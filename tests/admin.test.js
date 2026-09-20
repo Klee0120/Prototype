@@ -202,6 +202,33 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     assert.equal(negative.status, 400);
   });
 
+  await t.test("admin can flag and clear a pending punch correction for a specific day", async () => {
+    const flag = await server.call("PATCH", `/api/admin/weeks/T1003/${week}/pending-punch`, {
+      userId: "ADMIN",
+      body: { day: "Sat", flagged: true },
+    });
+    assert.equal(flag.status, 200);
+    assert.equal(flag.body.pendingPunchByDay.Sat, true);
+
+    const detail = await server.call("GET", `/api/technicians/T1003/weeks/${week}`, { userId: "T1003" });
+    assert.equal(detail.body.pendingPunchByDay.Sat, true);
+    // Flagging shouldn't disturb an already-set hours value for that day.
+    assert.equal(detail.body.ukgHoursByDay.Sat, 0);
+
+    const nonAdmin = await server.call("PATCH", `/api/admin/weeks/T1003/${week}/pending-punch`, {
+      userId: "T1003",
+      body: { day: "Sat", flagged: false },
+    });
+    assert.equal(nonAdmin.status, 403);
+
+    const clear = await server.call("PATCH", `/api/admin/weeks/T1003/${week}/pending-punch`, {
+      userId: "ADMIN",
+      body: { day: "Sat", flagged: false },
+    });
+    assert.equal(clear.status, 200);
+    assert.equal(clear.body.pendingPunchByDay.Sat, false);
+  });
+
   await t.test("admin can set a technician's home location", async () => {
     const res = await server.call("PATCH", "/api/admin/technicians/T1003/home-location", {
       userId: "ADMIN",

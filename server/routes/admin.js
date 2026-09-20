@@ -215,6 +215,26 @@ router.put("/weeks/:techId/:weekMonday/ukg-hours", (req, res) => {
   res.json({ ok: true, ukgHoursByDay: updated });
 });
 
+// Flags a specific day as waiting on a real UKG punch correction (missed
+// clock-out, etc.) so the technician sees why that day's hours aren't final
+// yet, instead of it just looking forgotten or wrong.
+router.patch("/weeks/:techId/:weekMonday/pending-punch", (req, res) => {
+  const { techId, weekMonday } = req.params;
+  const tech = db.findTechnician(techId);
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
+
+  const { day, flagged } = req.body || {};
+  if (!DAY_NAMES.includes(day)) return res.status(400).json({ error: `Invalid day: ${day}` });
+
+  const updated = db.setPendingPunch(techId, weekMonday, day, Boolean(flagged));
+  db.addAudit(
+    req.user.id,
+    flagged ? "PENDING_PUNCH_FLAGGED" : "PENDING_PUNCH_CLEARED",
+    `${req.user.name} ${flagged ? "flagged" : "cleared"} a pending punch correction for ${tech.name}, ${day} of week ${weekMonday}`
+  );
+  res.json({ ok: true, pendingPunchByDay: updated });
+});
+
 router.post("/weeks/:techId/:weekMonday/approve", (req, res) => {
   const { techId, weekMonday } = req.params;
   const tech = db.findTechnician(techId);

@@ -64,6 +64,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
   const week = db.getWeek(tech.id, weekMonday);
   const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
   const ukgHoursByDay = Object.fromEntries(DAY_NAMES.map((d) => [d, ukgByDay[d] || 0]));
+  const pendingPunchByDay = db.getPendingPunchByDay(tech.id, weekMonday);
   const allocatedByDay = sumByDay(week.allocations);
 
   res.json({
@@ -72,6 +73,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
     dates: datesForWeek(weekMonday),
     days: DAY_NAMES,
     ukgHoursByDay,
+    pendingPunchByDay,
     ukgTotal: round2(Object.values(ukgHoursByDay).reduce((s, h) => s + h, 0)),
     allocatedByDay,
     allocatedTotal: round2(Object.values(allocatedByDay).reduce((s, h) => s + h, 0)),

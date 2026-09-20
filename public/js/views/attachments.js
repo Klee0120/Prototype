@@ -7,6 +7,7 @@ const CATEGORY_LABELS = {
   wom_doc: "Document / Photo",
   tech_form: "Form / Certification",
   document: "Document",
+  labor_report: "Labor Report",
 };
 
 function formatSize(bytes) {

@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { DAY_NAMES, shiftWeek, weekRangeLabel } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
+import { renderWomPhotoPrompt } from "./womPhotoPrompt.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -51,6 +52,10 @@ export async function renderTechWeek(container, techIdOverride) {
   }
 
   let saveMessage = "";
+  // Handed off across the remount that happens right after a successful
+  // submit (state survives; local closures don't) -- consumed once here.
+  let photoPromptWomCodes = state.pendingPhotoPromptWoms || null;
+  delete state.pendingPhotoPromptWoms;
 
   container.innerHTML = `<div id="tw-main"></div><div id="tw-attachments"></div>`;
   const main = container.querySelector("#tw-main");
@@ -114,6 +119,8 @@ export async function renderTechWeek(container, techIdOverride) {
         ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
       </div>
 
+      <div id="wom-photo-prompt-host"></div>
+
       <div class="day-grid" id="day-grid"></div>
 
       <div id="receipt-host"></div>
@@ -126,6 +133,15 @@ export async function renderTechWeek(container, techIdOverride) {
         </div>
       `}
     `;
+
+    if (photoPromptWomCodes) {
+      main.querySelector("#wom-photo-prompt-host").appendChild(
+        renderWomPhotoPrompt(photoPromptWomCodes, () => {
+          photoPromptWomCodes = null;
+          draw();
+        })
+      );
+    }
 
     const grid = main.querySelector("#day-grid");
     DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, mode)));
@@ -154,6 +170,7 @@ export async function renderTechWeek(container, techIdOverride) {
     const card = document.createElement("div");
     card.className = "day-card";
     const ukgActual = week.ukgHoursByDay[day] || 0;
+    const pendingPunch = Boolean(week.pendingPunchByDay && week.pendingPunchByDay[day]);
     const splits = allocations.filter((a) => a.day === day && a.type !== "timeoff");
     const timeOff = allocations.find((a) => a.day === day && a.type === "timeoff") || null;
     const total = dayTotal(day);
@@ -165,6 +182,7 @@ export async function renderTechWeek(container, techIdOverride) {
         <span class="day-name">${day}</span>
         <span class="day-ukg-actual">UKG ACTUAL: <strong>${ukgActual}h</strong></span>
       </div>
+      ${pendingPunch ? `<p class="pending-punch-note">⚠ Pending punch correction in UKG — this day's hours aren't final yet.</p>` : ""}
       ${timeOffOnly ? "" : `<div class="day-rows"></div>`}
       ${full ? `
         <div class="day-actions">
@@ -430,6 +448,9 @@ export async function renderTechWeek(container, techIdOverride) {
           window.alert(`Week was submitted, but could not mark ${code} complete: ${err.message}`);
         }
       }
+
+      const womCodesWorked = [...new Set(allocations.filter((a) => a.type === "wom" && Number(a.hours) > 0).map((a) => a.womCode))];
+      if (womCodesWorked.length > 0) state.pendingPhotoPromptWoms = womCodesWorked;
 
       await renderTechWeek(container, techIdOverride);
     } catch (err) {

@@ -14,6 +14,7 @@ const CATEGORY_BY_RELATED = {
   week: new Set(["receipt", "ukg_screenshot"]),
   wom: new Set(["wom_doc"]),
   technician: new Set(["tech_form", "document"]),
+  labor_report: new Set(["labor_report"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -44,6 +45,9 @@ function relatedRecordExists(relatedType, relatedId) {
   if (relatedType === "wom") return Boolean(db.findWom(relatedId));
   if (relatedType === "technician") return Boolean(db.findTechnician(relatedId));
   if (relatedType === "week") return Boolean(db.findTechnician(parseWeekRelatedId(relatedId).techId));
+  // Labor reports aren't tied to a record that already exists elsewhere --
+  // they're just an admin-only monthly archive, keyed by "YYYY-MM".
+  if (relatedType === "labor_report") return /^\d{4}-\d{2}$/.test(relatedId);
   return false;
 }
 

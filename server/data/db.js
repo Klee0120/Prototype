@@ -161,6 +161,13 @@ if (!hasColumn("weeks", "ukg_confirmed_at")) {
   db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_by TEXT");
 }
 
+// Flags a specific day as waiting on a real UKG punch correction (a missed
+// clock-out, etc.) -- visible to the technician so a wrong/zero UKG number
+// reads as "not final yet" rather than "admin forgot about me".
+if (!hasColumn("ukg_hours", "pending_punch")) {
+  db.exec("ALTER TABLE ukg_hours ADD COLUMN pending_punch INTEGER NOT NULL DEFAULT 0");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -415,6 +422,21 @@ function setUkgHours(techId, weekMonday, hoursByDay) {
   return getUkgHoursByDay(techId, weekMonday);
 }
 
+function getPendingPunchByDay(techId, weekMonday) {
+  const rows = db
+    .prepare("SELECT day, pending_punch FROM ukg_hours WHERE tech_id = ? AND week_monday = ?")
+    .all(techId, weekMonday);
+  return Object.fromEntries(rows.map((r) => [r.day, Boolean(r.pending_punch)]));
+}
+
+function setPendingPunch(techId, weekMonday, day, flagged) {
+  db.prepare(
+    `INSERT INTO ukg_hours (tech_id, week_monday, day, hours, pending_punch) VALUES (?, ?, ?, 0, ?)
+     ON CONFLICT (tech_id, week_monday, day) DO UPDATE SET pending_punch = excluded.pending_punch`
+  ).run(techId, weekMonday, day, flagged ? 1 : 0);
+  return getPendingPunchByDay(techId, weekMonday);
+}
+
 // ---- Weekly allocation records ----
 
 function getWeek(techId, weekMonday) {
@@ -646,6 +668,8 @@ module.exports = {
   setWomStatus,
   getUkgHoursByDay,
   setUkgHours,
+  getPendingPunchByDay,
+  setPendingPunch,
   getWeek,
   saveAllocations,
   setUkgConfirmed,

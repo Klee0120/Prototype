@@ -337,6 +337,26 @@ button, input, select {
   font-size: 14px;
 }
 
+.pending-punch-note {
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 0 0 8px;
+}
+
+.ukg-day-field-pending input {
+  border-color: var(--warn);
+}
+
+.ukg-pending-punch-btn {
+  font-size: 10px;
+  padding: 2px 0;
+  white-space: nowrap;
+}
+
 /* ---- Split rows ---- */
 
 .split-row {
@@ -832,6 +852,42 @@ button, input, select {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
+}
+
+/* ---- WOM photo prompt ---- */
+
+.wom-photo-prompt {
+  background: var(--accent-bg, #eaf1fd);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 10px 0;
+}
+
+.wom-photo-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wom-photo-prompt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.wom-photo-code {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.wom-photo-attachments {
+  flex-basis: 100%;
 }
 
 /* ---- Attachments ---- */

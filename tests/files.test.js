@@ -67,6 +67,34 @@ test("files: attachments (upload/list/download/delete) authorization", async (t)
     assert.equal(res.status, 201);
   });
 
+  await t.test("labor_report uploads are admin-only, keyed by month", async () => {
+    const nonAdmin = await server.upload("/api/files", {
+      userId: "T1001",
+      fields: { relatedType: "labor_report", relatedId: "2026-09", category: "labor_report" },
+    });
+    assert.equal(nonAdmin.status, 403);
+
+    const badMonth = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "labor_report", relatedId: "not-a-month", category: "labor_report" },
+    });
+    assert.equal(badMonth.status, 404);
+
+    const ok = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "labor_report", relatedId: "2026-09", category: "labor_report" },
+      fileName: "labor-report-sept.xlsx",
+    });
+    assert.equal(ok.status, 201);
+
+    const list = await server.call("GET", "/api/files?relatedType=labor_report&relatedId=2026-09", { userId: "ADMIN" });
+    assert.equal(list.status, 200);
+    assert.equal(list.body.length, 1);
+
+    const techList = await server.call("GET", "/api/files?relatedType=labor_report&relatedId=2026-09", { userId: "T1001" });
+    assert.equal(techList.status, 403);
+  });
+
   await t.test("uploading against a nonexistent related record 404s", async () => {
     const res = await server.upload("/api/files", {
       userId: "T1002",

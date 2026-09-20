@@ -110,6 +110,22 @@ Demo logins:
   entry on the Weekly Review tab — hour-by-hour detail, approve/reject, and
   the UKG screenshot/receipt attachments — so admin/RFM can pull whatever
   they need from one table instead of opening each technician individually
+- **Pending punch correction flag**: admin can flag a specific day (right
+  next to that day's UKG hours field) as waiting on a real UKG punch fix
+  (a missed clock-out, etc.). The technician sees a clear note on that
+  day's card explaining the hours aren't final yet, instead of it looking
+  like their time was forgotten or entered wrong. Toggle it off once the
+  real punch is fixed and the correct hours are in.
+- **WOM photo prompt**: after a technician submits a week (or an admin marks
+  it "entered in UKG") that included WOM hours, a dismissible prompt offers
+  to attach a work photo for each WOM touched that week — reusing the same
+  WOM documents store as the WOM Status tab's Documents panel, so a photo
+  added either way shows up in both places.
+- **Labor Reports tab (admin)**: a simple month-by-month archive for the
+  labor report finance sends over, saved here so it's kept alongside the
+  timesheeting for that period — for comparing against what this app
+  tracked. File storage only for now; see "Where this stands" for the
+  bigger reconciliation idea this could grow into.
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
@@ -284,6 +300,28 @@ since only mock data has ever been in them).
   in the database), the same way a paper checklist trusts whoever checks
   the box. If that ever needs to be tied to something verifiable (e.g. a
   UKG export file), that's a bigger integration, not a UI change.
+- **The pending-punch flag is boolean, not a note.** It says "this day
+  isn't final" but doesn't capture why (which punch, what the tech says
+  happened) or log a resolution distinct from just re-entering the hours
+  later — it's flagged, then someone edits the hours and clears it. If a
+  documented "technician reported X, admin resolved with Y" trail turns
+  out to matter (not just a visual flag), that's a distinct small feature,
+  not an extension of this one — worth a separate design pass.
+- **The WOM photo prompt is a one-time nudge, not enforcement.** It shows
+  once right after the triggering action (submit, or admin confirming
+  "entered in UKG") and is fully skippable — nothing blocks progress if no
+  photo is ever added, and it won't reappear if dismissed. If photos ever
+  need to be mandatory for certain WOMs, that needs a real requirement
+  check, not just a prompt.
+- **Labor Reports is storage only — there's no comparison logic yet.** It
+  saves the monthly file finance sends so it's kept next to the
+  timesheeting for that period; nothing in the app reads its contents or
+  checks it against tracked hours. The real labor report (seen live use)
+  breaks hours down by employee and WOM/subledger into ST/OT/Holiday/
+  Sick/Vacation columns — close enough to what `computeReceipt` already
+  produces that a real reconciliation (export our numbers in the same
+  shape, or actually diff against a pasted-in report) is very buildable
+  once there's a settled target format to build against.
 
 ## Folder structure
 
@@ -301,11 +339,12 @@ server/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
     woms.js               GET/POST/PATCH WOM list + status, POST :code/complete (tech-facing)
-    admin.js               Weekly review + Overview report, UKG hours, roster, profile (basic
-                              info, onboarding, devices, allocation history), approve/reject/unlock
+    admin.js               Weekly review + Overview report, UKG hours, pending-punch flag,
+                              UKG-confirmed checklist, roster, profile (basic info, onboarding,
+                              devices, allocation history), approve/reject/unlock
     locations.js             GET (any user) / POST (admin) locations
     audit.js                  Audit log
-    files.js                   Upload/list/download/delete attachments
+    files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report)
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -318,11 +357,12 @@ tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking
-  admin.test.js             Approve / reject / unlock, Overview report OT-flagging, UKG-confirmed checklist
+  admin.test.js             Approve / reject / unlock, Overview report OT-flagging, UKG-confirmed
+                              checklist, pending-punch flag
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization
   roster.test.js              Basic info, onboarding, devices, allocation history
-  files.test.js                 Upload/list/download/delete authorization
+  files.test.js                 Upload/list/download/delete authorization, labor_report admin-only
   audit.test.js                   Audit log writes and admin-only read access
 public/
   index.html
@@ -334,7 +374,10 @@ public/
     views/
       login.js
       techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
-      adminReview.js         Admin review / Overview report / WOM docs / audit / Tech Allocation switcher / Technicians tab entry
+      adminReview.js         Admin review / Overview report / WOM docs / Labor Reports archive / audit /
+                              Tech Allocation switcher / Technicians tab entry
       technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
       attachments.js          Shared attachments list + upload component
+      womPhotoPrompt.js        Dismissible "add a photo?" nudge after submit / UKG-confirmed, reused
+                                  by both techWeek.js and adminReview.js
 ```

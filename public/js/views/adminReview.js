@@ -4,6 +4,7 @@ import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
+import { renderWomPhotoPrompt } from "./womPhotoPrompt.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -18,12 +19,31 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+function currentMonthISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function shiftMonth(monthIso, delta) {
+  const [y, m] = monthIso.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(monthIso) {
+  const [y, m] = monthIso.split("-").map(Number);
+  const d = new Date(y, m - 1, 1);
+  return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
 export async function renderAdminReview(container) {
   let activeTab = "review";
   let allocTechId = null;
   const expanded = new Map(); // techId -> detail payload
   const womsExpanded = new Set();
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
+  const photoPromptFor = new Map(); // techId -> WOM codes worked, shown right after confirming "entered in UKG"
+  let laborReportMonth = currentMonthISO();
 
   draw();
 
@@ -35,6 +55,7 @@ export async function renderAdminReview(container) {
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">WOM Status</button>
         <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
+        <button class="tab ${activeTab === "laborreports" ? "active" : ""}" data-tab="laborreports">Labor Reports</button>
         <button class="tab ${activeTab === "audit" ? "active" : ""}" data-tab="audit">Audit Trail</button>
       </div>
       <div id="tab-content" class="tab-content"></div>
@@ -53,7 +74,42 @@ export async function renderAdminReview(container) {
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
     else if (activeTab === "technicians") renderTechniciansTab(content);
+    else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
+  }
+
+  async function drawLaborReports(content) {
+    content.innerHTML = `
+      <div class="week-nav">
+        <button class="btn btn-ghost" id="prev-month">&larr; Prev</button>
+        <div class="week-range">${monthLabel(laborReportMonth)}</div>
+        <button class="btn btn-ghost" id="next-month">Next &rarr;</button>
+      </div>
+      <p class="review-checklist-hint">
+        Save the monthly labor report you get from finance here, month by month, so it's kept
+        alongside the timesheeting for that period -- for comparing side by side against what
+        this app tracked.
+      </p>
+      <div id="labor-report-attachments"></div>
+    `;
+
+    content.querySelector("#prev-month").addEventListener("click", () => {
+      laborReportMonth = shiftMonth(laborReportMonth, -1);
+      draw();
+    });
+    content.querySelector("#next-month").addEventListener("click", () => {
+      laborReportMonth = shiftMonth(laborReportMonth, 1);
+      draw();
+    });
+
+    await renderAttachments(content.querySelector("#labor-report-attachments"), {
+      title: "Labor Report Files",
+      relatedType: "labor_report",
+      relatedId: laborReportMonth,
+      categories: [{ value: "labor_report", label: "Labor Report" }],
+      canUpload: true,
+      emptyText: "No labor report saved for this month yet.",
+    });
   }
 
   async function drawTechAllocation(content) {
@@ -252,17 +308,37 @@ export async function renderAdminReview(container) {
         >${stage3 ? "Undo" : "Mark entered in UKG"}</button>
         <button class="btn btn-link expand-btn" type="button">${expanded.has(row.technician.id) ? "Hide" : "Details"}</button>
       </div>
+      <div class="wom-photo-prompt-host" id="photo-prompt-${row.technician.id}"></div>
       <div class="review-row-detail" id="detail-${row.technician.id}"></div>
     `;
+
+    if (photoPromptFor.has(row.technician.id)) {
+      el.querySelector(".wom-photo-prompt-host").appendChild(
+        renderWomPhotoPrompt(photoPromptFor.get(row.technician.id), () => {
+          photoPromptFor.delete(row.technician.id);
+          drawReview(content);
+        })
+      );
+    }
 
     el.querySelector(".confirm-ukg-btn").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       try {
-        await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-confirmed`, { confirmed: !stage3 });
+        const confirming = !stage3;
+        await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-confirmed`, { confirmed: confirming });
         // Collapse the detail panel on the way in/out of Completed -- that
         // list should default to just the summary row, not the full form.
         expanded.delete(row.technician.id);
+
+        if (confirming) {
+          const detail = await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`);
+          const womCodes = [...new Set(detail.allocations.filter((a) => a.type === "wom" && a.hours > 0).map((a) => a.womCode))];
+          if (womCodes.length > 0) photoPromptFor.set(row.technician.id, womCodes);
+        } else {
+          photoPromptFor.delete(row.technician.id);
+        }
+
         await drawReview(content);
       } catch (err) {
         btn.disabled = false;
@@ -317,13 +393,15 @@ export async function renderAdminReview(container) {
   }
 
   function renderUkgForm(detail, justSaved) {
-    const inputs = DAY_NAMES.map(
-      (day) => `
-        <label class="ukg-day-field">
+    const inputs = DAY_NAMES.map((day) => {
+      const pending = Boolean(detail.pendingPunchByDay && detail.pendingPunchByDay[day]);
+      return `
+        <label class="ukg-day-field ${pending ? "ukg-day-field-pending" : ""}">
           <span>${day}</span>
           <input type="number" min="0" step="0.25" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" />
-        </label>`
-    ).join("");
+          <button type="button" class="btn btn-link ukg-pending-punch-btn" data-day="${day}" data-flagged="${pending}" title="Flag or clear a pending punch correction for this day">${pending ? "⚠ Pending" : "Flag punch"}</button>
+        </label>`;
+    }).join("");
     const total = round2(DAY_NAMES.reduce((s, d) => s + Number(detail.ukgHoursByDay[d] || 0), 0));
     return `
       <form class="ukg-hours-form">
@@ -364,6 +442,22 @@ export async function renderAdminReview(container) {
       input.addEventListener("input", () => {
         justSavedUkg.delete(row.technician.id);
         updateTotal();
+      });
+    });
+
+    form.querySelectorAll(".ukg-pending-punch-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const day = btn.dataset.day;
+        const flagged = btn.dataset.flagged !== "true";
+        btn.disabled = true;
+        try {
+          await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/pending-punch`, { day, flagged });
+          expanded.set(row.technician.id, await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`));
+          await drawReview(content);
+        } catch (err) {
+          btn.disabled = false;
+          window.alert(`Could not update: ${err.message}`);
+        }
       });
     });
 
