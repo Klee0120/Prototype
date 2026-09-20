@@ -81,6 +81,11 @@ Demo logins:
     day's target like any other split
   - **"Default to home"** one-click button fills a day's remaining
     unallocated hours as E&F time at the technician's home location
+  - **Every day starts pre-filled** with a full E&F split at home matching
+    that day's UKG hours, so the common case (no WOM work that day) is
+    already balanced with zero clicks — switch a row's type to WOM Project,
+    or add another split, to carve out project hours instead. Only applies
+    to days with nothing entered yet; never overwrites an existing split
 - Submission blocked until **every day's** allocated hours exactly equal
   that day's UKG hours (not just the weekly total)
 - A technician can mark a WOM project complete from their own allocation
@@ -89,7 +94,10 @@ Demo logins:
   out of submitting their own in-progress draft; an admin can
   open/close/reopen any WOM directly at any time
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
-  fill a week's hours in one go instead of typing each day
+  fill a week's hours in one go instead of typing each day, with a live
+  **Total** readout next to the day fields in both decimal (e.g. `42.5`)
+  and UKG's own clock format (`42:30`), so it's easy to eyeball against
+  the UKG screenshot you're transcribing from
 - Admin review screen: approve, reject (with note, returns to technician), or
   unlock an approved week for correction; UKG screenshots/receipts for that
   week are visible right there, not just on the technician's own screen

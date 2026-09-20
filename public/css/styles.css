@@ -785,6 +785,29 @@ button, input, select {
   border-radius: 6px;
 }
 
+.ukg-total-field {
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
+.ukg-total-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.ukg-total-decimal {
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.ukg-total-clock {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .ukg-paste-row {
   display: flex;
   gap: 8px;

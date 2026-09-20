@@ -306,6 +306,16 @@ export async function renderAdminReview(container) {
     return el;
   }
 
+  function hoursToClock(totalHours) {
+    let h = Math.floor(totalHours);
+    let m = Math.round((totalHours - h) * 60);
+    if (m === 60) {
+      h += 1;
+      m = 0;
+    }
+    return `${h}:${String(m).padStart(2, "0")}`;
+  }
+
   function renderUkgForm(detail, justSaved) {
     const inputs = DAY_NAMES.map(
       (day) => `
@@ -314,10 +324,20 @@ export async function renderAdminReview(container) {
           <input type="number" min="0" step="0.25" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" />
         </label>`
     ).join("");
+    const total = round2(DAY_NAMES.reduce((s, d) => s + Number(detail.ukgHoursByDay[d] || 0), 0));
     return `
       <form class="ukg-hours-form">
         <div class="ukg-hours-title">UKG hours (from timesheet)</div>
-        <div class="ukg-day-fields">${inputs}</div>
+        <div class="ukg-day-fields">
+          ${inputs}
+          <div class="ukg-day-field ukg-total-field">
+            <span>Total</span>
+            <div class="ukg-total-value">
+              <strong class="ukg-total-decimal">${total}</strong>
+              <span class="ukg-total-clock">${hoursToClock(total)}</span>
+            </div>
+          </div>
+        </div>
         <div class="ukg-paste-row">
           <input type="text" class="ukg-paste-input" placeholder="Paste 7 values, Mon→Sun (e.g. 8 8 8 7 9 0 0)" />
           <button type="button" class="btn btn-link ukg-fill-week">Fill week</button>
@@ -332,8 +352,19 @@ export async function renderAdminReview(container) {
     const form = detailEl.querySelector(".ukg-hours-form");
     const msg = form.querySelector(".ukg-message");
 
+    function updateTotal() {
+      const total = round2(
+        [...form.querySelectorAll("input[data-day]")].reduce((s, input) => s + (Number(input.value) || 0), 0)
+      );
+      form.querySelector(".ukg-total-decimal").textContent = total;
+      form.querySelector(".ukg-total-clock").textContent = hoursToClock(total);
+    }
+
     form.querySelectorAll("input[data-day]").forEach((input) => {
-      input.addEventListener("input", () => justSavedUkg.delete(row.technician.id));
+      input.addEventListener("input", () => {
+        justSavedUkg.delete(row.technician.id);
+        updateTotal();
+      });
     });
 
     form.querySelector(".ukg-fill-week").addEventListener("click", () => {
@@ -350,6 +381,7 @@ export async function renderAdminReview(container) {
       justSavedUkg.delete(row.technician.id);
       msg.textContent = "";
       msg.className = "save-message ukg-message";
+      updateTotal();
     });
 
     form.addEventListener("submit", async (e) => {

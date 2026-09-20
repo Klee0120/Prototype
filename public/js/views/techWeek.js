@@ -32,6 +32,24 @@ export async function renderTechWeek(container, techIdOverride) {
   const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
   const homeLocationCode = week.technician.homeLocationCode;
 
+  // Default every day to a full E&F split at home up front, so the common
+  // case (no WOM work that day) needs no clicks -- switch the type to WOM
+  // Project on a row, or carve out hours into a new split, for the rest.
+  // Only for days with nothing entered yet; never touches a day someone's
+  // already started, and never runs outside full edit mode.
+  if (week.editMode === "full" && homeLocationCode) {
+    for (const day of DAY_NAMES) {
+      const hasAnySplit = allocations.some((a) => a.day === day && a.type !== "timeoff");
+      if (hasAnySplit) continue;
+      const ukgActual = week.ukgHoursByDay[day] || 0;
+      const already = allocations.filter((a) => a.day === day).reduce((s, a) => s + Number(a.hours || 0), 0);
+      const remaining = round2(ukgActual - already);
+      if (remaining > 0) {
+        allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: remaining });
+      }
+    }
+  }
+
   let saveMessage = "";
 
   container.innerHTML = `<div id="tw-main"></div><div id="tw-attachments"></div>`;
