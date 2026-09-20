@@ -14,6 +14,10 @@ const STATUS_LABELS = {
 
 const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
 
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
 export async function renderAdminReview(container) {
   let activeTab = "review";
   let allocTechId = null;
@@ -26,6 +30,7 @@ export async function renderAdminReview(container) {
     container.innerHTML = `
       <div class="tabs">
         <button class="tab ${activeTab === "techalloc" ? "active" : ""}" data-tab="techalloc">Tech Allocation</button>
+        <button class="tab ${activeTab === "overview" ? "active" : ""}" data-tab="overview">Overview</button>
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">WOM Status</button>
         <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
@@ -43,6 +48,7 @@ export async function renderAdminReview(container) {
 
     const content = container.querySelector("#tab-content");
     if (activeTab === "techalloc") await drawTechAllocation(content);
+    else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
     else if (activeTab === "technicians") renderTechniciansTab(content);
@@ -86,6 +92,87 @@ export async function renderAdminReview(container) {
     });
 
     await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId);
+  }
+
+  async function drawOverview(content) {
+    const [rows, locations] = await Promise.all([
+      api.get(`/api/admin/weeks/${state.weekMonday}`),
+      api.get("/api/locations"),
+    ]);
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+
+    const sorted = [...rows].sort((a, b) => {
+      if (a.flagged !== b.flagged) return a.flagged ? -1 : 1;
+      return b.otNotOnWom - a.otNotOnWom;
+    });
+
+    content.innerHTML = `
+      <div class="week-nav">
+        <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
+        <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
+        <button class="btn btn-ghost" id="next-week">Next &rarr;</button>
+      </div>
+      <p class="overview-hint">
+        Every technician's week at a glance, for RFM/admin review. A row is flagged when more than
+        3 overtime hours in the week aren't charged to any WOM project — i.e. overtime that isn't
+        explained by a specific job.
+      </p>
+      <table class="detail-table overview-table">
+        <thead>
+          <tr>
+            <th>Employee</th><th>Location</th><th>Status</th><th>Total (UKG)</th><th>+/- 40</th>
+            <th>Regular</th><th>OT</th><th>OT on WOM</th><th>OT not on WOM</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            sorted.length === 0
+              ? `<tr><td colspan="10" class="empty-note">No technicians yet.</td></tr>`
+              : sorted
+                  .map((row) => {
+                    const loc = locationByCode[row.technician.homeLocationCode];
+                    const delta = round2(row.ukgHours - 40);
+                    return `
+                      <tr class="${row.flagged ? "overview-row-flagged" : ""}">
+                        <td>${escapeHtml(row.technician.name)}</td>
+                        <td>${loc ? escapeHtml(loc.name) : "—"}</td>
+                        <td><span class="badge badge-${row.status}">${STATUS_LABELS[row.status]}</span></td>
+                        <td>${row.ukgHours}h</td>
+                        <td class="${delta > 0 ? "warn" : ""}">${delta > 0 ? "+" : ""}${delta}</td>
+                        <td>${row.regularHours}</td>
+                        <td>${row.otHours}</td>
+                        <td>${row.otOnWom}</td>
+                        <td class="${row.flagged ? "danger" : ""}">${row.otNotOnWom}</td>
+                        <td>
+                          ${row.flagged ? `<span class="rfm-flag">Flag for RFM</span>` : ""}
+                          <button class="btn btn-link overview-view-btn" type="button" data-tech="${escapeHtml(row.technician.id)}">View</button>
+                        </td>
+                      </tr>
+                    `;
+                  })
+                  .join("")
+          }
+        </tbody>
+      </table>
+    `;
+
+    content.querySelector("#prev-week").addEventListener("click", () => {
+      state.weekMonday = shiftWeek(state.weekMonday, -1);
+      draw();
+    });
+    content.querySelector("#next-week").addEventListener("click", () => {
+      state.weekMonday = shiftWeek(state.weekMonday, 1);
+      draw();
+    });
+    content.querySelectorAll(".overview-view-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const techId = btn.dataset.tech;
+        const detail = await api.get(`/api/technicians/${techId}/weeks/${state.weekMonday}`);
+        expanded.set(techId, detail);
+        activeTab = "review";
+        await draw();
+      });
+    });
   }
 
   async function drawReview(content) {

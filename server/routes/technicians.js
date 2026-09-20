@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("../data/db");
 const { requireAuth } = require("../middleware/auth");
 const { DAY_NAMES, datesForWeek } = require("../utils/week");
+const { presentAllocation } = require("../utils/allocation");
 
 const router = express.Router();
 
@@ -23,16 +24,6 @@ function sumByDay(allocations) {
   const totals = Object.fromEntries(DAY_NAMES.map((d) => [d, 0]));
   for (const a of allocations) totals[a.day] = round2((totals[a.day] || 0) + Number(a.hours || 0));
   return totals;
-}
-
-// Time-off rows are stored using the same columns as WOM rows (womCode
-// holds the time-off type instead of a WOM code) to avoid a parallel table;
-// translate that back to a clearer shape for API consumers.
-function presentAllocation(a) {
-  if (a.type === "timeoff") {
-    return { day: a.day, type: "timeoff", timeOffType: a.womCode, hours: a.hours };
-  }
-  return a;
 }
 
 router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {

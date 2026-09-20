@@ -461,6 +461,7 @@ button, input, select {
 }
 .receipt-tile-value.ok { color: var(--ok); }
 .receipt-tile-value.warn { color: var(--warn); }
+.receipt-tile-value.danger { color: var(--danger); }
 
 .receipt-table {
   margin-bottom: 10px;
@@ -626,6 +627,38 @@ button, input, select {
   margin-bottom: 16px;
   display: block;
   overflow-x: auto;
+}
+
+.overview-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 12px;
+  max-width: 640px;
+}
+
+.overview-table {
+  display: block;
+  overflow-x: auto;
+}
+
+.overview-table .warn { color: var(--warn); }
+.overview-table .danger { color: var(--danger); font-weight: 600; }
+
+.overview-row-flagged {
+  background: var(--danger-bg);
+}
+
+.rfm-flag {
+  display: inline-block;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  margin-right: 8px;
 }
 
 .wom-desc {

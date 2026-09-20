@@ -89,6 +89,15 @@ Demo logins:
 - Admin review screen: approve, reject (with note, returns to technician), or
   unlock an approved week for correction; UKG screenshots/receipts for that
   week are visible right there, not just on the technician's own screen
+- **Overview tab (RFM/admin)**: every technician's week at a glance for the
+  selected week — total UKG hours, +/- 40, Regular/OT split, and OT broken
+  into "on a WOM" vs. "not on a WOM." A row is **flagged** (and sorted to the
+  top) when more than 3 overtime hours in the week aren't charged to any WOM
+  project, since that's overtime nobody can currently explain by a specific
+  job. Each row's "View" button jumps straight to that technician's expanded
+  entry on the Weekly Review tab — hour-by-hour detail, approve/reject, and
+  the UKG screenshot/receipt attachments — so admin/RFM can pull whatever
+  they need from one table instead of opening each technician individually
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
@@ -198,6 +207,27 @@ since only mock data has ever been in them).
   to the database when a week is submitted/approved. If you need to look up
   a specific week's exact Reg/OT numbers later without recomputing (e.g.
   for JDE export), that needs a stored snapshot, not just a live calc.
+- **The Reg/OT math now exists in two places.** `public/js/views/techWeek.js`
+  has the browser copy (for the technician's own live receipt);
+  `server/utils/receipt.js` has a server copy (for the admin Overview
+  report, computed across every technician at once). They're deliberately
+  duplicated rather than shared, since one runs in the browser as an ES
+  module and the other in Node as CommonJS — if the OT rule ever changes,
+  both need updating together.
+- **Overview's flag threshold (3 OT hours not on a WOM) is a first guess,
+  not a rule you gave us.** It's easy to change
+  (`OT_NOT_ON_WOM_FLAG_THRESHOLD` in `server/routes/admin.js`) if 3 hours is
+  too sensitive or not sensitive enough in practice.
+- **Overview doesn't (yet) replace the call-in tracking or the Smartsheet
+  before/after screenshot process.** It shows the same UKG screenshot and
+  receipt/invoice attachments the technician's own week already has,
+  plus the live Reg/OT numbers — it doesn't have fields for call-in
+  time, H&E, or a separate "before I made changes" snapshot the way the
+  Smartsheet log does. If that turns out to matter for the audit trail (not
+  just "what's the total" but "what did it look like before someone
+  touched it"), the natural next step is persisting a locked snapshot of
+  the receipt/allocations at approval time, rather than only ever showing
+  the live numbers.
 
 ## Folder structure
 
@@ -215,21 +245,23 @@ server/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
     woms.js               GET/POST/PATCH WOM list + status, POST :code/complete (tech-facing)
-    admin.js               Weekly review, UKG hours, roster, profile (basic info, onboarding,
-                              devices, allocation history), approve/reject/unlock
+    admin.js               Weekly review + Overview report, UKG hours, roster, profile (basic
+                              info, onboarding, devices, allocation history), approve/reject/unlock
     locations.js             GET (any user) / POST (admin) locations
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments
   utils/
     week.js                Mon–Sun week date helpers
     password.js             scrypt PIN hashing (hashPin/verifyPin)
+    allocation.js            presentAllocation: translates a stored timeoff row's shape for API responses
+    receipt.js               Server-side copy of the Reg/OT computeReceipt calculation (admin Overview)
 scripts/
   deploy.sh               One-shot droplet setup: Node 22, app, systemd service, firewall
 tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking
-  admin.test.js             Approve / reject / unlock
+  admin.test.js             Approve / reject / unlock, Overview report OT-flagging
   woms.test.js               WOM CRUD + authorization
   roster.test.js              Basic info, onboarding, devices, allocation history
   files.test.js                 Upload/list/download/delete authorization
@@ -244,7 +276,7 @@ public/
     views/
       login.js
       techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
-      adminReview.js         Admin review / WOM docs / audit / Tech Allocation switcher / Technicians tab entry
+      adminReview.js         Admin review / Overview report / WOM docs / audit / Tech Allocation switcher / Technicians tab entry
       technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
       attachments.js          Shared attachments list + upload component
 ```

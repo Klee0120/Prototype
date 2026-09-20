@@ -86,6 +86,58 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     assert.equal(t1002.ukgHours, 37.5);
   });
 
+  await t.test("overview flags overtime that isn't charged to a WOM", async () => {
+    // T1003's seeded UKG hours for this week total 44h (Mon-Fri 8 + Sat 4) -- 4h of OT
+    const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "T1003",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+          .map((day) => ({ day, type: "ef", locationCode: "CINCINNATI", hours: 8 }))
+          .concat([{ day: "Sat", type: "ef", locationCode: "CINCINNATI", hours: 4 }]),
+      },
+    });
+    assert.equal(put.status, 200);
+    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "T1003" });
+    assert.equal(submit.status, 200);
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1003 = overview.body.find((r) => r.technician.id === "T1003");
+    assert.equal(t1003.otHours, 4);
+    assert.equal(t1003.otOnWom, 0);
+    assert.equal(t1003.otNotOnWom, 4);
+    assert.equal(t1003.flagged, true);
+  });
+
+  await t.test("overtime charged to an open WOM is not flagged", async () => {
+    const reject = await server.call("POST", `/api/admin/weeks/T1003/${week}/reject`, { userId: "ADMIN" });
+    assert.equal(reject.status, 200);
+
+    const createWom = await server.call("POST", "/api/woms", {
+      userId: "ADMIN",
+      body: { code: "WOM-9001", description: "Test overtime project", locationCode: "CINCINNATI" },
+    });
+    assert.equal(createWom.status, 201);
+
+    const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "T1003",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+          .map((day) => ({ day, type: "ef", locationCode: "CINCINNATI", hours: 8 }))
+          .concat([{ day: "Sat", type: "wom", locationCode: "CINCINNATI", womCode: "WOM-9001", hours: 4 }]),
+      },
+    });
+    assert.equal(put.status, 200);
+    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "T1003" });
+    assert.equal(submit.status, 200);
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1003 = overview.body.find((r) => r.technician.id === "T1003");
+    assert.equal(t1003.otHours, 4);
+    assert.equal(t1003.otOnWom, 4);
+    assert.equal(t1003.otNotOnWom, 0);
+    assert.equal(t1003.flagged, false);
+  });
+
   await t.test("admin can set a technician's per-day UKG hours", async () => {
     const res = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
       userId: "ADMIN",

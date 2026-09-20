@@ -2,6 +2,10 @@ const express = require("express");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { DAY_NAMES } = require("../utils/week");
+const { presentAllocation } = require("../utils/allocation");
+const { computeReceipt } = require("../utils/receipt");
+
+const OT_NOT_ON_WOM_FLAG_THRESHOLD = 3;
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -147,11 +151,17 @@ router.get("/weeks/:weekMonday", (req, res) => {
     const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
     const ukgHours = round2(DAY_NAMES.reduce((sum, d) => sum + (ukgByDay[d] || 0), 0));
     const allocatedHours = round2(week.allocations.reduce((sum, a) => sum + Number(a.hours || 0), 0));
+    const receipt = computeReceipt(week.allocations.map(presentAllocation));
     return {
-      technician: { id: tech.id, name: tech.name },
+      technician: { id: tech.id, name: tech.name, homeLocationCode: tech.home_location_code },
       status: week.status,
       ukgHours,
       allocatedHours,
+      regularHours: receipt.regularTotal,
+      otHours: receipt.otTotal,
+      otOnWom: receipt.otFromWom,
+      otNotOnWom: receipt.otFromEf,
+      flagged: receipt.otFromEf > OT_NOT_ON_WOM_FLAG_THRESHOLD,
       submittedAt: week.submittedAt,
       reviewedAt: week.reviewedAt,
       reviewedBy: week.reviewedBy,

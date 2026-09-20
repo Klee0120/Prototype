@@ -354,6 +354,7 @@ export async function renderTechWeek(container, techIdOverride) {
         <div class="receipt-tile"><span class="receipt-tile-label">Regular</span><span class="receipt-tile-value ok">${receipt.regularTotal}</span></div>
         <div class="receipt-tile"><span class="receipt-tile-label">Overtime</span><span class="receipt-tile-value warn">${receipt.otTotal}</span></div>
         <div class="receipt-tile"><span class="receipt-tile-label">OT on WOM</span><span class="receipt-tile-value warn">${receipt.otFromWom}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">OT not on WOM</span><span class="receipt-tile-value ${receipt.otFromEf > 3 ? "danger" : "warn"}">${receipt.otFromEf}</span></div>
         <div class="receipt-tile"><span class="receipt-tile-label">Time Off</span><span class="receipt-tile-value">${receipt.totalTimeOff}</span></div>
       </div>
       ${
@@ -483,6 +484,7 @@ function computeReceipt(allocations) {
     totalTimeOff,
     otTotal,
     otFromWom,
+    otFromEf,
     regularTotal,
     buckets: [...womBuckets, ...efBuckets, ...timeoffBuckets],
   };
