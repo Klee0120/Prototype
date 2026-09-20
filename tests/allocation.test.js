@@ -139,4 +139,31 @@ test("allocation: per-day hour validation, splits, and locking", async (t) => {
     const submit = await server.call("POST", `/api/technicians/T1002/weeks/${week}/submit`, { userId: "T1002" });
     assert.equal(submit.status, 200);
   });
+
+  await t.test("an admin can allocate and submit on a technician's behalf", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"].map((day) => ({ day, type: "ef", locationCode: "CINCINNATI", hours: 8 })).concat([
+          { day: "Sat", type: "ef", locationCode: "CINCINNATI", hours: 4 },
+        ]),
+      },
+    });
+    assert.equal(put.status, 200);
+
+    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "ADMIN" });
+    assert.equal(submit.status, 200);
+
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = audit.body.find((e) => e.action === "WEEK_SUBMITTED" && e.details.includes("T1003"));
+    assert.ok(entry, "expected an on-behalf-of audit entry naming T1003");
+  });
+
+  await t.test("a different technician still cannot touch someone else's allocations", async () => {
+    const res = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "T1002",
+      body: { allocations: [] },
+    });
+    assert.equal(res.status, 403);
+  });
 });

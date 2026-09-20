@@ -81,8 +81,12 @@ export async function renderAttachments(host, opts) {
     if (del) {
       del.addEventListener("click", async () => {
         if (!window.confirm(`Delete "${f.originalName}"?`)) return;
-        await api.delete(`/api/files/${f.id}`);
-        await refresh();
+        try {
+          await api.delete(`/api/files/${f.id}`);
+          await refresh();
+        } catch (err) {
+          window.alert(`Could not delete: ${err.message}`);
+        }
       });
     }
 

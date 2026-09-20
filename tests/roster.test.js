@@ -12,7 +12,7 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     const t1001 = res.body.find((r) => r.id === "T1001");
     assert.equal(t1001.ukgId, "5945928");
     assert.equal(t1001.position, "Maintenance Technician");
-    assert.equal(t1001.active, true);
+    assert.equal(t1001.employmentStatus, "active");
   });
 
   await t.test("a technician cannot access the roster", async () => {
@@ -30,15 +30,57 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.body.position, "Lead Tech");
   });
 
-  await t.test("admin can toggle active status", async () => {
-    const off = await server.call("PATCH", "/api/admin/technicians/T1001/active", { userId: "ADMIN", body: { active: false } });
+  await t.test("admin can change employment status", async () => {
+    const off = await server.call("PATCH", "/api/admin/technicians/T1001/employment-status", {
+      userId: "ADMIN",
+      body: { status: "terminated" },
+    });
     assert.equal(off.status, 200);
-    assert.equal(off.body.active, false);
+    assert.equal(off.body.employmentStatus, "terminated");
 
     const list = await server.call("GET", "/api/admin/technicians", { userId: "ADMIN" });
-    assert.equal(list.body.find((r) => r.id === "T1001").active, false);
+    assert.equal(list.body.find((r) => r.id === "T1001").employmentStatus, "terminated");
 
-    await server.call("PATCH", "/api/admin/technicians/T1001/active", { userId: "ADMIN", body: { active: true } });
+    const loginBlocked = await server.call("POST", "/api/auth/login", { body: { id: "T1001", pin: "1234" } });
+    assert.equal(loginBlocked.status, 401);
+
+    await server.call("PATCH", "/api/admin/technicians/T1001/employment-status", { userId: "ADMIN", body: { status: "active" } });
+  });
+
+  await t.test("rejects an unknown employment status value", async () => {
+    const res = await server.call("PATCH", "/api/admin/technicians/T1001/employment-status", {
+      userId: "ADMIN",
+      body: { status: "bogus" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("admin can create a new technician", async () => {
+    const res = await server.call("POST", "/api/admin/technicians", {
+      userId: "ADMIN",
+      body: { id: "T1099", name: "Casey New", pin: "4321", position: "Technician", homeLocationCode: "PRINCETON" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.employmentStatus, "active");
+
+    const login = await server.call("POST", "/api/auth/login", { body: { id: "T1099", pin: "4321" } });
+    assert.equal(login.status, 200);
+  });
+
+  await t.test("cannot create a technician with a duplicate ID", async () => {
+    const res = await server.call("POST", "/api/admin/technicians", {
+      userId: "ADMIN",
+      body: { id: "T1001", name: "Dupe", pin: "1111" },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("a technician cannot create another technician", async () => {
+    const res = await server.call("POST", "/api/admin/technicians", {
+      userId: "T1002",
+      body: { id: "T1098", name: "Nope", pin: "1111" },
+    });
+    assert.equal(res.status, 403);
   });
 
   await t.test("onboarding starts with all tasks incomplete and can be checked off", async () => {

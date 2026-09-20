@@ -17,8 +17,8 @@ const TIME_OFF_OPTIONS = [
   { value: "holiday", label: "Holiday" },
 ];
 
-export async function renderTechWeek(container) {
-  const techId = state.user.id;
+export async function renderTechWeek(container, techIdOverride) {
+  const techId = techIdOverride || state.user.id;
   const [week, woms, locations] = await Promise.all([
     api.get(`/api/technicians/${techId}/weeks/${state.weekMonday}`),
     api.get("/api/woms"),
@@ -94,6 +94,8 @@ export async function renderTechWeek(container) {
 
       <div class="day-grid" id="day-grid"></div>
 
+      <div id="receipt-host"></div>
+
       ${locked ? "" : `
         <div class="action-row">
           <button class="btn btn-secondary" id="save-draft">Save draft</button>
@@ -105,14 +107,15 @@ export async function renderTechWeek(container) {
 
     const grid = main.querySelector("#day-grid");
     DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, locked)));
+    main.querySelector("#receipt-host").appendChild(renderReceipt());
 
     main.querySelector("#prev-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, -1);
-      renderTechWeek(container);
+      renderTechWeek(container, techIdOverride);
     });
     main.querySelector("#next-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, 1);
-      renderTechWeek(container);
+      renderTechWeek(container, techIdOverride);
     });
 
     if (!locked) {
@@ -273,12 +276,16 @@ export async function renderTechWeek(container) {
     if (markComplete) {
       markComplete.addEventListener("click", async () => {
         if (!window.confirm(`Mark ${row.womCode} complete? This closes it for everyone.`)) return;
-        await api.post(`/api/woms/${encodeURIComponent(row.womCode)}/complete`);
-        const refreshed = await api.get("/api/woms");
-        woms.length = 0;
-        woms.push(...refreshed);
-        Object.assign(womByCode, Object.fromEntries(refreshed.map((w) => [w.code, w])));
-        draw();
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(row.womCode)}/complete`);
+          const refreshed = await api.get("/api/woms");
+          woms.length = 0;
+          woms.push(...refreshed);
+          Object.assign(womByCode, Object.fromEntries(refreshed.map((w) => [w.code, w])));
+          draw();
+        } catch (err) {
+          window.alert(`Could not mark complete: ${err.message}`);
+        }
       });
     }
 
@@ -318,6 +325,52 @@ export async function renderTechWeek(container) {
     return wrap;
   }
 
+  function renderReceipt() {
+    const receipt = computeReceipt(allocations);
+    const bucketLabel = (b) => {
+      if (b.kind === "wom") {
+        const wom = womByCode[b.code];
+        return `${b.code}${wom ? ` — ${wom.description}` : ""}`;
+      }
+      if (b.kind === "ef") {
+        const loc = locationByCode[b.code];
+        return `E&F — ${loc ? loc.name : b.code}`;
+      }
+      const label = TIME_OFF_OPTIONS.find((o) => o.value === b.code)?.label || b.code;
+      return `Time off — ${label}`;
+    };
+
+    const wrap = document.createElement("div");
+    wrap.className = "receipt-panel";
+    wrap.innerHTML = `
+      <div class="receipt-title">Weekly Receipt — Reg / OT Breakdown</div>
+      <div class="receipt-tiles">
+        <div class="receipt-tile"><span class="receipt-tile-label">Week Total (Worked)</span><span class="receipt-tile-value">${receipt.totalWorked}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">Regular</span><span class="receipt-tile-value ok">${receipt.regularTotal}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">Overtime</span><span class="receipt-tile-value warn">${receipt.otTotal}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">OT on WOM</span><span class="receipt-tile-value warn">${receipt.otFromWom}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">Time Off</span><span class="receipt-tile-value">${receipt.totalTimeOff}</span></div>
+      </div>
+      ${
+        receipt.buckets.length === 0
+          ? ""
+          : `<table class="detail-table receipt-table">
+              <thead><tr><th>Bucket</th><th>Type</th><th>Reg</th><th>OT</th><th>Total</th></tr></thead>
+              <tbody>
+                ${receipt.buckets
+                  .map(
+                    (b) => `<tr><td>${escapeHtml(bucketLabel(b))}</td><td>${b.kind.toUpperCase()}</td><td>${b.reg}</td><td>${b.ot}</td><td>${b.hours}</td></tr>`
+                  )
+                  .join("")}
+                <tr class="receipt-total-row"><td colspan="2">Total</td><td>${receipt.regularTotal}</td><td>${receipt.otTotal}</td><td>${round2(receipt.regularTotal + receipt.otTotal)}</td></tr>
+              </tbody>
+            </table>`
+      }
+      <p class="receipt-note">OT rule: hours beyond 40/week are automatic overtime, calculated on the week's total (not day-by-day). WOM-allocated hours are charged to OT before E&amp;F hours. Time off is paid straight time and isn't counted toward the 40-hour threshold. When OT spans more than one WOM, it's split proportionally across them.</p>
+    `;
+    return wrap;
+  }
+
   async function saveDraft() {
     try {
       await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/allocations`, { allocations });
@@ -332,7 +385,7 @@ export async function renderTechWeek(container) {
     try {
       await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/allocations`, { allocations });
       await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/submit`);
-      await renderTechWeek(container);
+      await renderTechWeek(container, techIdOverride);
     } catch (err) {
       saveMessage = err.message;
       draw();
@@ -342,4 +395,80 @@ export async function renderTechWeek(container) {
 
 function round2(n) {
   return Math.round(n * 100) / 100;
+}
+
+const WEEKLY_OT_THRESHOLD = 40;
+
+// Groups a week's allocation rows into pay buckets (one per WOM, one per
+// E&F location, one per time-off type) and splits each bucket's hours into
+// regular/OT. Hours beyond 40/week are OT; WOM hours are charged to OT
+// before E&F hours; time off is always straight time and excluded from the
+// 40-hour threshold entirely. When OT spans multiple WOM (or multiple E&F)
+// buckets, it's split proportionally across them — there's no specified
+// priority order between individual WOMs.
+function computeReceipt(allocations) {
+  const buckets = new Map();
+  for (const a of allocations) {
+    const hours = Number(a.hours || 0);
+    if (hours <= 0) continue;
+    let key, kind, code;
+    if (a.type === "wom") {
+      kind = "wom";
+      code = a.womCode;
+    } else if (a.type === "ef") {
+      kind = "ef";
+      code = a.locationCode;
+    } else {
+      kind = "timeoff";
+      code = a.timeOffType;
+    }
+    key = `${kind}:${code}`;
+    if (!buckets.has(key)) buckets.set(key, { kind, code, hours: 0 });
+    const b = buckets.get(key);
+    b.hours = round2(b.hours + hours);
+  }
+
+  const bucketList = [...buckets.values()];
+  const womBuckets = bucketList.filter((b) => b.kind === "wom");
+  const efBuckets = bucketList.filter((b) => b.kind === "ef");
+  const timeoffBuckets = bucketList.filter((b) => b.kind === "timeoff");
+
+  const sumWom = round2(womBuckets.reduce((s, b) => s + b.hours, 0));
+  const sumEf = round2(efBuckets.reduce((s, b) => s + b.hours, 0));
+  const totalWorked = round2(sumWom + sumEf);
+  const totalTimeOff = round2(timeoffBuckets.reduce((s, b) => s + b.hours, 0));
+
+  const otTotal = round2(Math.max(0, totalWorked - WEEKLY_OT_THRESHOLD));
+  const otFromWom = round2(Math.min(otTotal, sumWom));
+  const otFromEf = round2(otTotal - otFromWom);
+
+  function distribute(list, otPool, sumPool) {
+    let remaining = otPool;
+    list.forEach((b, i) => {
+      let ot;
+      if (sumPool <= 0) ot = 0;
+      else if (i === list.length - 1) ot = remaining; // last bucket absorbs rounding drift
+      else ot = round2((otPool * b.hours) / sumPool);
+      remaining = round2(remaining - ot);
+      b.ot = ot;
+      b.reg = round2(b.hours - ot);
+    });
+  }
+  distribute(womBuckets, otFromWom, sumWom);
+  distribute(efBuckets, otFromEf, sumEf);
+  timeoffBuckets.forEach((b) => {
+    b.ot = 0;
+    b.reg = b.hours;
+  });
+
+  const regularTotal = round2(bucketList.reduce((s, b) => s + b.reg, 0));
+
+  return {
+    totalWorked,
+    totalTimeOff,
+    otTotal,
+    otFromWom,
+    regularTotal,
+    buckets: [...womBuckets, ...efBuckets, ...timeoffBuckets],
+  };
 }

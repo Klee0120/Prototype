@@ -13,10 +13,26 @@ const PROFILE_TABS = [
 
 const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
 
+const STATUS_OPTIONS = [
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+  { value: "terminated", label: "Terminated" },
+  { value: "retired", label: "Retired" },
+];
+
+const STATUS_BADGE_CLASS = { active: "approved", inactive: "draft", terminated: "rejected", retired: "submitted" };
+
+function statusBadge(status) {
+  const cls = STATUS_BADGE_CLASS[status] || "draft";
+  const label = (STATUS_OPTIONS.find((o) => o.value === status) || {}).label || status;
+  return `<span class="badge badge-${cls}">${escapeHtml(label)}</span>`;
+}
+
 /** Manages its own roster-list vs. profile-detail state inside `content`. */
 export function renderTechniciansTab(content) {
   let profileTechId = null;
   let profileSubTab = "basic";
+  let showAddForm = false;
   const filters = { location: "", status: "active" };
 
   draw();
@@ -32,12 +48,14 @@ export function renderTechniciansTab(content) {
 
     const filtered = techs.filter((t) => {
       if (filters.location && t.homeLocationCode !== filters.location) return false;
-      if (filters.status === "active" && !t.active) return false;
-      if (filters.status === "inactive" && t.active) return false;
+      if (filters.status !== "all" && t.employmentStatus !== filters.status) return false;
       return true;
     });
 
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
+    const statusFilterOptions = STATUS_OPTIONS.map(
+      (o) => `<option value="${o.value}" ${filters.status === o.value ? "selected" : ""}>${o.label}</option>`
+    ).join("");
 
     content.innerHTML = `
       <div class="roster-filters">
@@ -51,12 +69,13 @@ export function renderTechniciansTab(content) {
         <label class="roster-filter-field">
           <span>Status</span>
           <select class="roster-status-filter">
-            <option value="active" ${filters.status === "active" ? "selected" : ""}>Active</option>
-            <option value="inactive" ${filters.status === "inactive" ? "selected" : ""}>Inactive</option>
+            ${statusFilterOptions}
             <option value="all" ${filters.status === "all" ? "selected" : ""}>All</option>
           </select>
         </label>
+        <button class="btn btn-secondary add-technician-toggle" type="button">${showAddForm ? "Cancel" : "+ Add technician"}</button>
       </div>
+      ${showAddForm ? renderAddForm(locations) : ""}
       <div class="roster-table-wrap">
         <table class="detail-table roster-table">
           <thead><tr><th>Name</th><th>UKG ID</th><th>Position</th><th>Location</th><th>Status</th></tr></thead>
@@ -69,7 +88,7 @@ export function renderTechniciansTab(content) {
                 <td>${escapeHtml(t.ukgId || "—")}</td>
                 <td>${escapeHtml(t.position || "—")}</td>
                 <td>${escapeHtml((locationByCode[t.homeLocationCode] && locationByCode[t.homeLocationCode].name) || "—")}</td>
-                <td><span class="badge badge-${t.active ? "approved" : "rejected"}">${t.active ? "Active" : "Inactive"}</span></td>
+                <td>${statusBadge(t.employmentStatus)}</td>
               </tr>`
               )
               .join("")}
@@ -87,12 +106,61 @@ export function renderTechniciansTab(content) {
       filters.status = e.target.value;
       draw();
     });
+    content.querySelector(".add-technician-toggle").addEventListener("click", () => {
+      showAddForm = !showAddForm;
+      draw();
+    });
+    const addForm = content.querySelector(".add-technician-form");
+    if (addForm) wireAddForm(addForm);
     content.querySelectorAll(".roster-row").forEach((row) => {
       row.addEventListener("click", () => {
         profileTechId = row.dataset.id;
         profileSubTab = "basic";
         draw();
       });
+    });
+  }
+
+  function renderAddForm(locations) {
+    const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
+    return `
+      <form class="add-technician-form">
+        <div class="add-tech-grid">
+          <input name="id" placeholder="ID (e.g. T1004)" required />
+          <input name="name" placeholder="Full name" required />
+          <input name="pin" placeholder="PIN" required inputmode="numeric" />
+          <input name="position" placeholder="Position" />
+          <select name="homeLocationCode"><option value="">No home location</option>${locationOptions}</select>
+          <input name="email" placeholder="Email" type="email" />
+          <input name="phone" placeholder="Phone" />
+          <input name="ukgId" placeholder="UKG ID" />
+        </div>
+        <button type="submit" class="btn btn-primary">Create technician</button>
+        <span class="save-message add-tech-message"></span>
+      </form>
+    `;
+  }
+
+  function wireAddForm(form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".add-tech-message");
+      try {
+        await api.post("/api/admin/technicians", {
+          id: form.id.value.trim(),
+          name: form.name.value.trim(),
+          pin: form.pin.value.trim(),
+          homeLocationCode: form.homeLocationCode.value || null,
+          email: form.email.value.trim(),
+          phone: form.phone.value.trim(),
+          ukgId: form.ukgId.value.trim(),
+          position: form.position.value.trim(),
+        });
+        showAddForm = false;
+        await draw();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
     });
   }
 
@@ -104,7 +172,7 @@ export function renderTechniciansTab(content) {
       <div class="profile-header">
         <div class="profile-name">${escapeHtml(tech.name)}</div>
         <span class="badge badge-draft">${escapeHtml(tech.id)}</span>
-        <span class="badge badge-${tech.active ? "approved" : "rejected"}">${tech.active ? "Active" : "Inactive"}</span>
+        ${statusBadge(tech.employmentStatus)}
       </div>
       <div class="profile-tabs">
         ${PROFILE_TABS.map((t) => `<button class="profile-tab ${profileSubTab === t.key ? "active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
@@ -137,6 +205,9 @@ export function renderTechniciansTab(content) {
     const locationOptions = locations
       .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === tech.homeLocationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
       .join("");
+    const statusOptions = STATUS_OPTIONS.map(
+      (o) => `<option value="${o.value}" ${tech.employmentStatus === o.value ? "selected" : ""}>${o.label}</option>`
+    ).join("");
 
     tabContent.innerHTML = `
       <form class="basic-info-form">
@@ -151,20 +222,23 @@ export function renderTechniciansTab(content) {
         </label>
         <label class="profile-field">
           <span>Status</span>
-          <select name="active">
-            <option value="true" ${tech.active ? "selected" : ""}>Active</option>
-            <option value="false" ${!tech.active ? "selected" : ""}>Inactive</option>
-          </select>
+          <select name="employmentStatus">${statusOptions}</select>
         </label>
         <button type="submit" class="btn btn-primary">Save</button>
         <span class="save-message basic-info-message"></span>
       </form>
     `;
 
-    tabContent.querySelector(".basic-info-form").addEventListener("submit", async (e) => {
+    const form = tabContent.querySelector(".basic-info-form");
+    const original = {
+      homeLocationCode: tech.homeLocationCode || "",
+      employmentStatus: tech.employmentStatus,
+    };
+
+    form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const form = e.target;
       const msg = form.querySelector(".basic-info-message");
+      msg.textContent = "";
       try {
         await api.patch(`/api/admin/technicians/${tech.id}/basic-info`, {
           email: form.email.value.trim(),
@@ -172,11 +246,21 @@ export function renderTechniciansTab(content) {
           ukgId: form.ukgId.value.trim(),
           position: form.position.value.trim(),
         });
-        await api.patch(`/api/admin/technicians/${tech.id}/home-location`, { locationCode: form.homeLocationCode.value || null });
-        await api.patch(`/api/admin/technicians/${tech.id}/active`, { active: form.active.value === "true" });
+        if (form.homeLocationCode.value !== original.homeLocationCode) {
+          await api.patch(`/api/admin/technicians/${tech.id}/home-location`, { locationCode: form.homeLocationCode.value || null });
+          original.homeLocationCode = form.homeLocationCode.value;
+        }
+        if (form.employmentStatus.value !== original.employmentStatus) {
+          await api.patch(`/api/admin/technicians/${tech.id}/employment-status`, { status: form.employmentStatus.value });
+          original.employmentStatus = form.employmentStatus.value;
+        }
         msg.textContent = "Saved.";
       } catch (err) {
-        msg.textContent = err.message;
+        // Revert the fields we couldn't confirm were saved, so the form
+        // never shows a value that isn't actually persisted.
+        form.homeLocationCode.value = original.homeLocationCode;
+        form.employmentStatus.value = original.employmentStatus;
+        msg.textContent = `Not saved: ${err.message}`;
       }
     });
   }
@@ -226,6 +310,7 @@ export function renderTechniciansTab(content) {
   async function drawOnboarding(tabContent, tech) {
     const tasks = await api.get(`/api/admin/technicians/${tech.id}/onboarding`);
     tabContent.innerHTML = `
+      <p class="onboarding-error" hidden></p>
       <div class="onboarding-list">
         ${tasks
           .map(
@@ -239,10 +324,19 @@ export function renderTechniciansTab(content) {
           .join("")}
       </div>
     `;
+    const errorEl = tabContent.querySelector(".onboarding-error");
     tabContent.querySelectorAll("input[data-key]").forEach((input) => {
       input.addEventListener("change", async () => {
-        await api.patch(`/api/admin/technicians/${tech.id}/onboarding/${input.dataset.key}`, { completed: input.checked });
-        await drawOnboarding(tabContent, tech);
+        const intended = input.checked;
+        errorEl.hidden = true;
+        try {
+          await api.patch(`/api/admin/technicians/${tech.id}/onboarding/${input.dataset.key}`, { completed: intended });
+          await drawOnboarding(tabContent, tech);
+        } catch (err) {
+          input.checked = !intended; // revert — the save didn't actually go through
+          errorEl.textContent = `Not saved: ${err.message}`;
+          errorEl.hidden = false;
+        }
       });
     });
   }
@@ -250,6 +344,7 @@ export function renderTechniciansTab(content) {
   async function drawDevices(tabContent, tech) {
     const devices = await api.get(`/api/admin/technicians/${tech.id}/devices`);
     tabContent.innerHTML = `
+      <p class="device-error" hidden></p>
       <div class="device-list">
         ${
           devices.length === 0
@@ -274,20 +369,31 @@ export function renderTechniciansTab(content) {
         <button type="submit" class="btn btn-secondary">Assign device</button>
       </form>
     `;
+    const errorEl = tabContent.querySelector(".device-error");
     tabContent.querySelectorAll(".remove-device").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        await api.delete(`/api/admin/technicians/${tech.id}/devices/${btn.dataset.id}`);
-        await drawDevices(tabContent, tech);
+        try {
+          await api.delete(`/api/admin/technicians/${tech.id}/devices/${btn.dataset.id}`);
+          await drawDevices(tabContent, tech);
+        } catch (err) {
+          errorEl.textContent = `Could not remove: ${err.message}`;
+          errorEl.hidden = false;
+        }
       });
     });
     tabContent.querySelector(".add-device-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.target;
-      await api.post(`/api/admin/technicians/${tech.id}/devices`, {
-        deviceName: form.deviceName.value.trim(),
-        notes: form.notes.value.trim(),
-      });
-      await drawDevices(tabContent, tech);
+      try {
+        await api.post(`/api/admin/technicians/${tech.id}/devices`, {
+          deviceName: form.deviceName.value.trim(),
+          notes: form.notes.value.trim(),
+        });
+        await drawDevices(tabContent, tech);
+      } catch (err) {
+        errorEl.textContent = `Not saved: ${err.message}`;
+        errorEl.hidden = false;
+      }
     });
   }
 

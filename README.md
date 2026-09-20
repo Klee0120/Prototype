@@ -46,9 +46,12 @@ The suite boots the Express app on an ephemeral port with a throwaway
 SQLite database and uploads folder per test file (`tests/helpers.js`), so
 it never touches your real `server/data/store.sqlite`. It covers login,
 allocation validation (hours mismatch, closed/unknown WOM rejection,
-per-tech authorization), week locking, admin approve/reject/unlock, WOM
-status management, file upload/download/delete authorization, and audit
-log writes/read-access.
+per-tech authorization, admin-on-behalf-of), week locking, admin
+approve/reject/unlock, WOM status management, technician creation and
+employment status, onboarding/devices/allocation history, file
+upload/download/delete authorization, and audit log writes/read-access.
+The Reg/OT receipt calculation is client-side only and isn't covered by
+this suite — verified manually (see "Where this stands").
 
 Demo logins:
 
@@ -86,18 +89,35 @@ Demo logins:
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
-  - Basic Info (editable email/phone/UKG ID/position/home location/active)
+  - Basic Info (editable email/phone/UKG ID/position/home location/**employment status**: active/inactive/terminated/retired)
   - Labor Allocation History — every WOM/E&F/time-off row ever allocated to
     that technician, across all weeks, so you can see what's been worked on
   - Onboarding — a fixed 5-item checklist per technician (not yet an
     admin-editable template — see "Where this stands")
   - Devices — a simple assigned-device list (not a request/approval workflow)
   - Forms on File / Documents — file attachments, same mechanism as WOM docs
+- **Add technician**: a form on the roster (ID, name, PIN, position,
+  home location, contact info) creates a new technician who can log in
+  immediately
+- **Admin can allocate on a technician's behalf** (new "Tech Allocation"
+  tab): the exact same day-by-day splitting screen a technician sees, with
+  an employee switcher (dropdown + Prev/Next) to move through the roster —
+  for when someone's on vacation or otherwise can't do it themselves
+- **Weekly Reg/OT receipt**: live-updating breakdown (Week Total, Regular,
+  Overtime, OT on WOM, Time Off, plus a per-bucket Reg/OT/Total table) shown
+  under the day cards. Hours beyond 40/week are OT; WOM hours are charged to
+  OT before E&F hours; time off is always straight time and excluded from
+  the 40-hour threshold entirely (see "Where this stands" for a documented
+  simplification in this calculation)
 - Week locking: a submitted/approved week can't be edited by the technician
   until an admin rejects or unlocks it
 - Audit trail of logins, allocation saves, submissions, approvals,
-  rejections, unlocks, WOM status changes, home-location changes, UKG hour
-  entries, and file uploads/deletes
+  rejections, unlocks, WOM status changes, home-location/employment-status
+  changes, technician creation, UKG hour entries, and file uploads/deletes
+- Every save/edit action shows a real error if it fails, rather than
+  silently appearing to succeed (a bug class found and fixed across the
+  onboarding checklist, device list, home-location field, WOM status
+  toggle, approve/reject/unlock, and file delete)
 - File attachments, stored in a real database + disk folder rather than a
   mock:
   - UKG timesheet screenshots and receipts/invoices — attached by a
@@ -156,6 +176,25 @@ since only mock data has ever been in them).
 - **Devices is a list, not a workflow.** It records "this device is
   assigned to this person" — no request/approval step, no due-back date,
   no device inventory shared across technicians.
+- **The OT calculation is a weekly aggregate, not day-by-day.** Hours over
+  40/week are OT, computed from the week's totals. The description this was
+  built from said OT applies "on the day the threshold is crossed," which
+  implies a chronological, day-sequential calculation (e.g. Monday's hours
+  count before Friday's) — that's not what's implemented. If OT ever needs
+  to land on a specific day rather than being a week-level total, this needs
+  revisiting.
+- **OT split across multiple WOMs is proportional, not prioritized.** The
+  rule "WOM before E&F" is implemented exactly. What's *not* specified
+  anywhere is which WOM if a technician worked OT hours across more than
+  one — this splits the OT proportionally by each WOM's share of the
+  week's WOM hours. If there's a real priority order (e.g. last-worked WOM
+  first), the calculation in `techWeek.js`'s `computeReceipt` needs that
+  rule instead.
+- **The receipt isn't persisted.** It's computed live in the browser from
+  that week's allocations every time the page renders — nothing is saved
+  to the database when a week is submitted/approved. If you need to look up
+  a specific week's exact Reg/OT numbers later without recomputing (e.g.
+  for JDE export), that needs a stored snapshot, not just a live calc.
 
 ## Folder structure
 
@@ -201,8 +240,8 @@ public/
     weekUtil.js            Client-side week date helpers
     views/
       login.js
-      techWeek.js           Technician weekly allocation screen + attachments
-      adminReview.js         Admin review / WOM docs / audit / Technicians tab entry point
-      technicianProfile.js    Team Roster list + tabbed employee profile
+      techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
+      adminReview.js         Admin review / WOM docs / audit / Tech Allocation switcher / Technicians tab entry
+      technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
       attachments.js          Shared attachments list + upload component
 ```

@@ -14,7 +14,7 @@ function presentTechnician(t) {
   return {
     id: t.id,
     name: t.name,
-    active: Boolean(t.active),
+    employmentStatus: t.employment_status,
     homeLocationCode: t.home_location_code,
     email: t.email,
     phone: t.phone,
@@ -25,6 +25,19 @@ function presentTechnician(t) {
 
 router.get("/technicians", (req, res) => {
   res.json(db.listTechnicians().map(presentTechnician));
+});
+
+router.post("/technicians", (req, res) => {
+  const { id, name, pin, homeLocationCode, email, phone, ukgId, position } = req.body || {};
+  if (!id || !name || !pin) return res.status(400).json({ error: "id, name, and pin are required" });
+  if (db.findTechnician(id)) return res.status(409).json({ error: "That ID is already in use" });
+  if (homeLocationCode && !db.findLocation(homeLocationCode)) {
+    return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });
+  }
+
+  const tech = db.createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position });
+  db.addAudit(req.user.id, "TECHNICIAN_CREATED", `${req.user.name} added technician ${tech.name} (${tech.id})`);
+  res.status(201).json(presentTechnician(tech));
 });
 
 router.get("/technicians/:id", (req, res) => {
@@ -47,13 +60,17 @@ router.patch("/technicians/:id/home-location", (req, res) => {
   res.json({ ok: true });
 });
 
-router.patch("/technicians/:id/active", (req, res) => {
+router.patch("/technicians/:id/employment-status", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
 
-  const active = Boolean(req.body && req.body.active);
-  db.setTechnicianActive(tech.id, active);
-  db.addAudit(req.user.id, "TECH_STATUS_CHANGED", `${req.user.name} set ${tech.name} to ${active ? "active" : "inactive"}`);
+  const { status } = req.body || {};
+  if (!db.EMPLOYMENT_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${db.EMPLOYMENT_STATUSES.join(", ")}` });
+  }
+
+  db.setEmploymentStatus(tech.id, status);
+  db.addAudit(req.user.id, "TECH_STATUS_CHANGED", `${req.user.name} set ${tech.name}'s status to ${status}`);
   res.json(presentTechnician(db.findTechnician(tech.id)));
 });
 

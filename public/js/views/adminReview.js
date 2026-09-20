@@ -3,6 +3,7 @@ import { state, escapeHtml } from "../app.js";
 import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderTechniciansTab } from "./technicianProfile.js";
+import { renderTechWeek } from "./techWeek.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -15,6 +16,7 @@ const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bere
 
 export async function renderAdminReview(container) {
   let activeTab = "review";
+  let allocTechId = null;
   const expanded = new Map(); // techId -> detail payload
   const womsExpanded = new Set();
 
@@ -23,6 +25,7 @@ export async function renderAdminReview(container) {
   async function draw() {
     container.innerHTML = `
       <div class="tabs">
+        <button class="tab ${activeTab === "techalloc" ? "active" : ""}" data-tab="techalloc">Tech Allocation</button>
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">WOM Status</button>
         <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
@@ -39,10 +42,50 @@ export async function renderAdminReview(container) {
     });
 
     const content = container.querySelector("#tab-content");
-    if (activeTab === "review") await drawReview(content);
+    if (activeTab === "techalloc") await drawTechAllocation(content);
+    else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
     else if (activeTab === "technicians") renderTechniciansTab(content);
     else await drawAudit(content);
+  }
+
+  async function drawTechAllocation(content) {
+    const techs = await api.get("/api/admin/technicians");
+    const selectable = techs.filter((t) => t.employmentStatus === "active");
+    if (!allocTechId && selectable.length > 0) allocTechId = selectable[0].id;
+
+    const options = selectable.map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === allocTechId ? "selected" : ""}>${escapeHtml(t.name)}</option>`).join("");
+    const currentIndex = selectable.findIndex((t) => t.id === allocTechId);
+
+    content.innerHTML = `
+      <div class="tech-alloc-switcher">
+        <button class="btn btn-ghost tech-alloc-prev" type="button" ${currentIndex <= 0 ? "disabled" : ""}>&larr; Prev</button>
+        <select class="tech-alloc-select">${options}</select>
+        <button class="btn btn-ghost tech-alloc-next" type="button" ${currentIndex === -1 || currentIndex >= selectable.length - 1 ? "disabled" : ""}>Next &rarr;</button>
+      </div>
+      <p class="tech-alloc-hint">You're allocating this technician's time on their behalf.</p>
+      <div class="tech-alloc-body"></div>
+    `;
+
+    if (selectable.length === 0) {
+      content.querySelector(".tech-alloc-body").innerHTML = `<p class="empty-note">No active technicians.</p>`;
+      return;
+    }
+
+    content.querySelector(".tech-alloc-select").addEventListener("change", (e) => {
+      allocTechId = e.target.value;
+      draw();
+    });
+    content.querySelector(".tech-alloc-prev").addEventListener("click", () => {
+      if (currentIndex > 0) allocTechId = selectable[currentIndex - 1].id;
+      draw();
+    });
+    content.querySelector(".tech-alloc-next").addEventListener("click", () => {
+      if (currentIndex < selectable.length - 1) allocTechId = selectable[currentIndex + 1].id;
+      draw();
+    });
+
+    await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId);
   }
 
   async function drawReview(content) {
@@ -228,27 +271,39 @@ export async function renderAdminReview(container) {
     const approveBtn = detailEl.querySelector(".approve-btn");
     if (approveBtn) {
       approveBtn.addEventListener("click", async () => {
-        await api.post(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/approve`);
-        expanded.delete(row.technician.id);
-        await drawReview(content);
+        try {
+          await api.post(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/approve`);
+          expanded.delete(row.technician.id);
+          await drawReview(content);
+        } catch (err) {
+          window.alert(`Could not approve: ${err.message}`);
+        }
       });
     }
     const rejectBtn = detailEl.querySelector(".reject-btn");
     if (rejectBtn) {
       rejectBtn.addEventListener("click", async () => {
         const note = window.prompt("Reason for returning this week to the technician:", "") || "";
-        await api.post(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/reject`, { note });
-        expanded.delete(row.technician.id);
-        await drawReview(content);
+        try {
+          await api.post(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/reject`, { note });
+          expanded.delete(row.technician.id);
+          await drawReview(content);
+        } catch (err) {
+          window.alert(`Could not reject: ${err.message}`);
+        }
       });
     }
     const unlockBtn = detailEl.querySelector(".unlock-btn");
     if (unlockBtn) {
       unlockBtn.addEventListener("click", async () => {
         if (!window.confirm("Unlock this approved week for correction?")) return;
-        await api.post(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/unlock`);
-        expanded.delete(row.technician.id);
-        await drawReview(content);
+        try {
+          await api.post(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/unlock`);
+          expanded.delete(row.technician.id);
+          await drawReview(content);
+        } catch (err) {
+          window.alert(`Could not unlock: ${err.message}`);
+        }
       });
     }
   }
@@ -310,8 +365,12 @@ export async function renderAdminReview(container) {
 
     el.querySelector(".toggle-wom").addEventListener("click", async () => {
       const nextStatus = w.status === "open" ? "closed" : "open";
-      await api.patch(`/api/woms/${encodeURIComponent(w.code)}`, { status: nextStatus });
-      await drawWoms(content);
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(w.code)}`, { status: nextStatus });
+        await drawWoms(content);
+      } catch (err) {
+        window.alert(`Could not update ${w.code}: ${err.message}`);
+      }
     });
 
     el.querySelector(".expand-btn").addEventListener("click", async () => {

@@ -67,8 +67,8 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
 
 router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {
   const { id, weekMonday } = req.params;
-  if (req.user.role !== "tech" || req.user.id !== id) {
-    return res.status(403).json({ error: "Only the technician can edit their own allocations" });
+  if (!canView(req, id)) {
+    return res.status(403).json({ error: "Only the technician or an admin can edit these allocations" });
   }
 
   const week = db.getWeek(id, weekMonday);
@@ -116,15 +116,16 @@ router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {
   }
 
   db.saveAllocations(id, weekMonday, normalized);
-  db.addAudit(req.user.id, "ALLOCATIONS_SAVED", `${req.user.name} saved allocations for week ${weekMonday}`);
+  const onBehalf = req.user.role === "admin" && req.user.id !== id ? ` for ${id}` : "";
+  db.addAudit(req.user.id, "ALLOCATIONS_SAVED", `${req.user.name} saved allocations${onBehalf} for week ${weekMonday}`);
 
   res.json({ ok: true });
 });
 
 router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
   const { id, weekMonday } = req.params;
-  if (req.user.role !== "tech" || req.user.id !== id) {
-    return res.status(403).json({ error: "Only the technician can submit their own week" });
+  if (!canView(req, id)) {
+    return res.status(403).json({ error: "Only the technician or an admin can submit this week" });
   }
 
   const week = db.getWeek(id, weekMonday);
@@ -161,7 +162,8 @@ router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
 
   db.submitWeek(id, weekMonday);
   const total = round2(Object.values(allocatedByDay).reduce((s, h) => s + h, 0));
-  db.addAudit(req.user.id, "WEEK_SUBMITTED", `${req.user.name} submitted week ${weekMonday} (${total}h)`);
+  const onBehalf = req.user.role === "admin" && req.user.id !== id ? ` for ${id}` : "";
+  db.addAudit(req.user.id, "WEEK_SUBMITTED", `${req.user.name} submitted week${onBehalf} ${weekMonday} (${total}h)`);
 
   res.json({ ok: true, status: "submitted" });
 });

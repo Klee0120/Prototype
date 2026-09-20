@@ -143,6 +143,15 @@ for (const col of ["email", "phone", "ukg_id", "position"]) {
   }
 }
 
+// employment_status (active/inactive/terminated/retired) replaces the old
+// boolean `active` flag with something a roster can actually filter/manage.
+// Backfill from the old column so existing inactive techs aren't silently
+// reactivated by a column default.
+if (!hasColumn("technicians", "employment_status")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN employment_status TEXT");
+  db.exec("UPDATE technicians SET employment_status = CASE WHEN active = 1 THEN 'active' ELSE 'inactive' END");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -155,8 +164,8 @@ function seedIfEmpty() {
   for (const l of data.locations) insertLocation.run(l.code, l.name);
 
   const insertTech = db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, home_location_code, email, phone, ukg_id, position)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const t of data.technicians) {
     insertTech.run(
@@ -165,6 +174,7 @@ function seedIfEmpty() {
       hashPin(t.pin),
       t.role,
       t.active,
+      t.active ? "active" : "inactive",
       t.homeLocationCode,
       t.email || null,
       t.phone || null,
@@ -220,9 +230,11 @@ function listTechnicians() {
   return db.prepare("SELECT * FROM technicians WHERE role = 'tech' ORDER BY rowid").all();
 }
 
+const EMPLOYMENT_STATUSES = ["active", "inactive", "terminated", "retired"];
+
 function verifyLogin(id, pin) {
   const tech = findTechnician(id);
-  if (!tech || !tech.active) return null;
+  if (!tech || tech.employment_status !== "active") return null;
   if (!verifyPin(pin, tech.pin)) return null;
   return tech;
 }
@@ -232,9 +244,21 @@ function setHomeLocation(techId, locationCode) {
   return findTechnician(techId);
 }
 
-function setTechnicianActive(techId, active) {
-  db.prepare("UPDATE technicians SET active = ? WHERE id = ?").run(active ? 1 : 0, techId);
+function setEmploymentStatus(techId, status) {
+  db.prepare("UPDATE technicians SET employment_status = ?, active = ? WHERE id = ?").run(
+    status,
+    status === "active" ? 1 : 0,
+    techId
+  );
   return findTechnician(techId);
+}
+
+function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position }) {
+  db.prepare(
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
+     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?)`
+  ).run(id, name, hashPin(pin), homeLocationCode || null, email || null, phone || null, ukgId || null, position || null);
+  return findTechnician(id);
 }
 
 function setTechnicianBasicInfo(techId, { email, phone, ukgId, position }) {
@@ -562,7 +586,9 @@ module.exports = {
   listTechnicians,
   verifyLogin,
   setHomeLocation,
-  setTechnicianActive,
+  EMPLOYMENT_STATUSES,
+  setEmploymentStatus,
+  createTechnician,
   setTechnicianBasicInfo,
   ONBOARDING_TASKS,
   getOnboardingProgress,
