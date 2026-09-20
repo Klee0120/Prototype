@@ -13,7 +13,7 @@ router.post("/", requireAuth, requireAdmin, (req, res) => {
   if (!code || !description) return res.status(400).json({ error: "code and description are required" });
   if (db.findWom(code)) return res.status(409).json({ error: "WOM code already exists" });
 
-  db.listWoms().push({ code, description, status: "open" });
+  db.createWom(code, description);
   db.addAudit(req.user.id, "WOM_CREATED", `${req.user.name} created WOM ${code}: ${description}`);
   res.status(201).json({ ok: true });
 });

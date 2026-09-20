@@ -9,6 +9,10 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+router.get("/technicians", (req, res) => {
+  res.json(db.listTechnicians().map((t) => ({ id: t.id, name: t.name })));
+});
+
 router.get("/weeks/:weekMonday", (req, res) => {
   const { weekMonday } = req.params;
   const rows = db.listTechnicians().map((tech) => {

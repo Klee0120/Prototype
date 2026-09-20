@@ -442,10 +442,17 @@ button, input, select {
   color: var(--muted);
 }
 
-.wom-table, .audit-table {
+.audit-table {
   margin-bottom: 16px;
   display: block;
   overflow-x: auto;
+}
+
+.wom-desc {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 13px;
+  margin-left: 6px;
 }
 
 .empty-note {
@@ -464,6 +471,88 @@ button, input, select {
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+/* ---- Attachments ---- */
+
+.attachments-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-top: 12px;
+}
+
+.attachments-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+
+.attachments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.attachments-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.attachment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.attachment-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.attachment-name {
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.attachment-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.attachment-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.danger-link {
+  color: var(--danger) !important;
+}
+
+.attachment-upload-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.attachment-upload-form select {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
 /* ---- Mobile ---- */
@@ -494,5 +583,13 @@ button, input, select {
   }
   .action-row .btn {
     width: 100%;
+  }
+  .attachment-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .attachment-upload-form {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

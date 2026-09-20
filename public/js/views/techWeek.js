@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { DAY_NAMES, shiftWeek, weekRangeLabel } from "../weekUtil.js";
+import { renderAttachments } from "./attachments.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -24,7 +25,22 @@ export async function renderTechWeek(container) {
 
   let saveMessage = "";
 
+  container.innerHTML = `<div id="tw-main"></div><div id="tw-attachments"></div>`;
+  const main = container.querySelector("#tw-main");
+  const attachmentsHost = container.querySelector("#tw-attachments");
+
   draw();
+  renderAttachments(attachmentsHost, {
+    title: "Attachments",
+    relatedType: "week",
+    relatedId: `${techId}|${state.weekMonday}`,
+    categories: [
+      { value: "ukg_screenshot", label: "UKG Timesheet Screenshot" },
+      { value: "receipt", label: "Receipt / Invoice" },
+    ],
+    canUpload: true,
+    emptyText: "No UKG screenshots or receipts attached yet.",
+  });
 
   function draw() {
     const locked = week.locked;
@@ -32,7 +48,7 @@ export async function renderTechWeek(container) {
     const delta = round2(weekTotal - week.ukgHours);
     const canSubmit = !locked && Math.abs(delta) < 0.01 && allocations.length > 0;
 
-    container.innerHTML = `
+    main.innerHTML = `
       <div class="week-nav">
         <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
         <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
@@ -71,21 +87,21 @@ export async function renderTechWeek(container) {
       `}
     `;
 
-    const grid = container.querySelector("#day-grid");
+    const grid = main.querySelector("#day-grid");
     DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, locked)));
 
-    container.querySelector("#prev-week").addEventListener("click", () => {
+    main.querySelector("#prev-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, -1);
       renderTechWeek(container);
     });
-    container.querySelector("#next-week").addEventListener("click", () => {
+    main.querySelector("#next-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, 1);
       renderTechWeek(container);
     });
 
     if (!locked) {
-      container.querySelector("#save-draft").addEventListener("click", () => saveDraft(false));
-      container.querySelector("#submit-week").addEventListener("click", submit);
+      main.querySelector("#save-draft").addEventListener("click", () => saveDraft(false));
+      main.querySelector("#submit-week").addEventListener("click", submit);
     }
   }
 

@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { shiftWeek, weekRangeLabel } from "../weekUtil.js";
+import { renderAttachments } from "./attachments.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -12,6 +13,8 @@ const STATUS_LABELS = {
 export async function renderAdminReview(container) {
   let activeTab = "review";
   const expanded = new Map(); // techId -> detail payload
+  const womsExpanded = new Set();
+  const techsExpanded = new Set();
 
   draw();
 
@@ -20,6 +23,7 @@ export async function renderAdminReview(container) {
       <div class="tabs">
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">WOM Status</button>
+        <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
         <button class="tab ${activeTab === "audit" ? "active" : ""}" data-tab="audit">Audit Trail</button>
       </div>
       <div id="tab-content" class="tab-content"></div>
@@ -35,6 +39,7 @@ export async function renderAdminReview(container) {
     const content = container.querySelector("#tab-content");
     if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
+    else if (activeTab === "technicians") await drawTechnicians(content);
     else await drawAudit(content);
   }
 
@@ -166,22 +171,7 @@ export async function renderAdminReview(container) {
   async function drawWoms(content) {
     const woms = await api.get("/api/woms");
     content.innerHTML = `
-      <table class="detail-table wom-table">
-        <thead><tr><th>Code</th><th>Description</th><th>Status</th><th></th></tr></thead>
-        <tbody>
-          ${woms
-            .map(
-              (w) => `
-            <tr>
-              <td>${escapeHtml(w.code)}</td>
-              <td>${escapeHtml(w.description)}</td>
-              <td><span class="badge badge-${w.status === "open" ? "approved" : "rejected"}">${w.status}</span></td>
-              <td><button class="btn btn-link toggle-wom" data-code="${escapeHtml(w.code)}" data-status="${w.status}">${w.status === "open" ? "Close" : "Reopen"}</button></td>
-            </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
+      <div class="review-list" id="wom-list"></div>
       <form id="add-wom-form" class="add-wom-form">
         <input name="code" placeholder="WOM code" required />
         <input name="description" placeholder="Description" required />
@@ -190,13 +180,10 @@ export async function renderAdminReview(container) {
       </form>
     `;
 
-    content.querySelectorAll(".toggle-wom").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const nextStatus = btn.dataset.status === "open" ? "closed" : "open";
-        await api.patch(`/api/woms/${encodeURIComponent(btn.dataset.code)}`, { status: nextStatus });
-        await drawWoms(content);
-      });
-    });
+    const list = content.querySelector("#wom-list");
+    for (const w of woms) {
+      list.appendChild(await renderWomRow(w, content));
+    }
 
     content.querySelector("#add-wom-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -209,6 +196,86 @@ export async function renderAdminReview(container) {
         msg.textContent = err.message;
       }
     });
+  }
+
+  async function renderWomRow(w, content) {
+    const el = document.createElement("div");
+    el.className = "review-row";
+    el.innerHTML = `
+      <div class="review-row-summary">
+        <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}</span></div>
+        <span class="badge badge-${w.status === "open" ? "approved" : "rejected"}">${w.status}</span>
+        <button class="btn btn-link toggle-wom" type="button">${w.status === "open" ? "Close" : "Reopen"}</button>
+        <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
+      </div>
+      <div class="review-row-detail"></div>
+    `;
+
+    el.querySelector(".toggle-wom").addEventListener("click", async () => {
+      const nextStatus = w.status === "open" ? "closed" : "open";
+      await api.patch(`/api/woms/${encodeURIComponent(w.code)}`, { status: nextStatus });
+      await drawWoms(content);
+    });
+
+    el.querySelector(".expand-btn").addEventListener("click", async () => {
+      if (womsExpanded.has(w.code)) womsExpanded.delete(w.code);
+      else womsExpanded.add(w.code);
+      await drawWoms(content);
+    });
+
+    if (womsExpanded.has(w.code)) {
+      await renderAttachments(el.querySelector(".review-row-detail"), {
+        title: "Documents & Photos",
+        relatedType: "wom",
+        relatedId: w.code,
+        categories: [{ value: "wom_doc", label: "Document / Photo" }],
+        canUpload: true,
+        emptyText: "No documents attached yet.",
+      });
+    }
+
+    return el;
+  }
+
+  async function drawTechnicians(content) {
+    const techs = await api.get("/api/admin/technicians");
+    content.innerHTML = `<div class="review-list" id="tech-list"></div>`;
+    const list = content.querySelector("#tech-list");
+    for (const t of techs) {
+      list.appendChild(await renderTechnicianRow(t, content));
+    }
+  }
+
+  async function renderTechnicianRow(t, content) {
+    const el = document.createElement("div");
+    el.className = "review-row";
+    el.innerHTML = `
+      <div class="review-row-summary">
+        <div class="review-row-name">${escapeHtml(t.name)}</div>
+        <span class="badge badge-draft">${escapeHtml(t.id)}</span>
+        <button class="btn btn-link expand-btn" type="button">${techsExpanded.has(t.id) ? "Hide" : "Forms"}</button>
+      </div>
+      <div class="review-row-detail"></div>
+    `;
+
+    el.querySelector(".expand-btn").addEventListener("click", async () => {
+      if (techsExpanded.has(t.id)) techsExpanded.delete(t.id);
+      else techsExpanded.add(t.id);
+      await drawTechnicians(content);
+    });
+
+    if (techsExpanded.has(t.id)) {
+      await renderAttachments(el.querySelector(".review-row-detail"), {
+        title: "Forms & Certifications",
+        relatedType: "technician",
+        relatedId: t.id,
+        categories: [{ value: "tech_form", label: "Form / Certification" }],
+        canUpload: true,
+        emptyText: "No forms on file.",
+      });
+    }
+
+    return el;
   }
 
   async function drawAudit(content) {
