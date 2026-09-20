@@ -13,7 +13,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 const CATEGORY_BY_RELATED = {
   week: new Set(["receipt", "ukg_screenshot"]),
   wom: new Set(["wom_doc"]),
-  technician: new Set(["tech_form"]),
+  technician: new Set(["tech_form", "document"]),
 };
 
 function parseWeekRelatedId(relatedId) {

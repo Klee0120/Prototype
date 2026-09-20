@@ -607,6 +607,25 @@ button, input, select {
   border-radius: 6px;
 }
 
+.ukg-paste-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.ukg-paste-input {
+  flex: 1 1 220px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.review-attachments {
+  margin-top: 12px;
+}
+
 .home-location-select {
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -694,6 +713,167 @@ button, input, select {
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+/* ---- Roster / employee profile ---- */
+
+.roster-filters {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.roster-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.roster-filter-field select {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.roster-table-wrap {
+  overflow-x: auto;
+}
+
+.roster-table {
+  min-width: 480px;
+}
+
+.roster-row {
+  cursor: pointer;
+}
+.roster-row:hover {
+  background: var(--bg);
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 14px;
+}
+
+.profile-name {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.profile-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+
+.profile-tab {
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.profile-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.basic-info-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 360px;
+}
+
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.profile-field input,
+.profile-field select {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.onboarding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.onboarding-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.onboarding-date {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.device-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.device-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.device-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.add-device-form {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.add-device-form input {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 /* ---- Mobile ---- */

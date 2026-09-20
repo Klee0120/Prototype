@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
+import { renderTechniciansTab } from "./technicianProfile.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -16,7 +17,6 @@ export async function renderAdminReview(container) {
   let activeTab = "review";
   const expanded = new Map(); // techId -> detail payload
   const womsExpanded = new Set();
-  const techsExpanded = new Set();
 
   draw();
 
@@ -41,7 +41,7 @@ export async function renderAdminReview(container) {
     const content = container.querySelector("#tab-content");
     if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
-    else if (activeTab === "technicians") await drawTechnicians(content);
+    else if (activeTab === "technicians") renderTechniciansTab(content);
     else await drawAudit(content);
   }
 
@@ -104,9 +104,24 @@ export async function renderAdminReview(container) {
     if (expanded.has(row.technician.id)) {
       const detail = expanded.get(row.technician.id);
       const detailEl = el.querySelector(`#detail-${row.technician.id}`);
-      detailEl.innerHTML = renderUkgForm(detail) + renderDetailTable(detail, locationByCode) + renderReviewActions(row);
+      detailEl.innerHTML =
+        renderUkgForm(detail) +
+        renderDetailTable(detail, locationByCode) +
+        renderReviewActions(row) +
+        `<div class="review-attachments"></div>`;
       wireUkgForm(detailEl, row, content);
       wireReviewActions(detailEl, row, content);
+      await renderAttachments(detailEl.querySelector(".review-attachments"), {
+        title: "UKG Screenshots & Receipts",
+        relatedType: "week",
+        relatedId: `${row.technician.id}|${state.weekMonday}`,
+        categories: [
+          { value: "ukg_screenshot", label: "UKG Timesheet Screenshot" },
+          { value: "receipt", label: "Receipt / Invoice" },
+        ],
+        canUpload: true,
+        emptyText: "No UKG screenshots or receipts attached yet.",
+      });
     }
 
     return el;
@@ -124,6 +139,10 @@ export async function renderAdminReview(container) {
       <form class="ukg-hours-form">
         <div class="ukg-hours-title">UKG hours (from timesheet)</div>
         <div class="ukg-day-fields">${inputs}</div>
+        <div class="ukg-paste-row">
+          <input type="text" class="ukg-paste-input" placeholder="Paste 7 values, Mon→Sun (e.g. 8 8 8 7 9 0 0)" />
+          <button type="button" class="btn btn-link ukg-fill-week">Fill week</button>
+        </div>
         <button type="submit" class="btn btn-secondary">Save UKG hours</button>
         <span class="save-message ukg-message"></span>
       </form>
@@ -132,9 +151,24 @@ export async function renderAdminReview(container) {
 
   function wireUkgForm(detailEl, row, content) {
     const form = detailEl.querySelector(".ukg-hours-form");
+    const msg = form.querySelector(".ukg-message");
+
+    form.querySelector(".ukg-fill-week").addEventListener("click", () => {
+      const raw = form.querySelector(".ukg-paste-input").value.trim();
+      const values = raw.split(/[\s,]+/).filter((v) => v !== "");
+      if (values.length !== 7 || values.some((v) => Number.isNaN(Number(v)))) {
+        msg.textContent = "Paste exactly 7 numbers (Mon through Sun).";
+        return;
+      }
+      const inputs = form.querySelectorAll("input[data-day]");
+      inputs.forEach((input, i) => {
+        input.value = values[i];
+      });
+      msg.textContent = "";
+    });
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const msg = form.querySelector(".ukg-message");
       const hours = {};
       form.querySelectorAll("input[data-day]").forEach((input) => {
         hours[input.dataset.day] = Number(input.value) || 0;
@@ -294,55 +328,6 @@ export async function renderAdminReview(container) {
         categories: [{ value: "wom_doc", label: "Document / Photo" }],
         canUpload: true,
         emptyText: "No documents attached yet.",
-      });
-    }
-
-    return el;
-  }
-
-  async function drawTechnicians(content) {
-    const [techs, locations] = await Promise.all([api.get("/api/admin/technicians"), api.get("/api/locations")]);
-    content.innerHTML = `<div class="review-list" id="tech-list"></div>`;
-    const list = content.querySelector("#tech-list");
-    for (const t of techs) {
-      list.appendChild(await renderTechnicianRow(t, content, locations));
-    }
-  }
-
-  async function renderTechnicianRow(t, content, locations) {
-    const el = document.createElement("div");
-    el.className = "review-row";
-    const locationOptions = locations
-      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === t.homeLocationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
-      .join("");
-    el.innerHTML = `
-      <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(t.name)}</div>
-        <span class="badge badge-draft">${escapeHtml(t.id)}</span>
-        <select class="home-location-select"><option value="">No home location</option>${locationOptions}</select>
-        <button class="btn btn-link expand-btn" type="button">${techsExpanded.has(t.id) ? "Hide" : "Forms"}</button>
-      </div>
-      <div class="review-row-detail"></div>
-    `;
-
-    el.querySelector(".home-location-select").addEventListener("change", async (e) => {
-      await api.patch(`/api/admin/technicians/${t.id}/home-location`, { locationCode: e.target.value || null });
-    });
-
-    el.querySelector(".expand-btn").addEventListener("click", async () => {
-      if (techsExpanded.has(t.id)) techsExpanded.delete(t.id);
-      else techsExpanded.add(t.id);
-      await drawTechnicians(content);
-    });
-
-    if (techsExpanded.has(t.id)) {
-      await renderAttachments(el.querySelector(".review-row-detail"), {
-        title: "Forms & Certifications",
-        relatedType: "technician",
-        relatedId: t.id,
-        categories: [{ value: "tech_form", label: "Form / Certification" }],
-        canUpload: true,
-        emptyText: "No forms on file.",
       });
     }
 

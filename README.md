@@ -78,8 +78,21 @@ Demo logins:
   that day's UKG hours (not just the weekly total)
 - A technician can mark a WOM project complete from their own allocation
   screen; an admin can open/close/reopen any WOM
+- **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
+  fill a week's hours in one go instead of typing each day
 - Admin review screen: approve, reject (with note, returns to technician), or
-  unlock an approved week for correction
+  unlock an approved week for correction; UKG screenshots/receipts for that
+  week are visible right there, not just on the technician's own screen
+- **Team Roster** (admin's Technicians tab): filterable by location/status,
+  showing name, UKG ID, position, and home location. Clicking a row opens a
+  tabbed **employee profile**:
+  - Basic Info (editable email/phone/UKG ID/position/home location/active)
+  - Labor Allocation History — every WOM/E&F/time-off row ever allocated to
+    that technician, across all weeks, so you can see what's been worked on
+  - Onboarding — a fixed 5-item checklist per technician (not yet an
+    admin-editable template — see "Where this stands")
+  - Devices — a simple assigned-device list (not a request/approval workflow)
+  - Forms on File / Documents — file attachments, same mechanism as WOM docs
 - Week locking: a submitted/approved week can't be edited by the technician
   until an admin rejects or unlocks it
 - Audit trail of logins, allocation saves, submissions, approvals,
@@ -136,6 +149,13 @@ since only mock data has ever been in them).
   ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
   rate-limit is what actually prevents brute-forcing it online. Worth moving
   to longer PINs or real passwords before this holds anything sensitive.
+- **Onboarding is a fixed checklist, not a template.** The 5 tasks are
+  hardcoded in `server/data/db.js` (`ONBOARDING_TASKS`); there's no UI yet
+  to add/remove/reorder tasks. Fine for a stable process, a real limitation
+  if the checklist needs to change often.
+- **Devices is a list, not a workflow.** It records "this device is
+  assigned to this person" — no request/approval step, no due-back date,
+  no device inventory shared across technicians.
 
 ## Folder structure
 
@@ -153,7 +173,8 @@ server/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
     woms.js               GET/POST/PATCH WOM list + status, POST :code/complete (tech-facing)
-    admin.js               Weekly review, UKG hours entry, home location, approve/reject/unlock
+    admin.js               Weekly review, UKG hours, roster, profile (basic info, onboarding,
+                              devices, allocation history), approve/reject/unlock
     locations.js             GET (any user) / POST (admin) locations
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments
@@ -168,8 +189,9 @@ tests/
   allocation.test.js       Hour validation, WOM gating, locking
   admin.test.js             Approve / reject / unlock
   woms.test.js               WOM CRUD + authorization
-  files.test.js               Upload/list/download/delete authorization
-  audit.test.js                 Audit log writes and admin-only read access
+  roster.test.js              Basic info, onboarding, devices, allocation history
+  files.test.js                 Upload/list/download/delete authorization
+  audit.test.js                   Audit log writes and admin-only read access
 public/
   index.html
   css/styles.css
@@ -180,6 +202,7 @@ public/
     views/
       login.js
       techWeek.js           Technician weekly allocation screen + attachments
-      adminReview.js         Admin review / WOM docs / technician forms / audit
+      adminReview.js         Admin review / WOM docs / audit / Technicians tab entry point
+      technicianProfile.js    Team Roster list + tabbed employee profile
       attachments.js          Shared attachments list + upload component
 ```

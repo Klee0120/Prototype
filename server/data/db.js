@@ -46,7 +46,11 @@ db.exec(`
     pin TEXT NOT NULL,
     role TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
-    home_location_code TEXT
+    home_location_code TEXT,
+    email TEXT,
+    phone TEXT,
+    ukg_id TEXT,
+    position TEXT
   );
 
   CREATE TABLE IF NOT EXISTS woms (
@@ -114,7 +118,30 @@ db.exec(`
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS onboarding_progress (
+    tech_id TEXT NOT NULL,
+    task_key TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY (tech_id, task_key)
+  );
+
+  CREATE TABLE IF NOT EXISTS tech_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tech_id TEXT NOT NULL,
+    device_name TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    assigned_at TEXT NOT NULL
+  );
 `);
+
+// Additive columns for existing databases created before the roster
+// expansion — safe to just add, unlike the relational rebuild above.
+for (const col of ["email", "phone", "ukg_id", "position"]) {
+  if (!hasColumn("technicians", col)) {
+    db.exec(`ALTER TABLE technicians ADD COLUMN ${col} TEXT`);
+  }
+}
 
 seedIfEmpty();
 
@@ -128,9 +155,23 @@ function seedIfEmpty() {
   for (const l of data.locations) insertLocation.run(l.code, l.name);
 
   const insertTech = db.prepare(
-    "INSERT INTO technicians (id, name, pin, role, active, home_location_code) VALUES (?, ?, ?, ?, ?, ?)"
+    `INSERT INTO technicians (id, name, pin, role, active, home_location_code, email, phone, ukg_id, position)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
-  for (const t of data.technicians) insertTech.run(t.id, t.name, hashPin(t.pin), t.role, t.active, t.homeLocationCode);
+  for (const t of data.technicians) {
+    insertTech.run(
+      t.id,
+      t.name,
+      hashPin(t.pin),
+      t.role,
+      t.active,
+      t.homeLocationCode,
+      t.email || null,
+      t.phone || null,
+      t.ukgId || null,
+      t.position || null
+    );
+  }
 
   const insertWom = db.prepare(
     "INSERT INTO woms (code, description, status, location_code, budget_hours) VALUES (?, ?, ?, ?, ?)"
@@ -189,6 +230,89 @@ function verifyLogin(id, pin) {
 function setHomeLocation(techId, locationCode) {
   db.prepare("UPDATE technicians SET home_location_code = ? WHERE id = ?").run(locationCode, techId);
   return findTechnician(techId);
+}
+
+function setTechnicianActive(techId, active) {
+  db.prepare("UPDATE technicians SET active = ? WHERE id = ?").run(active ? 1 : 0, techId);
+  return findTechnician(techId);
+}
+
+function setTechnicianBasicInfo(techId, { email, phone, ukgId, position }) {
+  db.prepare("UPDATE technicians SET email = ?, phone = ?, ukg_id = ?, position = ? WHERE id = ?").run(
+    email || null,
+    phone || null,
+    ukgId || null,
+    position || null,
+    techId
+  );
+  return findTechnician(techId);
+}
+
+// A fixed checklist for now rather than an admin-editable template — the
+// simplest version that's still a real, working checklist per technician.
+const ONBOARDING_TASKS = [
+  { key: "ukg_account", label: "UKG account created" },
+  { key: "badge_issued", label: "Badge issued" },
+  { key: "safety_training", label: "Safety training completed" },
+  { key: "uniform_issued", label: "Uniform issued" },
+  { key: "vehicle_assigned", label: "Vehicle assigned" },
+];
+
+function getOnboardingProgress(techId) {
+  const rows = db.prepare("SELECT task_key, completed_at FROM onboarding_progress WHERE tech_id = ?").all(techId);
+  const completedByKey = Object.fromEntries(rows.map((r) => [r.task_key, r.completed_at]));
+  return ONBOARDING_TASKS.map((t) => ({ ...t, completedAt: completedByKey[t.key] || null }));
+}
+
+function setOnboardingTask(techId, taskKey, completed) {
+  if (completed) {
+    db.prepare(
+      "INSERT INTO onboarding_progress (tech_id, task_key, completed_at) VALUES (?, ?, ?) ON CONFLICT (tech_id, task_key) DO UPDATE SET completed_at = excluded.completed_at"
+    ).run(techId, taskKey, new Date().toISOString());
+  } else {
+    db.prepare("DELETE FROM onboarding_progress WHERE tech_id = ? AND task_key = ?").run(techId, taskKey);
+  }
+  return getOnboardingProgress(techId);
+}
+
+// ---- Devices ----
+
+function listDevices(techId) {
+  return db
+    .prepare(
+      "SELECT id, device_name AS deviceName, notes, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
+    )
+    .all(techId);
+}
+
+function addDevice(techId, deviceName, notes) {
+  db.prepare("INSERT INTO tech_devices (tech_id, device_name, notes, assigned_at) VALUES (?, ?, ?, ?)").run(
+    techId,
+    deviceName,
+    notes || "",
+    new Date().toISOString()
+  );
+  return listDevices(techId);
+}
+
+function removeDevice(techId, id) {
+  db.prepare("DELETE FROM tech_devices WHERE id = ? AND tech_id = ?").run(id, techId);
+  return listDevices(techId);
+}
+
+// ---- Allocation history ----
+
+function getAllocationHistory(techId) {
+  return db
+    .prepare(
+      `SELECT a.week_monday AS weekMonday, a.day, a.type, a.location_code AS locationCode, a.wom_code AS womCode, a.hours,
+              w.status AS weekStatus
+       FROM allocations a
+       LEFT JOIN weeks w ON w.tech_id = a.tech_id AND w.week_monday = a.week_monday
+       WHERE a.tech_id = ?
+       ORDER BY a.week_monday DESC, a.id ASC`
+    )
+    .all(techId);
 }
 
 // ---- Locations ----
@@ -438,6 +562,15 @@ module.exports = {
   listTechnicians,
   verifyLogin,
   setHomeLocation,
+  setTechnicianActive,
+  setTechnicianBasicInfo,
+  ONBOARDING_TASKS,
+  getOnboardingProgress,
+  setOnboardingTask,
+  listDevices,
+  addDevice,
+  removeDevice,
+  getAllocationHistory,
   listLocations,
   findLocation,
   createLocation,

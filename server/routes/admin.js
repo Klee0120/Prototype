@@ -10,8 +10,27 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
+function presentTechnician(t) {
+  return {
+    id: t.id,
+    name: t.name,
+    active: Boolean(t.active),
+    homeLocationCode: t.home_location_code,
+    email: t.email,
+    phone: t.phone,
+    ukgId: t.ukg_id,
+    position: t.position,
+  };
+}
+
 router.get("/technicians", (req, res) => {
-  res.json(db.listTechnicians().map((t) => ({ id: t.id, name: t.name, homeLocationCode: t.home_location_code })));
+  res.json(db.listTechnicians().map(presentTechnician));
+});
+
+router.get("/technicians/:id", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  res.json(presentTechnician(tech));
 });
 
 router.patch("/technicians/:id/home-location", (req, res) => {
@@ -26,6 +45,82 @@ router.patch("/technicians/:id/home-location", (req, res) => {
   db.setHomeLocation(tech.id, locationCode || null);
   db.addAudit(req.user.id, "HOME_LOCATION_SET", `${req.user.name} set ${tech.name}'s home location to ${locationCode || "(none)"}`);
   res.json({ ok: true });
+});
+
+router.patch("/technicians/:id/active", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const active = Boolean(req.body && req.body.active);
+  db.setTechnicianActive(tech.id, active);
+  db.addAudit(req.user.id, "TECH_STATUS_CHANGED", `${req.user.name} set ${tech.name} to ${active ? "active" : "inactive"}`);
+  res.json(presentTechnician(db.findTechnician(tech.id)));
+});
+
+router.patch("/technicians/:id/basic-info", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const { email, phone, ukgId, position } = req.body || {};
+  db.setTechnicianBasicInfo(tech.id, { email, phone, ukgId, position });
+  db.addAudit(req.user.id, "TECH_BASIC_INFO_UPDATED", `${req.user.name} updated ${tech.name}'s basic info`);
+  res.json(presentTechnician(db.findTechnician(tech.id)));
+});
+
+router.get("/technicians/:id/history", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  res.json(db.getAllocationHistory(tech.id));
+});
+
+router.get("/technicians/:id/onboarding", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  res.json(db.getOnboardingProgress(tech.id));
+});
+
+router.patch("/technicians/:id/onboarding/:taskKey", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!db.ONBOARDING_TASKS.some((t) => t.key === req.params.taskKey)) {
+    return res.status(400).json({ error: "Unknown onboarding task" });
+  }
+
+  const completed = Boolean(req.body && req.body.completed);
+  const progress = db.setOnboardingTask(tech.id, req.params.taskKey, completed);
+  db.addAudit(
+    req.user.id,
+    "ONBOARDING_TASK_UPDATED",
+    `${req.user.name} marked "${req.params.taskKey}" ${completed ? "complete" : "incomplete"} for ${tech.name}`
+  );
+  res.json(progress);
+});
+
+router.get("/technicians/:id/devices", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  res.json(db.listDevices(tech.id));
+});
+
+router.post("/technicians/:id/devices", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const { deviceName, notes } = req.body || {};
+  if (!deviceName) return res.status(400).json({ error: "deviceName is required" });
+
+  const devices = db.addDevice(tech.id, deviceName, notes);
+  db.addAudit(req.user.id, "DEVICE_ASSIGNED", `${req.user.name} assigned "${deviceName}" to ${tech.name}`);
+  res.status(201).json(devices);
+});
+
+router.delete("/technicians/:id/devices/:deviceId", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const devices = db.removeDevice(tech.id, Number(req.params.deviceId));
+  db.addAudit(req.user.id, "DEVICE_REMOVED", `${req.user.name} removed a device from ${tech.name}`);
+  res.json(devices);
 });
 
 router.get("/weeks/:weekMonday", (req, res) => {

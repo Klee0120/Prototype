@@ -6,6 +6,7 @@ const CATEGORY_LABELS = {
   ukg_screenshot: "UKG Timesheet Screenshot",
   wom_doc: "Document / Photo",
   tech_form: "Form / Certification",
+  document: "Document",
 };
 
 function formatSize(bytes) {
