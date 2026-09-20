@@ -1,8 +1,8 @@
-function currentUserId() {
+function currentSessionToken() {
   try {
     const raw = localStorage.getItem("laborapp:user");
     if (!raw) return null;
-    return JSON.parse(raw).id;
+    return JSON.parse(raw).token;
   } catch {
     return null;
   }
@@ -10,8 +10,8 @@ function currentUserId() {
 
 async function request(method, path, body) {
   const headers = { "Content-Type": "application/json" };
-  const uid = currentUserId();
-  if (uid) headers["x-user-id"] = uid;
+  const token = currentSessionToken();
+  if (token) headers["x-session-token"] = token;
 
   const res = await fetch(path, {
     method,
@@ -44,8 +44,8 @@ async function uploadFile(relatedType, relatedId, category, file) {
   form.append("file", file);
 
   const headers = {};
-  const uid = currentUserId();
-  if (uid) headers["x-user-id"] = uid;
+  const token = currentSessionToken();
+  if (token) headers["x-session-token"] = token;
 
   const res = await fetch("/api/files", { method: "POST", headers, body: form });
   let data = null;
@@ -62,8 +62,8 @@ async function uploadFile(relatedType, relatedId, category, file) {
 
 async function downloadFile(id, filename) {
   const headers = {};
-  const uid = currentUserId();
-  if (uid) headers["x-user-id"] = uid;
+  const token = currentSessionToken();
+  if (token) headers["x-session-token"] = token;
 
   const res = await fetch(`/api/files/${encodeURIComponent(id)}/download`, { headers });
   if (!res.ok) {

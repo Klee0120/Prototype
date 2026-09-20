@@ -5,9 +5,11 @@ their UKG-reported weekly hours across open Work Order Management (WOM) codes,
 attach supporting files, and admins review, approve/reject, and lock completed
 weeks.
 
-This is a prototype, not a production system: mock login data, no password
-hashing, and it isn't deployed anywhere — everything runs locally. See
-"Where this stands" below for what that means in practice.
+This is a prototype, not a production system: mock login data (short PINs
+instead of real passwords) and no HTTPS by default. Login itself is real,
+though — PINs are hashed at rest, sessions are real random tokens, and
+brute-force login attempts get rate-limited. See "Where this stands" below
+for what that means in practice.
 
 ## Stack
 
@@ -94,15 +96,21 @@ files gone too) to reset to the seed.
   forward. What's still missing for real use by your team is *reachability*:
   right now this only runs on whatever machine starts it, reachable at
   `localhost:3000` on that machine only.
-- **No hosting decision has been made on purpose.** Getting this in front of
-  11 technicians means picking how they reach it — a private VPN mesh
-  (e.g. Tailscale) so nothing touches the public internet, a small
-  self-purchased VPS, or a managed host — and that's a real tradeoff between
-  convenience and where technician data physically lives. Worth deciding
-  deliberately rather than defaulting into it.
-- **Auth is still mock.** PINs are stored in plain text and there's no
-  session/token mechanism — fine while it's just you testing, not fine once
-  it's reachable by anyone other than you.
+- **Deployed on a $6/mo DigitalOcean droplet**, running as a systemd service
+  (auto-restarts on crash or reboot) behind a basic firewall (only SSH + port
+  80 open). See `scripts/deploy.sh`.
+- **Auth is real but the transport isn't encrypted yet.** Login issues a
+  genuine random session token (`server/data/db.js`'s `sessions` table); PINs
+  are hashed with scrypt, never stored or compared in plain text
+  (`server/utils/password.js`); repeated wrong-PIN attempts lock out for 15
+  minutes (`server/routes/auth.js`). What's still missing: the site is served
+  over plain HTTP, so credentials and data travel unencrypted over the
+  network. Real HTTPS needs a domain name pointed at the droplet's IP (a
+  bare IP can't get a trusted certificate) — a separate decision still ahead.
+- **PINs are still short (4 digits).** Hashing protects them if the database
+  ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
+  rate-limit is what actually prevents brute-forcing it online. Worth moving
+  to longer PINs or real passwords before this holds anything sensitive.
 
 ## Folder structure
 
@@ -115,18 +123,22 @@ server/
     db.js               SQLite schema, seeding, and all data accessors
     store.sqlite         (generated) the actual database file — gitignored
     uploads/              (generated) uploaded file contents — gitignored
-  middleware/auth.js     Mock header-based auth
+  middleware/auth.js     Verifies the x-session-token header against the sessions table
   routes/
-    auth.js              POST /api/auth/login
+    auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit
     woms.js               GET/POST/PATCH WOM list + status
     admin.js               Weekly review list, technician list, approve/reject/unlock
     audit.js                Audit log
     files.js                 Upload/list/download/delete attachments
-  utils/week.js           Mon–Sun week date helpers
+  utils/
+    week.js                Mon–Sun week date helpers
+    password.js             scrypt PIN hashing (hashPin/verifyPin)
+scripts/
+  deploy.sh               One-shot droplet setup: Node 22, app, systemd service, firewall
 tests/
-  helpers.js              Spins up an isolated app instance per test file
-  auth.test.js
+  helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
+  auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking
   admin.test.js             Approve / reject / unlock
   woms.test.js               WOM CRUD + authorization

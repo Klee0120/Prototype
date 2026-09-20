@@ -1,7 +1,11 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { seed } = require("./seed");
+const { hashPin, verifyPin } = require("../utils/password");
+
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Overridable so tests can point at a throwaway file instead of the real
 // mock database.
@@ -75,6 +79,13 @@ db.exec(`
     uploaded_by TEXT NOT NULL,
     uploaded_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    tech_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
 `);
 
 seedIfEmpty();
@@ -86,7 +97,7 @@ function seedIfEmpty() {
   const data = seed();
 
   const insertTech = db.prepare("INSERT INTO technicians (id, name, pin, role, active) VALUES (?, ?, ?, ?, ?)");
-  for (const t of data.technicians) insertTech.run(t.id, t.name, t.pin, t.role, t.active);
+  for (const t of data.technicians) insertTech.run(t.id, t.name, hashPin(t.pin), t.role, t.active);
 
   const insertWom = db.prepare("INSERT INTO woms (code, description, status) VALUES (?, ?, ?)");
   for (const w of data.woms) insertWom.run(w.code, w.description, w.status);
@@ -132,7 +143,7 @@ function listTechnicians() {
 function verifyLogin(id, pin) {
   const tech = findTechnician(id);
   if (!tech || !tech.active) return null;
-  if (tech.pin !== pin) return null;
+  if (!verifyPin(pin, tech.pin)) return null;
   return tech;
 }
 
@@ -235,6 +246,37 @@ function unlockWeek(techId, weekMonday, adminId) {
   return getWeek(techId, weekMonday);
 }
 
+// ---- Sessions ----
+
+function createSession(techId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
+  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(now.toISOString());
+  db.prepare("INSERT INTO sessions (token, tech_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(
+    token,
+    techId,
+    now.toISOString(),
+    expiresAt.toISOString()
+  );
+  return token;
+}
+
+function getSessionUser(token) {
+  if (!token) return null;
+  const session = db.prepare("SELECT * FROM sessions WHERE token = ?").get(token);
+  if (!session) return null;
+  if (new Date(session.expires_at) < new Date()) {
+    db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    return null;
+  }
+  return findTechnician(session.tech_id);
+}
+
+function deleteSession(token) {
+  db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+}
+
 // ---- Audit log ----
 
 function addAudit(actor, action, details) {
@@ -312,6 +354,9 @@ module.exports = {
   approveWeek,
   rejectWeek,
   unlockWeek,
+  createSession,
+  getSessionUser,
+  deleteSession,
   addAudit,
   listAudit,
   insertFile,

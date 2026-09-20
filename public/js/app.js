@@ -26,7 +26,12 @@ export function setUser(user) {
   }
 }
 
-export function logout() {
+export async function logout() {
+  try {
+    await api.post("/api/auth/logout");
+  } catch {
+    // Session may already be expired/invalid server-side; clear locally regardless.
+  }
   setUser(null);
   render();
 }

@@ -1,14 +1,12 @@
 const db = require("../data/db");
 
-// Prototype-only auth: the client sends the technician/admin id in a header
-// after a successful /api/login. There is no token/session/crypto here —
-// this is intentionally mock auth for a functional prototype, not production.
 function requireAuth(req, res, next) {
-  const id = req.header("x-user-id");
-  if (!id) return res.status(401).json({ error: "Not logged in" });
-  const user = db.findTechnician(id);
-  if (!user || !user.active) return res.status(401).json({ error: "Invalid session" });
+  const token = req.header("x-session-token");
+  if (!token) return res.status(401).json({ error: "Not logged in" });
+  const user = db.getSessionUser(token);
+  if (!user || !user.active) return res.status(401).json({ error: "Session expired or invalid" });
   req.user = user;
+  req.sessionToken = token;
   next();
 }
 
