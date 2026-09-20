@@ -260,6 +260,9 @@ export async function renderAdminReview(container) {
       btn.disabled = true;
       try {
         await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-confirmed`, { confirmed: !stage3 });
+        // Collapse the detail panel on the way in/out of Completed -- that
+        // list should default to just the summary row, not the full form.
+        expanded.delete(row.technician.id);
         await drawReview(content);
       } catch (err) {
         btn.disabled = false;
