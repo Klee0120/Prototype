@@ -1,9 +1,12 @@
 # Labor Allocation Prototype
 
-A functional prototype for internal weekly labor allocation: technicians allocate
-their UKG-reported weekly hours across open Work Order Management (WOM) codes,
-attach supporting files, and admins review, approve/reject, and lock completed
-weeks.
+A functional prototype for internal weekly labor allocation: an admin enters
+each technician's actual per-day UKG hours (from that week's UKG timesheet
+screenshot), which prompts the technician to split those hours across
+location-based general time (E&F), specific WOM projects, and time off, then
+submit for approval. Admin reviews, approves/rejects, and locks completed
+weeks, with everything — screenshots, WOM allocation history, budget
+drawdown — kept on file.
 
 This is a prototype, not a production system: mock login data (short PINs
 instead of real passwords) and no HTTPS by default. Login itself is real,
@@ -59,17 +62,29 @@ Demo logins:
 ## Features
 
 - Technician login (mock ID + PIN)
-- Weekly Mon–Sun hour allocation against a list of open WOMs
-- UKG total hours shown as the weekly source-of-truth target
-- Submission blocked until allocated hours exactly equal UKG hours
+- **Admin enters UKG hours per day, per technician** (Weekly Review → a
+  technician's Details) — this is the actual source-of-truth input, not mock
+  data; it's what the tech's target is checked against
+- **Split allocation per day**, matching how the hours actually get worked:
+  - **E&F** — general (non-project) time at a location
+  - **WOM Project** — a specific job; picking a location filters which WOMs
+    are selectable, and each shows remaining budget hours (e.g. "104h left
+    of 120h"), computed live from everyone's allocations against it
+  - **Time off** — vacation/sick/bereavement/holiday, counts toward the
+    day's target like any other split
+  - **"Default to home"** one-click button fills a day's remaining
+    unallocated hours as E&F time at the technician's home location
+- Submission blocked until **every day's** allocated hours exactly equal
+  that day's UKG hours (not just the weekly total)
+- A technician can mark a WOM project complete from their own allocation
+  screen; an admin can open/close/reopen any WOM
 - Admin review screen: approve, reject (with note, returns to technician), or
   unlock an approved week for correction
-- WOM open/closed status management (only open WOMs are selectable for new
-  allocations)
 - Week locking: a submitted/approved week can't be edited by the technician
   until an admin rejects or unlocks it
 - Audit trail of logins, allocation saves, submissions, approvals,
-  rejections, unlocks, WOM status changes, and file uploads/deletes
+  rejections, unlocks, WOM status changes, home-location changes, UKG hour
+  entries, and file uploads/deletes
 - File attachments, stored in a real database + disk folder rather than a
   mock:
   - UKG timesheet screenshots and receipts/invoices — attached by a
@@ -88,6 +103,16 @@ Mock seed data lives in `server/data/seed.js` and is loaded into
 one file, so state persists across restarts — delete
 `server/data/store.sqlite` (and `server/data/uploads/` if you want uploaded
 files gone too) to reset to the seed.
+
+Locations are a first-class table: WOMs belong to a location (and
+optionally a total budget hours), technicians have a home location, and an
+allocation "split" row is either `ef` (general time, tied to a location),
+`wom` (tied to a specific WOM, which is itself tied to a location), or
+`timeoff` (vacation/sick/bereavement/holiday, no location). UKG hours are
+stored per technician/week/day, not one weekly lump — that's what makes the
+per-day balance check possible. `server/data/db.js` auto-detects and rebuilds
+these tables from the older flat schema if it finds one (safe at this stage
+since only mock data has ever been in them).
 
 ## Where this stands
 
@@ -126,11 +151,12 @@ server/
   middleware/auth.js     Verifies the x-session-token header against the sessions table
   routes/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
-    technicians.js        GET/PUT/POST week + allocations + submit
-    woms.js               GET/POST/PATCH WOM list + status
-    admin.js               Weekly review list, technician list, approve/reject/unlock
-    audit.js                Audit log
-    files.js                 Upload/list/download/delete attachments
+    technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
+    woms.js               GET/POST/PATCH WOM list + status, POST :code/complete (tech-facing)
+    admin.js               Weekly review, UKG hours entry, home location, approve/reject/unlock
+    locations.js             GET (any user) / POST (admin) locations
+    audit.js                  Audit log
+    files.js                   Upload/list/download/delete attachments
   utils/
     week.js                Mon–Sun week date helpers
     password.js             scrypt PIN hashing (hashPin/verifyPin)

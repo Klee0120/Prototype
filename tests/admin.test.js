@@ -2,15 +2,17 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 
-async function submitFullWeek(server, techId, week, ukgHours) {
-  await server.call("PUT", `/api/technicians/${techId}/weeks/${week}/allocations`, {
-    userId: techId,
-    body: { allocations: [{ day: "Mon", womCode: "GEN-ADMIN", hours: ukgHours }] },
-  });
+async function submitFullWeek(server, techId, week, locationCode) {
+  const detail = await server.call("GET", `/api/technicians/${techId}/weeks/${week}`, { userId: techId });
+  const allocations = Object.entries(detail.body.ukgHoursByDay)
+    .filter(([, hours]) => hours > 0)
+    .map(([day, hours]) => ({ day, type: "ef", locationCode, hours }));
+
+  await server.call("PUT", `/api/technicians/${techId}/weeks/${week}/allocations`, { userId: techId, body: { allocations } });
   return server.call("POST", `/api/technicians/${techId}/weeks/${week}/submit`, { userId: techId });
 }
 
-test("admin: review, approve, reject, unlock", async (t) => {
+test("admin: review, approve, reject, unlock, UKG hours, home location", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
@@ -28,7 +30,7 @@ test("admin: review, approve, reject, unlock", async (t) => {
   });
 
   await t.test("approve locks a submitted week", async () => {
-    const submit = await submitFullWeek(server, "T1001", week, 40);
+    const submit = await submitFullWeek(server, "T1001", week, "PRINCETON");
     assert.equal(submit.status, 200);
 
     const approve = await server.call("POST", `/api/admin/weeks/T1001/${week}/approve`, { userId: "ADMIN" });
@@ -58,7 +60,7 @@ test("admin: review, approve, reject, unlock", async (t) => {
   });
 
   await t.test("reject returns a submitted week to the technician with a note", async () => {
-    const submit = await submitFullWeek(server, "T1002", week, 37.5);
+    const submit = await submitFullWeek(server, "T1002", week, "GEORGETOWN");
     assert.equal(submit.status, 200);
 
     const reject = await server.call("POST", `/api/admin/weeks/T1002/${week}/reject`, {
@@ -82,5 +84,59 @@ test("admin: review, approve, reject, unlock", async (t) => {
     assert.equal(t1001.status, "draft");
     assert.equal(t1002.status, "rejected");
     assert.equal(t1002.ukgHours, 37.5);
+  });
+
+  await t.test("admin can set a technician's per-day UKG hours", async () => {
+    const res = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: 8, Tue: 8, Wed: 8, Thu: 7, Fri: 9, Sat: 0 } },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ukgHoursByDay.Fri, 9);
+
+    const detail = await server.call("GET", `/api/technicians/T1003/weeks/${week}`, { userId: "T1003" });
+    assert.equal(detail.body.ukgTotal, 40);
+  });
+
+  await t.test("a technician cannot set UKG hours", async () => {
+    const res = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
+      userId: "T1003",
+      body: { hours: { Mon: 8 } },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects an invalid day or negative hours", async () => {
+    const badDay = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Someday: 8 } },
+    });
+    assert.equal(badDay.status, 400);
+
+    const negative = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: -1 } },
+    });
+    assert.equal(negative.status, 400);
+  });
+
+  await t.test("admin can set a technician's home location", async () => {
+    const res = await server.call("PATCH", "/api/admin/technicians/T1003/home-location", {
+      userId: "ADMIN",
+      body: { locationCode: "PRINCETON" },
+    });
+    assert.equal(res.status, 200);
+
+    const list = await server.call("GET", "/api/admin/technicians", { userId: "ADMIN" });
+    const t1003 = list.body.find((t) => t.id === "T1003");
+    assert.equal(t1003.homeLocationCode, "PRINCETON");
+  });
+
+  await t.test("rejects an unknown home location", async () => {
+    const res = await server.call("PATCH", "/api/admin/technicians/T1003/home-location", {
+      userId: "ADMIN",
+      body: { locationCode: "NOPE" },
+    });
+    assert.equal(res.status, 400);
   });
 });

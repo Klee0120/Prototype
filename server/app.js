@@ -8,6 +8,7 @@ const womRoutes = require("./routes/woms");
 const adminRoutes = require("./routes/admin");
 const auditRoutes = require("./routes/audit");
 const fileRoutes = require("./routes/files");
+const locationRoutes = require("./routes/locations");
 
 function createApp() {
   const app = express();
@@ -24,6 +25,7 @@ function createApp() {
   app.use("/api/admin", adminRoutes);
   app.use("/api/audit", auditRoutes);
   app.use("/api/files", fileRoutes);
+  app.use("/api/locations", locationRoutes);
 
   app.use(express.static(path.join(__dirname, "..", "public")));
 

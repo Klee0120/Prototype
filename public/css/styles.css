@@ -292,21 +292,6 @@ button, input, select {
   padding: 4px 0;
 }
 
-.row-wom-select {
-  flex: 1;
-  min-width: 0;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.row-hours-input {
-  width: 72px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
 .row-wom {
   flex: 1;
   font-size: 14px;
@@ -316,8 +301,117 @@ button, input, select {
   font-weight: 600;
 }
 
-.add-row {
+.day-ukg-actual {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.day-ukg-actual strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+/* ---- Split rows ---- */
+
+.split-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 4px;
+}
+
+.split-row-fields {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.split-row-fields select,
+.split-row-fields input {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.split-type-select {
+  flex: 1 1 140px;
+}
+
+.split-location-select {
+  flex: 1 1 140px;
+}
+
+.split-wom-select {
+  flex: 2 1 220px;
+}
+
+.split-hours-input {
+  width: 64px;
+  flex: 0 0 64px;
+}
+
+.mark-complete-btn {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.day-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+
+.day-balance {
+  display: flex;
+  justify-content: flex-end;
+  margin: 8px 0;
+}
+
+.balance-pill {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.balance-pill.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.balance-pill.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.time-off-row {
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
   margin-top: 4px;
+}
+
+.time-off-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.time-off-label {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 56px;
+}
+
+.time-off-select,
+.time-off-hours-input {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.time-off-hours-input {
+  width: 64px;
 }
 
 /* ---- Action row ---- */
@@ -467,10 +561,57 @@ button, input, select {
   align-items: center;
 }
 
-.add-wom-form input {
+.add-wom-form input,
+.add-wom-form select {
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+/* ---- UKG hours form (admin) ---- */
+
+.ukg-hours-form {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.ukg-hours-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.ukg-day-fields {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.ukg-day-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ukg-day-field input {
+  width: 56px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.home-location-select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
 }
 
 /* ---- Attachments ---- */
@@ -567,7 +708,9 @@ button, input, select {
   .day-row {
     flex-wrap: wrap;
   }
-  .row-wom-select {
+  .split-type-select,
+  .split-location-select,
+  .split-wom-select {
     flex-basis: 100%;
   }
   .review-row-summary {

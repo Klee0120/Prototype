@@ -18,7 +18,14 @@ test("audit: actions are recorded and only admins can read the log", async (t) =
   await t.test("login, save, and submit each write an audit entry", async () => {
     await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
       userId: "T1001",
-      body: { allocations: [{ day: "Mon", womCode: "GEN-ADMIN", hours: 40 }] },
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"].map((day) => ({
+          day,
+          type: "ef",
+          locationCode: "PRINCETON",
+          hours: 8,
+        })),
+      },
     });
     await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001" });
     await server.call("POST", `/api/admin/weeks/T1001/${week}/approve`, { userId: "ADMIN" });

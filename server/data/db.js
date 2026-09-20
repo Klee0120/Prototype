@@ -17,26 +17,52 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA foreign_keys = ON;");
 
+// Schema v1 (flat wom_code per allocation row, single weekly UKG total, no
+// locations) predates locations/WOM budgets/E&F split rows. Rather than
+// hand-migrate mock rows that were never real technician data, detect the
+// old shape and rebuild those tables fresh from the current seed.
+function tableExists(name) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name));
+}
+function hasColumn(table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+}
+if (tableExists("woms") && !hasColumn("woms", "location_code")) {
+  db.exec("DROP TABLE technicians");
+  db.exec("DROP TABLE woms");
+  db.exec("DROP TABLE allocations");
+  db.exec("DROP TABLE ukg_hours");
+}
+
 db.exec(`
+  CREATE TABLE IF NOT EXISTS locations (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS technicians (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     pin TEXT NOT NULL,
     role TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    home_location_code TEXT
   );
 
   CREATE TABLE IF NOT EXISTS woms (
     code TEXT PRIMARY KEY,
     description TEXT NOT NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    location_code TEXT,
+    budget_hours REAL
   );
 
   CREATE TABLE IF NOT EXISTS ukg_hours (
     tech_id TEXT NOT NULL,
     week_monday TEXT NOT NULL,
+    day TEXT NOT NULL,
     hours REAL NOT NULL,
-    PRIMARY KEY (tech_id, week_monday)
+    PRIMARY KEY (tech_id, week_monday, day)
   );
 
   CREATE TABLE IF NOT EXISTS weeks (
@@ -55,7 +81,9 @@ db.exec(`
     tech_id TEXT NOT NULL,
     week_monday TEXT NOT NULL,
     day TEXT NOT NULL,
-    wom_code TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'wom',
+    location_code TEXT,
+    wom_code TEXT,
     hours REAL NOT NULL
   );
 
@@ -96,26 +124,37 @@ function seedIfEmpty() {
 
   const data = seed();
 
-  const insertTech = db.prepare("INSERT INTO technicians (id, name, pin, role, active) VALUES (?, ?, ?, ?, ?)");
-  for (const t of data.technicians) insertTech.run(t.id, t.name, hashPin(t.pin), t.role, t.active);
+  const insertLocation = db.prepare("INSERT INTO locations (code, name) VALUES (?, ?)");
+  for (const l of data.locations) insertLocation.run(l.code, l.name);
 
-  const insertWom = db.prepare("INSERT INTO woms (code, description, status) VALUES (?, ?, ?)");
-  for (const w of data.woms) insertWom.run(w.code, w.description, w.status);
+  const insertTech = db.prepare(
+    "INSERT INTO technicians (id, name, pin, role, active, home_location_code) VALUES (?, ?, ?, ?, ?, ?)"
+  );
+  for (const t of data.technicians) insertTech.run(t.id, t.name, hashPin(t.pin), t.role, t.active, t.homeLocationCode);
 
-  const insertUkg = db.prepare("INSERT INTO ukg_hours (tech_id, week_monday, hours) VALUES (?, ?, ?)");
-  for (const u of data.ukgHours) insertUkg.run(u.techId, u.weekMonday, u.hours);
+  const insertWom = db.prepare(
+    "INSERT INTO woms (code, description, status, location_code, budget_hours) VALUES (?, ?, ?, ?, ?)"
+  );
+  for (const w of data.woms) insertWom.run(w.code, w.description, w.status, w.locationCode, w.budgetHours);
+
+  const insertUkg = db.prepare("INSERT INTO ukg_hours (tech_id, week_monday, day, hours) VALUES (?, ?, ?, ?)");
+  for (const u of data.ukgHours) {
+    for (const [day, hours] of Object.entries(u.hours)) {
+      insertUkg.run(u.techId, u.weekMonday, day, hours);
+    }
+  }
 
   const insertWeek = db.prepare(`
     INSERT INTO weeks (tech_id, week_monday, status, submitted_at, reviewed_at, reviewed_by, note)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   const insertAlloc = db.prepare(`
-    INSERT INTO allocations (tech_id, week_monday, day, wom_code, hours) VALUES (?, ?, ?, ?, ?)
+    INSERT INTO allocations (tech_id, week_monday, day, type, location_code, wom_code, hours) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   for (const w of data.weeks) {
     insertWeek.run(w.techId, w.weekMonday, w.status, w.submittedAt, w.reviewedAt, w.reviewedBy, w.note || "");
     for (const a of w.allocations) {
-      insertAlloc.run(w.techId, w.weekMonday, a.day, a.womCode, a.hours);
+      insertAlloc.run(w.techId, w.weekMonday, a.day, a.type, a.locationCode, a.womCode, a.hours);
     }
   }
 
@@ -147,18 +186,50 @@ function verifyLogin(id, pin) {
   return tech;
 }
 
+function setHomeLocation(techId, locationCode) {
+  db.prepare("UPDATE technicians SET home_location_code = ? WHERE id = ?").run(locationCode, techId);
+  return findTechnician(techId);
+}
+
+// ---- Locations ----
+
+function listLocations() {
+  return db.prepare("SELECT * FROM locations ORDER BY name").all();
+}
+
+function findLocation(code) {
+  return db.prepare("SELECT * FROM locations WHERE code = ?").get(code);
+}
+
+function createLocation(code, name) {
+  db.prepare("INSERT INTO locations (code, name) VALUES (?, ?)").run(code, name);
+  return findLocation(code);
+}
+
 // ---- WOMs ----
 
+function womWithRemaining(wom) {
+  if (!wom) return wom;
+  if (wom.budget_hours == null) return { ...wom, usedHours: null, remainingHours: null };
+  const { total } = db.prepare("SELECT COALESCE(SUM(hours), 0) AS total FROM allocations WHERE wom_code = ?").get(wom.code);
+  return { ...wom, usedHours: total, remainingHours: round2(wom.budget_hours - total) };
+}
+
 function listWoms() {
-  return db.prepare("SELECT * FROM woms ORDER BY rowid").all();
+  return db.prepare("SELECT * FROM woms ORDER BY rowid").all().map(womWithRemaining);
 }
 
 function findWom(code) {
-  return db.prepare("SELECT * FROM woms WHERE code = ?").get(code);
+  return womWithRemaining(db.prepare("SELECT * FROM woms WHERE code = ?").get(code));
 }
 
-function createWom(code, description) {
-  db.prepare("INSERT INTO woms (code, description, status) VALUES (?, ?, 'open')").run(code, description);
+function createWom(code, description, locationCode, budgetHours) {
+  db.prepare("INSERT INTO woms (code, description, status, location_code, budget_hours) VALUES (?, ?, 'open', ?, ?)").run(
+    code,
+    description,
+    locationCode || null,
+    budgetHours == null ? null : Number(budgetHours)
+  );
   return findWom(code);
 }
 
@@ -168,11 +239,23 @@ function setWomStatus(code, status) {
   return findWom(code);
 }
 
-// ---- UKG hours (weekly source of truth) ----
+// ---- UKG hours (per-day source of truth) ----
 
-function getUkgHours(techId, weekMonday) {
-  const row = db.prepare("SELECT hours FROM ukg_hours WHERE tech_id = ? AND week_monday = ?").get(techId, weekMonday);
-  return row ? row.hours : 0;
+function getUkgHoursByDay(techId, weekMonday) {
+  const rows = db.prepare("SELECT day, hours FROM ukg_hours WHERE tech_id = ? AND week_monday = ?").all(techId, weekMonday);
+  const byDay = Object.fromEntries(rows.map((r) => [r.day, r.hours]));
+  return byDay;
+}
+
+function setUkgHours(techId, weekMonday, hoursByDay) {
+  const upsert = db.prepare(`
+    INSERT INTO ukg_hours (tech_id, week_monday, day, hours) VALUES (?, ?, ?, ?)
+    ON CONFLICT (tech_id, week_monday, day) DO UPDATE SET hours = excluded.hours
+  `);
+  for (const [day, hours] of Object.entries(hoursByDay)) {
+    upsert.run(techId, weekMonday, day, Number(hours));
+  }
+  return getUkgHoursByDay(techId, weekMonday);
 }
 
 // ---- Weekly allocation records ----
@@ -182,7 +265,10 @@ function getWeek(techId, weekMonday) {
     .prepare("SELECT status, submitted_at, reviewed_at, reviewed_by, note FROM weeks WHERE tech_id = ? AND week_monday = ?")
     .get(techId, weekMonday);
   const allocations = db
-    .prepare("SELECT day, wom_code AS womCode, hours FROM allocations WHERE tech_id = ? AND week_monday = ? ORDER BY id")
+    .prepare(
+      `SELECT day, type, location_code AS locationCode, wom_code AS womCode, hours
+       FROM allocations WHERE tech_id = ? AND week_monday = ? ORDER BY id`
+    )
     .all(techId, weekMonday);
 
   if (!row) {
@@ -201,9 +287,17 @@ function getWeek(techId, weekMonday) {
 function saveAllocations(techId, weekMonday, allocations) {
   ensureWeekRow(techId, weekMonday);
   db.prepare("DELETE FROM allocations WHERE tech_id = ? AND week_monday = ?").run(techId, weekMonday);
-  const insert = db.prepare("INSERT INTO allocations (tech_id, week_monday, day, wom_code, hours) VALUES (?, ?, ?, ?, ?)");
-  for (const a of allocations) insert.run(techId, weekMonday, a.day, a.womCode, a.hours);
+  const insert = db.prepare(
+    "INSERT INTO allocations (tech_id, week_monday, day, type, location_code, wom_code, hours) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const a of allocations) {
+    insert.run(techId, weekMonday, a.day, a.type, a.locationCode || null, a.womCode || null, a.hours);
+  }
   return getWeek(techId, weekMonday);
+}
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
 }
 
 function submitWeek(techId, weekMonday) {
@@ -343,11 +437,16 @@ module.exports = {
   findTechnician,
   listTechnicians,
   verifyLogin,
+  setHomeLocation,
+  listLocations,
+  findLocation,
+  createLocation,
   listWoms,
   findWom,
   createWom,
   setWomStatus,
-  getUkgHours,
+  getUkgHoursByDay,
+  setUkgHours,
   getWeek,
   saveAllocations,
   submitWeek,
