@@ -111,16 +111,24 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.status, 400);
   });
 
-  await t.test("devices can be assigned and removed", async () => {
+  await t.test("devices can be assigned and removed, and require a valid deviceType", async () => {
     const empty = await server.call("GET", "/api/admin/technicians/T1001/devices", { userId: "ADMIN" });
     assert.deepEqual(empty.body, []);
 
+    const badType = await server.call("POST", "/api/admin/technicians/T1001/devices", {
+      userId: "ADMIN",
+      body: { deviceType: "tablet", deviceName: "iPad" },
+    });
+    assert.equal(badType.status, 400);
+
     const added = await server.call("POST", "/api/admin/technicians/T1001/devices", {
       userId: "ADMIN",
-      body: { deviceName: "iPhone 15", notes: "work phone" },
+      body: { deviceType: "phone", deviceName: "555-0100", notes: "work phone" },
     });
     assert.equal(added.status, 201);
     assert.equal(added.body.length, 1);
+    assert.equal(added.body[0].deviceType, "phone");
+    assert.deepEqual(added.body[0].requests, []);
     const deviceId = added.body[0].id;
 
     const removed = await server.call("DELETE", `/api/admin/technicians/T1001/devices/${deviceId}`, { userId: "ADMIN" });
@@ -128,10 +136,43 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.deepEqual(removed.body, []);
   });
 
+  await t.test("device IT requests (e.g. Calero) can be logged and followed up on", async () => {
+    const device = await server.call("POST", "/api/admin/technicians/T1001/devices", {
+      userId: "ADMIN",
+      body: { deviceType: "phone", deviceName: "555-0101" },
+    });
+    const deviceId = device.body[0].id;
+
+    const added = await server.call("POST", `/api/admin/technicians/T1001/devices/${deviceId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Cancellation", referenceNumber: "CAL-4821" },
+    });
+    assert.equal(added.status, 201);
+    assert.equal(added.body[0].requestType, "Cancellation");
+    assert.equal(added.body[0].referenceNumber, "CAL-4821");
+    assert.equal(added.body[0].completedAt, null);
+    const requestId = added.body[0].id;
+
+    const completed = await server.call(
+      "PATCH",
+      `/api/admin/technicians/T1001/devices/${deviceId}/requests/${requestId}`,
+      { userId: "ADMIN", body: { completed: true } }
+    );
+    assert.equal(completed.status, 200);
+    assert.ok(completed.body[0].completedAt);
+
+    const reopened = await server.call(
+      "PATCH",
+      `/api/admin/technicians/T1001/devices/${deviceId}/requests/${requestId}`,
+      { userId: "ADMIN", body: { completed: false } }
+    );
+    assert.equal(reopened.body[0].completedAt, null);
+  });
+
   await t.test("a technician cannot manage another technician's devices or onboarding", async () => {
     const devices = await server.call("POST", "/api/admin/technicians/T1001/devices", {
       userId: "T1002",
-      body: { deviceName: "Laptop" },
+      body: { deviceType: "laptop", deviceName: "Laptop" },
     });
     assert.equal(devices.status, 403);
 

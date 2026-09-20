@@ -127,11 +127,14 @@ router.post("/technicians/:id/devices", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
 
-  const { deviceName, notes } = req.body || {};
-  if (!deviceName) return res.status(400).json({ error: "deviceName is required" });
+  const { deviceType, deviceName, notes } = req.body || {};
+  if (!db.DEVICE_TYPES.includes(deviceType)) {
+    return res.status(400).json({ error: `deviceType must be one of: ${db.DEVICE_TYPES.join(", ")}` });
+  }
+  if (!deviceName) return res.status(400).json({ error: deviceType === "phone" ? "Phone number is required" : "Identifier is required" });
 
-  const devices = db.addDevice(tech.id, deviceName, notes);
-  db.addAudit(req.user.id, "DEVICE_ASSIGNED", `${req.user.name} assigned "${deviceName}" to ${tech.name}`);
+  const devices = db.addDevice(tech.id, deviceType, deviceName, notes);
+  db.addAudit(req.user.id, "DEVICE_ASSIGNED", `${req.user.name} assigned ${deviceType} "${deviceName}" to ${tech.name}`);
   res.status(201).json(devices);
 });
 
@@ -142,6 +145,42 @@ router.delete("/technicians/:id/devices/:deviceId", (req, res) => {
   const devices = db.removeDevice(tech.id, Number(req.params.deviceId));
   db.addAudit(req.user.id, "DEVICE_REMOVED", `${req.user.name} removed a device from ${tech.name}`);
   res.json(devices);
+});
+
+// Tracks an IT/vendor request against a device (Calero line cancellation,
+// etc.) with a reference number to follow up on until it's marked done.
+router.post("/technicians/:id/devices/:deviceId/requests", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  const device = db.findDevice(tech.id, Number(req.params.deviceId));
+  if (!device) return res.status(404).json({ error: "Device not found" });
+
+  const { requestType, referenceNumber } = req.body || {};
+  if (!requestType) return res.status(400).json({ error: "requestType is required" });
+
+  const requests = db.addDeviceRequest(device.id, requestType, referenceNumber);
+  db.addAudit(
+    req.user.id,
+    "DEVICE_REQUEST_ADDED",
+    `${req.user.name} logged a ${requestType} request${referenceNumber ? ` (#${referenceNumber})` : ""} for ${tech.name}'s device`
+  );
+  res.status(201).json(requests);
+});
+
+router.patch("/technicians/:id/devices/:deviceId/requests/:requestId", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  const device = db.findDevice(tech.id, Number(req.params.deviceId));
+  if (!device) return res.status(404).json({ error: "Device not found" });
+
+  const completed = Boolean(req.body && req.body.completed);
+  const requests = db.setDeviceRequestCompleted(device.id, Number(req.params.requestId), completed);
+  db.addAudit(
+    req.user.id,
+    completed ? "DEVICE_REQUEST_COMPLETED" : "DEVICE_REQUEST_REOPENED",
+    `${req.user.name} marked a device request ${completed ? "complete" : "not complete"} for ${tech.name}`
+  );
+  res.json(requests);
 });
 
 router.get("/weeks/:weekMonday", (req, res) => {

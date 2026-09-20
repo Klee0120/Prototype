@@ -134,7 +134,11 @@ Demo logins:
     that technician, across all weeks, so you can see what's been worked on
   - Onboarding — a fixed 5-item checklist per technician (not yet an
     admin-editable template — see "Where this stands")
-  - Devices — a simple assigned-device list (not a request/approval workflow)
+  - Devices — Phone or Laptop, each with its identifier (phone number, or
+    an asset tag/serial for a laptop) and notes. Each device also has its
+    own small **IT Requests** log (e.g. a Calero line cancellation): a
+    request type + reference number that can be marked completed and
+    reopened, so a pending vendor request doesn't get lost track of
   - Forms on File / Documents — file attachments, same mechanism as WOM docs
 - **Add technician**: a form on the roster (ID, name, PIN, position,
   home location, contact info) creates a new technician who can log in
@@ -243,9 +247,13 @@ since only mock data has ever been in them).
   hardcoded in `server/data/db.js` (`ONBOARDING_TASKS`); there's no UI yet
   to add/remove/reorder tasks. Fine for a stable process, a real limitation
   if the checklist needs to change often.
-- **Devices is a list, not a workflow.** It records "this device is
-  assigned to this person" — no request/approval step, no due-back date,
-  no device inventory shared across technicians.
+- **Devices is a list plus a request log, not a full workflow.** It records
+  "this device is assigned to this person" and lets you log/track IT
+  vendor requests against it (e.g. a Calero cancellation, by type +
+  reference number, marked completed when resolved) — but there's still
+  no due-back date, no approval step, and no device inventory shared
+  across technicians (you can't see "who else has a Toyota laptop" across
+  the roster, only per-person).
 - **The OT calculation is a weekly aggregate, not day-by-day.** Hours over
   40/week are OT, computed from the week's totals. The description this was
   built from said OT applies "on the day the threshold is crossed," which

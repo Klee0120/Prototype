@@ -133,6 +133,15 @@ db.exec(`
     notes TEXT DEFAULT '',
     assigned_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS device_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id INTEGER NOT NULL,
+    request_type TEXT NOT NULL,
+    reference_number TEXT DEFAULT '',
+    requested_at TEXT NOT NULL,
+    completed_at TEXT
+  );
 `);
 
 // Additive columns for existing databases created before the roster
@@ -166,6 +175,14 @@ if (!hasColumn("weeks", "ukg_confirmed_at")) {
 // reads as "not final yet" rather than "admin forgot about me".
 if (!hasColumn("ukg_hours", "pending_punch")) {
   db.exec("ALTER TABLE ukg_hours ADD COLUMN pending_punch INTEGER NOT NULL DEFAULT 0");
+}
+
+// A device is either a phone (device_name holds the phone number) or a
+// laptop (device_name holds an asset tag/serial) -- existing rows predate
+// this distinction, so they default to "phone" since that's what the old
+// single free-text field was actually labeled.
+if (!hasColumn("tech_devices", "device_type")) {
+  db.exec("ALTER TABLE tech_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'phone'");
 }
 
 seedIfEmpty();
@@ -317,17 +334,31 @@ function setOnboardingTask(techId, taskKey, completed) {
 
 // ---- Devices ----
 
-function listDevices(techId) {
+const DEVICE_TYPES = ["phone", "laptop"];
+
+function listDeviceRequests(deviceId) {
   return db
     .prepare(
-      "SELECT id, device_name AS deviceName, notes, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
+      `SELECT id, request_type AS requestType, reference_number AS referenceNumber,
+              requested_at AS requestedAt, completed_at AS completedAt
+       FROM device_requests WHERE device_id = ? ORDER BY id DESC`
     )
-    .all(techId);
+    .all(deviceId);
 }
 
-function addDevice(techId, deviceName, notes) {
-  db.prepare("INSERT INTO tech_devices (tech_id, device_name, notes, assigned_at) VALUES (?, ?, ?, ?)").run(
+function listDevices(techId) {
+  const devices = db
+    .prepare(
+      "SELECT id, device_type AS deviceType, device_name AS deviceName, notes, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
+    )
+    .all(techId);
+  return devices.map((d) => ({ ...d, requests: listDeviceRequests(d.id) }));
+}
+
+function addDevice(techId, deviceType, deviceName, notes) {
+  db.prepare("INSERT INTO tech_devices (tech_id, device_type, device_name, notes, assigned_at) VALUES (?, ?, ?, ?, ?)").run(
     techId,
+    deviceType,
     deviceName,
     notes || "",
     new Date().toISOString()
@@ -336,8 +367,32 @@ function addDevice(techId, deviceName, notes) {
 }
 
 function removeDevice(techId, id) {
+  db.prepare("DELETE FROM device_requests WHERE device_id = ?").run(id);
   db.prepare("DELETE FROM tech_devices WHERE id = ? AND tech_id = ?").run(id, techId);
   return listDevices(techId);
+}
+
+function findDevice(techId, id) {
+  return db.prepare("SELECT id FROM tech_devices WHERE id = ? AND tech_id = ?").get(id, techId);
+}
+
+// A "Calero" (or similar telecom/IT vendor) request against a device --
+// e.g. a line cancellation -- tracked with a reference number so it can be
+// followed up on until marked complete.
+function addDeviceRequest(deviceId, requestType, referenceNumber) {
+  db.prepare(
+    "INSERT INTO device_requests (device_id, request_type, reference_number, requested_at) VALUES (?, ?, ?, ?)"
+  ).run(deviceId, requestType, referenceNumber || "", new Date().toISOString());
+  return listDeviceRequests(deviceId);
+}
+
+function setDeviceRequestCompleted(deviceId, requestId, completed) {
+  db.prepare("UPDATE device_requests SET completed_at = ? WHERE id = ? AND device_id = ?").run(
+    completed ? new Date().toISOString() : null,
+    requestId,
+    deviceId
+  );
+  return listDeviceRequests(deviceId);
 }
 
 // ---- Allocation history ----
@@ -655,9 +710,13 @@ module.exports = {
   ONBOARDING_TASKS,
   getOnboardingProgress,
   setOnboardingTask,
+  DEVICE_TYPES,
   listDevices,
   addDevice,
   removeDevice,
+  findDevice,
+  addDeviceRequest,
+  setDeviceRequestCompleted,
   getAllocationHistory,
   listLocations,
   findLocation,

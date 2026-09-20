@@ -341,6 +341,9 @@ export function renderTechniciansTab(content) {
     });
   }
 
+  const DEVICE_TYPE_LABELS = { phone: "Phone", laptop: "Laptop" };
+  const DEVICE_IDENTIFIER_PLACEHOLDER = { phone: "Phone number", laptop: "Asset tag / serial" };
+
   async function drawDevices(tabContent, tech) {
     const devices = await api.get(`/api/admin/technicians/${tech.id}/devices`);
     tabContent.innerHTML = `
@@ -349,27 +352,64 @@ export function renderTechniciansTab(content) {
         ${
           devices.length === 0
             ? `<p class="empty-note">No devices assigned.</p>`
-            : devices
-                .map(
-                  (d) => `
-              <div class="device-row">
-                <div>
-                  <div class="device-name">${escapeHtml(d.deviceName)}</div>
-                  <div class="device-meta">${escapeHtml(d.notes || "")} &middot; assigned ${new Date(d.assignedAt).toLocaleDateString()}</div>
-                </div>
-                <button class="btn btn-link danger-link remove-device" data-id="${d.id}" type="button">Remove</button>
-              </div>`
-                )
-                .join("")
+            : devices.map((d) => renderDeviceRow(d)).join("")
         }
       </div>
       <form class="add-device-form">
-        <input name="deviceName" placeholder="Device name" required />
+        <select name="deviceType">
+          <option value="phone">Phone</option>
+          <option value="laptop">Laptop</option>
+        </select>
+        <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" required />
         <input name="notes" placeholder="Notes (optional)" />
         <button type="submit" class="btn btn-secondary">Assign device</button>
       </form>
     `;
+
+    function renderDeviceRow(d) {
+      return `
+        <div class="device-row">
+          <div class="device-row-main">
+            <div>
+              <span class="device-type-badge">${escapeHtml(DEVICE_TYPE_LABELS[d.deviceType] || d.deviceType)}</span>
+              <span class="device-name">${escapeHtml(d.deviceName)}</span>
+              <div class="device-meta">${escapeHtml(d.notes || "")}${d.notes ? " &middot; " : ""}assigned ${new Date(d.assignedAt).toLocaleDateString()}</div>
+            </div>
+            <button class="btn btn-link danger-link remove-device" data-id="${d.id}" type="button">Remove</button>
+          </div>
+          <div class="device-requests">
+            <div class="device-requests-title">IT Requests (e.g. Calero)</div>
+            ${
+              d.requests.length === 0
+                ? `<p class="empty-note">No requests logged.</p>`
+                : d.requests
+                    .map(
+                      (r) => `
+                  <div class="device-request-row">
+                    <span class="device-request-type">${escapeHtml(r.requestType)}${r.referenceNumber ? ` &mdash; #${escapeHtml(r.referenceNumber)}` : ""}</span>
+                    <span class="badge ${r.completedAt ? "badge-approved" : "badge-draft"}">${r.completedAt ? "Completed" : "Pending"}</span>
+                    <button class="btn btn-link toggle-request-btn" type="button" data-device-id="${d.id}" data-request-id="${r.id}" data-completed="${Boolean(r.completedAt)}">
+                      ${r.completedAt ? "Reopen" : "Mark completed"}
+                    </button>
+                  </div>`
+                    )
+                    .join("")
+            }
+            <form class="add-request-form" data-device-id="${d.id}">
+              <input name="requestType" placeholder="Request type (e.g. Cancellation)" required />
+              <input name="referenceNumber" placeholder="Reference #" />
+              <button type="submit" class="btn btn-link">+ Add request</button>
+            </form>
+          </div>
+        </div>`;
+    }
+
     const errorEl = tabContent.querySelector(".device-error");
+
+    tabContent.querySelector('select[name="deviceType"]').addEventListener("change", (e) => {
+      tabContent.querySelector('input[name="deviceName"]').placeholder = DEVICE_IDENTIFIER_PLACEHOLDER[e.target.value];
+    });
+
     tabContent.querySelectorAll(".remove-device").forEach((btn) => {
       btn.addEventListener("click", async () => {
         try {
@@ -381,11 +421,44 @@ export function renderTechniciansTab(content) {
         }
       });
     });
+
+    tabContent.querySelectorAll(".toggle-request-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api.patch(
+            `/api/admin/technicians/${tech.id}/devices/${btn.dataset.deviceId}/requests/${btn.dataset.requestId}`,
+            { completed: btn.dataset.completed !== "true" }
+          );
+          await drawDevices(tabContent, tech);
+        } catch (err) {
+          errorEl.textContent = `Could not update: ${err.message}`;
+          errorEl.hidden = false;
+        }
+      });
+    });
+
+    tabContent.querySelectorAll(".add-request-form").forEach((form) => {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+          await api.post(`/api/admin/technicians/${tech.id}/devices/${form.dataset.deviceId}/requests`, {
+            requestType: form.requestType.value.trim(),
+            referenceNumber: form.referenceNumber.value.trim(),
+          });
+          await drawDevices(tabContent, tech);
+        } catch (err) {
+          errorEl.textContent = `Not saved: ${err.message}`;
+          errorEl.hidden = false;
+        }
+      });
+    });
+
     tabContent.querySelector(".add-device-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.target;
       try {
         await api.post(`/api/admin/technicians/${tech.id}/devices`, {
+          deviceType: form.deviceType.value,
           deviceName: form.deviceName.value.trim(),
           notes: form.notes.value.trim(),
         });
