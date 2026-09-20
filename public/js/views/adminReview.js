@@ -23,6 +23,7 @@ export async function renderAdminReview(container) {
   let allocTechId = null;
   const expanded = new Map(); // techId -> detail payload
   const womsExpanded = new Set();
+  const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
 
   draw();
 
@@ -193,10 +194,12 @@ export async function renderAdminReview(container) {
 
     content.querySelector("#prev-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, -1);
+      justSavedUkg.clear();
       draw();
     });
     content.querySelector("#next-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, 1);
+      justSavedUkg.clear();
       draw();
     });
 
@@ -208,11 +211,13 @@ export async function renderAdminReview(container) {
 
   async function renderReviewRow(row, content, locationByCode) {
     const el = document.createElement("div");
-    el.className = "review-row";
     const balanced = Math.abs(row.allocatedHours - row.ukgHours) < 0.01;
+    const ready = balanced && (row.status === "submitted" || row.status === "approved");
+    el.className = `review-row ${ready ? "review-row-ready" : "review-row-pending"}`;
 
     el.innerHTML = `
       <div class="review-row-summary">
+        <span class="review-row-dot ${ready ? "ready" : "pending"}" title="${ready ? "Done — submitted and matches UKG" : "Not done yet"}"></span>
         <div class="review-row-name">${escapeHtml(row.technician.name)}</div>
         <div class="review-row-hours ${balanced ? "ok" : "warn"}">${row.allocatedHours}h / ${row.ukgHours}h UKG</div>
         <span class="badge badge-${row.status}">${STATUS_LABELS[row.status]}</span>
@@ -235,7 +240,7 @@ export async function renderAdminReview(container) {
       const detail = expanded.get(row.technician.id);
       const detailEl = el.querySelector(`#detail-${row.technician.id}`);
       detailEl.innerHTML =
-        renderUkgForm(detail) +
+        renderUkgForm(detail, justSavedUkg.has(row.technician.id)) +
         renderDetailTable(detail, locationByCode) +
         renderReviewActions(row) +
         `<div class="review-attachments"></div>`;
@@ -257,7 +262,7 @@ export async function renderAdminReview(container) {
     return el;
   }
 
-  function renderUkgForm(detail) {
+  function renderUkgForm(detail, justSaved) {
     const inputs = DAY_NAMES.map(
       (day) => `
         <label class="ukg-day-field">
@@ -274,7 +279,7 @@ export async function renderAdminReview(container) {
           <button type="button" class="btn btn-link ukg-fill-week">Fill week</button>
         </div>
         <button type="submit" class="btn btn-secondary">Save UKG hours</button>
-        <span class="save-message ukg-message"></span>
+        <span class="save-message ukg-message ${justSaved ? "ukg-saved-confirmation" : ""}">${justSaved ? "✓ Saved" : ""}</span>
       </form>
     `;
   }
@@ -282,6 +287,10 @@ export async function renderAdminReview(container) {
   function wireUkgForm(detailEl, row, content) {
     const form = detailEl.querySelector(".ukg-hours-form");
     const msg = form.querySelector(".ukg-message");
+
+    form.querySelectorAll("input[data-day]").forEach((input) => {
+      input.addEventListener("input", () => justSavedUkg.delete(row.technician.id));
+    });
 
     form.querySelector(".ukg-fill-week").addEventListener("click", () => {
       const raw = form.querySelector(".ukg-paste-input").value.trim();
@@ -294,7 +303,9 @@ export async function renderAdminReview(container) {
       inputs.forEach((input, i) => {
         input.value = values[i];
       });
+      justSavedUkg.delete(row.technician.id);
       msg.textContent = "";
+      msg.className = "save-message ukg-message";
     });
 
     form.addEventListener("submit", async (e) => {
@@ -306,9 +317,12 @@ export async function renderAdminReview(container) {
       try {
         await api.put(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-hours`, { hours });
         expanded.set(row.technician.id, await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`));
+        justSavedUkg.add(row.technician.id);
         await drawReview(content);
       } catch (err) {
+        justSavedUkg.delete(row.technician.id);
         msg.textContent = err.message;
+        msg.className = "save-message ukg-message";
       }
     });
   }
