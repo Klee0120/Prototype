@@ -191,7 +191,13 @@ since only mock data has ever been in them).
   `localhost:3000` on that machine only.
 - **Deployed on a $6/mo DigitalOcean droplet**, running as a systemd service
   (auto-restarts on crash or reboot) behind a basic firewall (only SSH + port
-  80 open). See `scripts/deploy.sh`.
+  80 open). See `scripts/deploy.sh` for first-time setup, and
+  `scripts/redeploy.sh` to pull + restart afterward — both are single-line
+  `curl | bash` commands so there's no multi-command line for a
+  copy/paste-mangling terminal to break:
+  ```
+  curl -fsSL https://raw.githubusercontent.com/Klee0120/Prototype/claude/labor-allocation-prototype-b0y12v/scripts/redeploy.sh | bash
+  ```
 - **Auth is real but the transport isn't encrypted yet.** Login issues a
   genuine random session token (`server/data/db.js`'s `sessions` table); PINs
   are hashed with scrypt, never stored or compared in plain text
