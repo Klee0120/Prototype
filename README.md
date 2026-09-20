@@ -80,7 +80,10 @@ Demo logins:
 - Submission blocked until **every day's** allocated hours exactly equal
   that day's UKG hours (not just the weekly total)
 - A technician can mark a WOM project complete from their own allocation
-  screen; an admin can open/close/reopen any WOM
+  screen — it closes the WOM (for everyone) only once they successfully
+  submit that week, not the moment they click it, so it can't lock them
+  out of submitting their own in-progress draft; an admin can
+  open/close/reopen any WOM directly at any time
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day
 - Admin review screen: approve, reject (with note, returns to technician), or

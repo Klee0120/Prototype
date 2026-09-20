@@ -236,7 +236,13 @@ export async function renderTechWeek(container, techIdOverride) {
         <input class="split-hours-input" type="number" min="0" step="0.25" value="${row.hours}" />
         <button class="btn btn-icon remove-split" type="button" aria-label="Remove split">&times;</button>
       </div>
-      ${row.type === "wom" && row.womCode ? `<button class="btn btn-link mark-complete-btn" type="button">Mark this WOM project complete</button>` : ""}
+      ${
+        row.type === "wom" && row.womCode
+          ? row._markComplete
+            ? `<span class="mark-complete-pending">Will mark ${escapeHtml(row.womCode)} complete after you submit.</span> <button class="btn btn-link undo-complete-btn" type="button">Undo</button>`
+            : `<button class="btn btn-link mark-complete-btn" type="button">Mark this WOM project complete</button>`
+          : ""
+      }
     `;
 
     rowEl.querySelector(".split-type-select").addEventListener("change", (e) => {
@@ -274,18 +280,17 @@ export async function renderTechWeek(container, techIdOverride) {
     });
     const markComplete = rowEl.querySelector(".mark-complete-btn");
     if (markComplete) {
-      markComplete.addEventListener("click", async () => {
-        if (!window.confirm(`Mark ${row.womCode} complete? This closes it for everyone.`)) return;
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(row.womCode)}/complete`);
-          const refreshed = await api.get("/api/woms");
-          woms.length = 0;
-          woms.push(...refreshed);
-          Object.assign(womByCode, Object.fromEntries(refreshed.map((w) => [w.code, w])));
-          draw();
-        } catch (err) {
-          window.alert(`Could not mark complete: ${err.message}`);
-        }
+      markComplete.addEventListener("click", () => {
+        if (!window.confirm(`Mark ${row.womCode} complete once this week is submitted? It will close for everyone at that point.`)) return;
+        allocations[idx]._markComplete = true;
+        draw();
+      });
+    }
+    const undoComplete = rowEl.querySelector(".undo-complete-btn");
+    if (undoComplete) {
+      undoComplete.addEventListener("click", () => {
+        allocations[idx]._markComplete = false;
+        draw();
       });
     }
 
@@ -385,6 +390,16 @@ export async function renderTechWeek(container, techIdOverride) {
     try {
       await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/allocations`, { allocations });
       await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/submit`);
+
+      const codesToComplete = [...new Set(allocations.filter((a) => a.type === "wom" && a._markComplete).map((a) => a.womCode))];
+      for (const code of codesToComplete) {
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(code)}/complete`);
+        } catch (err) {
+          window.alert(`Week was submitted, but could not mark ${code} complete: ${err.message}`);
+        }
+      }
+
       await renderTechWeek(container, techIdOverride);
     } catch (err) {
       saveMessage = err.message;

@@ -312,6 +312,12 @@ button, input, select {
   padding: 4px 0;
 }
 
+.mark-complete-pending {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
 .row-wom {
   flex: 1;
   font-size: 14px;
