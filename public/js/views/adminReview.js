@@ -304,7 +304,13 @@ export async function renderAdminReview(container) {
         <button
           class="btn ${stage3 ? "btn-secondary" : "btn-primary"} confirm-ukg-btn"
           type="button"
-          ${!stage3 && !(stage1 && stage2) ? `disabled title="Enter UKG hours and match the allocation first"` : ""}
+          ${
+            !stage3 && !(stage1 && stage2)
+              ? `disabled title="Enter UKG hours and match the allocation first"`
+              : stage3
+              ? `title="Only un-checks your own \\"entered in UKG\\" confirmation -- doesn't change the week's submitted/approved status"`
+              : ""
+          }
         >${stage3 ? "Undo" : "Mark entered in UKG"}</button>
         <button class="btn btn-link expand-btn" type="button">${expanded.has(row.technician.id) ? "Hide" : "Details"}</button>
       </div>

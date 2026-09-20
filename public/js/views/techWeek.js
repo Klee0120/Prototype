@@ -114,7 +114,13 @@ export async function renderTechWeek(container, techIdOverride) {
       <div class="status-banner status-${week.status}">
         <strong>${STATUS_LABELS[week.status]}</strong>
         ${week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : ""}
-        ${week.status === "approved" ? `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>` : ""}
+        ${
+          week.status === "approved"
+            ? state.user.role === "admin"
+              ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
+              : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
+            : ""
+        }
         ${locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : ""}
         ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
       </div>
@@ -155,6 +161,20 @@ export async function renderTechWeek(container, techIdOverride) {
       state.weekMonday = shiftWeek(state.weekMonday, 1);
       renderTechWeek(container, techIdOverride);
     });
+
+    const unlockBtn = main.querySelector(".unlock-week-btn");
+    if (unlockBtn) {
+      unlockBtn.addEventListener("click", async () => {
+        unlockBtn.disabled = true;
+        try {
+          await api.post(`/api/admin/weeks/${techId}/${state.weekMonday}/unlock`);
+          await renderTechWeek(container, techIdOverride);
+        } catch (err) {
+          unlockBtn.disabled = false;
+          window.alert(`Could not unlock: ${err.message}`);
+        }
+      });
+    }
 
     if (!locked) {
       main.querySelector("#save-draft").addEventListener("click", () => saveDraft());

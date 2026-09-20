@@ -142,7 +142,12 @@ Demo logins:
 - **Admin can allocate on a technician's behalf** (new "Tech Allocation"
   tab): the exact same day-by-day splitting screen a technician sees, with
   an employee switcher (dropdown + Prev/Next) to move through the roster —
-  for when someone's on vacation or otherwise can't do it themselves
+  for when someone's on vacation or otherwise can't do it themselves. If
+  the week they land on is already approved, an **"Unlock for correction"**
+  link sits right there in the status banner — no need to switch over to
+  Weekly Review to unlock it first (that's a separate action from the
+  Weekly Review checklist's "Undo," which only un-checks your own "entered
+  in UKG" confirmation and never touches submitted/approved status)
 - **Weekly Reg/OT receipt**: live-updating breakdown (Week Total, Regular,
   Overtime, OT on WOM, Time Off, plus a per-bucket Reg/OT/Total table) shown
   under the day cards. Hours beyond 40/week are OT; WOM hours are charged to
