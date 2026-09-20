@@ -1,0 +1,18 @@
+{
+  "name": "labor-allocation-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Functional prototype for internal labor allocation (technician weekly WOM hour allocation, admin review, week locking, audit trail).",
+  "type": "commonjs",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
