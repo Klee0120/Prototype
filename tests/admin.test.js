@@ -86,6 +86,36 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     assert.equal(t1002.ukgHours, 37.5);
   });
 
+  await t.test("admin can mark a week entered in UKG, independent of submit/approve status", async () => {
+    const before = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001Before = before.body.find((r) => r.technician.id === "T1001");
+    assert.equal(t1001Before.ukgConfirmedAt, null);
+
+    const nonAdmin = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/ukg-confirmed`, {
+      userId: "T1001",
+      body: { confirmed: true },
+    });
+    assert.equal(nonAdmin.status, 403);
+
+    const confirm = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/ukg-confirmed`, {
+      userId: "ADMIN",
+      body: { confirmed: true },
+    });
+    assert.equal(confirm.status, 200);
+    assert.ok(confirm.body.ukgConfirmedAt);
+
+    const after = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001After = after.body.find((r) => r.technician.id === "T1001");
+    assert.ok(t1001After.ukgConfirmedAt);
+
+    const undo = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/ukg-confirmed`, {
+      userId: "ADMIN",
+      body: { confirmed: false },
+    });
+    assert.equal(undo.status, 200);
+    assert.equal(undo.body.ukgConfirmedAt, null);
+  });
+
   await t.test("overview flags overtime that isn't charged to a WOM", async () => {
     // T1003's seeded UKG hours for this week total 44h (Mon-Fri 8 + Sat 4) -- 4h of OT
     const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {

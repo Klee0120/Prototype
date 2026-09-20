@@ -1,7 +1,7 @@
 const express = require("express");
 const db = require("../data/db");
 const { requireAuth } = require("../middleware/auth");
-const { DAY_NAMES, datesForWeek } = require("../utils/week");
+const { DAY_NAMES, datesForWeek, classifyWeekForTech, getOpenWeekMonday, currentWeekMonday } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 
 const router = express.Router();
@@ -16,6 +16,24 @@ function isLocked(status) {
   return status === "submitted" || status === "approved";
 }
 
+// What a technician (or admin) is allowed to do with a given week right now:
+// - "full": normal editing, all split types, can submit
+// - "timeoff-only": the week's edit window hasn't opened yet -- only time
+//   off can be pre-entered, no submit (nothing to balance against yet)
+// - "locked": already submitted/approved, or the edit window has closed
+// Admin is never restricted by the window -- only by the submitted/approved lock,
+// same as before this feature existed. A rejected week is always "full" for the
+// technician regardless of the window, so a late rejection never strands them.
+function getEditMode(req, week, weekMonday) {
+  if (req.user.role === "admin") return isLocked(week.status) ? "locked" : "full";
+  if (isLocked(week.status)) return "locked";
+  if (week.status === "rejected") return "full";
+  const cls = classifyWeekForTech(weekMonday);
+  if (cls === "open") return "full";
+  if (cls === "past") return "locked";
+  return "timeoff-only";
+}
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -25,6 +43,17 @@ function sumByDay(allocations) {
   for (const a of allocations) totals[a.day] = round2((totals[a.day] || 0) + Number(a.hours || 0));
   return totals;
 }
+
+// Which week a technician should land on by default: the currently-open
+// week if there is one, otherwise this calendar week (which will render in
+// "timeoff-only" mode until its own window opens -- see getEditMode).
+router.get("/:id/open-week", requireAuth, (req, res) => {
+  const { id } = req.params;
+  if (!canView(req, id)) return res.status(403).json({ error: "Not authorized" });
+
+  const openWeekMonday = getOpenWeekMonday();
+  res.json({ weekMonday: openWeekMonday || currentWeekMonday(), isOpen: openWeekMonday !== null });
+});
 
 router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
   const { id, weekMonday } = req.params;
@@ -48,6 +77,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
     allocatedTotal: round2(Object.values(allocatedByDay).reduce((s, h) => s + h, 0)),
     status: week.status,
     locked: isLocked(week.status),
+    editMode: getEditMode(req, week, weekMonday),
     allocations: week.allocations.map(presentAllocation),
     submittedAt: week.submittedAt,
     reviewedAt: week.reviewedAt,
@@ -63,12 +93,18 @@ router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {
   }
 
   const week = db.getWeek(id, weekMonday);
-  if (isLocked(week.status)) {
-    return res.status(409).json({ error: `Week is ${week.status} and cannot be edited` });
+  const editMode = getEditMode(req, week, weekMonday);
+  if (editMode === "locked") {
+    const reason = isLocked(week.status) ? `Week is ${week.status} and cannot be edited` : "This week is closed for edits";
+    return res.status(409).json({ error: reason });
   }
 
   const allocations = Array.isArray(req.body && req.body.allocations) ? req.body.allocations : null;
   if (!allocations) return res.status(400).json({ error: "allocations array is required" });
+
+  if (editMode === "timeoff-only" && allocations.some((a) => a.type !== "timeoff")) {
+    return res.status(400).json({ error: "This week isn't open yet -- only time off can be entered in advance" });
+  }
 
   const normalized = [];
   for (const a of allocations) {
@@ -122,6 +158,11 @@ router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
   const week = db.getWeek(id, weekMonday);
   if (isLocked(week.status)) {
     return res.status(409).json({ error: `Week is already ${week.status}` });
+  }
+  const editMode = getEditMode(req, week, weekMonday);
+  if (editMode !== "full") {
+    const reason = editMode === "timeoff-only" ? "This week isn't open for submission yet" : "This week is closed for submission";
+    return res.status(409).json({ error: reason });
   }
 
   const ukgByDay = db.getUkgHoursByDay(id, weekMonday);

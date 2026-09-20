@@ -152,6 +152,15 @@ if (!hasColumn("technicians", "employment_status")) {
   db.exec("UPDATE technicians SET employment_status = CASE WHEN active = 1 THEN 'active' ELSE 'inactive' END");
 }
 
+// Admin's own "I've entered this into the real UKG system" checklist step --
+// deliberately separate from status (draft/submitted/approved/rejected),
+// since in practice the admin often drives the whole allocation on a
+// technician's behalf and tracks this as their own third confirmation step.
+if (!hasColumn("weeks", "ukg_confirmed_at")) {
+  db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_at TEXT");
+  db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_by TEXT");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -410,7 +419,9 @@ function setUkgHours(techId, weekMonday, hoursByDay) {
 
 function getWeek(techId, weekMonday) {
   const row = db
-    .prepare("SELECT status, submitted_at, reviewed_at, reviewed_by, note FROM weeks WHERE tech_id = ? AND week_monday = ?")
+    .prepare(
+      "SELECT status, submitted_at, reviewed_at, reviewed_by, note, ukg_confirmed_at, ukg_confirmed_by FROM weeks WHERE tech_id = ? AND week_monday = ?"
+    )
     .get(techId, weekMonday);
   const allocations = db
     .prepare(
@@ -420,7 +431,16 @@ function getWeek(techId, weekMonday) {
     .all(techId, weekMonday);
 
   if (!row) {
-    return { status: "draft", allocations, submittedAt: null, reviewedAt: null, reviewedBy: null, note: "" };
+    return {
+      status: "draft",
+      allocations,
+      submittedAt: null,
+      reviewedAt: null,
+      reviewedBy: null,
+      note: "",
+      ukgConfirmedAt: null,
+      ukgConfirmedBy: null,
+    };
   }
   return {
     status: row.status,
@@ -429,7 +449,27 @@ function getWeek(techId, weekMonday) {
     reviewedAt: row.reviewed_at,
     reviewedBy: row.reviewed_by,
     note: row.note || "",
+    ukgConfirmedAt: row.ukg_confirmed_at,
+    ukgConfirmedBy: row.ukg_confirmed_by,
   };
+}
+
+function setUkgConfirmed(techId, weekMonday, adminId, confirmed) {
+  ensureWeekRow(techId, weekMonday);
+  if (confirmed) {
+    db.prepare("UPDATE weeks SET ukg_confirmed_at = ?, ukg_confirmed_by = ? WHERE tech_id = ? AND week_monday = ?").run(
+      new Date().toISOString(),
+      adminId,
+      techId,
+      weekMonday
+    );
+  } else {
+    db.prepare("UPDATE weeks SET ukg_confirmed_at = NULL, ukg_confirmed_by = NULL WHERE tech_id = ? AND week_monday = ?").run(
+      techId,
+      weekMonday
+    );
+  }
+  return getWeek(techId, weekMonday);
 }
 
 function saveAllocations(techId, weekMonday, allocations) {
@@ -608,6 +648,7 @@ module.exports = {
   setUkgHours,
   getWeek,
   saveAllocations,
+  setUkgConfirmed,
   submitWeek,
   approveWeek,
   rejectWeek,

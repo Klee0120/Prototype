@@ -56,8 +56,13 @@ export async function render() {
   }
 
   if (!state.weekMonday) {
-    const meta = await api.get("/api/meta/current-week");
-    state.weekMonday = meta.weekMonday;
+    if (state.user.role === "admin") {
+      const meta = await api.get("/api/meta/current-week");
+      state.weekMonday = meta.weekMonday;
+    } else {
+      const meta = await api.get(`/api/technicians/${state.user.id}/open-week`);
+      state.weekMonday = meta.weekMonday;
+    }
   }
 
   const shell = document.createElement("div");

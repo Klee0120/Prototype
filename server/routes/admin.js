@@ -166,9 +166,32 @@ router.get("/weeks/:weekMonday", (req, res) => {
       reviewedAt: week.reviewedAt,
       reviewedBy: week.reviewedBy,
       note: week.note,
+      ukgConfirmedAt: week.ukgConfirmedAt,
+      ukgConfirmedBy: week.ukgConfirmedBy,
     };
   });
   res.json(rows);
+});
+
+// Admin's own three-step checklist for a technician's week: UKG hours
+// entered, allocation split entered, and finally "I've put this into the
+// real UKG system too" -- this last step is a manual flag independent of
+// the technician's own submit/approve status (admin often drives all three
+// steps directly, based on a conversation with the technician, without the
+// technician ever touching the app themselves).
+router.patch("/weeks/:techId/:weekMonday/ukg-confirmed", (req, res) => {
+  const { techId, weekMonday } = req.params;
+  const tech = db.findTechnician(techId);
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
+
+  const confirmed = Boolean(req.body && req.body.confirmed);
+  const week = db.setUkgConfirmed(techId, weekMonday, req.user.id, confirmed);
+  db.addAudit(
+    req.user.id,
+    confirmed ? "UKG_ALLOCATION_CONFIRMED" : "UKG_ALLOCATION_UNCONFIRMED",
+    `${req.user.name} marked ${tech.name}'s week ${weekMonday} as ${confirmed ? "" : "not "}entered in UKG`
+  );
+  res.json({ ok: true, ukgConfirmedAt: week.ukgConfirmedAt, ukgConfirmedBy: week.ukgConfirmedBy });
 });
 
 router.put("/weeks/:techId/:weekMonday/ukg-hours", (req, res) => {

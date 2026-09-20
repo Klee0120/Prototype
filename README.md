@@ -46,12 +46,16 @@ The suite boots the Express app on an ephemeral port with a throwaway
 SQLite database and uploads folder per test file (`tests/helpers.js`), so
 it never touches your real `server/data/store.sqlite`. It covers login,
 allocation validation (hours mismatch, closed/unknown WOM rejection,
-per-tech authorization, admin-on-behalf-of), week locking, admin
-approve/reject/unlock, WOM status management, technician creation and
-employment status, onboarding/devices/allocation history, file
-upload/download/delete authorization, and audit log writes/read-access.
-The Reg/OT receipt calculation is client-side only and isn't covered by
-this suite — verified manually (see "Where this stands").
+per-tech authorization, admin-on-behalf-of), week locking, the Thu-Mon
+technician edit window (open/past/future/gap, with a test-only clock
+override so this doesn't depend on which day the suite happens to run),
+admin approve/reject/unlock, the UKG-confirmed checklist, WOM status
+management, technician creation and employment status,
+onboarding/devices/allocation history, file upload/download/delete
+authorization, and audit log writes/read-access. The Reg/OT receipt
+calculation exists client-side (technician's own view) and server-side
+(admin Overview); the server copy has OT-flagging test coverage, the
+client copy is verified manually (see "Where this stands").
 
 Demo logins:
 
@@ -121,6 +125,25 @@ Demo logins:
   OT before E&F hours; time off is always straight time and excluded from
   the 40-hour threshold entirely (see "Where this stands" for a documented
   simplification in this calculation)
+- **Technician edit window (Thu 12am – Mon 12pm Eastern)**: a technician can
+  only fully allocate the one week whose window is currently open. Outside
+  that window: past weeks are read-only (locked, same as an approved week,
+  regardless of status), and future weeks are open for **time off only**
+  (vacation/sick/bereavement/holiday) so someone can pre-book known time off
+  before their actual hours are known — no WOM/E&F splitting, no submit,
+  since there's nothing to balance against yet. A rejected week is always
+  fully editable for the technician regardless of the window, so a late
+  rejection never strands them. **Admin is never restricted by this window**
+  — the existing allocate-on-behalf/unlock tools work exactly as before, any
+  time. See "Where this stands" for the exact rule and how to change it.
+- **Weekly Review's admin checklist**: three steps per technician per week —
+  UKG hours entered, allocation matches UKG, and a third, purely
+  admin-controlled confirmation ("entered in UKG") for once you've put it
+  into the real UKG system. That third step is independent of the
+  technician's own submit/approve status — since in practice you often
+  drive all three steps yourself based on a conversation with the
+  technician. Marking it moves that technician into a separate "Completed"
+  list (undo-able) so Weekly Review always shows who still needs attention.
 - Week locking: a submitted/approved week can't be edited by the technician
   until an admin rejects or unlocks it
 - Audit trail of logins, allocation saves, submissions, approvals,
@@ -228,6 +251,25 @@ since only mock data has ever been in them).
   touched it"), the natural next step is persisting a locked snapshot of
   the receipt/allocations at approval time, rather than only ever showing
   the live numbers.
+- **The technician edit window is hardcoded to Eastern Time.** Thursday
+  12am through Monday 12pm, in `America/New_York`
+  (`server/utils/week.js`'s `BUSINESS_TIMEZONE`) — picked because 3 of the
+  4 seeded locations are Eastern; Kansas City is Central, so its
+  technicians see the window open/close an hour later on their own clock.
+  If that's not acceptable, either change the constant (one timezone for
+  everyone) or the window needs to become per-location, which isn't built.
+- **The "gap" between windows is deliberate, not a bug.** Monday noon
+  through Wednesday night, no week is open for full allocation — the
+  just-finished week has already closed for processing, and the coming
+  week hasn't happened yet. A technician can still pre-book time off on
+  the coming week during that gap; there's just nothing to submit until
+  Thursday.
+- **The three-step admin checklist ("entered in UKG") is a flag, not a
+  fact-check.** Nothing verifies that the admin actually entered it into
+  the real UKG system — it's a manual confirmation (`weeks.ukg_confirmed_at`
+  in the database), the same way a paper checklist trusts whoever checks
+  the box. If that ever needs to be tied to something verifiable (e.g. a
+  UKG export file), that's a bigger integration, not a UI change.
 
 ## Folder structure
 
@@ -251,7 +293,8 @@ server/
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments
   utils/
-    week.js                Mon–Sun week date helpers
+    week.js                Mon–Sun week date helpers, business-timezone edit window
+                              (classifyWeekForTech / getOpenWeekMonday)
     password.js             scrypt PIN hashing (hashPin/verifyPin)
     allocation.js            presentAllocation: translates a stored timeoff row's shape for API responses
     receipt.js               Server-side copy of the Reg/OT computeReceipt calculation (admin Overview)
@@ -261,7 +304,8 @@ tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking
-  admin.test.js             Approve / reject / unlock, Overview report OT-flagging
+  admin.test.js             Approve / reject / unlock, Overview report OT-flagging, UKG-confirmed checklist
+  weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization
   roster.test.js              Basic info, onboarding, devices, allocation history
   files.test.js                 Upload/list/download/delete authorization

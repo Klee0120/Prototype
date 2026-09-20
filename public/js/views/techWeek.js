@@ -65,7 +65,9 @@ export async function renderTechWeek(container, techIdOverride) {
   }
 
   function draw() {
-    const locked = week.locked;
+    const mode = week.editMode || (week.locked ? "locked" : "full");
+    const locked = mode === "locked";
+    const timeOffOnly = mode === "timeoff-only";
     const weekAllocated = round2(allocations.reduce((s, a) => s + Number(a.hours || 0), 0));
 
     main.innerHTML = `
@@ -90,6 +92,8 @@ export async function renderTechWeek(container, techIdOverride) {
         <strong>${STATUS_LABELS[week.status]}</strong>
         ${week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : ""}
         ${week.status === "approved" ? `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>` : ""}
+        ${locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : ""}
+        ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
       </div>
 
       <div class="day-grid" id="day-grid"></div>
@@ -99,15 +103,15 @@ export async function renderTechWeek(container, techIdOverride) {
       ${locked ? "" : `
         <div class="action-row">
           <button class="btn btn-secondary" id="save-draft">Save draft</button>
-          <button class="btn btn-primary" id="submit-week" ${canSubmitWeek() ? "" : "disabled"}>Submit for review</button>
+          ${timeOffOnly ? "" : `<button class="btn btn-primary" id="submit-week" ${canSubmitWeek() ? "" : "disabled"}>Submit for review</button>`}
           <span class="save-message">${escapeHtml(saveMessage)}</span>
         </div>
       `}
     `;
 
     const grid = main.querySelector("#day-grid");
-    DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, locked)));
-    main.querySelector("#receipt-host").appendChild(renderReceipt());
+    DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, mode)));
+    if (!timeOffOnly) main.querySelector("#receipt-host").appendChild(renderReceipt());
 
     main.querySelector("#prev-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, -1);
@@ -120,11 +124,15 @@ export async function renderTechWeek(container, techIdOverride) {
 
     if (!locked) {
       main.querySelector("#save-draft").addEventListener("click", () => saveDraft());
-      main.querySelector("#submit-week").addEventListener("click", submit);
+      const submitBtn = main.querySelector("#submit-week");
+      if (submitBtn) submitBtn.addEventListener("click", submit);
     }
   }
 
-  function renderDayCard(day, locked) {
+  function renderDayCard(day, mode) {
+    const locked = mode === "locked";
+    const full = mode === "full";
+    const timeOffOnly = mode === "timeoff-only";
     const card = document.createElement("div");
     card.className = "day-card";
     const ukgActual = week.ukgHoursByDay[day] || 0;
@@ -139,35 +147,37 @@ export async function renderTechWeek(container, techIdOverride) {
         <span class="day-name">${day}</span>
         <span class="day-ukg-actual">UKG ACTUAL: <strong>${ukgActual}h</strong></span>
       </div>
-      <div class="day-rows"></div>
-      ${locked ? "" : `
+      ${timeOffOnly ? "" : `<div class="day-rows"></div>`}
+      ${full ? `
         <div class="day-actions">
           <button class="btn btn-link add-split" type="button">+ Add split</button>
           <button class="btn btn-link default-home" type="button" ${homeLocationCode ? "" : "disabled"}>
             Default to home — ${homeLocationCode ? remaining : "0.00"} hrs
           </button>
         </div>
+      `: ""}
+      ${timeOffOnly ? "" : `
+        <div class="day-balance">
+          <span class="balance-pill ${Math.abs(delta) < 0.01 ? "ok" : "warn"}">
+            ${Math.abs(delta) < 0.01 ? "● Balanced" : `● Off by ${Math.abs(delta)}`}
+          </span>
+        </div>
       `}
-      <div class="day-balance">
-        <span class="balance-pill ${Math.abs(delta) < 0.01 ? "ok" : "warn"}">
-          ${Math.abs(delta) < 0.01 ? "● Balanced" : `● Off by ${Math.abs(delta)}`}
-        </span>
-      </div>
       ${locked ? "" : `<div class="time-off-row"></div>`}
     `;
 
-    const rowsEl = card.querySelector(".day-rows");
-    if (splits.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "day-row-empty";
-      empty.textContent = locked ? "No hours logged." : "Not yet allocated.";
-      rowsEl.appendChild(empty);
-    }
-    splits.forEach((row) => rowsEl.appendChild(renderSplitRow(row, locked)));
+    if (!timeOffOnly) {
+      const rowsEl = card.querySelector(".day-rows");
+      if (splits.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "day-row-empty";
+        empty.textContent = locked ? "No hours logged." : "Not yet allocated.";
+        rowsEl.appendChild(empty);
+      }
+      splits.forEach((row) => rowsEl.appendChild(renderSplitRow(row, locked)));
 
-    if (timeOff) {
-      const label = TIME_OFF_OPTIONS.find((o) => o.value === timeOff.timeOffType)?.label || timeOff.timeOffType;
-      if (locked) {
+      if (timeOff && locked) {
+        const label = TIME_OFF_OPTIONS.find((o) => o.value === timeOff.timeOffType)?.label || timeOff.timeOffType;
         const row = document.createElement("div");
         row.className = "day-row";
         row.innerHTML = `<span class="row-wom">Time off — ${escapeHtml(label)}</span><span class="row-hours">${timeOff.hours}h</span>`;
@@ -175,7 +185,7 @@ export async function renderTechWeek(container, techIdOverride) {
       }
     }
 
-    if (!locked) {
+    if (full) {
       card.querySelector(".add-split").addEventListener("click", () => {
         const locationCode = homeLocationCode || (locations[0] && locations[0].code) || "";
         allocations.push({ day, type: "ef", locationCode, womCode: null, hours: 0 });
@@ -190,7 +200,9 @@ export async function renderTechWeek(container, techIdOverride) {
         else allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: remaining });
         draw();
       });
+    }
 
+    if (!locked) {
       const timeOffHost = card.querySelector(".time-off-row");
       timeOffHost.appendChild(renderTimeOffRow(day, timeOff));
     }

@@ -183,13 +183,24 @@ export async function renderAdminReview(container) {
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
 
+    const needsAttention = rows.filter((r) => !r.ukgConfirmedAt);
+    const completed = rows.filter((r) => r.ukgConfirmedAt);
+
     content.innerHTML = `
       <div class="week-nav">
         <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
         <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
         <button class="btn btn-ghost" id="next-week">Next &rarr;</button>
       </div>
-      <div class="review-list" id="review-list"></div>
+      <p class="review-checklist-hint">
+        Three steps per technician: <strong>1. UKG hours entered</strong>, <strong>2. Time allocated</strong>
+        (matches UKG), <strong>3. Entered in UKG</strong> -- your own confirmation once you've put it into the
+        real UKG system. Marking step 3 moves them to Completed below.
+      </p>
+      <div class="review-section-title">Needs Attention (${needsAttention.length})</div>
+      <div class="review-list" id="review-list-open"></div>
+      <div class="review-section-title">Completed (${completed.length})</div>
+      <div class="review-list" id="review-list-done"></div>
     `;
 
     content.querySelector("#prev-week").addEventListener("click", () => {
@@ -203,28 +214,58 @@ export async function renderAdminReview(container) {
       draw();
     });
 
-    const list = content.querySelector("#review-list");
-    for (const row of rows) {
-      list.appendChild(await renderReviewRow(row, content, locationByCode));
+    const openList = content.querySelector("#review-list-open");
+    if (needsAttention.length === 0) openList.innerHTML = `<p class="empty-note">Nothing needs attention this week.</p>`;
+    for (const row of needsAttention) {
+      openList.appendChild(await renderReviewRow(row, content, locationByCode));
+    }
+
+    const doneList = content.querySelector("#review-list-done");
+    if (completed.length === 0) doneList.innerHTML = `<p class="empty-note">Nobody confirmed yet.</p>`;
+    for (const row of completed) {
+      doneList.appendChild(await renderReviewRow(row, content, locationByCode));
     }
   }
 
   async function renderReviewRow(row, content, locationByCode) {
     const el = document.createElement("div");
-    const balanced = Math.abs(row.allocatedHours - row.ukgHours) < 0.01;
-    const ready = balanced && (row.status === "submitted" || row.status === "approved");
-    el.className = `review-row ${ready ? "review-row-ready" : "review-row-pending"}`;
+    const balanced = row.ukgHours > 0 && Math.abs(row.allocatedHours - row.ukgHours) < 0.01;
+    const stage1 = row.ukgHours > 0; // UKG hours entered
+    const stage2 = balanced; // allocation split matches UKG
+    const stage3 = Boolean(row.ukgConfirmedAt); // admin confirmed it's in the real UKG system
+    el.className = `review-row ${stage3 ? "review-row-ready" : "review-row-pending"}`;
 
     el.innerHTML = `
       <div class="review-row-summary">
-        <span class="review-row-dot ${ready ? "ready" : "pending"}" title="${ready ? "Done — submitted and matches UKG" : "Not done yet"}"></span>
         <div class="review-row-name">${escapeHtml(row.technician.name)}</div>
+        <div class="review-steps">
+          <span class="review-step ${stage1 ? "done" : ""}">1. UKG hours</span>
+          <span class="review-step ${stage2 ? "done" : ""}">2. Allocated</span>
+          <span class="review-step ${stage3 ? "done" : ""}">3. Entered in UKG</span>
+        </div>
         <div class="review-row-hours ${balanced ? "ok" : "warn"}">${row.allocatedHours}h / ${row.ukgHours}h UKG</div>
         <span class="badge badge-${row.status}">${STATUS_LABELS[row.status]}</span>
+        <button
+          class="btn ${stage3 ? "btn-secondary" : "btn-primary"} confirm-ukg-btn"
+          type="button"
+          ${!stage3 && !(stage1 && stage2) ? `disabled title="Enter UKG hours and match the allocation first"` : ""}
+        >${stage3 ? "Undo" : "Mark entered in UKG"}</button>
         <button class="btn btn-link expand-btn" type="button">${expanded.has(row.technician.id) ? "Hide" : "Details"}</button>
       </div>
       <div class="review-row-detail" id="detail-${row.technician.id}"></div>
     `;
+
+    el.querySelector(".confirm-ukg-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-confirmed`, { confirmed: !stage3 });
+        await drawReview(content);
+      } catch (err) {
+        btn.disabled = false;
+        window.alert(`Could not update: ${err.message}`);
+      }
+    });
 
     el.querySelector(".expand-btn").addEventListener("click", async () => {
       if (expanded.has(row.technician.id)) {
