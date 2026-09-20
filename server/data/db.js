@@ -2,7 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { seed } = require("./seed");
 
-const STORE_PATH = path.join(__dirname, "store.json");
+// Overridable so tests can point at a throwaway file instead of the real
+// mock store.
+const STORE_PATH = process.env.LABOR_DB_PATH || path.join(__dirname, "store.json");
 
 let data;
 if (fs.existsSync(STORE_PATH)) {

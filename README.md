@@ -23,6 +23,20 @@ npm start
 
 Then open http://localhost:3000
 
+To run the automated test suite (Node's built-in test runner, no extra
+dependency):
+
+```
+npm test
+```
+
+The suite boots the Express app on an ephemeral port with a throwaway JSON
+store per test file (`tests/helpers.js`), so it never touches your real
+`server/data/store.json`. It covers login, allocation validation (hours
+mismatch, closed/unknown WOM rejection, per-tech authorization), week
+locking, admin approve/reject/unlock, WOM status management, and audit log
+writes/read-access.
+
 Demo logins:
 
 | ID    | PIN  | Role       |
@@ -58,7 +72,8 @@ so state persists across restarts — delete it to reset to the seed).
 
 ```
 server/
-  index.js              Express app entry
+  app.js                Express app + route wiring (exported for tests)
+  index.js              Entry point: creates the app and listens
   data/
     seed.js             Mock data (technicians, WOMs, UKG hours, sample weeks)
     db.js               In-memory store + JSON persistence + accessors
@@ -70,6 +85,13 @@ server/
     admin.js               Weekly review list, approve/reject/unlock
     audit.js                Audit log
   utils/week.js           Mon–Sun week date helpers
+tests/
+  helpers.js              Spins up an isolated app instance per test file
+  auth.test.js
+  allocation.test.js       Hour validation, WOM gating, locking
+  admin.test.js             Approve / reject / unlock
+  woms.test.js               WOM CRUD + authorization
+  audit.test.js               Audit log writes and admin-only read access
 public/
   index.html
   css/styles.css
