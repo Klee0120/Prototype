@@ -10,6 +10,7 @@ const auditRoutes = require("./routes/audit");
 const fileRoutes = require("./routes/files");
 const locationRoutes = require("./routes/locations");
 const vendorRoutes = require("./routes/vendors");
+const vendorLookupRoutes = require("./routes/vendorLookup");
 
 function createApp() {
   const app = express();
@@ -28,6 +29,7 @@ function createApp() {
   app.use("/api/files", fileRoutes);
   app.use("/api/locations", locationRoutes);
   app.use("/api/admin/vendors", vendorRoutes);
+  app.use("/api/vendors", vendorLookupRoutes);
 
   app.use(express.static(path.join(__dirname, "..", "public")));
 

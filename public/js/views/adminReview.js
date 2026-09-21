@@ -4,6 +4,7 @@ import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
+import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -70,9 +71,10 @@ export async function renderAdminReview(container) {
   // searched client-side (291+ rows is small enough that refetching on
   // every keystroke would just be wasted network, not a real cache concern).
   let vendorsCache = null;
-  const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "" };
+  const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "" };
   const vendorExpanded = new Set();
   let showAddVendorForm = false;
+  const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
 
   draw();
 
@@ -85,7 +87,7 @@ export async function renderAdminReview(container) {
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">E&amp;F Locations &amp; WOM</button>
         <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
         <button class="tab ${activeTab === "vendors" ? "active" : ""}" data-tab="vendors">Vendors</button>
-        <button class="tab ${activeTab === "laborreports" ? "active" : ""}" data-tab="laborreports">Labor Reports</button>
+        <button class="tab ${activeTab === "laborreports" ? "active" : ""}" data-tab="laborreports">Reports</button>
         <button class="tab ${activeTab === "audit" ? "active" : ""}" data-tab="audit">Audit Trail</button>
       </div>
       <div id="tab-content" class="tab-content"></div>
@@ -93,6 +95,10 @@ export async function renderAdminReview(container) {
 
     container.querySelectorAll(".tab").forEach((btn) => {
       btn.addEventListener("click", () => {
+        // Coming back to Vendors from somewhere else should start collapsed
+        // again -- an "Open" row is a within-visit convenience, not state
+        // that should survive switching away and back.
+        if (btn.dataset.tab === "vendors" && activeTab !== "vendors") vendorExpanded.clear();
         activeTab = btn.dataset.tab;
         draw();
       });
@@ -112,6 +118,10 @@ export async function renderAdminReview(container) {
     else await drawAudit(content);
   }
 
+  // Four report kinds (WOM, Labor, Financial, GL), each filed by month/year
+  // in one combined list for now -- kept together deliberately (per-type
+  // tabs/sections is a "later" ask, not today's), distinguished by the
+  // category label shown on each file's row.
   async function drawLaborReports(content) {
     content.innerHTML = `
       <div class="week-nav">
@@ -120,9 +130,9 @@ export async function renderAdminReview(container) {
         <button class="btn btn-ghost" id="next-month">Next &rarr;</button>
       </div>
       <p class="review-checklist-hint">
-        Save the monthly labor report you get from finance here, month by month, so it's kept
-        alongside the timesheeting for that period -- for comparing side by side against what
-        this app tracked.
+        Save your monthly reports here -- WOM, Labor, Financial, and GL -- filed by month/year so
+        each one's kept alongside the timesheeting for that period, for comparing side by side
+        against what this app tracked.
       </p>
       <div id="labor-report-attachments"></div>
     `;
@@ -137,12 +147,17 @@ export async function renderAdminReview(container) {
     });
 
     await renderAttachments(content.querySelector("#labor-report-attachments"), {
-      title: "Labor Report Files",
+      title: "Monthly Reports",
       relatedType: "labor_report",
       relatedId: laborReportMonth,
-      categories: [{ value: "labor_report", label: "Labor Report" }],
+      categories: [
+        { value: "wom_report", label: "WOM Report" },
+        { value: "labor_report", label: "Labor Report" },
+        { value: "financial_report", label: "Financial Report" },
+        { value: "gl_report", label: "GL Report" },
+      ],
       canUpload: true,
-      emptyText: "No labor report saved for this month yet.",
+      emptyText: "No reports saved for this month yet.",
     });
   }
 
@@ -155,6 +170,7 @@ export async function renderAdminReview(container) {
     return vendorsCache.filter((v) => {
       if (vendorFilters.cwStatus && v.cwStatus !== vendorFilters.cwStatus) return false;
       if (vendorFilters.toyotaStatus && v.toyotaStatus !== vendorFilters.toyotaStatus) return false;
+      if (vendorFilters.formsStatus && v.formsStatus !== vendorFilters.formsStatus) return false;
       if (vendorFilters.search) {
         const q = vendorFilters.search.toLowerCase();
         const haystack = `${v.name} ${v.jdeVendorNumber || ""} ${v.services || ""}`.toLowerCase();
@@ -174,18 +190,37 @@ export async function renderAdminReview(container) {
       .map((s) => `<option value="${s}" ${vendorFilters.toyotaStatus === s ? "selected" : ""}>${escapeHtml(TOYOTA_STATUS_LABELS[s])}</option>`)
       .join("");
   }
+  function formsFilterOptions() {
+    return ["current", "outdated", "unknown"]
+      .map((s) => `<option value="${s}" ${vendorFilters.formsStatus === s ? "selected" : ""}>${escapeHtml(FORMS_STATUS_LABELS[s])}</option>`)
+      .join("");
+  }
 
   // Renders the toolbar shell once per visit/mutation; the search input's
   // "input" handler only calls refreshVendorList() below so the input never
   // gets torn down and rebuilt mid-keystroke (which would drop focus/cursor
   // position on every character typed).
   function renderVendorsUI(content) {
+    const outdatedCount = vendorsCache.filter((v) => v.formsStatus === "outdated").length;
+
     content.innerHTML = `
       <h3>Vendors</h3>
       <p class="review-checklist-hint">
         Vendor onboarding/compliance tracker -- C&amp;W approval, Toyota approval, and forms
         currency per vendor. Click a vendor to expand and edit.
       </p>
+      ${
+        outdatedCount === 0
+          ? ""
+          : `<div class="expiring-forms-banner">
+              <div class="expiring-forms-title">Vendor forms needing attention</div>
+              <div class="expiring-forms-row">
+                <span class="rfm-flag">Outdated</span>
+                <span>${outdatedCount} vendor${outdatedCount === 1 ? "" : "s"} on file ${outdatedCount === 1 ? "has" : "have"} outdated forms -- updated forms are needed to bring ${outdatedCount === 1 ? "it" : "them"} current.</span>
+                <button class="btn btn-link vendor-view-outdated-btn" type="button">View</button>
+              </div>
+            </div>`
+      }
       <div class="vendor-toolbar">
         <input class="vendor-search" type="text" placeholder="Vendor name, JDE #, or service" value="${escapeHtml(vendorFilters.search)}" />
         <select class="vendor-cw-filter">
@@ -195,6 +230,10 @@ export async function renderAdminReview(container) {
         <select class="vendor-toyota-filter">
           <option value="">All Toyota statuses</option>
           ${toyotaFilterOptions()}
+        </select>
+        <select class="vendor-forms-filter">
+          <option value="">All forms statuses</option>
+          ${formsFilterOptions()}
         </select>
         <button class="btn btn-secondary vendor-add-toggle" type="button">${showAddVendorForm ? "Cancel" : "+ Add vendor"}</button>
       </div>
@@ -217,11 +256,22 @@ export async function renderAdminReview(container) {
       vendorFilters.toyotaStatus = e.target.value;
       refreshVendorList(content);
     });
+    content.querySelector(".vendor-forms-filter").addEventListener("change", (e) => {
+      vendorFilters.formsStatus = e.target.value;
+      refreshVendorList(content);
+    });
     content.querySelector(".vendor-add-toggle").addEventListener("click", () => {
       showAddVendorForm = !showAddVendorForm;
       content.querySelector(".vendor-add-toggle").textContent = showAddVendorForm ? "Cancel" : "+ Add vendor";
       renderVendorAddHost(content);
     });
+    const viewOutdatedBtn = content.querySelector(".vendor-view-outdated-btn");
+    if (viewOutdatedBtn) {
+      viewOutdatedBtn.addEventListener("click", () => {
+        vendorFilters.formsStatus = "outdated";
+        renderVendorsUI(content);
+      });
+    }
 
     refreshVendorList(content);
   }
@@ -325,11 +375,23 @@ export async function renderAdminReview(container) {
             trackerWorkExamples: form.trackerWorkExamples.value.trim(),
             coverageOutsideMidwest: form.coverageOutsideMidwest.value.trim(),
             notes: form.notes.value.trim(),
+            coiMeetsRequiredLimits: form.coiMeetsRequiredLimits.checked,
+            coiMeetsLanguageRequirements: form.coiMeetsLanguageRequirements.checked,
+            coiLimits: Object.fromEntries(
+              Object.keys(COI_LIMIT_LABELS).map((key) => [key, form[`coi_${key}`].value.trim()])
+            ),
           });
           vendorsCache = null;
           await drawVendors(content);
         } catch (err) {
           msg.textContent = err.message;
+        }
+      });
+      form.querySelector('select[name="services"]').addEventListener("change", (e) => {
+        const matrixEntry = COI_MATRIX_BY_LABEL[e.target.value];
+        if (!matrixEntry) return;
+        for (const [coiKey, matrixKey] of Object.entries(COI_LIMIT_TO_MATRIX_KEY)) {
+          form[`coi_${coiKey}`].value = matrixEntry.requirements[matrixKey] || "";
         }
       });
       el.querySelector(".cancel-vendor-edit").addEventListener("click", () => {
@@ -367,6 +429,61 @@ export async function renderAdminReview(container) {
     return el;
   }
 
+  const COI_LIMIT_LABELS = {
+    glLiabilityOcc: "GL Liability (Occ)",
+    glLiabilityAgg: "GL Liability (Agg)",
+    autoLiability: "Auto Liability",
+    workersComp: "Workers Comp",
+    umbrellaLiability: "Umbrella Liability",
+    eAndO: "E&amp;O",
+    pollution: "Pollution",
+    crime: "Crime",
+    productsComplOpAgg: "Products Compl (OP Agg)",
+  };
+  // Maps our vendor COI field names to the COI matrix's own key names --
+  // same nine coverage types, named slightly differently in each place.
+  const COI_LIMIT_TO_MATRIX_KEY = {
+    glLiabilityOcc: "glOcc",
+    glLiabilityAgg: "glAgg",
+    autoLiability: "auto",
+    workersComp: "wc",
+    umbrellaLiability: "exs",
+    eAndO: "eAndO",
+    pollution: "pol",
+    crime: "crime",
+    productsComplOpAgg: "productsComplOpAgg",
+  };
+
+  function renderServicesSelect(currentValue) {
+    const matches = COI_MATRIX_BY_LABEL[currentValue];
+    const groups = new Map();
+    for (const entry of COI_MATRIX) {
+      if (!groups.has(entry.group)) groups.set(entry.group, []);
+      groups.get(entry.group).push(entry);
+    }
+    const optgroups = [...groups.entries()]
+      .map(
+        ([group, entries]) =>
+          `<optgroup label="${escapeHtml(group)}">${entries
+            .map((e) => `<option value="${escapeHtml(e.label)}" ${e.label === currentValue ? "selected" : ""}>${escapeHtml(e.label)}</option>`)
+            .join("")}</optgroup>`
+      )
+      .join("");
+    // A vendor imported before this dropdown existed (or with a service
+    // type outside the matrix) keeps its original free-text value as a
+    // preserved option, rather than silently losing it the moment the
+    // field renders as a select.
+    const unmatchedOption =
+      currentValue && !matches
+        ? `<option value="${escapeHtml(currentValue)}" selected>${escapeHtml(currentValue)} (not in matrix)</option>`
+        : "";
+    return `<select name="services">
+      <option value="">-- Select a service --</option>
+      ${unmatchedOption}
+      ${optgroups}
+    </select>`;
+  }
+
   function renderVendorEditForm(v) {
     const cwSelect = ["unknown", "active", "inactive"]
       .map((s) => `<option value="${s}" ${v.cwStatus === s ? "selected" : ""}>${escapeHtml(CW_STATUS_LABELS[s])}</option>`)
@@ -376,6 +493,12 @@ export async function renderAdminReview(container) {
       .join("");
     const formsSelect = ["unknown", "current", "outdated"]
       .map((s) => `<option value="${s}" ${v.formsStatus === s ? "selected" : ""}>${escapeHtml(FORMS_STATUS_LABELS[s])}</option>`)
+      .join("");
+    const coiLimitInputs = Object.entries(COI_LIMIT_LABELS)
+      .map(
+        ([key, label]) =>
+          `<label class="profile-field"><span>${label}</span><input name="coi_${key}" placeholder="e.g. $1M or -" value="${escapeHtml((v.coiLimits && v.coiLimits[key]) || "")}" /></label>`
+      )
       .join("");
 
     return `
@@ -391,7 +514,7 @@ export async function renderAdminReview(container) {
           <label class="profile-field"><span>PO email</span><input name="poEmail" value="${escapeHtml(v.poEmail || "")}" /></label>
           <label class="profile-field"><span>Online source URL</span><input name="onlineSourceUrl" value="${escapeHtml(v.onlineSourceUrl || "")}" /></label>
           <label class="profile-field"><span>Midwest sites seen</span><input name="midwestSitesSeen" value="${escapeHtml(v.midwestSitesSeen || "")}" /></label>
-          <label class="profile-field"><span>Services</span><input name="services" value="${escapeHtml(v.services || "")}" /></label>
+          <label class="profile-field"><span>Services</span>${renderServicesSelect(v.services || "")}</label>
           <label class="profile-field"><span>Invoiced previously?</span><input name="invoicedPreviously" value="${escapeHtml(v.invoicedPreviously || "")}" /></label>
           <label class="profile-field"><span>Successful invoice records</span><input name="successfulInvoiceRecords" type="number" min="0" value="${v.successfulInvoiceRecords ?? ""}" /></label>
           <label class="profile-field"><span>Successful since date</span><input name="successfulSinceDate" type="date" value="${escapeHtml((v.successfulSinceDate || "").slice(0, 10))}" /></label>
@@ -404,6 +527,19 @@ export async function renderAdminReview(container) {
             ? `<p class="vendor-raw-status">Original tracker status text: <em>${escapeHtml(v.rawStatusText)}</em></p>`
             : ""
         }
+
+        <h4>COI (Certificate of Insurance) requirements</h4>
+        <p class="review-checklist-hint">
+          Picking a Service above fills these with the limits Toyota requires for that service type
+          (from the insurance matrix) -- still editable if this vendor has a negotiated exception.
+          Check the boxes once the vendor's actual COI (attached below) has been reviewed against them.
+        </p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="coiMeetsRequiredLimits" ${v.coiMeetsRequiredLimits ? "checked" : ""} /> Meets required limits</label>
+          <label><input type="checkbox" name="coiMeetsLanguageRequirements" ${v.coiMeetsLanguageRequirements ? "checked" : ""} /> Meets language requirements</label>
+        </div>
+        <div class="vendor-edit-grid">${coiLimitInputs}</div>
+
         <div class="vendor-edit-actions">
           <button type="submit" class="btn btn-primary">Save</button>
           <button type="button" class="btn btn-link cancel-vendor-edit">Cancel</button>
@@ -456,14 +592,17 @@ export async function renderAdminReview(container) {
   const TREND_LABELS = { rising: "Rising", falling: "Falling", steady: "Steady" };
 
   async function drawOverview(content) {
-    const [rows, locations, expiringForms, otTrends] = await Promise.all([
+    const [rows, locations, expiringForms, otTrends, vendors] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
       api.get("/api/admin/expiring-forms"),
       api.get(`/api/admin/ot-trends/${state.weekMonday}`),
+      api.get("/api/admin/vendors"),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const todayIso = new Date().toISOString().slice(0, 10);
+    const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
+    vendorsCache = vendors; // reuse this fetch if the admin jumps straight to the Vendors tab below
 
     const sorted = [...rows].sort((a, b) => {
       if (a.flagged !== b.flagged) return a.flagged ? -1 : 1;
@@ -486,6 +625,18 @@ export async function renderAdminReview(container) {
                   </div>`;
                 })
                 .join("")}
+            </div>`
+      }
+      ${
+        outdatedVendorCount === 0
+          ? ""
+          : `<div class="expiring-forms-banner">
+              <div class="expiring-forms-title">Vendor forms needing attention</div>
+              <div class="expiring-forms-row">
+                <span class="rfm-flag">Outdated</span>
+                <span>${outdatedVendorCount} vendor${outdatedVendorCount === 1 ? "" : "s"} on file ${outdatedVendorCount === 1 ? "has" : "have"} outdated forms.</span>
+                <button class="btn btn-link overview-view-outdated-vendors-btn" type="button">View</button>
+              </div>
             </div>`
       }
       <div class="week-nav">
@@ -594,6 +745,14 @@ export async function renderAdminReview(container) {
         await draw();
       });
     });
+    const viewOutdatedVendorsBtn = content.querySelector(".overview-view-outdated-vendors-btn");
+    if (viewOutdatedVendorsBtn) {
+      viewOutdatedVendorsBtn.addEventListener("click", async () => {
+        vendorFilters.formsStatus = "outdated";
+        activeTab = "vendors";
+        await draw();
+      });
+    }
   }
 
   async function drawReview(content) {
@@ -891,6 +1050,7 @@ export async function renderAdminReview(container) {
         <div class="review-actions">
           <button class="btn btn-primary approve-btn" data-id="${row.technician.id}">Approve</button>
           <button class="btn btn-secondary reject-btn" data-id="${row.technician.id}">Reject</button>
+          <button class="btn btn-link unlock-btn" data-id="${row.technician.id}">Unlock for correction</button>
         </div>
       `;
     }

@@ -59,6 +59,37 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     assert.equal(edit.status, 200);
   });
 
+  await t.test("unlock also works on a merely-submitted (not yet approved) week", async () => {
+    // This is the exact scenario that leaves a day mismatched: a week gets
+    // submitted, then an admin corrects the technician's UKG hours
+    // afterward -- the already-submitted allocation no longer matches, and
+    // admin needs a way back in to fix it without first rejecting (which
+    // would bounce it to the technician) or approving a now-wrong week.
+    const submit = await submitFullWeek(server, "T1003", week, "CINCINNATI");
+    assert.equal(submit.status, 200);
+
+    const cannotEditWhileSubmitted = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: { allocations: [] },
+    });
+    assert.equal(cannotEditWhileSubmitted.status, 409);
+
+    const unlock = await server.call("POST", `/api/admin/weeks/T1003/${week}/unlock`, { userId: "ADMIN" });
+    assert.equal(unlock.status, 200);
+    assert.equal(unlock.body.status, "draft");
+
+    const nowEditable = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: { allocations: [] },
+    });
+    assert.equal(nowEditable.status, 200);
+  });
+
+  await t.test("unlock rejects a week that's still just a draft", async () => {
+    const res = await server.call("POST", `/api/admin/weeks/T1003/${week}/unlock`, { userId: "ADMIN" });
+    assert.equal(res.status, 409);
+  });
+
   await t.test("reject returns a submitted week to the technician with a note", async () => {
     const submit = await submitFullWeek(server, "T1002", week, "GEORGETOWN");
     assert.equal(submit.status, 200);

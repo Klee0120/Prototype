@@ -15,7 +15,12 @@ const CATEGORY_BY_RELATED = {
   week: new Set(["receipt", "ukg_screenshot"]),
   wom: new Set(["wom_doc"]),
   technician: new Set(["tech_form", "document"]),
-  labor_report: new Set(["labor_report"]),
+  // Kept under the one existing relatedType (not renamed) so already-
+  // uploaded labor reports stay attached to their month instead of being
+  // orphaned by a relatedType change -- "labor_report" the type now covers
+  // four report kinds, distinguished by category, all filed by month/year.
+  labor_report: new Set(["labor_report", "wom_report", "financial_report", "gl_report"]),
+  vendor: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -25,18 +30,23 @@ function parseWeekRelatedId(relatedId) {
 
 function canRead(user, relatedType, relatedId) {
   if (user.role === "admin") return true;
+  // Vendor forms (COI, W-9, etc.) are compliance documents a technician has
+  // no reason to see -- their own vendor lookup is a separate, much
+  // narrower read-only endpoint that never touches this files system.
+  if (relatedType === "vendor") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
   return false;
 }
 
-// Technician forms/certifications are HR-adjacent and admin-managed; every
-// other category can be attached by the technician who owns the record (or
-// an admin).
+// Technician forms/certifications and vendor forms are both admin-managed
+// compliance documents; every other category can be attached by whoever
+// owns the record (or an admin).
 function canWrite(user, relatedType, relatedId, category) {
   if (user.role === "admin") return true;
   if (category === "tech_form") return false;
+  if (relatedType === "vendor") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   return false;
@@ -45,6 +55,7 @@ function canWrite(user, relatedType, relatedId, category) {
 function relatedRecordExists(relatedType, relatedId) {
   if (relatedType === "wom") return Boolean(db.findWom(relatedId));
   if (relatedType === "technician") return Boolean(db.findTechnician(relatedId));
+  if (relatedType === "vendor") return Boolean(db.findVendor(relatedId));
   if (relatedType === "week") return Boolean(db.findTechnician(parseWeekRelatedId(relatedId).techId));
   // Labor reports aren't tied to a record that already exists elsewhere --
   // they're just an admin-only monthly archive, keyed by "YYYY-MM".

@@ -95,6 +95,22 @@ test("files: attachments (upload/list/download/delete) authorization", async (t)
     assert.equal(techList.status, 403);
   });
 
+  await t.test("WOM, Financial, and GL reports share the same monthly archive as labor reports", async () => {
+    for (const category of ["wom_report", "financial_report", "gl_report"]) {
+      const res = await server.upload("/api/files", {
+        userId: "ADMIN",
+        fields: { relatedType: "labor_report", relatedId: "2026-10", category },
+        fileName: `${category}.xlsx`,
+      });
+      assert.equal(res.status, 201, `${category} should upload`);
+    }
+
+    const list = await server.call("GET", "/api/files?relatedType=labor_report&relatedId=2026-10", { userId: "ADMIN" });
+    assert.equal(list.status, 200);
+    const categories = list.body.map((f) => f.category).sort();
+    assert.deepEqual(categories, ["financial_report", "gl_report", "wom_report"]);
+  });
+
   await t.test("uploading against a nonexistent related record 404s", async () => {
     const res = await server.upload("/api/files", {
       userId: "T1002",

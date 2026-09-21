@@ -170,8 +170,28 @@ db.exec(`
     email TEXT DEFAULT '',
     online_source_url TEXT DEFAULT '',
     notes TEXT DEFAULT '',
+    coi_meets_required_limits INTEGER NOT NULL DEFAULT 0,
+    coi_meets_language_requirements INTEGER NOT NULL DEFAULT 0,
+    coi_gl_liability_occ TEXT DEFAULT '',
+    coi_gl_liability_agg TEXT DEFAULT '',
+    coi_auto_liability TEXT DEFAULT '',
+    coi_workers_comp TEXT DEFAULT '',
+    coi_umbrella_liability TEXT DEFAULT '',
+    coi_e_and_o TEXT DEFAULT '',
+    coi_pollution TEXT DEFAULT '',
+    coi_crime TEXT DEFAULT '',
+    coi_products_compl_op_agg TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS vendor_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id INTEGER NOT NULL,
+    request_type TEXT NOT NULL,
+    reference_number TEXT DEFAULT '',
+    status TEXT DEFAULT '',
+    requested_at TEXT NOT NULL
   );
 `);
 
@@ -260,6 +280,31 @@ if (!hasColumn("files", "form_type")) {
 }
 if (!hasColumn("files", "expires_at")) {
   db.exec("ALTER TABLE files ADD COLUMN expires_at TEXT");
+}
+// COI (Certificate of Insurance) coverage limits requested/on file per
+// vendor -- a fixed, small set of coverage types (matches the real vendor
+// tracker), so plain named columns rather than a flexible key/value shape.
+const VENDOR_COI_TEXT_COLUMNS = [
+  "coi_gl_liability_occ",
+  "coi_gl_liability_agg",
+  "coi_auto_liability",
+  "coi_workers_comp",
+  "coi_umbrella_liability",
+  "coi_e_and_o",
+  "coi_pollution",
+  "coi_crime",
+  "coi_products_compl_op_agg",
+];
+for (const col of VENDOR_COI_TEXT_COLUMNS) {
+  if (!hasColumn("vendors", col)) {
+    db.exec(`ALTER TABLE vendors ADD COLUMN ${col} TEXT DEFAULT ''`);
+  }
+}
+if (!hasColumn("vendors", "coi_meets_required_limits")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_required_limits INTEGER NOT NULL DEFAULT 0");
+}
+if (!hasColumn("vendors", "coi_meets_language_requirements")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_language_requirements INTEGER NOT NULL DEFAULT 0");
 }
 
 seedIfEmpty();
@@ -507,7 +552,25 @@ const CW_STATUSES = ["active", "inactive", "unknown"];
 const TOYOTA_STATUSES = ["approved", "not_approved", "unknown"];
 const FORMS_STATUSES = ["current", "outdated", "unknown"];
 
+// The fixed set of COI (Certificate of Insurance) coverage types tracked
+// per vendor -- matches the real vendor tracker's columns. Values are free
+// text (e.g. "$1M", "-") rather than numbers, since "-" (not required for
+// this vendor's service type) is a valid, common value.
+const VENDOR_COI_FIELDS = [
+  ["glLiabilityOcc", "coi_gl_liability_occ"],
+  ["glLiabilityAgg", "coi_gl_liability_agg"],
+  ["autoLiability", "coi_auto_liability"],
+  ["workersComp", "coi_workers_comp"],
+  ["umbrellaLiability", "coi_umbrella_liability"],
+  ["eAndO", "coi_e_and_o"],
+  ["pollution", "coi_pollution"],
+  ["crime", "coi_crime"],
+  ["productsComplOpAgg", "coi_products_compl_op_agg"],
+];
+
 function presentVendorRow(v) {
+  const coiLimits = {};
+  for (const [key, col] of VENDOR_COI_FIELDS) coiLimits[key] = v[col] || "";
   return {
     id: v.id,
     name: v.name,
@@ -528,6 +591,9 @@ function presentVendorRow(v) {
     email: v.email,
     onlineSourceUrl: v.online_source_url,
     notes: v.notes,
+    coiMeetsRequiredLimits: Boolean(v.coi_meets_required_limits),
+    coiMeetsLanguageRequirements: Boolean(v.coi_meets_language_requirements),
+    coiLimits,
     createdAt: v.created_at,
     updatedAt: v.updated_at,
   };
@@ -544,48 +610,74 @@ function findVendor(id) {
 
 function createVendor(fields) {
   const now = new Date().toISOString();
+  const coiLimits = fields.coiLimits || {};
+  const columns = [
+    "name",
+    "jde_vendor_number",
+    "cw_status",
+    "toyota_status",
+    "forms_status",
+    "raw_status_text",
+    "po_email",
+    "invoiced_previously",
+    "successful_invoice_records",
+    "successful_since_date",
+    "midwest_sites_seen",
+    "services",
+    "tracker_work_examples",
+    "coverage_outside_midwest",
+    "phone",
+    "email",
+    "online_source_url",
+    "notes",
+    "coi_meets_required_limits",
+    "coi_meets_language_requirements",
+    ...VENDOR_COI_FIELDS.map(([, col]) => col),
+    "created_at",
+    "updated_at",
+  ];
+  const values = [
+    fields.name,
+    fields.jdeVendorNumber || null,
+    fields.cwStatus || "unknown",
+    fields.toyotaStatus || "unknown",
+    fields.formsStatus || "unknown",
+    fields.rawStatusText || "",
+    fields.poEmail || "",
+    fields.invoicedPreviously || "",
+    fields.successfulInvoiceRecords == null ? null : Number(fields.successfulInvoiceRecords),
+    fields.successfulSinceDate || null,
+    fields.midwestSitesSeen || "",
+    fields.services || "",
+    fields.trackerWorkExamples || "",
+    fields.coverageOutsideMidwest || "",
+    fields.phone || "",
+    fields.email || "",
+    fields.onlineSourceUrl || "",
+    fields.notes || "",
+    fields.coiMeetsRequiredLimits ? 1 : 0,
+    fields.coiMeetsLanguageRequirements ? 1 : 0,
+    ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
+    now,
+    now,
+  ];
   const result = db
-    .prepare(
-      `INSERT INTO vendors (
-        name, jde_vendor_number, cw_status, toyota_status, forms_status, raw_status_text,
-        po_email, invoiced_previously, successful_invoice_records, successful_since_date,
-        midwest_sites_seen, services, tracker_work_examples, coverage_outside_midwest,
-        phone, email, online_source_url, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      fields.name,
-      fields.jdeVendorNumber || null,
-      fields.cwStatus || "unknown",
-      fields.toyotaStatus || "unknown",
-      fields.formsStatus || "unknown",
-      fields.rawStatusText || "",
-      fields.poEmail || "",
-      fields.invoicedPreviously || "",
-      fields.successfulInvoiceRecords == null ? null : Number(fields.successfulInvoiceRecords),
-      fields.successfulSinceDate || null,
-      fields.midwestSitesSeen || "",
-      fields.services || "",
-      fields.trackerWorkExamples || "",
-      fields.coverageOutsideMidwest || "",
-      fields.phone || "",
-      fields.email || "",
-      fields.onlineSourceUrl || "",
-      fields.notes || "",
-      now,
-      now
-    );
+    .prepare(`INSERT INTO vendors (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+    .run(...values);
   return findVendor(result.lastInsertRowid);
 }
 
 function updateVendor(id, fields) {
   if (!findVendor(id)) return null;
+  const coiLimits = fields.coiLimits || {};
   db.prepare(
     `UPDATE vendors SET
       name = ?, jde_vendor_number = ?, cw_status = ?, toyota_status = ?, forms_status = ?,
       raw_status_text = ?, po_email = ?, invoiced_previously = ?, successful_invoice_records = ?,
       successful_since_date = ?, midwest_sites_seen = ?, services = ?, tracker_work_examples = ?,
       coverage_outside_midwest = ?, phone = ?, email = ?, online_source_url = ?, notes = ?,
+      coi_meets_required_limits = ?, coi_meets_language_requirements = ?,
+      ${VENDOR_COI_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
       updated_at = ?
      WHERE id = ?`
   ).run(
@@ -607,6 +699,9 @@ function updateVendor(id, fields) {
     fields.email || "",
     fields.onlineSourceUrl || "",
     fields.notes || "",
+    fields.coiMeetsRequiredLimits ? 1 : 0,
+    fields.coiMeetsLanguageRequirements ? 1 : 0,
+    ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     new Date().toISOString(),
     Number(id)
   );
@@ -616,8 +711,44 @@ function updateVendor(id, fields) {
 function deleteVendor(id) {
   const vendor = findVendor(id);
   if (!vendor) return null;
+  db.prepare("DELETE FROM vendor_requests WHERE vendor_id = ?").run(Number(id));
   db.prepare("DELETE FROM vendors WHERE id = ?").run(Number(id));
   return vendor;
+}
+
+// A vendor onboarding/compliance case (e.g. a ServiceEdge COI Case, Toyota
+// Onboarding Case, Payment Details Case) tracked with a reference/case
+// number and a free-text status -- the real tracker uses varied statuses
+// ("Approved", "Waiting", "Denied - No Response - Start over Case") that
+// don't reduce cleanly to a fixed enum, so status is left as free text
+// rather than force-fitting it.
+function listVendorRequests(vendorId) {
+  return db
+    .prepare(
+      `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status,
+              requested_at AS requestedAt
+       FROM vendor_requests WHERE vendor_id = ? ORDER BY id DESC`
+    )
+    .all(vendorId);
+}
+
+function addVendorRequest(vendorId, requestType, referenceNumber, status) {
+  db.prepare(
+    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, requested_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(vendorId, requestType, referenceNumber || "", status || "", new Date().toISOString());
+  return listVendorRequests(vendorId);
+}
+
+function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status }) {
+  db.prepare(
+    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ? WHERE id = ? AND vendor_id = ?"
+  ).run(requestType, referenceNumber || "", status || "", requestId, vendorId);
+  return listVendorRequests(vendorId);
+}
+
+function deleteVendorRequest(vendorId, requestId) {
+  db.prepare("DELETE FROM vendor_requests WHERE id = ? AND vendor_id = ?").run(requestId, vendorId);
+  return listVendorRequests(vendorId);
 }
 
 // ---- Allocation history ----
@@ -1006,6 +1137,11 @@ module.exports = {
   createVendor,
   updateVendor,
   deleteVendor,
+  VENDOR_COI_FIELDS,
+  listVendorRequests,
+  addVendorRequest,
+  updateVendorRequest,
+  deleteVendorRequest,
   ONBOARDING_TASKS,
   getOnboardingProgress,
   setOnboardingTask,

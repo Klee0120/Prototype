@@ -126,7 +126,7 @@ export async function renderTechWeek(container, techIdOverride) {
         <strong>${STATUS_LABELS[week.status]}</strong>
         ${week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : ""}
         ${
-          week.status === "approved"
+          week.status === "approved" || week.status === "submitted"
             ? state.user.role === "admin"
               ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
               : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`

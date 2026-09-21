@@ -401,18 +401,23 @@ router.post("/weeks/:techId/:weekMonday/reject", (req, res) => {
   res.json({ ok: true, status: "rejected" });
 });
 
+// Submitted-but-not-yet-approved weeks need this just as much as approved
+// ones do: if UKG hours get corrected after a technician already submitted
+// (the exact case that leaves a day mismatched, e.g. "Off by 6"), admin has
+// no other way to get back into the allocation to fix it -- Reject sends it
+// back to the technician instead of letting admin fix it directly.
 router.post("/weeks/:techId/:weekMonday/unlock", (req, res) => {
   const { techId, weekMonday } = req.params;
   const tech = db.findTechnician(techId);
   if (!tech) return res.status(404).json({ error: "Technician not found" });
 
   const week = db.getWeek(techId, weekMonday);
-  if (week.status !== "approved") {
-    return res.status(409).json({ error: `Only an approved week can be unlocked (currently ${week.status})` });
+  if (!["submitted", "approved"].includes(week.status)) {
+    return res.status(409).json({ error: `Only a submitted or approved week can be unlocked (currently ${week.status})` });
   }
 
   db.unlockWeek(techId, weekMonday, req.user.id);
-  db.addAudit(req.user.id, "WEEK_UNLOCKED", `${req.user.name} unlocked approved week ${weekMonday} for ${tech.name} for correction`);
+  db.addAudit(req.user.id, "WEEK_UNLOCKED", `${req.user.name} unlocked ${week.status} week ${weekMonday} for ${tech.name} for correction`);
   res.json({ ok: true, status: "draft" });
 });
 

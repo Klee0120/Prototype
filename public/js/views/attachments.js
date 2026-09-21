@@ -8,6 +8,14 @@ const CATEGORY_LABELS = {
   tech_form: "Form / Certification",
   document: "Document",
   labor_report: "Labor Report",
+  wom_report: "WOM Report",
+  financial_report: "Financial Report",
+  gl_report: "GL Report",
+  coi: "COI (Certificate of Insurance)",
+  w9: "W-9",
+  ach: "ACH / Bank Letter",
+  vpo_waiver: "VPO Waiver",
+  vendor_other: "Other Vendor Document",
 };
 
 function formatSize(bytes) {
