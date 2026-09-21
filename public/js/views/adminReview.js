@@ -14,6 +14,19 @@ const STATUS_LABELS = {
 
 const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
 
+const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
+const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
+const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
+const VENDOR_STATUS_BADGE_CLASS = {
+  active: "approved",
+  approved: "approved",
+  current: "approved",
+  inactive: "rejected",
+  not_approved: "rejected",
+  outdated: "rejected",
+  unknown: "draft",
+};
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -50,6 +63,14 @@ export async function renderAdminReview(container) {
   let laborReportMonth = currentMonthISO();
   let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
 
+  // Vendors tab: the full list is fetched once per visit and filtered/
+  // searched client-side (291+ rows is small enough that refetching on
+  // every keystroke would just be wasted network, not a real cache concern).
+  let vendorsCache = null;
+  const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "" };
+  const vendorExpanded = new Set();
+  let showAddVendorForm = false;
+
   draw();
 
   async function draw() {
@@ -60,6 +81,7 @@ export async function renderAdminReview(container) {
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">E&amp;F Locations &amp; WOM</button>
         <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
+        <button class="tab ${activeTab === "vendors" ? "active" : ""}" data-tab="vendors">Vendors</button>
         <button class="tab ${activeTab === "laborreports" ? "active" : ""}" data-tab="laborreports">Labor Reports</button>
         <button class="tab ${activeTab === "audit" ? "active" : ""}" data-tab="audit">Audit Trail</button>
       </div>
@@ -82,6 +104,7 @@ export async function renderAdminReview(container) {
       renderTechniciansTab(content, jumpToTech);
       jumpToTech = null;
     }
+    else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
   }
@@ -118,6 +141,274 @@ export async function renderAdminReview(container) {
       canUpload: true,
       emptyText: "No labor report saved for this month yet.",
     });
+  }
+
+  async function drawVendors(content) {
+    if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    renderVendorsUI(content);
+  }
+
+  function filteredVendors() {
+    return vendorsCache.filter((v) => {
+      if (vendorFilters.cwStatus && v.cwStatus !== vendorFilters.cwStatus) return false;
+      if (vendorFilters.toyotaStatus && v.toyotaStatus !== vendorFilters.toyotaStatus) return false;
+      if (vendorFilters.search) {
+        const q = vendorFilters.search.toLowerCase();
+        const haystack = `${v.name} ${v.jdeVendorNumber || ""} ${v.services || ""}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function cwFilterOptions() {
+    return ["active", "inactive", "unknown"]
+      .map((s) => `<option value="${s}" ${vendorFilters.cwStatus === s ? "selected" : ""}>${escapeHtml(CW_STATUS_LABELS[s])}</option>`)
+      .join("");
+  }
+  function toyotaFilterOptions() {
+    return ["approved", "not_approved", "unknown"]
+      .map((s) => `<option value="${s}" ${vendorFilters.toyotaStatus === s ? "selected" : ""}>${escapeHtml(TOYOTA_STATUS_LABELS[s])}</option>`)
+      .join("");
+  }
+
+  // Renders the toolbar shell once per visit/mutation; the search input's
+  // "input" handler only calls refreshVendorList() below so the input never
+  // gets torn down and rebuilt mid-keystroke (which would drop focus/cursor
+  // position on every character typed).
+  function renderVendorsUI(content) {
+    content.innerHTML = `
+      <h3>Vendors</h3>
+      <p class="review-checklist-hint">
+        Vendor onboarding/compliance tracker -- C&amp;W approval, Toyota approval, and forms
+        currency per vendor. Click a vendor to expand and edit.
+      </p>
+      <div class="vendor-toolbar">
+        <input class="vendor-search" type="text" placeholder="Vendor name, JDE #, or service" value="${escapeHtml(vendorFilters.search)}" />
+        <select class="vendor-cw-filter">
+          <option value="">All C&amp;W statuses</option>
+          ${cwFilterOptions()}
+        </select>
+        <select class="vendor-toyota-filter">
+          <option value="">All Toyota statuses</option>
+          ${toyotaFilterOptions()}
+        </select>
+        <button class="btn btn-secondary vendor-add-toggle" type="button">${showAddVendorForm ? "Cancel" : "+ Add vendor"}</button>
+      </div>
+      <p class="vendor-count"></p>
+      <div id="vendor-add-host"></div>
+      <div class="review-list" id="vendor-list"></div>
+    `;
+
+    renderVendorAddHost(content);
+
+    content.querySelector(".vendor-search").addEventListener("input", (e) => {
+      vendorFilters.search = e.target.value;
+      refreshVendorList(content);
+    });
+    content.querySelector(".vendor-cw-filter").addEventListener("change", (e) => {
+      vendorFilters.cwStatus = e.target.value;
+      refreshVendorList(content);
+    });
+    content.querySelector(".vendor-toyota-filter").addEventListener("change", (e) => {
+      vendorFilters.toyotaStatus = e.target.value;
+      refreshVendorList(content);
+    });
+    content.querySelector(".vendor-add-toggle").addEventListener("click", () => {
+      showAddVendorForm = !showAddVendorForm;
+      content.querySelector(".vendor-add-toggle").textContent = showAddVendorForm ? "Cancel" : "+ Add vendor";
+      renderVendorAddHost(content);
+    });
+
+    refreshVendorList(content);
+  }
+
+  // Toggling the add-vendor form only touches its own host element, not the
+  // whole toolbar, so the search input (and whatever the admin was typing
+  // into it) is never torn down along the way.
+  function renderVendorAddHost(content) {
+    const host = content.querySelector("#vendor-add-host");
+    if (!showAddVendorForm) {
+      host.innerHTML = "";
+      return;
+    }
+    host.innerHTML = renderAddVendorForm();
+    wireAddVendorForm(content);
+  }
+
+  function refreshVendorList(content) {
+    const filtered = filteredVendors();
+    content.querySelector(".vendor-count").textContent = `${filtered.length} match${filtered.length === 1 ? "" : "es"}.`;
+    const list = content.querySelector("#vendor-list");
+    list.innerHTML = "";
+    if (filtered.length === 0) {
+      list.innerHTML = `<p class="empty-note">No vendors match these filters.</p>`;
+    } else {
+      filtered.forEach((v) => list.appendChild(renderVendorRow(v, content)));
+    }
+  }
+
+  function wireAddVendorForm(content) {
+    const addForm = content.querySelector(".add-vendor-form");
+    if (!addForm) return;
+    addForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = addForm.querySelector(".save-message");
+      try {
+        await api.post("/api/admin/vendors", {
+          name: addForm.name.value.trim(),
+          jdeVendorNumber: addForm.jdeVendorNumber.value.trim(),
+          cwStatus: addForm.cwStatus.value,
+          toyotaStatus: addForm.toyotaStatus.value,
+        });
+        vendorsCache = null;
+        showAddVendorForm = false;
+        await drawVendors(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  function renderAddVendorForm() {
+    return `
+      <form class="add-vendor-form review-row">
+        <div class="add-tech-grid">
+          <input name="name" placeholder="Vendor name" required />
+          <input name="jdeVendorNumber" placeholder="JDE Vendor #" />
+          <select name="cwStatus">
+            <option value="unknown">C&amp;W Unknown</option>
+            <option value="active">C&amp;W Active</option>
+            <option value="inactive">C&amp;W Inactive</option>
+          </select>
+          <select name="toyotaStatus">
+            <option value="unknown">Toyota Unknown</option>
+            <option value="approved">Toyota Approved</option>
+            <option value="not_approved">Toyota Not Approved</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Add vendor</button>
+        <span class="save-message"></span>
+      </form>
+    `;
+  }
+
+  function renderVendorRow(v, content) {
+    const el = document.createElement("div");
+    el.className = "review-row vendor-row";
+
+    if (vendorExpanded.has(v.id)) {
+      el.innerHTML = renderVendorEditForm(v);
+      const form = el.querySelector(".vendor-edit-form");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const msg = form.querySelector(".save-message");
+        try {
+          await api.patch(`/api/admin/vendors/${v.id}`, {
+            name: form.name.value.trim(),
+            jdeVendorNumber: form.jdeVendorNumber.value.trim(),
+            cwStatus: form.cwStatus.value,
+            toyotaStatus: form.toyotaStatus.value,
+            formsStatus: form.formsStatus.value,
+            phone: form.phone.value.trim(),
+            email: form.email.value.trim(),
+            poEmail: form.poEmail.value.trim(),
+            onlineSourceUrl: form.onlineSourceUrl.value.trim(),
+            midwestSitesSeen: form.midwestSitesSeen.value.trim(),
+            services: form.services.value.trim(),
+            invoicedPreviously: form.invoicedPreviously.value.trim(),
+            successfulInvoiceRecords: form.successfulInvoiceRecords.value === "" ? null : Number(form.successfulInvoiceRecords.value),
+            successfulSinceDate: form.successfulSinceDate.value || null,
+            trackerWorkExamples: form.trackerWorkExamples.value.trim(),
+            coverageOutsideMidwest: form.coverageOutsideMidwest.value.trim(),
+            notes: form.notes.value.trim(),
+          });
+          vendorsCache = null;
+          await drawVendors(content);
+        } catch (err) {
+          msg.textContent = err.message;
+        }
+      });
+      el.querySelector(".cancel-vendor-edit").addEventListener("click", () => {
+        vendorExpanded.delete(v.id);
+        refreshVendorList(content);
+      });
+      el.querySelector(".delete-vendor-btn").addEventListener("click", async () => {
+        if (!window.confirm(`Remove vendor "${v.name}"? This can't be undone.`)) return;
+        try {
+          await api.delete(`/api/admin/vendors/${v.id}`);
+          vendorsCache = null;
+          vendorExpanded.delete(v.id);
+          await drawVendors(content);
+        } catch (err) {
+          window.alert(`Could not remove: ${err.message}`);
+        }
+      });
+      return el;
+    }
+
+    el.innerHTML = `
+      <div class="review-row-summary vendor-summary">
+        <span class="review-row-name">${escapeHtml(v.name)}</span>
+        <span class="vendor-jde">${escapeHtml(v.jdeVendorNumber || "No JDE #")}</span>
+        <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
+        <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
+        <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.formsStatus]}">${escapeHtml(FORMS_STATUS_LABELS[v.formsStatus])}</span>
+        <button class="btn btn-secondary vendor-open-btn" type="button">Open</button>
+      </div>
+    `;
+    el.querySelector(".vendor-open-btn").addEventListener("click", () => {
+      vendorExpanded.add(v.id);
+      refreshVendorList(content);
+    });
+    return el;
+  }
+
+  function renderVendorEditForm(v) {
+    const cwSelect = ["unknown", "active", "inactive"]
+      .map((s) => `<option value="${s}" ${v.cwStatus === s ? "selected" : ""}>${escapeHtml(CW_STATUS_LABELS[s])}</option>`)
+      .join("");
+    const toyotaSelect = ["unknown", "approved", "not_approved"]
+      .map((s) => `<option value="${s}" ${v.toyotaStatus === s ? "selected" : ""}>${escapeHtml(TOYOTA_STATUS_LABELS[s])}</option>`)
+      .join("");
+    const formsSelect = ["unknown", "current", "outdated"]
+      .map((s) => `<option value="${s}" ${v.formsStatus === s ? "selected" : ""}>${escapeHtml(FORMS_STATUS_LABELS[s])}</option>`)
+      .join("");
+
+    return `
+      <form class="vendor-edit-form">
+        <div class="vendor-edit-grid">
+          <label class="profile-field"><span>Vendor name</span><input name="name" value="${escapeHtml(v.name)}" required /></label>
+          <label class="profile-field"><span>JDE Vendor #</span><input name="jdeVendorNumber" value="${escapeHtml(v.jdeVendorNumber || "")}" /></label>
+          <label class="profile-field"><span>C&amp;W status</span><select name="cwStatus">${cwSelect}</select></label>
+          <label class="profile-field"><span>Toyota status</span><select name="toyotaStatus">${toyotaSelect}</select></label>
+          <label class="profile-field"><span>Forms status</span><select name="formsStatus">${formsSelect}</select></label>
+          <label class="profile-field"><span>Phone</span><input name="phone" value="${escapeHtml(v.phone || "")}" /></label>
+          <label class="profile-field"><span>Email</span><input name="email" value="${escapeHtml(v.email || "")}" /></label>
+          <label class="profile-field"><span>PO email</span><input name="poEmail" value="${escapeHtml(v.poEmail || "")}" /></label>
+          <label class="profile-field"><span>Online source URL</span><input name="onlineSourceUrl" value="${escapeHtml(v.onlineSourceUrl || "")}" /></label>
+          <label class="profile-field"><span>Midwest sites seen</span><input name="midwestSitesSeen" value="${escapeHtml(v.midwestSitesSeen || "")}" /></label>
+          <label class="profile-field"><span>Services</span><input name="services" value="${escapeHtml(v.services || "")}" /></label>
+          <label class="profile-field"><span>Invoiced previously?</span><input name="invoicedPreviously" value="${escapeHtml(v.invoicedPreviously || "")}" /></label>
+          <label class="profile-field"><span>Successful invoice records</span><input name="successfulInvoiceRecords" type="number" min="0" value="${v.successfulInvoiceRecords ?? ""}" /></label>
+          <label class="profile-field"><span>Successful since date</span><input name="successfulSinceDate" type="date" value="${escapeHtml((v.successfulSinceDate || "").slice(0, 10))}" /></label>
+        </div>
+        <label class="profile-field"><span>Tracker work examples</span><textarea name="trackerWorkExamples" rows="2">${escapeHtml(v.trackerWorkExamples || "")}</textarea></label>
+        <label class="profile-field"><span>Potential coverage outside Midwest (online)</span><textarea name="coverageOutsideMidwest" rows="2">${escapeHtml(v.coverageOutsideMidwest || "")}</textarea></label>
+        <label class="profile-field"><span>Notes</span><textarea name="notes" rows="2">${escapeHtml(v.notes || "")}</textarea></label>
+        ${
+          v.rawStatusText
+            ? `<p class="vendor-raw-status">Original tracker status text: <em>${escapeHtml(v.rawStatusText)}</em></p>`
+            : ""
+        }
+        <div class="vendor-edit-actions">
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-link cancel-vendor-edit">Cancel</button>
+          <button type="button" class="btn btn-link danger-link delete-vendor-btn">Remove vendor</button>
+          <span class="save-message"></span>
+        </div>
+      </form>
+    `;
   }
 
   async function drawTechAllocation(content) {

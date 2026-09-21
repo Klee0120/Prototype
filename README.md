@@ -154,6 +154,19 @@ Demo logins:
   shown to an admin (allocating on a technician's behalf on Tech Allocation,
   or confirming "entered in UKG" on Weekly Review) — an admin who wants to
   attach a WOM photo does it from the E&F Locations & WOM tab's Documents panel.
+- **Vendors tab (admin)**: a vendor onboarding/compliance tracker, separate
+  from technicians/locations since a vendor is a company, not a person who
+  logs in or a place work happens. Each vendor tracks a JDE Vendor #, three
+  independent statuses (**C&W** active/inactive, **Toyota** approved/not
+  approved, **Forms** current/outdated — each defaulting to "unknown" until
+  set), plus detail fields (phone/email/PO email, services, Midwest sites
+  seen, invoicing history, notes, etc.). Search by name/JDE#/service and
+  filter by C&W or Toyota status; click a vendor to expand and edit, or
+  remove it outright (unlike locations/WOMs, which can't currently be
+  deleted — see "Where this stands"). `scripts/import-vendors.js` bulk-loads
+  or updates vendor records from a JSON file — built for importing an
+  existing vendor tracker spreadsheet once, safe to re-run (matches
+  existing vendors by JDE # or name and updates them instead of duplicating).
 - **Labor Reports tab (admin)**: a simple month-by-month archive for the
   labor report finance sends over, saved here so it's kept alongside the
   timesheeting for that period — for comparing against what this app
@@ -435,6 +448,22 @@ a missing code is obvious rather than silently blank.
   infrastructure for. Easy to add later behind the same
   `notification_pref` field (just another option alongside `email`) if it
   turns out to matter more than email in practice.
+- **Vendor statuses are a simplified read on messy source data.** The
+  imported tracker's "Current Use Status" column was really free text with
+  ~50 slightly different phrasings of the same handful of states (typos,
+  inconsistent capitalization, etc.) — the import script normalizes that
+  into the three clean statuses the app actually uses, but the original
+  text is preserved per vendor (`rawStatusText`, shown under "Original
+  tracker status text" when editing) in case a normalization guess turns
+  out wrong and needs a human to double check it. "Forms Outdated" is only
+  ever set when the original text said so explicitly; there's no positive
+  "forms confirmed current" signal in the source data, so most vendors show
+  "Forms Unknown" until someone actually verifies and updates them.
+- **Vendor search/filtering is entirely client-side.** With ~300 vendors
+  that's instant either way, but if this list grows into the thousands,
+  the search would want to move server-side (SQL `LIKE`/status filtering
+  in `server/routes/vendors.js`) rather than shipping the whole table to
+  the browser on every visit.
 - **Labor Reports is storage only — there's no comparison logic yet.** It
   saves the monthly file finance sends so it's kept next to the
   timesheeting for that period; nothing in the app reads its contents or
@@ -480,6 +509,7 @@ server/
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
                                   incl. formType/expiresAt for tech_form uploads
+    vendors.js                  GET/POST/PATCH/DELETE vendor onboarding/compliance records (admin-only)
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -490,6 +520,8 @@ server/
                                  "your hours are ready" notification
 scripts/
   deploy.sh               One-shot droplet setup: Node 22, app, systemd service, firewall
+  import-vendors.js         One-time/repeatable bulk import of vendor records from a JSON
+                               file into the live database (see the Vendors feature above)
 tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
@@ -502,6 +534,7 @@ tests/
                                  (add/complete/edit), notification-pref, allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
                                     tech_form type/expiration + admin expiring-forms list
+  vendors.test.js                 Vendor CRUD + authorization + audit logging
   audit.test.js                   Audit log writes and admin-only read access
   mailer.test.js                   Email is a safe no-op (not a crash) when SMTP isn't configured
 public/
@@ -514,8 +547,8 @@ public/
     views/
       login.js
       techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
-      adminReview.js         Admin review / Overview report / WOM docs / Labor Reports archive / audit /
-                              Tech Allocation switcher / Technicians tab entry
+      adminReview.js         Admin review / Overview report / WOM docs / Vendors tracker / Labor
+                              Reports archive / audit / Tech Allocation switcher / Technicians tab entry
       technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
       attachments.js          Shared attachments list + upload component
       womPhotoPrompt.js        Dismissible "add a photo?" nudge after submit / UKG-confirmed, reused

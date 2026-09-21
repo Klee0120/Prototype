@@ -1077,6 +1077,73 @@ button, input, select {
   width: 100%;
 }
 
+.vendor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.vendor-toolbar .vendor-search {
+  flex: 1 1 260px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.vendor-toolbar select {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.vendor-count {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 4px 0 10px;
+}
+
+.vendor-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.vendor-jde {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.vendor-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.vendor-edit-form textarea {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
+}
+
+.vendor-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.vendor-raw-status {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0;
+}
+
 .onboarding-error,
 .device-error {
   color: var(--danger);

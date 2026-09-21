@@ -149,6 +149,30 @@ db.exec(`
     requested_at TEXT NOT NULL,
     completed_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS vendors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    jde_vendor_number TEXT,
+    cw_status TEXT NOT NULL DEFAULT 'unknown',
+    toyota_status TEXT NOT NULL DEFAULT 'unknown',
+    forms_status TEXT NOT NULL DEFAULT 'unknown',
+    raw_status_text TEXT DEFAULT '',
+    po_email TEXT DEFAULT '',
+    invoiced_previously TEXT DEFAULT '',
+    successful_invoice_records INTEGER,
+    successful_since_date TEXT,
+    midwest_sites_seen TEXT DEFAULT '',
+    services TEXT DEFAULT '',
+    tracker_work_examples TEXT DEFAULT '',
+    coverage_outside_midwest TEXT DEFAULT '',
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
+    online_source_url TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 // Additive columns for existing databases created before the roster
@@ -470,6 +494,130 @@ function setDeviceRequestDetails(deviceId, requestId, { requestType, referenceNu
     deviceId
   );
   return listDeviceRequests(deviceId);
+}
+
+// ---- Vendors ----
+//
+// A vendor onboarding/compliance tracker (JDE vendor record, C&W approval,
+// Toyota approval, forms currency) -- separate from technicians/locations
+// since a vendor isn't a person who logs in or a place work happens, just a
+// company being tracked for onboarding/compliance status.
+
+const CW_STATUSES = ["active", "inactive", "unknown"];
+const TOYOTA_STATUSES = ["approved", "not_approved", "unknown"];
+const FORMS_STATUSES = ["current", "outdated", "unknown"];
+
+function presentVendorRow(v) {
+  return {
+    id: v.id,
+    name: v.name,
+    jdeVendorNumber: v.jde_vendor_number,
+    cwStatus: v.cw_status,
+    toyotaStatus: v.toyota_status,
+    formsStatus: v.forms_status,
+    rawStatusText: v.raw_status_text,
+    poEmail: v.po_email,
+    invoicedPreviously: v.invoiced_previously,
+    successfulInvoiceRecords: v.successful_invoice_records,
+    successfulSinceDate: v.successful_since_date,
+    midwestSitesSeen: v.midwest_sites_seen,
+    services: v.services,
+    trackerWorkExamples: v.tracker_work_examples,
+    coverageOutsideMidwest: v.coverage_outside_midwest,
+    phone: v.phone,
+    email: v.email,
+    onlineSourceUrl: v.online_source_url,
+    notes: v.notes,
+    createdAt: v.created_at,
+    updatedAt: v.updated_at,
+  };
+}
+
+function listVendors() {
+  return db.prepare("SELECT * FROM vendors ORDER BY name").all().map(presentVendorRow);
+}
+
+function findVendor(id) {
+  const row = db.prepare("SELECT * FROM vendors WHERE id = ?").get(Number(id));
+  return row ? presentVendorRow(row) : null;
+}
+
+function createVendor(fields) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO vendors (
+        name, jde_vendor_number, cw_status, toyota_status, forms_status, raw_status_text,
+        po_email, invoiced_previously, successful_invoice_records, successful_since_date,
+        midwest_sites_seen, services, tracker_work_examples, coverage_outside_midwest,
+        phone, email, online_source_url, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      fields.name,
+      fields.jdeVendorNumber || null,
+      fields.cwStatus || "unknown",
+      fields.toyotaStatus || "unknown",
+      fields.formsStatus || "unknown",
+      fields.rawStatusText || "",
+      fields.poEmail || "",
+      fields.invoicedPreviously || "",
+      fields.successfulInvoiceRecords == null ? null : Number(fields.successfulInvoiceRecords),
+      fields.successfulSinceDate || null,
+      fields.midwestSitesSeen || "",
+      fields.services || "",
+      fields.trackerWorkExamples || "",
+      fields.coverageOutsideMidwest || "",
+      fields.phone || "",
+      fields.email || "",
+      fields.onlineSourceUrl || "",
+      fields.notes || "",
+      now,
+      now
+    );
+  return findVendor(result.lastInsertRowid);
+}
+
+function updateVendor(id, fields) {
+  if (!findVendor(id)) return null;
+  db.prepare(
+    `UPDATE vendors SET
+      name = ?, jde_vendor_number = ?, cw_status = ?, toyota_status = ?, forms_status = ?,
+      raw_status_text = ?, po_email = ?, invoiced_previously = ?, successful_invoice_records = ?,
+      successful_since_date = ?, midwest_sites_seen = ?, services = ?, tracker_work_examples = ?,
+      coverage_outside_midwest = ?, phone = ?, email = ?, online_source_url = ?, notes = ?,
+      updated_at = ?
+     WHERE id = ?`
+  ).run(
+    fields.name,
+    fields.jdeVendorNumber || null,
+    fields.cwStatus || "unknown",
+    fields.toyotaStatus || "unknown",
+    fields.formsStatus || "unknown",
+    fields.rawStatusText || "",
+    fields.poEmail || "",
+    fields.invoicedPreviously || "",
+    fields.successfulInvoiceRecords == null ? null : Number(fields.successfulInvoiceRecords),
+    fields.successfulSinceDate || null,
+    fields.midwestSitesSeen || "",
+    fields.services || "",
+    fields.trackerWorkExamples || "",
+    fields.coverageOutsideMidwest || "",
+    fields.phone || "",
+    fields.email || "",
+    fields.onlineSourceUrl || "",
+    fields.notes || "",
+    new Date().toISOString(),
+    Number(id)
+  );
+  return findVendor(id);
+}
+
+function deleteVendor(id) {
+  const vendor = findVendor(id);
+  if (!vendor) return null;
+  db.prepare("DELETE FROM vendors WHERE id = ?").run(Number(id));
+  return vendor;
 }
 
 // ---- Allocation history ----
@@ -844,6 +992,14 @@ module.exports = {
   setTechnicianBasicInfo,
   NOTIFICATION_PREFS,
   setNotificationPref,
+  CW_STATUSES,
+  TOYOTA_STATUSES,
+  FORMS_STATUSES,
+  listVendors,
+  findVendor,
+  createVendor,
+  updateVendor,
+  deleteVendor,
   ONBOARDING_TASKS,
   getOnboardingProgress,
   setOnboardingTask,
