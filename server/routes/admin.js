@@ -24,6 +24,9 @@ function presentTechnician(t) {
     phone: t.phone,
     ukgId: t.ukg_id,
     position: t.position,
+    hireDate: t.hire_date,
+    terminationDate: t.termination_date,
+    standardDailyHours: t.standard_daily_hours,
   };
 }
 
@@ -78,12 +81,23 @@ router.patch("/technicians/:id/employment-status", (req, res) => {
   res.json(presentTechnician(db.findTechnician(tech.id)));
 });
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 router.patch("/technicians/:id/basic-info", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
 
-  const { email, phone, ukgId, position } = req.body || {};
-  db.setTechnicianBasicInfo(tech.id, { email, phone, ukgId, position });
+  const { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours } = req.body || {};
+  if (hireDate && !DATE_RE.test(hireDate)) return res.status(400).json({ error: "hireDate must be YYYY-MM-DD" });
+  if (terminationDate && !DATE_RE.test(terminationDate)) {
+    return res.status(400).json({ error: "terminationDate must be YYYY-MM-DD" });
+  }
+  if (standardDailyHours !== "" && standardDailyHours != null) {
+    const n = Number(standardDailyHours);
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: "standardDailyHours must be a non-negative number" });
+  }
+
+  db.setTechnicianBasicInfo(tech.id, { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours });
   db.addAudit(req.user.id, "TECH_BASIC_INFO_UPDATED", `${req.user.name} updated ${tech.name}'s basic info`);
   res.json(presentTechnician(db.findTechnician(tech.id)));
 });

@@ -23,11 +23,36 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
   await t.test("admin can update basic info", async () => {
     const res = await server.call("PATCH", "/api/admin/technicians/T1001/basic-info", {
       userId: "ADMIN",
-      body: { email: "new@example.com", phone: "555-1111", ukgId: "999", position: "Lead Tech" },
+      body: {
+        email: "new@example.com",
+        phone: "555-1111",
+        ukgId: "999",
+        position: "Lead Tech",
+        hireDate: "2026-01-12",
+        terminationDate: "",
+        standardDailyHours: 8,
+      },
     });
     assert.equal(res.status, 200);
     assert.equal(res.body.email, "new@example.com");
     assert.equal(res.body.position, "Lead Tech");
+    assert.equal(res.body.hireDate, "2026-01-12");
+    assert.equal(res.body.terminationDate, null);
+    assert.equal(res.body.standardDailyHours, 8);
+  });
+
+  await t.test("rejects a malformed hire/termination date or a negative standard daily hours", async () => {
+    const badDate = await server.call("PATCH", "/api/admin/technicians/T1001/basic-info", {
+      userId: "ADMIN",
+      body: { hireDate: "01/12/2026" },
+    });
+    assert.equal(badDate.status, 400);
+
+    const badHours = await server.call("PATCH", "/api/admin/technicians/T1001/basic-info", {
+      userId: "ADMIN",
+      body: { standardDailyHours: -1 },
+    });
+    assert.equal(badHours.status, 400);
   });
 
   await t.test("admin can change employment status", async () => {

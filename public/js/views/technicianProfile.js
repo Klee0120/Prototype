@@ -224,6 +224,9 @@ export function renderTechniciansTab(content) {
           <span>Status</span>
           <select name="employmentStatus">${statusOptions}</select>
         </label>
+        <label class="profile-field"><span>Hire date</span><input type="date" name="hireDate" value="${escapeHtml(tech.hireDate || "")}" /></label>
+        <label class="profile-field"><span>Termination date</span><input type="date" name="terminationDate" value="${escapeHtml(tech.terminationDate || "")}" /></label>
+        <label class="profile-field"><span>Standard daily hours (net of break)</span><input type="number" min="0" step="0.25" name="standardDailyHours" value="${tech.standardDailyHours ?? ""}" /></label>
         <button type="submit" class="btn btn-primary">Save</button>
         <span class="save-message basic-info-message"></span>
       </form>
@@ -233,6 +236,9 @@ export function renderTechniciansTab(content) {
     const original = {
       homeLocationCode: tech.homeLocationCode || "",
       employmentStatus: tech.employmentStatus,
+      hireDate: tech.hireDate || "",
+      terminationDate: tech.terminationDate || "",
+      standardDailyHours: tech.standardDailyHours ?? "",
     };
 
     form.addEventListener("submit", async (e) => {
@@ -245,7 +251,13 @@ export function renderTechniciansTab(content) {
           phone: form.phone.value.trim(),
           ukgId: form.ukgId.value.trim(),
           position: form.position.value.trim(),
+          hireDate: form.hireDate.value,
+          terminationDate: form.terminationDate.value,
+          standardDailyHours: form.standardDailyHours.value,
         });
+        original.hireDate = form.hireDate.value;
+        original.terminationDate = form.terminationDate.value;
+        original.standardDailyHours = form.standardDailyHours.value;
         if (form.homeLocationCode.value !== original.homeLocationCode) {
           await api.patch(`/api/admin/technicians/${tech.id}/home-location`, { locationCode: form.homeLocationCode.value || null });
           original.homeLocationCode = form.homeLocationCode.value;
@@ -260,6 +272,9 @@ export function renderTechniciansTab(content) {
         // never shows a value that isn't actually persisted.
         form.homeLocationCode.value = original.homeLocationCode;
         form.employmentStatus.value = original.employmentStatus;
+        form.hireDate.value = original.hireDate;
+        form.terminationDate.value = original.terminationDate;
+        form.standardDailyHours.value = original.standardDailyHours;
         msg.textContent = `Not saved: ${err.message}`;
       }
     });

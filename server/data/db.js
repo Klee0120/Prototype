@@ -146,10 +146,13 @@ db.exec(`
 
 // Additive columns for existing databases created before the roster
 // expansion — safe to just add, unlike the relational rebuild above.
-for (const col of ["email", "phone", "ukg_id", "position"]) {
+for (const col of ["email", "phone", "ukg_id", "position", "hire_date", "termination_date"]) {
   if (!hasColumn("technicians", col)) {
     db.exec(`ALTER TABLE technicians ADD COLUMN ${col} TEXT`);
   }
+}
+if (!hasColumn("technicians", "standard_daily_hours")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN standard_daily_hours REAL");
 }
 
 // employment_status (active/inactive/terminated/retired) replaces the old
@@ -294,12 +297,19 @@ function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId
   return findTechnician(id);
 }
 
-function setTechnicianBasicInfo(techId, { email, phone, ukgId, position }) {
-  db.prepare("UPDATE technicians SET email = ?, phone = ?, ukg_id = ?, position = ? WHERE id = ?").run(
+function setTechnicianBasicInfo(techId, { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours }) {
+  db.prepare(
+    `UPDATE technicians
+     SET email = ?, phone = ?, ukg_id = ?, position = ?, hire_date = ?, termination_date = ?, standard_daily_hours = ?
+     WHERE id = ?`
+  ).run(
     email || null,
     phone || null,
     ukgId || null,
     position || null,
+    hireDate || null,
+    terminationDate || null,
+    standardDailyHours === "" || standardDailyHours == null ? null : Number(standardDailyHours),
     techId
   );
   return findTechnician(techId);

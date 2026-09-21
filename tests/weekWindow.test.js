@@ -52,15 +52,17 @@ test("week window: route enforcement for technicians vs admin", async (t) => {
     week.setTestNow(null);
   });
 
-  const OPEN_WEEK = "2026-09-14";
-  // Deliberately not "2026-09-07" (last week) -- seed data pre-approves that
-  // exact week for T1001/T1002, which would make it locked for a different
-  // reason than the one this test is checking.
-  const PAST_WEEK = "2026-08-31";
-  const FUTURE_WEEK = "2026-09-21";
+  // Fixed, safely-past dates (all Mondays, 7 days apart) rather than dates
+  // near "today" -- seed data's thisWeek/lastWeek roll forward with the
+  // real calendar, so a literal close to today will eventually collide
+  // with one of those (as happened here once already). 2024-01-08 etc.
+  // will never collide with "today" in this app's lifetime.
+  const OPEN_WEEK = "2024-01-08";
+  const PAST_WEEK = "2024-01-01";
+  const FUTURE_WEEK = "2024-01-15";
 
-  // Pin "now" to Friday of the open week's window.
-  week.setTestNow(week.businessNowFromParts(2026, 9, 18, 10, 0));
+  // Pin "now" to Thursday of the open week's window.
+  week.setTestNow(week.businessNowFromParts(2024, 1, 11, 10, 0));
 
   await t.test("technician has full access to the open week", async () => {
     const put = await server.call("PUT", `/api/technicians/T1001/weeks/${OPEN_WEEK}/allocations`, {

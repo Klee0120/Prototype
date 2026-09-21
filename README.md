@@ -47,8 +47,11 @@ SQLite database and uploads folder per test file (`tests/helpers.js`), so
 it never touches your real `server/data/store.sqlite`. It covers login,
 allocation validation (hours mismatch, closed/unknown WOM rejection,
 per-tech authorization, admin-on-behalf-of), week locking, the Thu-Mon
-technician edit window (open/past/future/gap, with a test-only clock
-override so this doesn't depend on which day the suite happens to run),
+technician edit window (open/past/future/gap). Every test file gets a
+default clock pin (Thursday of "this week", via `tests/helpers.js`) so a
+plain technician PUT/submit doesn't depend on which real day/time
+`npm test` happens to run — `weekWindow.test.js` overrides that pin
+per-test to specifically exercise the other three states. Also:
 admin approve/reject/unlock, the UKG-confirmed checklist, WOM status
 management, technician creation and employment status,
 onboarding/devices/allocation history, file upload/download/delete
@@ -129,7 +132,12 @@ Demo logins:
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
-  - Basic Info (editable email/phone/UKG ID/position/home location/**employment status**: active/inactive/terminated/retired)
+  - Basic Info (editable email/phone/UKG ID/position/home location/
+    **employment status**: active/inactive/terminated/retired/**hire
+    date**/**termination date**/**standard daily hours (net of break)**).
+    The technician's own `id` (e.g. `T1001`) already serves as the stable
+    internal identifier a UKG ID correction shouldn't be able to disturb —
+    no separate "Employee ID" field was added on top of it
   - Labor Allocation History — every WOM/E&F/time-off row ever allocated to
     that technician, across all weeks, so you can see what's been worked on
   - Onboarding — a fixed 5-item checklist per technician (not yet an
@@ -243,6 +251,10 @@ since only mock data has ever been in them).
   ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
   rate-limit is what actually prevents brute-forcing it online. Worth moving
   to longer PINs or real passwords before this holds anything sensitive.
+- **Standard daily hours is stored but not used anywhere yet.** It's
+  plain reference data on the profile right now — a natural next step
+  would be using it to pre-fill the admin's UKG hours form (instead of
+  the current blank/last-saved default), but that's not wired up.
 - **Onboarding is a fixed checklist, not a template.** The 5 tasks are
   hardcoded in `server/data/db.js` (`ONBOARDING_TASKS`); there's no UI yet
   to add/remove/reorder tasks. Fine for a stable process, a real limitation

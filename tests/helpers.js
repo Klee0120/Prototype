@@ -15,6 +15,21 @@ process.env.LABOR_UPLOADS_DIR = uploadsDir;
 if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 
 const { createApp } = require("../server/app");
+const week = require("../server/utils/week");
+
+// The tech edit-window feature (server/utils/week.js) makes whether "this
+// week" is fully open for a technician depend on the real day/time the
+// suite happens to run -- Mon/Tue/Wed (or Mon afternoon) would otherwise
+// make a plain PUT/submit as a technician fail depending on the calendar.
+// Pin "now" to Thursday of whatever week currentWeekMonday() considers
+// "this week", so every test file gets a stable, fully-open default week
+// regardless of which real day `npm test` runs on. Individual test files
+// (e.g. weekWindow.test.js) can still call week.setTestNow(...) themselves
+// to exercise other states -- this is just the shared baseline.
+{
+  const [y, m, d] = week.currentWeekMonday().split("-").map(Number);
+  week.setTestNow(week.businessNowFromParts(y, m, d + 3, 10, 0));
+}
 
 // Matches server/data/seed.js. Lets test call sites keep saying
 // `{ userId: "T1001" }` while actually exercising the real login/session
