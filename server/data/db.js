@@ -84,6 +84,7 @@ db.exec(`
     reviewed_by TEXT,
     note TEXT DEFAULT '',
     weekend_addendum_at TEXT,
+    purelyhr_verified_at TEXT,
     PRIMARY KEY (tech_id, week_monday)
   );
 
@@ -248,6 +249,16 @@ if (!hasColumn("weeks", "ukg_confirmed_at")) {
 // admin's attention without touching its already-locked Mon-Fri status.
 if (!hasColumn("weeks", "weekend_addendum_at")) {
   db.exec("ALTER TABLE weeks ADD COLUMN weekend_addendum_at TEXT");
+}
+// PurelyHR tracks time-off balances/requests separately from UKG (and
+// doesn't link to it), so a week's PTO/Sick/Holiday/Bereavement hours have
+// to be manually cross-checked there. NULL means "this week has time off
+// and hasn't been checked yet" -- see setPurelyHrVerified. Cleared
+// back to NULL whenever the week's allocations are rewritten (saveAllocations/
+// saveWeekendAllocations), since an edit could add, remove, or change the
+// time off that was verified.
+if (!hasColumn("weeks", "purelyhr_verified_at")) {
+  db.exec("ALTER TABLE weeks ADD COLUMN purelyhr_verified_at TEXT");
 }
 
 // Flags a specific day as waiting on a real UKG punch correction (a missed
@@ -1036,7 +1047,7 @@ function getWeek(techId, weekMonday) {
   const row = db
     .prepare(
       `SELECT status, submitted_at, reviewed_at, reviewed_by, note, ukg_confirmed_at, ukg_confirmed_by,
-              weekend_addendum_at
+              weekend_addendum_at, purelyhr_verified_at
        FROM weeks WHERE tech_id = ? AND week_monday = ?`
     )
     .get(techId, weekMonday);
@@ -1058,6 +1069,7 @@ function getWeek(techId, weekMonday) {
       ukgConfirmedAt: null,
       ukgConfirmedBy: null,
       weekendAddendumAt: null,
+      purelyhrVerifiedAt: null,
     };
   }
   return {
@@ -1070,6 +1082,7 @@ function getWeek(techId, weekMonday) {
     ukgConfirmedAt: row.ukg_confirmed_at,
     ukgConfirmedBy: row.ukg_confirmed_by,
     weekendAddendumAt: row.weekend_addendum_at,
+    purelyhrVerifiedAt: row.purelyhr_verified_at,
   };
 }
 
@@ -1088,7 +1101,7 @@ function saveWeekendAllocations(techId, weekMonday, allocations) {
   for (const a of allocations) {
     insert.run(techId, weekMonday, a.day, a.type, a.locationCode || null, a.womCode || null, a.hours);
   }
-  db.prepare("UPDATE weeks SET weekend_addendum_at = ? WHERE tech_id = ? AND week_monday = ?").run(
+  db.prepare("UPDATE weeks SET weekend_addendum_at = ?, purelyhr_verified_at = NULL WHERE tech_id = ? AND week_monday = ?").run(
     new Date().toISOString(),
     techId,
     weekMonday
@@ -1100,6 +1113,53 @@ function acknowledgeWeekendAddendum(techId, weekMonday) {
   ensureWeekRow(techId, weekMonday);
   db.prepare("UPDATE weeks SET weekend_addendum_at = NULL WHERE tech_id = ? AND week_monday = ?").run(techId, weekMonday);
   return getWeek(techId, weekMonday);
+}
+
+// Only a submitted/approved week with actual time off on it can be marked
+// verified -- a draft, or a week with none, has nothing to check against
+// PurelyHR. Symmetric set/unset (like setUkgConfirmed) rather than a
+// one-way "mark" so the same call handles both the button and its Undo.
+function setPurelyHrVerified(techId, weekMonday, verified) {
+  const week = getWeek(techId, weekMonday);
+  if (verified) {
+    if (!["submitted", "approved"].includes(week.status)) return null;
+    if (!week.allocations.some((a) => a.type === "timeoff")) return null;
+    db.prepare("UPDATE weeks SET purelyhr_verified_at = ? WHERE tech_id = ? AND week_monday = ?").run(
+      new Date().toISOString(),
+      techId,
+      weekMonday
+    );
+  } else {
+    db.prepare("UPDATE weeks SET purelyhr_verified_at = NULL WHERE tech_id = ? AND week_monday = ?").run(techId, weekMonday);
+  }
+  return getWeek(techId, weekMonday);
+}
+
+// Every submitted/approved week, across all technicians, that has time off
+// on it and hasn't been checked against PurelyHR yet -- not just the
+// currently-open week, so a past week doesn't quietly get missed. Each
+// entry includes the actual time-off rows so admin doesn't have to open
+// the week just to see what to look up.
+function listWeeksNeedingPurelyHrVerification() {
+  const weeks = db
+    .prepare(
+      `SELECT DISTINCT w.tech_id AS techId, t.name AS techName, w.week_monday AS weekMonday
+       FROM weeks w
+       JOIN technicians t ON t.id = w.tech_id
+       WHERE w.purelyhr_verified_at IS NULL
+         AND w.status IN ('submitted', 'approved')
+         AND EXISTS (
+           SELECT 1 FROM allocations a
+           WHERE a.tech_id = w.tech_id AND a.week_monday = w.week_monday AND a.type = 'timeoff'
+         )
+       ORDER BY w.week_monday DESC`
+    )
+    .all();
+
+  const timeOffStmt = db.prepare(
+    "SELECT day, wom_code AS timeOffType, hours FROM allocations WHERE tech_id = ? AND week_monday = ? AND type = 'timeoff' ORDER BY id"
+  );
+  return weeks.map((w) => ({ ...w, timeOff: timeOffStmt.all(w.techId, w.weekMonday) }));
 }
 
 function setUkgConfirmed(techId, weekMonday, adminId, confirmed) {
@@ -1129,6 +1189,9 @@ function saveAllocations(techId, weekMonday, allocations) {
   for (const a of allocations) {
     insert.run(techId, weekMonday, a.day, a.type, a.locationCode || null, a.womCode || null, a.hours);
   }
+  // An edit could add, remove, or change the time off that was already
+  // verified against PurelyHR -- clear the mark so it gets a fresh look.
+  db.prepare("UPDATE weeks SET purelyhr_verified_at = NULL WHERE tech_id = ? AND week_monday = ?").run(techId, weekMonday);
   return getWeek(techId, weekMonday);
 }
 
@@ -1386,6 +1449,8 @@ module.exports = {
   saveAllocations,
   saveWeekendAllocations,
   acknowledgeWeekendAddendum,
+  setPurelyHrVerified,
+  listWeeksNeedingPurelyHrVerification,
   setUkgConfirmed,
   submitWeek,
   approveWeek,

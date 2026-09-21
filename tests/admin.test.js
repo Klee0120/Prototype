@@ -573,3 +573,144 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(res.status, 403);
   });
 });
+
+test("purelyhr verification: time off flagged for manual cross-check", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const meta = await server.call("GET", "/api/meta/current-week");
+  const week = meta.body.weekMonday;
+
+  await t.test("a submitted week with time off shows hasTimeOff and no verification yet", async () => {
+    await server.call("POST", `/api/admin/weeks/T1001/${week}/unlock`, { userId: "ADMIN" });
+
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: [
+          { day: "Mon", type: "ef", locationCode: "PRINCETON", hours: 8 },
+          { day: "Tue", type: "ef", locationCode: "PRINCETON", hours: 8 },
+          { day: "Wed", type: "timeoff", timeOffType: "sick", hours: 8 },
+          { day: "Thu", type: "ef", locationCode: "PRINCETON", hours: 8 },
+          { day: "Fri", type: "ef", locationCode: "PRINCETON", hours: 8 },
+        ],
+      },
+    });
+    assert.equal(put.status, 200);
+    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "ADMIN" });
+    assert.equal(submit.status, 200);
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001 = overview.body.find((r) => r.technician.id === "T1001");
+    assert.equal(t1001.hasTimeOff, true);
+    assert.equal(t1001.purelyhrVerifiedAt, null);
+  });
+
+  await t.test("shows up in the admin's unverified list with the time-off detail", async () => {
+    const res = await server.call("GET", "/api/admin/purelyhr-unverified", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const entry = res.body.find((w) => w.techId === "T1001" && w.weekMonday === week);
+    assert.ok(entry, "expected T1001's week in the unverified list");
+    assert.ok(entry.timeOff.some((t) => t.timeOffType === "sick" && t.hours === 8 && t.day === "Wed"));
+
+    const forbidden = await server.call("GET", "/api/admin/purelyhr-unverified", { userId: "T1001" });
+    assert.equal(forbidden.status, 403);
+  });
+
+  await t.test("a technician cannot mark PurelyHR verification themselves", async () => {
+    const res = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/purelyhr-verified`, {
+      userId: "T1001",
+      body: { verified: true },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("admin marks it verified, and it drops off the unverified list", async () => {
+    const res = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/purelyhr-verified`, {
+      userId: "ADMIN",
+      body: { verified: true },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.purelyhrVerifiedAt);
+
+    const list = await server.call("GET", "/api/admin/purelyhr-unverified", { userId: "ADMIN" });
+    assert.ok(!list.body.some((w) => w.techId === "T1001" && w.weekMonday === week));
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001 = overview.body.find((r) => r.technician.id === "T1001");
+    assert.ok(t1001.purelyhrVerifiedAt);
+  });
+
+  await t.test("undo clears it, putting the week back on the unverified list", async () => {
+    const res = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/purelyhr-verified`, {
+      userId: "ADMIN",
+      body: { verified: false },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.purelyhrVerifiedAt, null);
+
+    const list = await server.call("GET", "/api/admin/purelyhr-unverified", { userId: "ADMIN" });
+    assert.ok(list.body.some((w) => w.techId === "T1001" && w.weekMonday === week));
+  });
+
+  await t.test("editing the week's allocations clears an existing verification", async () => {
+    const verify = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/purelyhr-verified`, {
+      userId: "ADMIN",
+      body: { verified: true },
+    });
+    assert.ok(verify.body.purelyhrVerifiedAt);
+
+    await server.call("POST", `/api/admin/weeks/T1001/${week}/unlock`, { userId: "ADMIN" });
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: [
+          { day: "Mon", type: "ef", locationCode: "PRINCETON", hours: 8 },
+          { day: "Tue", type: "ef", locationCode: "PRINCETON", hours: 8 },
+          { day: "Wed", type: "timeoff", timeOffType: "vacation", hours: 8 },
+          { day: "Thu", type: "ef", locationCode: "PRINCETON", hours: 8 },
+          { day: "Fri", type: "ef", locationCode: "PRINCETON", hours: 8 },
+        ],
+      },
+    });
+    assert.equal(put.status, 200);
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001 = overview.body.find((r) => r.technician.id === "T1001");
+    assert.equal(t1001.purelyhrVerifiedAt, null);
+  });
+
+  await t.test("a week with no time off can't be verified", async () => {
+    await server.call("POST", `/api/admin/weeks/T1002/${week}/unlock`, { userId: "ADMIN" });
+    // T1002's UKG hours may carry residual values from an earlier test in
+    // this file -- pin them so the allocation below is guaranteed to match.
+    await server.call("PUT", `/api/admin/weeks/T1002/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: 8, Tue: 8, Wed: 8, Thu: 8, Fri: 8, Sat: 0, Sun: 0 } },
+    });
+    const put = await server.call("PUT", `/api/technicians/T1002/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"].map((day) => ({ day, type: "ef", locationCode: "GEORGETOWN", hours: 8 })),
+      },
+    });
+    assert.equal(put.status, 200);
+    const submit = await server.call("POST", `/api/technicians/T1002/weeks/${week}/submit`, { userId: "ADMIN" });
+    assert.equal(submit.status, 200);
+
+    const res = await server.call("PATCH", `/api/admin/weeks/T1002/${week}/purelyhr-verified`, {
+      userId: "ADMIN",
+      body: { verified: true },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("a draft week can't be verified even with time off entered", async () => {
+    await server.call("POST", `/api/admin/weeks/T1001/${week}/unlock`, { userId: "ADMIN" });
+    const res = await server.call("PATCH", `/api/admin/weeks/T1001/${week}/purelyhr-verified`, {
+      userId: "ADMIN",
+      body: { verified: true },
+    });
+    assert.equal(res.status, 409);
+  });
+});

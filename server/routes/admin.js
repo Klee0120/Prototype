@@ -229,6 +229,14 @@ router.get("/weekend-addenda", (req, res) => {
   res.json(db.listWeekendAddenda());
 });
 
+// Weeks with time off that hasn't been checked against PurelyHR yet, across
+// all technicians and weeks -- PurelyHR tracks time-off balances/requests
+// separately from UKG and doesn't link to it, so this has to be verified
+// by hand. For the Priorities tab's attention list.
+router.get("/purelyhr-unverified", (req, res) => {
+  res.json(db.listWeeksNeedingPurelyHrVerification());
+});
+
 const WEEKLY_HOURS_TARGET = 40;
 
 function computeWeekRow(tech, weekMonday) {
@@ -267,6 +275,8 @@ function computeWeekRow(tech, weekMonday) {
     note: week.note,
     ukgConfirmedAt: week.ukgConfirmedAt,
     ukgConfirmedBy: week.ukgConfirmedBy,
+    hasTimeOff: week.allocations.some((a) => a.type === "timeoff"),
+    purelyhrVerifiedAt: week.purelyhrVerifiedAt,
   };
 }
 
@@ -465,6 +475,32 @@ router.post("/weeks/:techId/:weekMonday/acknowledge-weekend", (req, res) => {
   db.acknowledgeWeekendAddendum(techId, weekMonday);
   db.addAudit(req.user.id, "WEEKEND_ADDENDUM_ACKNOWLEDGED", `${req.user.name} reviewed weekend hours for ${tech.name}, week ${weekMonday}`);
   res.json({ ok: true });
+});
+
+// Admin's own confirmation that this week's time off has been checked
+// against PurelyHR (which doesn't link to UKG or this app) -- symmetric
+// set/unset, same shape as ukg-confirmed above. Setting only succeeds for a
+// submitted/approved week that actually has time off on it; unsetting
+// (Undo) always succeeds since there's nothing to protect against there.
+router.patch("/weeks/:techId/:weekMonday/purelyhr-verified", (req, res) => {
+  const { techId, weekMonday } = req.params;
+  const tech = db.findTechnician(techId);
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
+
+  const { verified } = req.body || {};
+  const week = db.setPurelyHrVerified(techId, weekMonday, Boolean(verified));
+  if (!week) {
+    const current = db.getWeek(techId, weekMonday);
+    if (!["submitted", "approved"].includes(current.status)) {
+      return res.status(409).json({ error: `Only a submitted or approved week can be verified (currently ${current.status})` });
+    }
+    return res.status(409).json({ error: "This week has no time off to verify" });
+  }
+
+  if (verified) {
+    db.addAudit(req.user.id, "PURELYHR_VERIFIED", `${req.user.name} verified ${tech.name}'s time off for week ${weekMonday} in PurelyHR`);
+  }
+  res.json({ ok: true, purelyhrVerifiedAt: week.purelyhrVerifiedAt });
 });
 
 const REPORT_GAP_MONTHS_BACK = 3;

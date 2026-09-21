@@ -676,25 +676,31 @@ export async function renderAdminReview(container) {
   // calls fails.
   async function computePriorityCount() {
     try {
-      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms] = await Promise.all([
+      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified] = await Promise.all([
         api.get("/api/admin/expiring-forms"),
         api.get("/api/admin/vendors"),
         api.get("/api/admin/weekend-addenda"),
         api.get("/api/admin/report-gaps"),
         api.get("/api/admin/missing-ukg"),
         api.get("/api/woms"),
+        api.get("/api/admin/purelyhr-unverified"),
       ]);
       const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
-      const incompleteDocCount = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale).length;
       const smartsheetGapCount = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
+      // Vendor document-check completeness is deliberately left out of this
+      // badge: against a real, bulk-imported vendor list, "not yet checked"
+      // starts out true for nearly everyone, so counting it here would make
+      // the badge reflect the whole backlog size instead of "a few things
+      // to look at" -- it still shows up in full in the section below, to
+      // work through at whatever daily pace makes sense (see Today's focus).
       return (
         expiringForms.length +
         outdatedVendorCount +
-        incompleteDocCount +
         weekendAddenda.length +
         reportGaps.length +
         missingUkg.length +
-        smartsheetGapCount
+        smartsheetGapCount +
+        purelyhrUnverified.length
       );
     } catch {
       return 0;
@@ -706,13 +712,14 @@ export async function renderAdminReview(container) {
   // other tab. Each section below is its own quiet list; the only "in your
   // face" surface at all is the small count on the tab itself.
   async function drawPriorities(content) {
-    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms] = await Promise.all([
+    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified] = await Promise.all([
       api.get("/api/admin/expiring-forms"),
       api.get("/api/admin/vendors"),
       api.get("/api/admin/weekend-addenda"),
       api.get("/api/admin/report-gaps"),
       api.get("/api/admin/missing-ukg"),
       api.get("/api/woms"),
+      api.get("/api/admin/purelyhr-unverified"),
     ]);
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
     const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale);
@@ -820,6 +827,19 @@ export async function renderAdminReview(container) {
       )
     );
     sections.appendChild(renderWomSmartsheetSection(content, womsNeedingSmartsheetUpdate));
+    sections.appendChild(
+      renderPrioritySection(
+        "Time off needing PurelyHR verification",
+        purelyhrUnverified.map((w) => ({
+          label: w.techName,
+          detail: `week of ${w.weekMonday} — ${w.timeOff.map((t) => `${TIME_OFF_LABELS[t.timeOffType] || t.timeOffType} ${t.hours}h (${t.day})`).join(", ")}`,
+          kind: "purelyhr",
+          techId: w.techId,
+          weekMonday: w.weekMonday,
+        })),
+        "No time off is waiting on a PurelyHR check."
+      )
+    );
 
     sections.querySelectorAll(".priority-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -840,6 +860,10 @@ export async function renderAdminReview(container) {
         } else if (kind === "report-gap") {
           laborReportMonth = month;
           activeTab = "laborreports";
+        } else if (kind === "purelyhr") {
+          state.weekMonday = week;
+          expanded.add(tech);
+          activeTab = "review";
         }
         await draw();
       });
@@ -1129,8 +1153,12 @@ export async function renderAdminReview(container) {
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const womByCode = Object.fromEntries(woms.map((w) => [w.code, w]));
 
-    const needsAttention = rows.filter((r) => !r.ukgConfirmedAt);
-    const completed = rows.filter((r) => r.ukgConfirmedAt);
+    // A week with time off isn't really "done" until PurelyHR's been
+    // checked too -- PurelyHR doesn't link to UKG, so this can't be
+    // inferred from anything else already tracked here.
+    const isDone = (r) => Boolean(r.ukgConfirmedAt) && (!r.hasTimeOff || Boolean(r.purelyhrVerifiedAt));
+    const needsAttention = rows.filter((r) => !isDone(r));
+    const completed = rows.filter((r) => isDone(r));
 
     content.innerHTML = `
       <div class="week-nav">
@@ -1179,7 +1207,9 @@ export async function renderAdminReview(container) {
     const stage1 = row.ukgHours > 0; // UKG hours entered
     const stage2 = balanced; // allocation split matches UKG
     const stage3 = Boolean(row.ukgConfirmedAt); // admin confirmed it's in the real UKG system
-    el.className = `review-row ${stage3 ? "review-row-ready" : "review-row-pending"}`;
+    const stage4 = Boolean(row.purelyhrVerifiedAt); // time off checked against PurelyHR (only applies if hasTimeOff)
+    const isDone = stage3 && (!row.hasTimeOff || stage4);
+    el.className = `review-row ${isDone ? "review-row-ready" : "review-row-pending"}`;
 
     el.innerHTML = `
       <div class="review-row-summary">
@@ -1188,6 +1218,7 @@ export async function renderAdminReview(container) {
           <span class="review-step ${stage1 ? "done" : ""}">1. UKG hours</span>
           <span class="review-step ${stage2 ? "done" : ""}">2. Allocated</span>
           <span class="review-step ${stage3 ? "done" : ""}">3. Entered in UKG</span>
+          ${row.hasTimeOff ? `<span class="review-step ${stage4 ? "done" : ""}">4. PurelyHR verified</span>` : ""}
         </div>
         <div class="review-row-hours ${balanced ? "ok" : "warn"}">${row.allocatedHours}h / ${row.ukgHours}h UKG</div>
         <span class="badge badge-${row.status}">${STATUS_LABELS[row.status]}</span>
@@ -1202,6 +1233,19 @@ export async function renderAdminReview(container) {
               : ""
           }
         >${stage3 ? "Undo" : "Mark entered in UKG"}</button>
+        ${
+          row.hasTimeOff
+            ? `<button
+                class="btn ${stage4 ? "btn-secondary" : "btn-primary"} confirm-purelyhr-btn"
+                type="button"
+                ${
+                  stage4
+                    ? `title="PurelyHR tracks time off separately from UKG -- this doesn't touch the week's status"`
+                    : `${!["submitted", "approved"].includes(row.status) ? "disabled" : ""} title="Cross-check this week's PTO/Sick/Holiday/Bereavement hours in PurelyHR, then mark it here"`
+                }
+              >${stage4 ? "Undo PurelyHR check" : "Mark PurelyHR verified"}</button>`
+            : ""
+        }
         <button class="btn btn-link expand-btn" type="button">${expanded.has(row.technician.id) ? "Hide" : "Details"}</button>
       </div>
       <div class="review-row-detail" id="detail-${row.technician.id}"></div>
@@ -1222,6 +1266,21 @@ export async function renderAdminReview(container) {
         window.alert(`Could not update: ${err.message}`);
       }
     });
+
+    const purelyhrBtn = el.querySelector(".confirm-purelyhr-btn");
+    if (purelyhrBtn) {
+      purelyhrBtn.addEventListener("click", async () => {
+        purelyhrBtn.disabled = true;
+        try {
+          await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/purelyhr-verified`, { verified: !stage4 });
+          expanded.delete(row.technician.id);
+          await drawReview(content);
+        } catch (err) {
+          purelyhrBtn.disabled = false;
+          window.alert(`Could not update: ${err.message}`);
+        }
+      });
+    }
 
     el.querySelector(".expand-btn").addEventListener("click", async () => {
       if (expanded.has(row.technician.id)) expanded.delete(row.technician.id);

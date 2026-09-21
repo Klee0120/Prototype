@@ -221,6 +221,21 @@ Demo logins:
   gone and done that by hand. Reopening and re-closing a WOM flags it again
   from scratch, so a second closure doesn't get silently skipped just
   because the first one was already handled.
+- **PurelyHR time-off verification, 4th step on Weekly Review**: PurelyHR
+  tracks time-off balances/requests separately from UKG and doesn't link to
+  either UKG or this app, so a technician's PTO/Sick/Holiday/Bereavement
+  hours logged here have to be manually cross-checked there. Any
+  submitted/approved week containing time off gets a 4th checklist step
+  ("PurelyHR verified") right alongside the existing three on Weekly Review
+  — a week isn't "Completed" until that's checked too, same as the other
+  three. Verification is per-week (not per individual time-off entry), set/
+  unset via `PATCH /api/admin/weeks/:techId/:weekMonday/purelyhr-verified`
+  (mirrors the existing `ukg-confirmed` step), and automatically clears if
+  the week's allocations are edited afterward (an edit could add, remove,
+  or change the time off that was already checked). Also rolled up into the
+  Priorities tab ("Time off needing PurelyHR verification") so a past
+  week's unverified time off doesn't just get missed once Weekly Review
+  moves on to a later week.
 - **Reports tab (admin)**: a month-by-month archive for four monthly report
   kinds -- **WOM Report, Labor Report, Financial Report, and GL Report** --
   saved here so each is kept alongside the timesheeting for that period, for
@@ -235,14 +250,20 @@ Demo logins:
   that needs a look -- outdated vendor forms, vendors with incomplete
   document checks, expiring/missing employee forms, technicians with zero
   UKG hours entered for the current week, pending weekend-hours addenda,
-  and trailing months with no report saved at all. Deliberately not more
-  banners scattered across other tabs -- the
-  only "in your face" surface is a small red count badge on the tab itself
-  (`GET /api/admin/report-gaps` and `/api/admin/missing-ukg` back the two
-  newer sections). A **Today's focus** box at the top suggests a concrete
-  daily target (try clearing 10 of however many outdated vendor/employee
-  forms are outstanding) and calls out Mondays specifically (timecards +
-  vendor case updates on ServiceEdge) -- fixed defaults for now, not yet
+  WOM closures not yet reflected in Smartsheet, unverified PurelyHR time
+  off, and trailing months with no report saved at all. Deliberately not
+  more banners scattered across other tabs -- the only "in your face"
+  surface is a small red count badge on the tab itself. That badge
+  deliberately **excludes** the vendor document-checks-incomplete section:
+  against a real, bulk-imported vendor list, "not yet checked" starts out
+  true for nearly every vendor, so counting it in the badge would make the
+  number reflect the size of that whole backlog rather than "a few things
+  to look at today" -- it's still fully listed in its own section to work
+  through at whatever pace makes sense, just not driving the badge. A
+  **Today's focus** box at the top suggests a concrete daily target (try
+  clearing 10 of however many outdated vendor/employee forms are
+  outstanding) and calls out Mondays specifically (timecards + vendor case
+  updates on ServiceEdge) -- fixed defaults for now, not yet
   admin-configurable goal numbers; see "Where this stands."
 - **Short-hours flag, symmetric with the existing OT-not-on-WOM flag**: a
   week that comes in more than 3 hours under 40 (and has UKG hours entered
@@ -745,7 +766,12 @@ tests/
   admin.test.js             Approve / reject / unlock (incl. on a merely-submitted week),
                               Overview report OT-flagging, ot-trends, UKG-confirmed checklist,
                               pending-punch flag, weekend hours addendum (log without
-                              unlocking, no UKG-match required, admin adjust + acknowledge)
+                              unlocking, no UKG-match required, admin adjust + acknowledge),
+                              short-hours flag (symmetric with OT, excluded from OT trends),
+                              missing-UKG list, report-gap months, admin account
+                              create/deactivate/self-deactivation-blocked, PurelyHR
+                              verification (hasTimeOff, set/unset, cleared on edit,
+                              submitted/approved + time-off required)
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region,
                                  Smartsheet-reflected flag (set on close, cleared on reopen, admin-only)
