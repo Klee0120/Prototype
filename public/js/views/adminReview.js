@@ -405,6 +405,8 @@ export async function renderAdminReview(container) {
             coiLimits: Object.fromEntries(
               Object.keys(COI_LIMIT_LABELS).map((key) => [key, form[`coi_${key}`].value.trim()])
             ),
+            formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, form[key].checked])),
+            w9InvoiceDate: form.w9InvoiceDate.value || null,
           });
           vendorsCache = null;
           await drawVendors(content);
@@ -444,6 +446,7 @@ export async function renderAdminReview(container) {
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.formsStatus]}">${escapeHtml(FORMS_STATUS_LABELS[v.formsStatus])}</span>
+        ${!v.formChecksComplete || v.w9InvoiceStale ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
         <button class="btn btn-secondary vendor-open-btn" type="button">Open</button>
       </div>
     `;
@@ -478,6 +481,21 @@ export async function renderAdminReview(container) {
     crime: "crime",
     productsComplOpAgg: "productsComplOpAgg",
   };
+
+  // Matches VENDOR_FORM_CHECK_FIELDS' camelCase keys in server/data/db.js --
+  // each is a checkbox <input name="..."> in the vendor edit form below.
+  const FORM_CHECK_KEYS = [
+    "coiIsAcord25_2016_03",
+    "coiMatchesW9",
+    "w9SignedDated",
+    "w9CorrectVersion",
+    "w9HasPhone",
+    "w9HasRemitToAddress",
+    "w9HasName",
+    "achBankLetterhead",
+    "achHasW9Name",
+    "achHasW9Address",
+  ];
 
   function renderServicesSelect(currentValue) {
     const matches = COI_MATRIX_BY_LABEL[currentValue];
@@ -565,6 +583,40 @@ export async function renderAdminReview(container) {
         </div>
         <div class="vendor-edit-grid">${coiLimitInputs}</div>
 
+        <h4>COI document checks</h4>
+        <p class="review-checklist-hint">Verified against the actual COI document attached below.</p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="coiIsAcord25_2016_03" ${v.formChecks.coiIsAcord25_2016_03 ? "checked" : ""} /> Issued on ACORD 25 form (2016/03 version)</label>
+          <label><input type="checkbox" name="coiMatchesW9" ${v.formChecks.coiMatchesW9 ? "checked" : ""} /> Matches W-9 name &amp; address</label>
+        </div>
+
+        <h4>W-9 document checks</h4>
+        <p class="review-checklist-hint">Verified against the actual W-9 document attached below.</p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="w9SignedDated" ${v.formChecks.w9SignedDated ? "checked" : ""} /> Signed and dated</label>
+          <label><input type="checkbox" name="w9CorrectVersion" ${v.formChecks.w9CorrectVersion ? "checked" : ""} /> October 2018 or March 2024 version</label>
+          <label><input type="checkbox" name="w9HasPhone" ${v.formChecks.w9HasPhone ? "checked" : ""} /> Has phone number</label>
+          <label><input type="checkbox" name="w9HasRemitToAddress" ${v.formChecks.w9HasRemitToAddress ? "checked" : ""} /> Has remit-to address</label>
+          <label><input type="checkbox" name="w9HasName" ${v.formChecks.w9HasName ? "checked" : ""} /> Has vendor name</label>
+        </div>
+        <label class="profile-field vendor-w9-invoice-field">
+          <span>Blank invoice date on file${v.w9InvoiceStale ? ` <span class="badge badge-rejected">Over 2 years old</span>` : ""}</span>
+          <input type="date" name="w9InvoiceDate" value="${v.w9InvoiceDate || ""}" />
+        </label>
+
+        <h4>ACH document checks</h4>
+        <p class="review-checklist-hint">Verified against the actual ACH/bank letter attached below.</p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="achBankLetterhead" ${v.formChecks.achBankLetterhead ? "checked" : ""} /> On bank letterhead</label>
+          <label><input type="checkbox" name="achHasW9Name" ${v.formChecks.achHasW9Name ? "checked" : ""} /> Has W-9 name</label>
+          <label><input type="checkbox" name="achHasW9Address" ${v.formChecks.achHasW9Address ? "checked" : ""} /> Has W-9 address</label>
+        </div>
+        ${
+          !v.formChecksComplete || v.w9InvoiceStale
+            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks above aren't confirmed yet. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old." : ""}</p>`
+            : ""
+        }
+
         <div class="vendor-edit-actions">
           <button type="submit" class="btn btn-primary">Save</button>
           <button type="button" class="btn btn-link cancel-vendor-edit">Cancel</button>
@@ -629,7 +681,10 @@ export async function renderAdminReview(container) {
         api.get("/api/admin/missing-ukg"),
       ]);
       const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
-      return expiringForms.length + outdatedVendorCount + weekendAddenda.length + reportGaps.length + missingUkg.length;
+      const incompleteDocCount = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale).length;
+      return (
+        expiringForms.length + outdatedVendorCount + incompleteDocCount + weekendAddenda.length + reportGaps.length + missingUkg.length
+      );
     } catch {
       return 0;
     }
@@ -648,6 +703,7 @@ export async function renderAdminReview(container) {
       api.get("/api/admin/missing-ukg"),
     ]);
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
+    const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale);
     const todayIso = new Date().toISOString().slice(0, 10);
     const isMonday = new Date().getDay() === 1;
 
@@ -686,6 +742,18 @@ export async function renderAdminReview(container) {
           kind: "vendor",
         })),
         "No outdated vendor forms."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
+        "Vendor document checks incomplete",
+        incompleteDocVendors.map((v) => ({
+          label: v.name,
+          detail: v.w9InvoiceStale ? "Blank invoice on file is over 2 years old" : "COI/W-9/ACH checks not all confirmed",
+          kind: "vendor-doc",
+          vendorId: v.id,
+        })),
+        "All vendor document checks are confirmed."
       )
     );
     sections.appendChild(
@@ -741,9 +809,12 @@ export async function renderAdminReview(container) {
 
     sections.querySelectorAll(".priority-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const { kind, tech, week, month } = btn.dataset;
+        const { kind, tech, week, month, vendor } = btn.dataset;
         if (kind === "vendor") {
           vendorFilters.formsStatus = "outdated";
+          activeTab = "vendors";
+        } else if (kind === "vendor-doc") {
+          vendorExpanded.add(Number(vendor));
           activeTab = "vendors";
         } else if (kind === "tech-forms") {
           jumpToTech = { techId: tech, subTab: "forms" };
@@ -785,6 +856,7 @@ export async function renderAdminReview(container) {
                     ${item.techId ? `data-tech="${escapeHtml(item.techId)}"` : ""}
                     ${item.weekMonday ? `data-week="${escapeHtml(item.weekMonday)}"` : ""}
                     ${item.month ? `data-month="${escapeHtml(item.month)}"` : ""}
+                    ${item.vendorId ? `data-vendor="${escapeHtml(String(item.vendorId))}"` : ""}
                   >View</button>
                 </div>`
                 )

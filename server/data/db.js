@@ -182,6 +182,17 @@ db.exec(`
     coi_pollution TEXT DEFAULT '',
     coi_crime TEXT DEFAULT '',
     coi_products_compl_op_agg TEXT DEFAULT '',
+    coi_is_acord25_2016_03 INTEGER NOT NULL DEFAULT 0,
+    coi_matches_w9 INTEGER NOT NULL DEFAULT 0,
+    w9_signed_dated INTEGER NOT NULL DEFAULT 0,
+    w9_correct_version INTEGER NOT NULL DEFAULT 0,
+    w9_has_phone INTEGER NOT NULL DEFAULT 0,
+    w9_has_remit_to_address INTEGER NOT NULL DEFAULT 0,
+    w9_has_name INTEGER NOT NULL DEFAULT 0,
+    ach_bank_letterhead INTEGER NOT NULL DEFAULT 0,
+    ach_has_w9_name INTEGER NOT NULL DEFAULT 0,
+    ach_has_w9_address INTEGER NOT NULL DEFAULT 0,
+    w9_invoice_date TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -313,6 +324,35 @@ if (!hasColumn("vendors", "coi_meets_required_limits")) {
 }
 if (!hasColumn("vendors", "coi_meets_language_requirements")) {
   db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_language_requirements INTEGER NOT NULL DEFAULT 0");
+}
+
+// Specific per-document compliance checks admin verifies against the real
+// attached file (COI/W-9/ACH) -- separate from coi_meets_required_limits
+// above, which is about coverage *amounts*; these are about the document
+// itself being the right form, signed, and matching the vendor's other
+// documents. Any unchecked box means that document hasn't been confirmed
+// compliant yet, same flagging idea as forms_status = 'outdated'.
+const VENDOR_FORM_CHECK_BOOL_COLUMNS = [
+  "coi_is_acord25_2016_03",
+  "coi_matches_w9",
+  "w9_signed_dated",
+  "w9_correct_version",
+  "w9_has_phone",
+  "w9_has_remit_to_address",
+  "w9_has_name",
+  "ach_bank_letterhead",
+  "ach_has_w9_name",
+  "ach_has_w9_address",
+];
+for (const col of VENDOR_FORM_CHECK_BOOL_COLUMNS) {
+  if (!hasColumn("vendors", col)) {
+    db.exec(`ALTER TABLE vendors ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+// The date on the blank invoice W-9 documentation is expected to include --
+// flagged stale once it's more than 2 years old (see W9_INVOICE_MAX_AGE_YEARS).
+if (!hasColumn("vendors", "w9_invoice_date")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN w9_invoice_date TEXT");
 }
 
 seedIfEmpty();
@@ -596,9 +636,41 @@ const VENDOR_COI_FIELDS = [
   ["productsComplOpAgg", "coi_products_compl_op_agg"],
 ];
 
+// Specific compliance checks verified against the actual attached document
+// -- distinct from coiMeetsRequiredLimits/coiMeetsLanguageRequirements
+// (coverage amounts) above, and from formsStatus (currency/expiration).
+// A vendor with any of these unchecked shows up as needing attention
+// (formChecksComplete below), same idea as an outdated form.
+const VENDOR_FORM_CHECK_FIELDS = [
+  ["coiIsAcord25_2016_03", "coi_is_acord25_2016_03"],
+  ["coiMatchesW9", "coi_matches_w9"],
+  ["w9SignedDated", "w9_signed_dated"],
+  ["w9CorrectVersion", "w9_correct_version"],
+  ["w9HasPhone", "w9_has_phone"],
+  ["w9HasRemitToAddress", "w9_has_remit_to_address"],
+  ["w9HasName", "w9_has_name"],
+  ["achBankLetterhead", "ach_bank_letterhead"],
+  ["achHasW9Name", "ach_has_w9_name"],
+  ["achHasW9Address", "ach_has_w9_address"],
+];
+
+const W9_INVOICE_MAX_AGE_YEARS = 2;
+
 function presentVendorRow(v) {
   const coiLimits = {};
   for (const [key, col] of VENDOR_COI_FIELDS) coiLimits[key] = v[col] || "";
+
+  const formChecks = {};
+  for (const [key, col] of VENDOR_FORM_CHECK_FIELDS) formChecks[key] = Boolean(v[col]);
+  const formChecksComplete = VENDOR_FORM_CHECK_FIELDS.every(([key]) => formChecks[key]);
+
+  let w9InvoiceStale = false;
+  if (v.w9_invoice_date) {
+    const maxAge = new Date(v.w9_invoice_date);
+    maxAge.setFullYear(maxAge.getFullYear() + W9_INVOICE_MAX_AGE_YEARS);
+    w9InvoiceStale = maxAge < new Date();
+  }
+
   return {
     id: v.id,
     name: v.name,
@@ -622,6 +694,10 @@ function presentVendorRow(v) {
     coiMeetsRequiredLimits: Boolean(v.coi_meets_required_limits),
     coiMeetsLanguageRequirements: Boolean(v.coi_meets_language_requirements),
     coiLimits,
+    formChecks,
+    formChecksComplete,
+    w9InvoiceDate: v.w9_invoice_date || null,
+    w9InvoiceStale,
     createdAt: v.created_at,
     updatedAt: v.updated_at,
   };
@@ -639,6 +715,7 @@ function findVendor(id) {
 function createVendor(fields) {
   const now = new Date().toISOString();
   const coiLimits = fields.coiLimits || {};
+  const formChecks = fields.formChecks || {};
   const columns = [
     "name",
     "jde_vendor_number",
@@ -661,6 +738,8 @@ function createVendor(fields) {
     "coi_meets_required_limits",
     "coi_meets_language_requirements",
     ...VENDOR_COI_FIELDS.map(([, col]) => col),
+    ...VENDOR_FORM_CHECK_FIELDS.map(([, col]) => col),
+    "w9_invoice_date",
     "created_at",
     "updated_at",
   ];
@@ -686,6 +765,8 @@ function createVendor(fields) {
     fields.coiMeetsRequiredLimits ? 1 : 0,
     fields.coiMeetsLanguageRequirements ? 1 : 0,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
+    ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
+    fields.w9InvoiceDate || null,
     now,
     now,
   ];
@@ -698,6 +779,7 @@ function createVendor(fields) {
 function updateVendor(id, fields) {
   if (!findVendor(id)) return null;
   const coiLimits = fields.coiLimits || {};
+  const formChecks = fields.formChecks || {};
   db.prepare(
     `UPDATE vendors SET
       name = ?, jde_vendor_number = ?, cw_status = ?, toyota_status = ?, forms_status = ?,
@@ -706,6 +788,8 @@ function updateVendor(id, fields) {
       coverage_outside_midwest = ?, phone = ?, email = ?, online_source_url = ?, notes = ?,
       coi_meets_required_limits = ?, coi_meets_language_requirements = ?,
       ${VENDOR_COI_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
+      ${VENDOR_FORM_CHECK_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
+      w9_invoice_date = ?,
       updated_at = ?
      WHERE id = ?`
   ).run(
@@ -730,6 +814,8 @@ function updateVendor(id, fields) {
     fields.coiMeetsRequiredLimits ? 1 : 0,
     fields.coiMeetsLanguageRequirements ? 1 : 0,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
+    ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
+    fields.w9InvoiceDate || null,
     new Date().toISOString(),
     Number(id)
   );

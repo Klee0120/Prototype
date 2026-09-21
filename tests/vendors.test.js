@@ -89,6 +89,61 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     assert.equal(res.body.successfulInvoiceRecords, 2);
   });
 
+  await t.test("a freshly created vendor's document checks default to incomplete", async () => {
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.formChecksComplete, false);
+    assert.equal(vendor.formChecks.coiIsAcord25_2016_03, false);
+    assert.equal(vendor.w9InvoiceStale, false);
+  });
+
+  await t.test("checking every document box makes formChecksComplete true", async () => {
+    const allChecked = {
+      coiIsAcord25_2016_03: true,
+      coiMatchesW9: true,
+      w9SignedDated: true,
+      w9CorrectVersion: true,
+      w9HasPhone: true,
+      w9HasRemitToAddress: true,
+      w9HasName: true,
+      achBankLetterhead: true,
+      achHasW9Name: true,
+      achHasW9Address: true,
+    };
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "24/7 Fire Protection", formChecks: allChecked },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.formChecksComplete, true);
+
+    // Unchecking just one flips it back.
+    const uncheckOne = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "24/7 Fire Protection", formChecks: { ...allChecked, achHasW9Address: false } },
+    });
+    assert.equal(uncheckOne.body.formChecksComplete, false);
+  });
+
+  await t.test("a W-9 invoice date over 2 years old flags as stale", async () => {
+    const fiveYearsAgo = new Date();
+    fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
+    const stale = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "24/7 Fire Protection", w9InvoiceDate: fiveYearsAgo.toISOString().slice(0, 10) },
+    });
+    assert.equal(stale.status, 200);
+    assert.equal(stale.body.w9InvoiceStale, true);
+
+    const recent = new Date();
+    recent.setMonth(recent.getMonth() - 3);
+    const fresh = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "24/7 Fire Protection", w9InvoiceDate: recent.toISOString().slice(0, 10) },
+    });
+    assert.equal(fresh.body.w9InvoiceStale, false);
+  });
+
   await t.test("editing an unknown vendor 404s", async () => {
     const res = await server.call("PATCH", "/api/admin/vendors/999999", {
       userId: "ADMIN",

@@ -182,6 +182,24 @@ Demo logins:
   or updates vendor records from a JSON file — built for importing an
   existing vendor tracker spreadsheet once, safe to re-run (matches
   existing vendors by JDE # or name and updates them instead of duplicating).
+- **Vendor document compliance checklist**: specific checkboxes verified
+  against the actual attached COI/W-9/ACH document, separate from the COI
+  coverage-limit checks (`coiMeetsRequiredLimits`/`coiMeetsLanguageRequirements`)
+  and from `formsStatus` (currency/expiration) — these are about the
+  document itself being the right form and matching the vendor's other
+  paperwork:
+  - **COI**: issued on ACORD 25 (2016/03 version); matches the vendor's W-9
+    name & address.
+  - **W-9**: signed and dated; correct version (October 2018 or March
+    2024); has a phone number; has a remit-to address; has the vendor's
+    name. Plus a **blank invoice date** field — flagged stale once it's
+    over 2 years old.
+  - **ACH**: on bank letterhead; has the vendor's W-9 name; has the
+    vendor's W-9 address.
+
+  Any box left unchecked (or a stale invoice date) marks that vendor
+  "Doc checks incomplete" on the Vendors list and rolls up into the
+  Priorities tab, same flagging idea as an outdated form.
 - **Reports tab (admin)**: a month-by-month archive for four monthly report
   kinds -- **WOM Report, Labor Report, Financial Report, and GL Report** --
   saved here so each is kept alongside the timesheeting for that period, for
@@ -193,10 +211,11 @@ Demo logins:
   "Where this stands" for the bigger reconciliation idea this could grow
   into.
 - **Priorities tab (admin)**: one calm, dedicated place gathering everything
-  that needs a look -- outdated vendor forms, expiring/missing employee
-  forms, technicians with zero UKG hours entered for the current week,
-  pending weekend-hours addenda, and trailing months with no report saved
-  at all. Deliberately not more banners scattered across other tabs -- the
+  that needs a look -- outdated vendor forms, vendors with incomplete
+  document checks, expiring/missing employee forms, technicians with zero
+  UKG hours entered for the current week, pending weekend-hours addenda,
+  and trailing months with no report saved at all. Deliberately not more
+  banners scattered across other tabs -- the
   only "in your face" surface is a small red count badge on the tab itself
   (`GET /api/admin/report-gaps` and `/api/admin/missing-ukg` back the two
   newer sections). A **Today's focus** box at the top suggests a concrete
@@ -443,6 +462,26 @@ a missing code is obvious rather than silently blank.
   over plain HTTP, so credentials and data travel unencrypted over the
   network. Real HTTPS needs a domain name pointed at the droplet's IP (a
   bare IP can't get a trusted certificate) — a separate decision still ahead.
+- **Vendor documents (COI/W-9/ACH, which can carry bank routing/account
+  numbers and tax IDs) are already access-controlled at the application
+  layer** — `server/routes/files.js`'s `canRead`/`canWrite` refuse any
+  non-admin for `relatedType: "vendor"` outright (a technician can look up
+  a vendor's active/contact info via the separate `/api/vendors` endpoint,
+  but never sees or downloads its files), every file route requires a
+  valid session token, and there's no public/unauthenticated route that
+  serves uploaded files at all — nothing is reachable by just guessing a
+  URL. What that access control doesn't cover is the **network** it
+  travels over: see the HTTPS gap directly above. Until that's closed,
+  anyone positioned to intercept traffic between a browser and the droplet
+  (the same public wifi, a compromised router, etc.) could read a session
+  token or a downloaded file's bytes in transit, even though they still
+  couldn't just browse to it unauthenticated. Practically: **put a domain
+  in front of the droplet and get it a free Let's Encrypt certificate**
+  (e.g. via `certbot --nginx` once a reverse proxy is added, or a
+  DigitalOcean App Platform / Cloudflare tunnel in front of it) before
+  onboarding real ACH numbers — that one change closes the actual gap here.
+  Everything else (hashed PINs, session-based auth, admin-only file access)
+  is already in place and doesn't change with that migration.
 - **PINs are still short (4 digits).** Hashing protects them if the database
   ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
   rate-limit is what actually prevents brute-forcing it online. Worth moving
