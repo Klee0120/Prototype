@@ -86,9 +86,13 @@ Demo logins:
     unallocated hours as E&F time at the technician's home location
   - **Every day starts pre-filled** with a full E&F split at home matching
     that day's UKG hours, so the common case (no WOM work that day) is
-    already balanced with zero clicks — switch a row's type to WOM Project,
-    or add another split, to carve out project hours instead. Only applies
-    to days with nothing entered yet; never overwrites an existing split
+    already balanced with zero clicks. Only applies to days with nothing
+    entered yet, and clears itself the moment it's no longer the whole
+    story: clicking **+ Add split** removes it (so a new WOM split doesn't
+    just stack on top and double the hours), picking a real **Time off**
+    type removes it (and defaults the time-off hours to the day's full UKG
+    total), and **Default to home** clears any WOM/other-location splits
+    for that day and reverts to home for whatever's left after time off
 - Submission blocked until **every day's** allocated hours exactly equal
   that day's UKG hours (not just the weekly total)
 - A technician can mark a WOM project complete from their own allocation

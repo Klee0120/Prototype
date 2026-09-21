@@ -39,7 +39,11 @@ function monthLabel(monthIso) {
 export async function renderAdminReview(container) {
   let activeTab = "review";
   let allocTechId = null;
-  const expanded = new Map(); // techId -> detail payload
+  // Which technicians' detail panels are expanded on Weekly Review -- just
+  // membership, not a cache of the detail itself, so a stale snapshot can
+  // never be shown after something changes it elsewhere (Tech Allocation,
+  // another tab, etc.). Detail is always fetched fresh when rendering.
+  const expanded = new Set();
   const womsExpanded = new Set();
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   const photoPromptFor = new Map(); // techId -> WOM codes worked, shown right after confirming "entered in UKG"
@@ -223,9 +227,7 @@ export async function renderAdminReview(container) {
     });
     content.querySelectorAll(".overview-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const techId = btn.dataset.tech;
-        const detail = await api.get(`/api/technicians/${techId}/weeks/${state.weekMonday}`);
-        expanded.set(techId, detail);
+        expanded.add(btn.dataset.tech);
         activeTab = "review";
         await draw();
       });
@@ -353,17 +355,13 @@ export async function renderAdminReview(container) {
     });
 
     el.querySelector(".expand-btn").addEventListener("click", async () => {
-      if (expanded.has(row.technician.id)) {
-        expanded.delete(row.technician.id);
-      } else {
-        const detail = await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`);
-        expanded.set(row.technician.id, detail);
-      }
+      if (expanded.has(row.technician.id)) expanded.delete(row.technician.id);
+      else expanded.add(row.technician.id);
       await drawReview(content);
     });
 
     if (expanded.has(row.technician.id)) {
-      const detail = expanded.get(row.technician.id);
+      const detail = await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`);
       const detailEl = el.querySelector(`#detail-${row.technician.id}`);
       detailEl.innerHTML =
         renderUkgForm(detail, justSavedUkg.has(row.technician.id)) +
@@ -458,7 +456,6 @@ export async function renderAdminReview(container) {
         btn.disabled = true;
         try {
           await api.patch(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/pending-punch`, { day, flagged });
-          expanded.set(row.technician.id, await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`));
           await drawReview(content);
         } catch (err) {
           btn.disabled = false;
@@ -492,7 +489,6 @@ export async function renderAdminReview(container) {
       });
       try {
         await api.put(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-hours`, { hours });
-        expanded.set(row.technician.id, await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`));
         justSavedUkg.add(row.technician.id);
         await drawReview(content);
       } catch (err) {

@@ -46,7 +46,7 @@ export async function renderTechWeek(container, techIdOverride) {
       const already = allocations.filter((a) => a.day === day).reduce((s, a) => s + Number(a.hours || 0), 0);
       const remaining = round2(ukgActual - already);
       if (remaining > 0) {
-        allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: remaining });
+        allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: remaining, _isAutoDefault: true });
       }
     }
   }
@@ -80,6 +80,16 @@ export async function renderTechWeek(container, techIdOverride) {
 
   function dayTotal(day) {
     return round2(allocations.filter((a) => a.day === day).reduce((s, a) => s + Number(a.hours || 0), 0));
+  }
+
+  // The auto-filled "default to home" row is a convenience guess, not a
+  // deliberate choice -- clear it out the moment the user does something
+  // that means it no longer applies (adds a real split, or marks the day
+  // as time off), so it doesn't silently double-count alongside it.
+  function clearAutoDefault(day) {
+    for (let i = allocations.length - 1; i >= 0; i--) {
+      if (allocations[i].day === day && allocations[i]._isAutoDefault) allocations.splice(i, 1);
+    }
   }
 
   function canSubmitWeek() {
@@ -243,24 +253,42 @@ export async function renderTechWeek(container, techIdOverride) {
 
     if (full) {
       card.querySelector(".add-split").addEventListener("click", () => {
+        // Adding a real split means the auto-filled "everything is home
+        // time" guess no longer applies -- clear it so it doesn't sit
+        // there stacking hours on top of whatever gets added.
+        clearAutoDefault(day);
         const locationCode = homeLocationCode || (locations[0] && locations[0].code) || "";
         allocations.push({ day, type: "ef", locationCode, womCode: null, hours: 0 });
         draw();
       });
       card.querySelector(".default-home").addEventListener("click", () => {
-        if (!homeLocationCode || remaining <= 0) return;
+        if (!homeLocationCode) return;
+        // "Default to home" means "everything today was worked at home" --
+        // clear any WOM/other-location splits for this day (time off is
+        // left alone) and set home E&F to whatever's left after that.
+        for (let i = allocations.length - 1; i >= 0; i--) {
+          const a = allocations[i];
+          if (a.day !== day || a.type === "timeoff") continue;
+          if (a.type === "ef" && a.locationCode === homeLocationCode) continue;
+          allocations.splice(i, 1);
+        }
+        const afterClear = round2(ukgActual - dayTotal(day));
+        if (afterClear <= 0) {
+          draw();
+          return;
+        }
         const existingHome = allocations.find(
           (a) => a.day === day && a.type === "ef" && a.locationCode === homeLocationCode
         );
-        if (existingHome) existingHome.hours = round2(existingHome.hours + remaining);
-        else allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: remaining });
+        if (existingHome) existingHome.hours = afterClear;
+        else allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: afterClear });
         draw();
       });
     }
 
     if (!locked) {
       const timeOffHost = card.querySelector(".time-off-row");
-      timeOffHost.appendChild(renderTimeOffRow(day, timeOff));
+      timeOffHost.appendChild(renderTimeOffRow(day, timeOff, ukgActual));
     }
 
     return card;
@@ -314,6 +342,7 @@ export async function renderTechWeek(container, techIdOverride) {
     `;
 
     rowEl.querySelector(".split-type-select").addEventListener("change", (e) => {
+      delete allocations[idx]._isAutoDefault; // a deliberate edit now, not the auto-guess
       allocations[idx].type = e.target.value;
       if (e.target.value === "wom") {
         const firstOpen = openWomsAt(allocations[idx].locationCode)[0];
@@ -324,6 +353,7 @@ export async function renderTechWeek(container, techIdOverride) {
       draw();
     });
     rowEl.querySelector(".split-location-select").addEventListener("change", (e) => {
+      delete allocations[idx]._isAutoDefault;
       allocations[idx].locationCode = e.target.value;
       if (allocations[idx].type === "wom") {
         const firstOpen = openWomsAt(e.target.value)[0];
@@ -334,11 +364,13 @@ export async function renderTechWeek(container, techIdOverride) {
     const womSelect = rowEl.querySelector(".split-wom-select");
     if (womSelect) {
       womSelect.addEventListener("change", (e) => {
+        delete allocations[idx]._isAutoDefault;
         allocations[idx].womCode = e.target.value;
         draw();
       });
     }
     rowEl.querySelector(".split-hours-input").addEventListener("input", (e) => {
+      delete allocations[idx]._isAutoDefault;
       allocations[idx].hours = e.target.value === "" ? 0 : Number(e.target.value);
       draw();
     });
@@ -365,7 +397,7 @@ export async function renderTechWeek(container, techIdOverride) {
     return rowEl;
   }
 
-  function renderTimeOffRow(day, timeOff) {
+  function renderTimeOffRow(day, timeOff, ukgActual) {
     const wrap = document.createElement("div");
     wrap.className = "time-off-field";
     const options = [`<option value="">None</option>`]
@@ -379,13 +411,20 @@ export async function renderTechWeek(container, techIdOverride) {
     `;
 
     wrap.querySelector(".time-off-select").addEventListener("change", (e) => {
+      if (e.target.value) {
+        // A real time-off selection means the day (or part of it) wasn't
+        // worked -- clear the auto-filled "everything is home time" guess.
+        clearAutoDefault(day);
+      }
       const existingIdx = allocations.findIndex((a) => a.day === day && a.type === "timeoff");
       if (!e.target.value) {
         if (existingIdx !== -1) allocations.splice(existingIdx, 1);
       } else if (existingIdx !== -1) {
         allocations[existingIdx].timeOffType = e.target.value;
       } else {
-        allocations.push({ day, type: "timeoff", timeOffType: e.target.value, hours: 8 });
+        // Default to the day's full UKG hours -- matches the common case
+        // (a full day off) so it balances immediately without more typing.
+        allocations.push({ day, type: "timeoff", timeOffType: e.target.value, hours: ukgActual || 8 });
       }
       draw();
     });
