@@ -4,6 +4,7 @@ const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { DAY_NAMES, shiftWeek } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 const { computeReceipt } = require("../utils/receipt");
+const mailer = require("../utils/mailer");
 
 const OT_NOT_ON_WOM_FLAG_THRESHOLD = 3;
 const OT_TREND_WEEKS = 8;
@@ -28,6 +29,7 @@ function presentTechnician(t) {
     hireDate: t.hire_date,
     terminationDate: t.termination_date,
     standardDailyHours: t.standard_daily_hours,
+    notificationPref: t.notification_pref,
   };
 }
 
@@ -142,13 +144,13 @@ router.post("/technicians/:id/devices", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
 
-  const { deviceType, deviceName, notes } = req.body || {};
+  const { deviceType, deviceName, notes, plan } = req.body || {};
   if (!db.DEVICE_TYPES.includes(deviceType)) {
     return res.status(400).json({ error: `deviceType must be one of: ${db.DEVICE_TYPES.join(", ")}` });
   }
   if (!deviceName) return res.status(400).json({ error: deviceType === "phone" ? "Phone number is required" : "Identifier is required" });
 
-  const devices = db.addDevice(tech.id, deviceType, deviceName, notes);
+  const devices = db.addDevice(tech.id, deviceType, deviceName, notes, plan);
   db.addAudit(req.user.id, "DEVICE_ASSIGNED", `${req.user.name} assigned ${deviceType} "${deviceName}" to ${tech.name}`);
   res.status(201).json(devices);
 });
@@ -330,6 +332,20 @@ router.put("/weeks/:techId/:weekMonday/ukg-hours", (req, res) => {
   const updated = db.setUkgHours(techId, weekMonday, hours);
   const total = round2(DAY_NAMES.reduce((sum, d) => sum + (updated[d] || 0), 0));
   db.addAudit(req.user.id, "UKG_HOURS_SET", `${req.user.name} set UKG hours for ${tech.name}, week ${weekMonday} (${total}h total)`);
+
+  // The in-app banner (techWeek.js) always shows "your hours are ready" once
+  // there's something to allocate; email is the technician's own opt-in on
+  // top of that, sent right when the hours they need to react to appear.
+  const week = db.getWeek(techId, weekMonday);
+  if (total > 0 && week.status === "draft" && tech.notification_pref === "email" && tech.email) {
+    mailer
+      .sendMail({
+        to: tech.email,
+        subject: "Your hours are ready to allocate",
+        text: `Hi ${tech.name},\n\nYour UKG hours for the week of ${weekMonday} are entered (${total}h total) and ready for you to allocate. Log in to the Labor Allocation app to split your time and submit.\n`,
+      })
+      .catch((err) => console.error(`[mailer] failed to notify ${tech.id}:`, err.message));
+  }
 
   res.json({ ok: true, ukgHoursByDay: updated });
 });

@@ -134,7 +134,14 @@ export async function renderTechWeek(container, techIdOverride) {
         }
         ${locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : ""}
         ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
+        ${
+          state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
+            ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
+            : ""
+        }
       </div>
+
+      ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
 
       <div id="wom-photo-prompt-host"></div>
 
@@ -197,6 +204,43 @@ export async function renderTechWeek(container, techIdOverride) {
       const submitBtn = main.querySelector("#submit-week");
       if (submitBtn) submitBtn.addEventListener("click", submit);
     }
+
+    const prefSelect = main.querySelector(".notification-pref-select");
+    if (prefSelect) {
+      prefSelect.addEventListener("change", async (e) => {
+        const pref = e.target.value;
+        const msg = main.querySelector(".notification-pref-message");
+        try {
+          await api.patch(`/api/technicians/${techId}/notification-pref`, { notificationPref: pref });
+          week.technician.notificationPref = pref;
+          if (msg) msg.textContent = "Saved.";
+        } catch (err) {
+          e.target.value = week.technician.notificationPref || "in_app";
+          if (msg) msg.textContent = err.message;
+        }
+      });
+    }
+  }
+
+  // How the technician wants to hear "your hours are ready to allocate" --
+  // in-app (the note above) always shows regardless; email is their own
+  // opt-in on top of that, and only offered once they have an email on file
+  // (set by an admin on their profile, not editable here).
+  function renderNotificationPrefRow() {
+    const pref = week.technician.notificationPref || "in_app";
+    const hasEmail = Boolean(week.technician.email);
+    return `
+      <div class="notification-pref-row">
+        <label>
+          Notify me by
+          <select class="notification-pref-select">
+            <option value="in_app" ${pref === "in_app" ? "selected" : ""}>In-app only</option>
+            <option value="email" ${pref === "email" ? "selected" : ""} ${hasEmail ? "" : "disabled"}>Email${hasEmail ? "" : " (ask admin to add your email first)"}</option>
+          </select>
+        </label>
+        <span class="save-message notification-pref-message"></span>
+      </div>
+    `;
   }
 
   function renderDayCard(day, mode) {

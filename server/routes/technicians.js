@@ -68,7 +68,13 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
   const allocatedByDay = sumByDay(week.allocations);
 
   res.json({
-    technician: { id: tech.id, name: tech.name, homeLocationCode: tech.home_location_code },
+    technician: {
+      id: tech.id,
+      name: tech.name,
+      homeLocationCode: tech.home_location_code,
+      email: tech.email,
+      notificationPref: tech.notification_pref,
+    },
     weekMonday,
     dates: datesForWeek(weekMonday),
     days: DAY_NAMES,
@@ -86,6 +92,28 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
     reviewedBy: week.reviewedBy,
     note: week.note,
   });
+});
+
+// A technician's own choice of how they want to hear "your hours are ready
+// to allocate" -- in-app is always shown regardless, this only controls
+// whether an email additionally goes out (see server/utils/mailer.js).
+router.patch("/:id/notification-pref", requireAuth, (req, res) => {
+  const { id } = req.params;
+  const tech = db.findTechnician(id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!canView(req, id)) return res.status(403).json({ error: "Not authorized" });
+
+  const { notificationPref } = req.body || {};
+  if (!db.NOTIFICATION_PREFS.includes(notificationPref)) {
+    return res.status(400).json({ error: `notificationPref must be one of: ${db.NOTIFICATION_PREFS.join(", ")}` });
+  }
+  if (notificationPref === "email" && !tech.email) {
+    return res.status(400).json({ error: "Add an email address (Basic Info) before choosing email notifications" });
+  }
+
+  const updated = db.setNotificationPref(id, notificationPref);
+  db.addAudit(req.user.id, "NOTIFICATION_PREF_CHANGED", `${req.user.name} set ${tech.name}'s notification preference to ${notificationPref}`);
+  res.json({ notificationPref: updated.notification_pref });
 });
 
 router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {

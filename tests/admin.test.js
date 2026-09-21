@@ -180,6 +180,23 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     assert.equal(detail.body.ukgTotal, 40);
   });
 
+  await t.test("setting UKG hours for a technician opted into email notifications doesn't fail the request", async () => {
+    const optIn = await server.call("PATCH", "/api/technicians/T1003/notification-pref", {
+      userId: "T1003",
+      body: { notificationPref: "email" },
+    });
+    assert.equal(optIn.status, 200);
+
+    // SMTP isn't configured in tests, so this exercises the fire-and-forget
+    // mailer.sendMail() call without actually sending anything -- the point
+    // is that a missing/failed email never blocks the actual UKG-hours save.
+    const res = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: 8, Tue: 8, Wed: 8, Thu: 8, Fri: 8, Sat: 0 } },
+    });
+    assert.equal(res.status, 200);
+  });
+
   await t.test("a technician cannot set UKG hours", async () => {
     const res = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
       userId: "T1003",

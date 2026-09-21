@@ -232,6 +232,11 @@ export function renderTechniciansTab(content, openTo) {
         <label class="profile-field"><span>Hire date</span><input type="date" name="hireDate" value="${escapeHtml(tech.hireDate || "")}" /></label>
         <label class="profile-field"><span>Termination date</span><input type="date" name="terminationDate" value="${escapeHtml(tech.terminationDate || "")}" /></label>
         <label class="profile-field"><span>Standard daily hours (net of break)</span><input type="number" min="0" step="0.25" name="standardDailyHours" value="${tech.standardDailyHours ?? ""}" /></label>
+        <p class="profile-field-note">
+          Notify-me-by-email is the technician's own setting, not editable here:
+          currently <strong>${tech.notificationPref === "email" ? "Email" : "In-app only"}</strong>.
+          ${tech.notificationPref !== "email" && !tech.email ? " Add an email above so they can switch to email if they want to." : ""}
+        </p>
         <button type="submit" class="btn btn-primary">Save</button>
         <span class="save-message basic-info-message"></span>
       </form>
@@ -361,8 +366,8 @@ export function renderTechniciansTab(content, openTo) {
     });
   }
 
-  const DEVICE_TYPE_LABELS = { phone: "Phone", laptop: "Laptop" };
-  const DEVICE_IDENTIFIER_PLACEHOLDER = { phone: "Phone number", laptop: "Asset tag / serial" };
+  const DEVICE_TYPE_LABELS = { phone: "Phone", laptop: "Laptop", ipad: "iPad" };
+  const DEVICE_IDENTIFIER_PLACEHOLDER = { phone: "Phone number", laptop: "Asset tag / serial", ipad: "iPad #" };
 
   const requestEditing = new Set(); // request ids currently showing the edit form
 
@@ -380,9 +385,11 @@ export function renderTechniciansTab(content, openTo) {
       <form class="add-device-form">
         <select name="deviceType">
           <option value="phone">Phone</option>
+          <option value="ipad">iPad</option>
           <option value="laptop">Laptop</option>
         </select>
         <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" required />
+        <input name="plan" placeholder="Plan (optional, e.g. carrier plan)" />
         <input name="notes" placeholder="Notes (optional)" />
         <button type="submit" class="btn btn-secondary">Assign device</button>
       </form>
@@ -416,6 +423,7 @@ export function renderTechniciansTab(content, openTo) {
             <div>
               <span class="device-type-badge">${escapeHtml(DEVICE_TYPE_LABELS[d.deviceType] || d.deviceType)}</span>
               <span class="device-name">${escapeHtml(d.deviceName)}</span>
+              ${d.plan ? `<span class="device-plan">${escapeHtml(d.plan)}</span>` : ""}
               <div class="device-meta">${escapeHtml(d.notes || "")}${d.notes ? " &middot; " : ""}assigned ${new Date(d.assignedAt).toLocaleDateString()}</div>
             </div>
             <button class="btn btn-link danger-link remove-device" data-id="${d.id}" type="button">Remove</button>
@@ -523,6 +531,7 @@ export function renderTechniciansTab(content, openTo) {
         await api.post(`/api/admin/technicians/${tech.id}/devices`, {
           deviceType: form.deviceType.value,
           deviceName: form.deviceName.value.trim(),
+          plan: form.plan.value.trim(),
           notes: form.notes.value.trim(),
         });
         await drawDevices(tabContent, tech);

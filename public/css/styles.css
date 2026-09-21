@@ -263,6 +263,23 @@ button, input, select {
   color: var(--ink);
 }
 
+.status-note.ready-to-allocate {
+  font-weight: 600;
+}
+
+.notification-pref-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 10px 0;
+}
+
+.notification-pref-row select {
+  margin-left: 6px;
+}
+
 /* ---- Day cards ---- */
 
 .day-grid {
@@ -1215,6 +1232,12 @@ button, input, select {
 .device-name {
   font-weight: 600;
   font-size: 14px;
+}
+
+.device-plan {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 8px;
 }
 
 .device-meta {

@@ -23,8 +23,11 @@ for what that means in practice.
   referenced by a `files` table.
 - **Frontend:** Vanilla JS (native ES modules, no build step) + plain CSS,
   served as static files by Express.
-- No cloud services of any kind are involved — the whole thing runs on one
-  machine with two local files/folders as its only state.
+- No cloud services are required — the whole thing runs on one machine with
+  two local files/folders as its only state. The one optional exception is
+  outbound email (`nodemailer`, via `server/utils/mailer.js`): it's a no-op
+  until you point it at an SMTP account (see "Where this stands"), and
+  nothing else in the app depends on it.
 
 ## Running it
 
@@ -125,6 +128,17 @@ Demo logins:
   8-week average, and a simple Rising/Falling/Steady trend (comparing the
   first half of the window's average to the second half's) — a "View" jumps
   to that technician on Weekly Review the same as the main table's does
+- **"Your hours are ready to allocate" notifications**: as soon as an admin
+  saves UKG hours for a technician's still-draft week, that technician sees a
+  clear in-app note the next time they open that week ("Your hours are in —
+  go ahead and allocate your time below"). On top of that, each technician
+  can pick **Notify me by: In-app only / Email** for themselves (right on
+  their own week screen) — email is only offered once they have an email
+  address on file (set by an admin on their Basic Info; not editable by the
+  technician), and choosing it sends a real email at that same trigger
+  point. Email delivery is opt-in infrastructure: it's a no-op (logs what it
+  would have sent, doesn't error) until real SMTP credentials are set via
+  environment variables — see "Where this stands" for exactly which ones.
 - **Pending punch correction flag**: admin can flag a specific day (right
   next to that day's UKG hours field) as waiting on a real UKG punch fix
   (a missed clock-out, etc.). The technician sees a clear note on that
@@ -158,9 +172,10 @@ Demo logins:
     that technician, across all weeks, so you can see what's been worked on
   - Onboarding — a fixed 5-item checklist per technician (not yet an
     admin-editable template — see "Where this stands")
-  - Devices — Phone or Laptop, each with its identifier (phone number, or
-    an asset tag/serial for a laptop) and notes. Each device also has its
-    own small **IT Requests** log (e.g. a Calero line cancellation): a
+  - Devices — Phone, iPad, or Laptop, each with its identifier (phone
+    number, iPad #, or an asset tag/serial for a laptop), an optional
+    **plan** (e.g. a phone's carrier plan), and notes. Each device also has
+    its own small **IT Requests** log (e.g. a Calero line cancellation): a
     request type + reference number that can be marked completed and
     reopened, and edited after the fact (e.g. to correct or fill in a
     reference number once the vendor provides it), so a pending vendor
@@ -400,8 +415,26 @@ a missing code is obvious rather than silently blank.
   load that screen — there's no email/text alert sent when a form actually
   crosses its expiration date, and no daily digest. The warning window is a
   named constant (`FORM_EXPIRY_WARNING_DAYS` in `server/routes/admin.js`,
-  currently 30 days) if that lead time needs to change. Real push
-  notifications (email, SMS) would be a separate integration.
+  currently 30 days) if that lead time needs to change. The email
+  infrastructure now exists (`server/utils/mailer.js`, see below) if this
+  ever needs a real email/SMS alert too — it just isn't wired up for it yet.
+- **Email notifications need SMTP credentials to actually send anything.**
+  Until then, `server/utils/mailer.js` just logs what it would have sent and
+  the technician only ever sees the in-app note — nothing breaks, nothing
+  silently lies about having emailed someone. To turn real email on, set
+  these environment variables before starting the app (e.g. in the
+  systemd service file, or a `.env` loaded by your process manager):
+  `SMTP_HOST`, `SMTP_PORT` (defaults to 587), `SMTP_USER`, `SMTP_PASS`, and
+  optionally `SMTP_FROM` (defaults to `SMTP_USER`). Any SMTP provider works
+  (a Microsoft 365/Google Workspace mailbox's SMTP settings, or a
+  transactional provider like SendGrid) — this app doesn't care which, it
+  just needs standard SMTP auth.
+- **SMS was considered but isn't built.** It needs a paid third-party
+  provider (e.g. Twilio) and a phone number on file for every technician —
+  a bigger decision than email, which most workplaces already have
+  infrastructure for. Easy to add later behind the same
+  `notification_pref` field (just another option alongside `email`) if it
+  turns out to matter more than email in practice.
 - **Labor Reports is storage only — there's no comparison logic yet.** It
   saves the monthly file finance sends so it's kept next to the
   timesheeting for that period; nothing in the app reads its contents or
@@ -453,6 +486,8 @@ server/
     password.js             scrypt PIN hashing (hashPin/verifyPin)
     allocation.js            presentAllocation: translates a stored timeoff row's shape for API responses
     receipt.js               Server-side copy of the Reg/OT computeReceipt calculation (admin Overview)
+    mailer.js                 Opt-in SMTP email (no-op until SMTP_* env vars are set) for the
+                                 "your hours are ready" notification
 scripts/
   deploy.sh               One-shot droplet setup: Node 22, app, systemd service, firewall
 tests/
@@ -463,11 +498,12 @@ tests/
                               UKG-confirmed checklist, pending-punch flag
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region
-  roster.test.js              Basic info, onboarding, devices + IT requests (add/complete/edit),
-                                 allocation history
+  roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
+                                 (add/complete/edit), notification-pref, allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
                                     tech_form type/expiration + admin expiring-forms list
   audit.test.js                   Audit log writes and admin-only read access
+  mailer.test.js                   Email is a safe no-op (not a crash) when SMTP isn't configured
 public/
   index.html
   css/styles.css

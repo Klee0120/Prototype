@@ -41,6 +41,48 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.body.standardDailyHours, 8);
   });
 
+  await t.test("a technician can set their own notification preference once they have an email on file", async () => {
+    const res = await server.call("PATCH", "/api/technicians/T1001/notification-pref", {
+      userId: "T1001",
+      body: { notificationPref: "email" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.notificationPref, "email");
+
+    const list = await server.call("GET", "/api/admin/technicians", { userId: "ADMIN" });
+    assert.equal(list.body.find((r) => r.id === "T1001").notificationPref, "email");
+  });
+
+  await t.test("cannot switch to email without an email on file", async () => {
+    const create = await server.call("POST", "/api/admin/technicians", {
+      userId: "ADMIN",
+      body: { id: "T-NOEMAIL", name: "No Email Tech", pin: "1111" },
+    });
+    assert.equal(create.status, 201);
+
+    const res = await server.call("PATCH", "/api/technicians/T-NOEMAIL/notification-pref", {
+      userId: "ADMIN",
+      body: { notificationPref: "email" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician cannot set another technician's notification preference", async () => {
+    const res = await server.call("PATCH", "/api/technicians/T1002/notification-pref", {
+      userId: "T1001",
+      body: { notificationPref: "in_app" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects an invalid notification preference value", async () => {
+    const res = await server.call("PATCH", "/api/technicians/T1001/notification-pref", {
+      userId: "T1001",
+      body: { notificationPref: "carrier_pigeon" },
+    });
+    assert.equal(res.status, 400);
+  });
+
   await t.test("rejects a malformed hire/termination date or a negative standard daily hours", async () => {
     const badDate = await server.call("PATCH", "/api/admin/technicians/T1001/basic-info", {
       userId: "ADMIN",
@@ -159,6 +201,16 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     const removed = await server.call("DELETE", `/api/admin/technicians/T1001/devices/${deviceId}`, { userId: "ADMIN" });
     assert.equal(removed.status, 200);
     assert.deepEqual(removed.body, []);
+  });
+
+  await t.test("an iPad device can be assigned with an optional plan", async () => {
+    const added = await server.call("POST", "/api/admin/technicians/T1001/devices", {
+      userId: "ADMIN",
+      body: { deviceType: "ipad", deviceName: "IPAD-4471", plan: "Cellular unlimited" },
+    });
+    assert.equal(added.status, 201);
+    assert.equal(added.body[0].deviceType, "ipad");
+    assert.equal(added.body[0].plan, "Cellular unlimited");
   });
 
   await t.test("device IT requests (e.g. Calero) can be logged and followed up on", async () => {

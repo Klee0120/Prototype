@@ -53,7 +53,8 @@ db.exec(`
     email TEXT,
     phone TEXT,
     ukg_id TEXT,
-    position TEXT
+    position TEXT,
+    notification_pref TEXT NOT NULL DEFAULT 'in_app'
   );
 
   CREATE TABLE IF NOT EXISTS woms (
@@ -160,6 +161,12 @@ for (const col of ["email", "phone", "ukg_id", "position", "hire_date", "termina
 if (!hasColumn("technicians", "standard_daily_hours")) {
   db.exec("ALTER TABLE technicians ADD COLUMN standard_daily_hours REAL");
 }
+// How a technician wants to hear "your hours are ready, go allocate them" --
+// the in-app banner always shows regardless, but email additionally sends a
+// real message (see server/utils/mailer.js) when this is set to 'email'.
+if (!hasColumn("technicians", "notification_pref")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN notification_pref TEXT NOT NULL DEFAULT 'in_app'");
+}
 
 // employment_status (active/inactive/terminated/retired) replaces the old
 // boolean `active` flag with something a roster can actually filter/manage.
@@ -192,6 +199,11 @@ if (!hasColumn("ukg_hours", "pending_punch")) {
 // single free-text field was actually labeled.
 if (!hasColumn("tech_devices", "device_type")) {
   db.exec("ALTER TABLE tech_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'phone'");
+}
+// Optional plan/line info (e.g. a phone's carrier plan) -- free text since
+// plan names/tiers vary by carrier and change over time.
+if (!hasColumn("tech_devices", "plan")) {
+  db.exec("ALTER TABLE tech_devices ADD COLUMN plan TEXT DEFAULT ''");
 }
 
 // Real JDE accounting codes: each location's own job number for general
@@ -353,6 +365,17 @@ function setTechnicianBasicInfo(techId, { email, phone, ukgId, position, hireDat
   return findTechnician(techId);
 }
 
+// A technician's own choice of how they hear "your hours are ready to
+// allocate": the in-app banner always shows regardless of this, but 'email'
+// additionally sends a real email (requires the technician to have an email
+// on file -- see server/utils/mailer.js and the ukg-hours route).
+const NOTIFICATION_PREFS = ["in_app", "email"];
+
+function setNotificationPref(techId, pref) {
+  db.prepare("UPDATE technicians SET notification_pref = ? WHERE id = ?").run(pref, techId);
+  return findTechnician(techId);
+}
+
 // A fixed checklist for now rather than an admin-editable template — the
 // simplest version that's still a real, working checklist per technician.
 const ONBOARDING_TASKS = [
@@ -382,7 +405,7 @@ function setOnboardingTask(techId, taskKey, completed) {
 
 // ---- Devices ----
 
-const DEVICE_TYPES = ["phone", "laptop"];
+const DEVICE_TYPES = ["phone", "laptop", "ipad"];
 
 function listDeviceRequests(deviceId) {
   return db
@@ -397,20 +420,16 @@ function listDeviceRequests(deviceId) {
 function listDevices(techId) {
   const devices = db
     .prepare(
-      "SELECT id, device_type AS deviceType, device_name AS deviceName, notes, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
+      "SELECT id, device_type AS deviceType, device_name AS deviceName, notes, plan, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
     )
     .all(techId);
   return devices.map((d) => ({ ...d, requests: listDeviceRequests(d.id) }));
 }
 
-function addDevice(techId, deviceType, deviceName, notes) {
-  db.prepare("INSERT INTO tech_devices (tech_id, device_type, device_name, notes, assigned_at) VALUES (?, ?, ?, ?, ?)").run(
-    techId,
-    deviceType,
-    deviceName,
-    notes || "",
-    new Date().toISOString()
-  );
+function addDevice(techId, deviceType, deviceName, notes, plan) {
+  db.prepare(
+    "INSERT INTO tech_devices (tech_id, device_type, device_name, notes, plan, assigned_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(techId, deviceType, deviceName, notes || "", plan || "", new Date().toISOString());
   return listDevices(techId);
 }
 
@@ -823,6 +842,8 @@ module.exports = {
   setEmploymentStatus,
   createTechnician,
   setTechnicianBasicInfo,
+  NOTIFICATION_PREFS,
+  setNotificationPref,
   ONBOARDING_TASKS,
   getOnboardingProgress,
   setOnboardingTask,
