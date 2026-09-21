@@ -134,12 +134,15 @@ test("files: attachments (upload/list/download/delete) authorization", async (t)
     assert.equal(other.status, 403);
   });
 
-  await t.test("only the uploader or an admin can delete a file", async () => {
+  await t.test("only an admin can delete a file -- not even the technician who uploaded it", async () => {
     const wrongUser = await server.call("DELETE", `/api/files/${receiptId}`, { userId: "T1002" });
     assert.equal(wrongUser.status, 403);
 
     const owner = await server.call("DELETE", `/api/files/${receiptId}`, { userId: "T1001" });
-    assert.equal(owner.status, 200);
+    assert.equal(owner.status, 403);
+
+    const admin = await server.call("DELETE", `/api/files/${receiptId}`, { userId: "ADMIN" });
+    assert.equal(admin.status, 200);
 
     const afterDelete = await server.call("GET", `/api/files?relatedType=week&relatedId=${weekRelatedId}`, { userId: "T1001" });
     assert.equal(afterDelete.body.length, 0);

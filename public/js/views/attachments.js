@@ -69,7 +69,9 @@ export async function renderAttachments(host, opts) {
     const row = document.createElement("div");
     row.className = "attachment-row";
     const label = CATEGORY_LABELS[f.category] || f.category;
-    const canDelete = state.user.role === "admin" || f.uploadedBy === state.user.id;
+    // Delete is admin-only everywhere -- a technician can view (and, where
+    // allowed, upload) but never remove anything, even their own upload.
+    const canDelete = state.user.role === "admin";
 
     row.innerHTML = `
       <div class="attachment-info">

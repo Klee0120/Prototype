@@ -125,10 +125,13 @@ router.get("/:id/download", requireAuth, (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
+// Deleting is admin-only, full stop -- even a technician deleting their own
+// upload is disallowed, so nothing a technician can see ever has a delete
+// path that isn't mediated by an admin.
 router.delete("/:id", requireAuth, (req, res) => {
   const file = db.getFile(req.params.id);
   if (!file) return res.status(404).json({ error: "File not found" });
-  if (req.user.role !== "admin" && file.uploadedBy !== req.user.id) {
+  if (req.user.role !== "admin") {
     return res.status(403).json({ error: "Not authorized" });
   }
 
