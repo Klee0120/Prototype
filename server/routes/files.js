@@ -8,6 +8,7 @@ const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Which upload categories make sense for which kind of record.
 const CATEGORY_BY_RELATED = {
@@ -61,7 +62,7 @@ router.get("/", requireAuth, (req, res) => {
 });
 
 router.post("/", requireAuth, upload.single("file"), (req, res) => {
-  const { relatedType, relatedId, category } = req.body || {};
+  const { relatedType, relatedId, category, formType, expiresAt } = req.body || {};
   if (!req.file) return res.status(400).json({ error: "file is required" });
   if (!relatedType || !relatedId || !category) {
     return res.status(400).json({ error: "relatedType, relatedId, and category are required" });
@@ -76,6 +77,9 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
   }
   if (!canWrite(req.user, relatedType, relatedId, category)) {
     return res.status(403).json({ error: "Not authorized" });
+  }
+  if (expiresAt && !DATE_RE.test(expiresAt)) {
+    return res.status(400).json({ error: "expiresAt must be a YYYY-MM-DD date" });
   }
 
   const id = crypto.randomUUID();
@@ -94,6 +98,8 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
     size: req.file.size,
     uploadedBy: req.user.id,
     uploadedAt: new Date().toISOString(),
+    formType: formType || null,
+    expiresAt: expiresAt || null,
   });
 
   db.addAudit(

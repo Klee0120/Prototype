@@ -4,7 +4,6 @@ import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
-import { renderWomPhotoPrompt } from "./womPhotoPrompt.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -48,8 +47,8 @@ export async function renderAdminReview(container) {
   const womEditing = new Set();
   const locationEditing = new Set();
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
-  const photoPromptFor = new Map(); // techId -> WOM codes worked, shown right after confirming "entered in UKG"
   let laborReportMonth = currentMonthISO();
+  let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
 
   draw();
 
@@ -79,7 +78,10 @@ export async function renderAdminReview(container) {
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
-    else if (activeTab === "technicians") renderTechniciansTab(content);
+    else if (activeTab === "technicians") {
+      renderTechniciansTab(content, jumpToTech);
+      jumpToTech = null;
+    }
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
   }
@@ -158,11 +160,13 @@ export async function renderAdminReview(container) {
   }
 
   async function drawOverview(content) {
-    const [rows, locations] = await Promise.all([
+    const [rows, locations, expiringForms] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
+      api.get("/api/admin/expiring-forms"),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const todayIso = new Date().toISOString().slice(0, 10);
 
     const sorted = [...rows].sort((a, b) => {
       if (a.flagged !== b.flagged) return a.flagged ? -1 : 1;
@@ -170,6 +174,23 @@ export async function renderAdminReview(container) {
     });
 
     content.innerHTML = `
+      ${
+        expiringForms.length === 0
+          ? ""
+          : `<div class="expiring-forms-banner">
+              <div class="expiring-forms-title">Forms &amp; certifications needing attention</div>
+              ${expiringForms
+                .map((f) => {
+                  const expired = f.expiresAt < todayIso;
+                  return `<div class="expiring-forms-row">
+                    <span class="rfm-flag">${expired ? "Expired" : "Expiring"}</span>
+                    <span>${escapeHtml(f.techName)} — ${escapeHtml(f.formType || f.originalName)} (${expired ? "expired" : "expires"} ${escapeHtml(f.expiresAt)})</span>
+                    <button class="btn btn-link expiring-form-view-btn" type="button" data-tech="${escapeHtml(f.techId)}">View</button>
+                  </div>`;
+                })
+                .join("")}
+            </div>`
+      }
       <div class="week-nav">
         <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
         <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
@@ -231,6 +252,13 @@ export async function renderAdminReview(container) {
       btn.addEventListener("click", async () => {
         expanded.add(btn.dataset.tech);
         activeTab = "review";
+        await draw();
+      });
+    });
+    content.querySelectorAll(".expiring-form-view-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        jumpToTech = { techId: btn.dataset.tech, subTab: "forms" };
+        activeTab = "technicians";
         await draw();
       });
     });
@@ -318,18 +346,8 @@ export async function renderAdminReview(container) {
         >${stage3 ? "Undo" : "Mark entered in UKG"}</button>
         <button class="btn btn-link expand-btn" type="button">${expanded.has(row.technician.id) ? "Hide" : "Details"}</button>
       </div>
-      <div class="wom-photo-prompt-host" id="photo-prompt-${row.technician.id}"></div>
       <div class="review-row-detail" id="detail-${row.technician.id}"></div>
     `;
-
-    if (photoPromptFor.has(row.technician.id)) {
-      el.querySelector(".wom-photo-prompt-host").appendChild(
-        renderWomPhotoPrompt(photoPromptFor.get(row.technician.id), () => {
-          photoPromptFor.delete(row.technician.id);
-          drawReview(content);
-        })
-      );
-    }
 
     el.querySelector(".confirm-ukg-btn").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -340,15 +358,6 @@ export async function renderAdminReview(container) {
         // Collapse the detail panel on the way in/out of Completed -- that
         // list should default to just the summary row, not the full form.
         expanded.delete(row.technician.id);
-
-        if (confirming) {
-          const detail = await api.get(`/api/technicians/${row.technician.id}/weeks/${state.weekMonday}`);
-          const womCodes = [...new Set(detail.allocations.filter((a) => a.type === "wom" && a.hours > 0).map((a) => a.womCode))];
-          if (womCodes.length > 0) photoPromptFor.set(row.technician.id, womCodes);
-        } else {
-          photoPromptFor.delete(row.technician.id);
-        }
-
         await drawReview(content);
       } catch (err) {
         btn.disabled = false;

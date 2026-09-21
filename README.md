@@ -123,11 +123,15 @@ Demo logins:
   day's card explaining the hours aren't final yet, instead of it looking
   like their time was forgotten or entered wrong. Toggle it off once the
   real punch is fixed and the correct hours are in.
-- **WOM photo prompt**: after a technician submits a week (or an admin marks
-  it "entered in UKG") that included WOM hours, a dismissible prompt offers
-  to attach a work photo for each WOM touched that week — reusing the same
-  WOM documents store as the WOM Status tab's Documents panel, so a photo
-  added either way shows up in both places.
+- **WOM photo prompt**: when a technician has WOM hours entered for the week,
+  a dismissible prompt (shown *before* Submit, right alongside the day cards,
+  not as an after-the-fact step with nothing left to do) offers to attach a
+  work photo for each WOM touched that week — reusing the same WOM documents
+  store as the WOM Status tab's Documents panel, so a photo added either way
+  shows up in both places. It's the technician's own reminder, so it's never
+  shown to an admin (allocating on a technician's behalf on Tech Allocation,
+  or confirming "entered in UKG" on Weekly Review) — an admin who wants to
+  attach a WOM photo does it from the WOM Status tab's Documents panel.
 - **Labor Reports tab (admin)**: a simple month-by-month archive for the
   labor report finance sends over, saved here so it's kept alongside the
   timesheeting for that period — for comparing against what this app
@@ -150,8 +154,19 @@ Demo logins:
     an asset tag/serial for a laptop) and notes. Each device also has its
     own small **IT Requests** log (e.g. a Calero line cancellation): a
     request type + reference number that can be marked completed and
-    reopened, so a pending vendor request doesn't get lost track of
-  - Forms on File / Documents — file attachments, same mechanism as WOM docs
+    reopened, and edited after the fact (e.g. to correct or fill in a
+    reference number once the vendor provides it), so a pending vendor
+    request doesn't get lost track of
+  - Forms on File — file attachments like the others, but with two extra
+    fields for a form/certification: a **type** (e.g. "Forklift License")
+    and an **expiration date**. A form past (or close to) its expiration
+    date shows an Expired/Expiring badge here, and also surfaces in a
+    dedicated banner at the top of the admin's **Overview** tab ("Forms &
+    certifications needing attention") so it doesn't just sit unnoticed on
+    an individual profile — a "View" link jumps straight to that
+    technician's Forms on File tab
+  - Documents — general file attachments, same mechanism as WOM docs but
+    with no type/expiration tracking
 - **Add technician**: a form on the roster (ID, name, PIN, position,
   home location, contact info) creates a new technician who can log in
   immediately
@@ -351,12 +366,18 @@ set/change the subsidiary code.
   documented "technician reported X, admin resolved with Y" trail turns
   out to matter (not just a visual flag), that's a distinct small feature,
   not an extension of this one — worth a separate design pass.
-- **The WOM photo prompt is a one-time nudge, not enforcement.** It shows
-  once right after the triggering action (submit, or admin confirming
-  "entered in UKG") and is fully skippable — nothing blocks progress if no
-  photo is ever added, and it won't reappear if dismissed. If photos ever
-  need to be mandatory for certain WOMs, that needs a real requirement
-  check, not just a prompt.
+- **The WOM photo prompt is a one-time nudge, not enforcement.** It's
+  dismissible for the current visit (dismiss it and it won't reappear until
+  the page is reloaded) and fully skippable — nothing blocks Submit if no
+  photo is ever added. If photos ever need to be mandatory for certain WOMs,
+  that needs a real requirement check, not just a prompt.
+- **Expiring-forms flag is visual only, not a notification.** It shows up in
+  the Overview banner and on the form's own row whenever an admin happens to
+  load that screen — there's no email/text alert sent when a form actually
+  crosses its expiration date, and no daily digest. The warning window is a
+  named constant (`FORM_EXPIRY_WARNING_DAYS` in `server/routes/admin.js`,
+  currently 30 days) if that lead time needs to change. Real push
+  notifications (email, SMS) would be a separate integration.
 - **Labor Reports is storage only — there's no comparison logic yet.** It
   saves the monthly file finance sends so it's kept next to the
   timesheeting for that period; nothing in the app reads its contents or
@@ -395,11 +416,13 @@ server/
                               POST :code/complete (tech-facing)
     admin.js               Weekly review + Overview report, UKG hours, pending-punch flag,
                               UKG-confirmed checklist, roster, profile (basic info, onboarding,
-                              devices, allocation history), approve/reject/unlock
+                              devices + IT requests, allocation history, expiring-forms list),
+                              approve/reject/unlock
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F Job
                               Number/Region and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
-    files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report)
+    files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
+                                  incl. formType/expiresAt for tech_form uploads
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -416,8 +439,10 @@ tests/
                               checklist, pending-punch flag
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F Job Number/Region
-  roster.test.js              Basic info, onboarding, devices, allocation history
-  files.test.js                 Upload/list/download/delete authorization, labor_report admin-only
+  roster.test.js              Basic info, onboarding, devices + IT requests (add/complete/edit),
+                                 allocation history
+  files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
+                                    tech_form type/expiration + admin expiring-forms list
   audit.test.js                   Audit log writes and admin-only read access
 public/
   index.html

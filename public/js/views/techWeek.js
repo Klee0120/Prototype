@@ -52,10 +52,11 @@ export async function renderTechWeek(container, techIdOverride) {
   }
 
   let saveMessage = "";
-  // Handed off across the remount that happens right after a successful
-  // submit (state survives; local closures don't) -- consumed once here.
-  let photoPromptWomCodes = state.pendingPhotoPromptWoms || null;
-  delete state.pendingPhotoPromptWoms;
+  // Dismissible for this render session -- resets on remount (e.g. after
+  // save/submit or navigating away and back), same as the old post-submit
+  // version, but now shown *before* submit so there's still a Submit button
+  // on screen while photos are being added instead of a dead end after.
+  let photoPromptDismissed = false;
 
   container.innerHTML = `<div id="tw-main"></div><div id="tw-attachments"></div>`;
   const main = container.querySelector("#tw-main");
@@ -150,10 +151,15 @@ export async function renderTechWeek(container, techIdOverride) {
       `}
     `;
 
-    if (photoPromptWomCodes) {
+    // Admins allocating on a technician's behalf don't need this nudge --
+    // it's the technician's own reminder to document their WOM work, shown
+    // up front (next to the Submit button) rather than as an after-the-fact
+    // step with nothing left to do on screen.
+    const womCodesWorked = [...new Set(allocations.filter((a) => a.type === "wom" && Number(a.hours) > 0).map((a) => a.womCode))];
+    if (state.user.role !== "admin" && !photoPromptDismissed && womCodesWorked.length > 0) {
       main.querySelector("#wom-photo-prompt-host").appendChild(
-        renderWomPhotoPrompt(photoPromptWomCodes, () => {
-          photoPromptWomCodes = null;
+        renderWomPhotoPrompt(womCodesWorked, () => {
+          photoPromptDismissed = true;
           draw();
         })
       );
@@ -507,9 +513,6 @@ export async function renderTechWeek(container, techIdOverride) {
           window.alert(`Week was submitted, but could not mark ${code} complete: ${err.message}`);
         }
       }
-
-      const womCodesWorked = [...new Set(allocations.filter((a) => a.type === "wom" && Number(a.hours) > 0).map((a) => a.womCode))];
-      if (womCodesWorked.length > 0) state.pendingPhotoPromptWoms = womCodesWorked;
 
       await renderTechWeek(container, techIdOverride);
     } catch (err) {

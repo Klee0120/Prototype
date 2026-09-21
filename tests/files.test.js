@@ -151,4 +151,46 @@ test("files: attachments (upload/list/download/delete) authorization", async (t)
     assert.ok(actions.includes("FILE_UPLOADED"));
     assert.ok(actions.includes("FILE_DELETED"));
   });
+
+  await t.test("a tech_form can carry a type and expiration date", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "technician", relatedId: "T1002", category: "tech_form", formType: "Forklift License", expiresAt: "2020-01-01" },
+      fileName: "forklift.pdf",
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.formType, "Forklift License");
+    assert.equal(res.body.expiresAt, "2020-01-01");
+
+    const list = await server.call("GET", "/api/files?relatedType=technician&relatedId=T1002", { userId: "ADMIN" });
+    assert.ok(list.body.some((f) => f.formType === "Forklift License" && f.expiresAt === "2020-01-01"));
+  });
+
+  await t.test("rejects a malformed expiration date", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "technician", relatedId: "T1002", category: "tech_form", expiresAt: "not-a-date" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("expired/expiring forms surface on the admin expiring-forms endpoint", async () => {
+    const res = await server.call("GET", "/api/admin/expiring-forms", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((f) => f.techId === "T1002" && f.formType === "Forklift License"));
+  });
+
+  await t.test("a form expiring far in the future doesn't show up on the warning list", async () => {
+    await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "technician", relatedId: "T1003", category: "tech_form", formType: "Not due for years", expiresAt: "2099-01-01" },
+    });
+    const res = await server.call("GET", "/api/admin/expiring-forms", { userId: "ADMIN" });
+    assert.ok(!res.body.some((f) => f.formType === "Not due for years"));
+  });
+
+  await t.test("a technician cannot view the expiring-forms list", async () => {
+    const res = await server.call("GET", "/api/admin/expiring-forms", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
 });

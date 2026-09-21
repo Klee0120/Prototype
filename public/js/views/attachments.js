@@ -16,9 +16,21 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function expiryBadge(expiresAt) {
+  if (!expiresAt) return "";
+  const expired = expiresAt < todayISO();
+  return `<span class="badge ${expired ? "badge-rejected" : "badge-draft"}">${expired ? "Expired" : "Expires"} ${escapeHtml(expiresAt)}</span>`;
+}
+
 /**
  * Renders a self-contained attachments list + upload form into `host`.
- * options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText }
+ * options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,
+ *            trackExpiration: true adds Type + Expiration date fields to the upload form and
+ *            shows them (with an Expired/Expires badge) on each file row -- used for Forms on File. }
  */
 export async function renderAttachments(host, opts) {
   await refresh();
@@ -62,7 +74,10 @@ export async function renderAttachments(host, opts) {
     row.innerHTML = `
       <div class="attachment-info">
         <span class="attachment-name">${escapeHtml(f.originalName)}</span>
-        <span class="attachment-meta">${escapeHtml(label)} &middot; ${formatSize(f.size)} &middot; ${escapeHtml(f.uploadedBy)} &middot; ${new Date(f.uploadedAt).toLocaleDateString()}</span>
+        <span class="attachment-meta">
+          ${opts.trackExpiration && f.formType ? `${escapeHtml(f.formType)} &middot; ` : ""}${escapeHtml(label)} &middot; ${formatSize(f.size)} &middot; ${escapeHtml(f.uploadedBy)} &middot; ${new Date(f.uploadedAt).toLocaleDateString()}
+        </span>
+        ${opts.trackExpiration ? expiryBadge(f.expiresAt) : ""}
       </div>
       <div class="attachment-actions">
         <button type="button" class="btn btn-link download-btn">Download</button>
@@ -105,6 +120,8 @@ export async function renderAttachments(host, opts) {
     return `
       <form class="attachment-upload-form">
         ${categorySelect}
+        ${opts.trackExpiration ? `<input name="formType" placeholder="Type (e.g. Certification)" />` : ""}
+        ${opts.trackExpiration ? `<label class="attachment-expiry-field"><span>Expires</span><input type="date" name="expiresAt" /></label>` : ""}
         <input type="file" name="file" required />
         <button type="submit" class="btn btn-secondary">Upload</button>
         <span class="save-message upload-message"></span>
@@ -122,7 +139,10 @@ export async function renderAttachments(host, opts) {
       if (!file) return;
       const msg = form.querySelector(".upload-message");
       try {
-        await api.uploadFile(opts.relatedType, opts.relatedId, category, file);
+        await api.uploadFile(opts.relatedType, opts.relatedId, category, file, {
+          formType: opts.trackExpiration ? form.formType.value.trim() : undefined,
+          expiresAt: opts.trackExpiration ? form.expiresAt.value : undefined,
+        });
         await refresh();
       } catch (err) {
         msg.textContent = err.message;

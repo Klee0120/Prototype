@@ -187,6 +187,21 @@ router.patch("/technicians/:id/devices/:deviceId/requests/:requestId", (req, res
   const device = db.findDevice(tech.id, Number(req.params.deviceId));
   if (!device) return res.status(404).json({ error: "Device not found" });
 
+  // Editing the type/reference # and toggling completion are distinct
+  // actions on the same request -- routed by which fields are present.
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "requestType")) {
+    const { requestType, referenceNumber } = req.body || {};
+    if (!requestType) return res.status(400).json({ error: "requestType is required" });
+
+    const requests = db.setDeviceRequestDetails(device.id, Number(req.params.requestId), { requestType, referenceNumber });
+    db.addAudit(
+      req.user.id,
+      "DEVICE_REQUEST_UPDATED",
+      `${req.user.name} updated a device request for ${tech.name} (${requestType}${referenceNumber ? ` #${referenceNumber}` : ""})`
+    );
+    return res.json(requests);
+  }
+
   const completed = Boolean(req.body && req.body.completed);
   const requests = db.setDeviceRequestCompleted(device.id, Number(req.params.requestId), completed);
   db.addAudit(
@@ -195,6 +210,14 @@ router.patch("/technicians/:id/devices/:deviceId/requests/:requestId", (req, res
     `${req.user.name} marked a device request ${completed ? "complete" : "not complete"} for ${tech.name}`
   );
   res.json(requests);
+});
+
+const FORM_EXPIRY_WARNING_DAYS = 30;
+
+// Forms/certifications that are already expired or expiring soon, for the
+// Overview tab's admin/RFM attention banner.
+router.get("/expiring-forms", (req, res) => {
+  res.json(db.listExpiringForms(FORM_EXPIRY_WARNING_DAYS));
 });
 
 router.get("/weeks/:weekMonday", (req, res) => {

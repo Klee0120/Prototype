@@ -28,10 +28,15 @@ function statusBadge(status) {
   return `<span class="badge badge-${cls}">${escapeHtml(label)}</span>`;
 }
 
-/** Manages its own roster-list vs. profile-detail state inside `content`. */
-export function renderTechniciansTab(content) {
-  let profileTechId = null;
-  let profileSubTab = "basic";
+/**
+ * Manages its own roster-list vs. profile-detail state inside `content`.
+ * `openTo`: optional one-shot deep link, e.g. { techId, subTab } to jump
+ * straight into a technician's profile on a given sub-tab (used by the
+ * Overview tab's expiring-forms banner).
+ */
+export function renderTechniciansTab(content, openTo) {
+  let profileTechId = openTo ? openTo.techId : null;
+  let profileSubTab = openTo && openTo.subTab ? openTo.subTab : "basic";
   let showAddForm = false;
   const filters = { location: "", status: "active" };
 
@@ -359,6 +364,8 @@ export function renderTechniciansTab(content) {
   const DEVICE_TYPE_LABELS = { phone: "Phone", laptop: "Laptop" };
   const DEVICE_IDENTIFIER_PLACEHOLDER = { phone: "Phone number", laptop: "Asset tag / serial" };
 
+  const requestEditing = new Set(); // request ids currently showing the edit form
+
   async function drawDevices(tabContent, tech) {
     const devices = await api.get(`/api/admin/technicians/${tech.id}/devices`);
     tabContent.innerHTML = `
@@ -381,6 +388,27 @@ export function renderTechniciansTab(content) {
       </form>
     `;
 
+    function renderRequestRow(d, r) {
+      if (requestEditing.has(r.id)) {
+        return `
+          <form class="edit-request-form" data-device-id="${d.id}" data-request-id="${r.id}">
+            <input name="requestType" value="${escapeHtml(r.requestType)}" required />
+            <input name="referenceNumber" placeholder="Reference #" value="${escapeHtml(r.referenceNumber || "")}" />
+            <button type="submit" class="btn btn-link">Save</button>
+            <button type="button" class="btn btn-link cancel-request-edit" data-request-id="${r.id}">Cancel</button>
+          </form>`;
+      }
+      return `
+        <div class="device-request-row">
+          <span class="device-request-type">${escapeHtml(r.requestType)}${r.referenceNumber ? ` &mdash; #${escapeHtml(r.referenceNumber)}` : ""}</span>
+          <span class="badge ${r.completedAt ? "badge-approved" : "badge-draft"}">${r.completedAt ? "Completed" : "Pending"}</span>
+          <button class="btn btn-link edit-request-btn" type="button" data-request-id="${r.id}">Edit</button>
+          <button class="btn btn-link toggle-request-btn" type="button" data-device-id="${d.id}" data-request-id="${r.id}" data-completed="${Boolean(r.completedAt)}">
+            ${r.completedAt ? "Reopen" : "Mark completed"}
+          </button>
+        </div>`;
+    }
+
     function renderDeviceRow(d) {
       return `
         <div class="device-row">
@@ -397,18 +425,7 @@ export function renderTechniciansTab(content) {
             ${
               d.requests.length === 0
                 ? `<p class="empty-note">No requests logged.</p>`
-                : d.requests
-                    .map(
-                      (r) => `
-                  <div class="device-request-row">
-                    <span class="device-request-type">${escapeHtml(r.requestType)}${r.referenceNumber ? ` &mdash; #${escapeHtml(r.referenceNumber)}` : ""}</span>
-                    <span class="badge ${r.completedAt ? "badge-approved" : "badge-draft"}">${r.completedAt ? "Completed" : "Pending"}</span>
-                    <button class="btn btn-link toggle-request-btn" type="button" data-device-id="${d.id}" data-request-id="${r.id}" data-completed="${Boolean(r.completedAt)}">
-                      ${r.completedAt ? "Reopen" : "Mark completed"}
-                    </button>
-                  </div>`
-                    )
-                    .join("")
+                : d.requests.map((r) => renderRequestRow(d, r)).join("")
             }
             <form class="add-request-form" data-device-id="${d.id}">
               <input name="requestType" placeholder="Request type (e.g. Cancellation)" required />
@@ -447,6 +464,37 @@ export function renderTechniciansTab(content) {
           await drawDevices(tabContent, tech);
         } catch (err) {
           errorEl.textContent = `Could not update: ${err.message}`;
+          errorEl.hidden = false;
+        }
+      });
+    });
+
+    tabContent.querySelectorAll(".edit-request-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        requestEditing.add(Number(btn.dataset.requestId));
+        drawDevices(tabContent, tech);
+      });
+    });
+
+    tabContent.querySelectorAll(".cancel-request-edit").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        requestEditing.delete(Number(btn.dataset.requestId));
+        drawDevices(tabContent, tech);
+      });
+    });
+
+    tabContent.querySelectorAll(".edit-request-form").forEach((form) => {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+          await api.patch(
+            `/api/admin/technicians/${tech.id}/devices/${form.dataset.deviceId}/requests/${form.dataset.requestId}`,
+            { requestType: form.requestType.value.trim(), referenceNumber: form.referenceNumber.value.trim() }
+          );
+          requestEditing.delete(Number(form.dataset.requestId));
+          await drawDevices(tabContent, tech);
+        } catch (err) {
+          errorEl.textContent = `Not saved: ${err.message}`;
           errorEl.hidden = false;
         }
       });
@@ -493,6 +541,7 @@ export function renderTechniciansTab(content) {
       categories: [{ value: "tech_form", label: "Form / Certification" }],
       canUpload: true,
       emptyText: "No forms on file.",
+      trackExpiration: true,
     });
   }
 

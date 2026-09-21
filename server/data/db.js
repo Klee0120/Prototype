@@ -112,7 +112,9 @@ db.exec(`
     mime_type TEXT NOT NULL,
     size INTEGER NOT NULL,
     uploaded_by TEXT NOT NULL,
-    uploaded_at TEXT NOT NULL
+    uploaded_at TEXT NOT NULL,
+    form_type TEXT,
+    expires_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
@@ -205,6 +207,15 @@ if (!hasColumn("locations", "region")) {
 }
 if (!hasColumn("woms", "subsidiary_code")) {
   db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
+}
+// Forms on File (tech_form uploads) can carry a type (e.g. "Certification",
+// "License") and an expiration date, so expired ones can be flagged for
+// admin/RFM attention on the Overview tab -- see listExpiringForms below.
+if (!hasColumn("files", "form_type")) {
+  db.exec("ALTER TABLE files ADD COLUMN form_type TEXT");
+}
+if (!hasColumn("files", "expires_at")) {
+  db.exec("ALTER TABLE files ADD COLUMN expires_at TEXT");
 }
 
 seedIfEmpty();
@@ -418,6 +429,16 @@ function addDeviceRequest(deviceId, requestType, referenceNumber) {
 function setDeviceRequestCompleted(deviceId, requestId, completed) {
   db.prepare("UPDATE device_requests SET completed_at = ? WHERE id = ? AND device_id = ?").run(
     completed ? new Date().toISOString() : null,
+    requestId,
+    deviceId
+  );
+  return listDeviceRequests(deviceId);
+}
+
+function setDeviceRequestDetails(deviceId, requestId, { requestType, referenceNumber }) {
+  db.prepare("UPDATE device_requests SET request_type = ?, reference_number = ? WHERE id = ? AND device_id = ?").run(
+    requestType,
+    referenceNumber || "",
     requestId,
     deviceId
   );
@@ -715,8 +736,8 @@ function listAudit() {
 
 function insertFile(file) {
   db.prepare(`
-    INSERT INTO files (id, related_type, related_id, category, original_name, stored_name, mime_type, size, uploaded_by, uploaded_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO files (id, related_type, related_id, category, original_name, stored_name, mime_type, size, uploaded_by, uploaded_at, form_type, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     file.id,
     file.relatedType,
@@ -727,7 +748,9 @@ function insertFile(file) {
     file.mimeType,
     file.size,
     file.uploadedBy,
-    file.uploadedAt
+    file.uploadedAt,
+    file.formType || null,
+    file.expiresAt || null
   );
   return getFile(file.id);
 }
@@ -736,7 +759,8 @@ function listFiles(relatedType, relatedId) {
   return db
     .prepare(
       `SELECT id, related_type AS relatedType, related_id AS relatedId, category, original_name AS originalName,
-              stored_name AS storedName, mime_type AS mimeType, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt
+              stored_name AS storedName, mime_type AS mimeType, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt,
+              form_type AS formType, expires_at AS expiresAt
        FROM files WHERE related_type = ? AND related_id = ? ORDER BY uploaded_at DESC`
     )
     .all(relatedType, relatedId);
@@ -746,7 +770,8 @@ function getFile(id) {
   return db
     .prepare(
       `SELECT id, related_type AS relatedType, related_id AS relatedId, category, original_name AS originalName,
-              stored_name AS storedName, mime_type AS mimeType, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt
+              stored_name AS storedName, mime_type AS mimeType, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt,
+              form_type AS formType, expires_at AS expiresAt
        FROM files WHERE id = ?`
     )
     .get(id);
@@ -757,6 +782,25 @@ function deleteFile(id) {
   if (!file) return null;
   db.prepare("DELETE FROM files WHERE id = ?").run(id);
   return file;
+}
+
+// Forms (tech_form uploads) with an expiration date that's already passed or
+// is coming up within `daysAhead` -- surfaced to admin/RFM on the Overview
+// tab so an expired certification/license doesn't just sit unnoticed.
+function listExpiringForms(daysAhead = 30) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + daysAhead);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  return db
+    .prepare(
+      `SELECT f.id, f.related_id AS techId, t.name AS techName, f.form_type AS formType,
+              f.original_name AS originalName, f.expires_at AS expiresAt
+       FROM files f
+       JOIN technicians t ON t.id = f.related_id
+       WHERE f.category = 'tech_form' AND f.expires_at IS NOT NULL AND f.expires_at <= ?
+       ORDER BY f.expires_at ASC`
+    )
+    .all(cutoffStr);
 }
 
 module.exports = {
@@ -779,6 +823,7 @@ module.exports = {
   findDevice,
   addDeviceRequest,
   setDeviceRequestCompleted,
+  setDeviceRequestDetails,
   getAllocationHistory,
   listLocations,
   findLocation,
@@ -809,4 +854,5 @@ module.exports = {
   listFiles,
   getFile,
   deleteFile,
+  listExpiringForms,
 };

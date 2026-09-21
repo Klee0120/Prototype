@@ -192,6 +192,15 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
       { userId: "ADMIN", body: { completed: false } }
     );
     assert.equal(reopened.body[0].completedAt, null);
+
+    const edited = await server.call(
+      "PATCH",
+      `/api/admin/technicians/T1001/devices/${deviceId}/requests/${requestId}`,
+      { userId: "ADMIN", body: { requestType: "Line transfer", referenceNumber: "CAL-9999" } }
+    );
+    assert.equal(edited.status, 200);
+    assert.equal(edited.body[0].requestType, "Line transfer");
+    assert.equal(edited.body[0].referenceNumber, "CAL-9999");
   });
 
   await t.test("a technician cannot manage another technician's devices or onboarding", async () => {

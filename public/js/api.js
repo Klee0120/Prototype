@@ -36,12 +36,17 @@ async function request(method, path, body) {
   return data;
 }
 
-async function uploadFile(relatedType, relatedId, category, file) {
+async function uploadFile(relatedType, relatedId, category, file, extra) {
   const form = new FormData();
   form.append("relatedType", relatedType);
   form.append("relatedId", relatedId);
   form.append("category", category);
   form.append("file", file);
+  if (extra) {
+    for (const [key, value] of Object.entries(extra)) {
+      if (value) form.append(key, value);
+    }
+  }
 
   const headers = {};
   const token = currentSessionToken();
