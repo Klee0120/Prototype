@@ -18,6 +18,12 @@ const TIME_OFF_OPTIONS = [
   { value: "holiday", label: "Holiday" },
 ];
 
+const WEEKLY_HOURS_TARGET = 40;
+// Mirrors OT_NOT_ON_WOM_FLAG_THRESHOLD / the short-hours check in
+// server/routes/admin.js -- same number, so what the technician sees here
+// lines up with what actually gets flagged for RFM on the Overview tab.
+const HOURS_CHECK_THRESHOLD = 3;
+
 export async function renderTechWeek(container, techIdOverride) {
   const techId = techIdOverride || state.user.id;
   const [week, woms, locations] = await Promise.all([
@@ -57,6 +63,13 @@ export async function renderTechWeek(container, techIdOverride) {
   // version, but now shown *before* submit so there's still a Submit button
   // on screen while photos are being added instead of a dead end after.
   let photoPromptDismissed = false;
+  // Each of these self-checks goes through up to three states for this
+  // render session: "question" (shown), "acknowledged" (they confirmed it's
+  // accurate -- shows the "RFM will be flagged" note), or "dismissed" (they
+  // said they'll go fix the allocation instead, or clicked past the note).
+  // Resets on remount same as the photo prompt above.
+  let otCheckStage = "question";
+  let shortCheckStage = "question";
 
   container.innerHTML = `<div id="tw-main"></div><div id="tw-attachments"></div>`;
   const main = container.querySelector("#tw-main");
@@ -149,6 +162,15 @@ export async function renderTechWeek(container, techIdOverride) {
     const locked = mode === "locked";
     const timeOffOnly = mode === "timeoff-only";
     const weekAllocated = round2(allocations.reduce((s, a) => s + Number(a.hours || 0), 0));
+    // Same two self-checks as the server's flagging in Overview: too much OT
+    // not explained by any WOM project, or a week that came in well short of
+    // 40 with nothing on file to explain the gap. UKG total (not allocated)
+    // is the basis for the short check, same as the server -- 0 just means
+    // nothing's been entered yet, not an actual short week.
+    const receipt = computeReceipt(allocations);
+    const otNotOnWomFlagged = receipt.otFromEf > HOURS_CHECK_THRESHOLD;
+    const shortfall = round2(WEEKLY_HOURS_TARGET - week.ukgTotal);
+    const shortHoursFlagged = week.ukgTotal > 0 && shortfall > HOURS_CHECK_THRESHOLD;
     // Once a week is submitted/approved, Sat/Sun stay open for a weekend
     // callout the tech gets asked to work after the fact -- logged via a
     // dedicated endpoint that never touches the already-locked Mon-Fri rows.
@@ -208,6 +230,7 @@ export async function renderTechWeek(container, techIdOverride) {
       ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
 
       <div id="wom-photo-prompt-host"></div>
+      <div id="hours-check-host"></div>
 
       <div class="day-grid" id="day-grid"></div>
 
@@ -241,6 +264,46 @@ export async function renderTechWeek(container, techIdOverride) {
           draw();
         })
       );
+    }
+
+    // Same self-checks as the server's Overview flagging, surfaced to the
+    // technician themselves before they submit -- a nudge to double-check
+    // (did RFM know about this? is there WOM time not yet reported?), not a
+    // gate on submitting. Mutually exclusive by construction (one needs
+    // >40h, the other <37h), so at most one shows at a time.
+    const hoursCheckHost = main.querySelector("#hours-check-host");
+    if (state.user.role !== "admin" && !locked && !timeOffOnly) {
+      if (otNotOnWomFlagged && otCheckStage !== "dismissed") {
+        hoursCheckHost.appendChild(
+          renderHoursCheckPrompt(
+            otCheckStage,
+            `You have ${receipt.otFromEf}h of overtime this week that isn't charged to any WOM project. Was this approved by your RFM? Is there additional WOM time you haven't reported yet?`,
+            () => {
+              otCheckStage = "acknowledged";
+              draw();
+            },
+            () => {
+              otCheckStage = "dismissed";
+              draw();
+            }
+          )
+        );
+      } else if (shortHoursFlagged && shortCheckStage !== "dismissed") {
+        hoursCheckHost.appendChild(
+          renderHoursCheckPrompt(
+            shortCheckStage,
+            `You're at ${week.ukgTotal}h this week, ${shortfall}h short of a full 40. If this was planned time off, submit PTO/Sick/Holiday for the difference. Did you arrange with your RFM to take these hours unpaid?`,
+            () => {
+              shortCheckStage = "acknowledged";
+              draw();
+            },
+            () => {
+              shortCheckStage = "dismissed";
+              draw();
+            }
+          )
+        );
+      }
     }
 
     const grid = main.querySelector("#day-grid");
@@ -701,6 +764,37 @@ export async function renderTechWeek(container, techIdOverride) {
       draw();
     }
   }
+}
+
+// A two-stage nudge: ask the question, and if they confirm it's accurate,
+// swap to a short note that this will show up flagged for RFM (which, per
+// the server's own flagging in Overview, it already will be -- this is just
+// making the technician aware, not creating a separate flag on top of it).
+// "I'll update my allocation" skips straight past the note, on the
+// assumption they're about to go fix the actual cause.
+function renderHoursCheckPrompt(stage, questionText, onAccurate, onWillFix) {
+  const wrap = document.createElement("div");
+  wrap.className = "hours-check-prompt";
+
+  if (stage === "acknowledged") {
+    wrap.innerHTML = `
+      <p class="hours-check-note">Noted — this will show up flagged for your RFM to review.</p>
+      <button type="button" class="btn btn-link hours-check-gotit">Got it</button>
+    `;
+    wrap.querySelector(".hours-check-gotit").addEventListener("click", onWillFix);
+    return wrap;
+  }
+
+  wrap.innerHTML = `
+    <p class="hours-check-question">${escapeHtml(questionText)}</p>
+    <div class="hours-check-actions">
+      <button type="button" class="btn btn-link hours-check-fix">I'll update my allocation</button>
+      <button type="button" class="btn btn-link hours-check-accurate">This is accurate</button>
+    </div>
+  `;
+  wrap.querySelector(".hours-check-fix").addEventListener("click", onWillFix);
+  wrap.querySelector(".hours-check-accurate").addEventListener("click", onAccurate);
+  return wrap;
 }
 
 function round2(n) {

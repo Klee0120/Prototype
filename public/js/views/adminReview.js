@@ -94,8 +94,11 @@ export async function renderAdminReview(container) {
   draw();
 
   async function draw() {
+    const priorityCount = await computePriorityCount();
+
     container.innerHTML = `
       <div class="tabs">
+        <button class="tab ${activeTab === "priorities" ? "active" : ""}" data-tab="priorities">Priorities${priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}</button>
         <button class="tab ${activeTab === "techalloc" ? "active" : ""}" data-tab="techalloc">Tech Allocation</button>
         <button class="tab ${activeTab === "overview" ? "active" : ""}" data-tab="overview">Overview</button>
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
@@ -120,7 +123,8 @@ export async function renderAdminReview(container) {
     });
 
     const content = container.querySelector("#tab-content");
-    if (activeTab === "techalloc") await drawTechAllocation(content);
+    if (activeTab === "priorities") await drawPriorities(content);
+    else if (activeTab === "techalloc") await drawTechAllocation(content);
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
@@ -332,6 +336,7 @@ export async function renderAdminReview(container) {
           jdeVendorNumber: addForm.jdeVendorNumber.value.trim(),
           cwStatus: addForm.cwStatus.value,
           toyotaStatus: addForm.toyotaStatus.value,
+          services: addForm.services.value.trim(),
         });
         vendorsCache = null;
         showAddVendorForm = false;
@@ -358,6 +363,7 @@ export async function renderAdminReview(container) {
             <option value="approved">Toyota Approved</option>
             <option value="not_approved">Toyota Not Approved</option>
           </select>
+          ${renderServicesSelect("")}
         </div>
         <button type="submit" class="btn btn-primary">Add vendor</button>
         <span class="save-message"></span>
@@ -608,6 +614,187 @@ export async function renderAdminReview(container) {
     await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId);
   }
 
+  const DAILY_GOAL_TARGET = 10;
+
+  // The tab's own badge count -- a small number next to its label, not a
+  // banner anywhere else. Never blocks the tab bar itself if one of these
+  // calls fails.
+  async function computePriorityCount() {
+    try {
+      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg] = await Promise.all([
+        api.get("/api/admin/expiring-forms"),
+        api.get("/api/admin/vendors"),
+        api.get("/api/admin/weekend-addenda"),
+        api.get("/api/admin/report-gaps"),
+        api.get("/api/admin/missing-ukg"),
+      ]);
+      const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
+      return expiringForms.length + outdatedVendorCount + weekendAddenda.length + reportGaps.length + missingUkg.length;
+    } catch {
+      return 0;
+    }
+  }
+
+  // Everything that needs a look, gathered into one calm place to check on
+  // your own schedule -- deliberately not scattered as banners across every
+  // other tab. Each section below is its own quiet list; the only "in your
+  // face" surface at all is the small count on the tab itself.
+  async function drawPriorities(content) {
+    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg] = await Promise.all([
+      api.get("/api/admin/expiring-forms"),
+      api.get("/api/admin/vendors"),
+      api.get("/api/admin/weekend-addenda"),
+      api.get("/api/admin/report-gaps"),
+      api.get("/api/admin/missing-ukg"),
+    ]);
+    const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const isMonday = new Date().getDay() === 1;
+
+    const focusItems = [];
+    if (isMonday) {
+      focusItems.push("It's Monday -- timecards and vendor case updates on ServiceEdge.");
+    }
+    if (outdatedVendors.length > 0) {
+      focusItems.push(`Try clearing ${Math.min(DAILY_GOAL_TARGET, outdatedVendors.length)} of ${outdatedVendors.length} outdated vendor forms today.`);
+    }
+    if (expiringForms.length > 0) {
+      focusItems.push(`Try clearing ${Math.min(DAILY_GOAL_TARGET, expiringForms.length)} of ${expiringForms.length} employee forms today.`);
+    }
+    if (focusItems.length === 0) focusItems.push("Nothing urgent queued up right now.");
+
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Everything that needs a look, gathered here so you can check in on your own schedule rather
+        than chasing banners across tabs.
+      </p>
+      <div class="priorities-focus">
+        <div class="priorities-focus-title">Today's focus</div>
+        ${focusItems.map((t) => `<p class="priorities-focus-item">${escapeHtml(t)}</p>`).join("")}
+      </div>
+      <div id="priorities-sections"></div>
+    `;
+
+    const sections = content.querySelector("#priorities-sections");
+
+    sections.appendChild(
+      renderPrioritySection(
+        "Vendor forms outdated",
+        outdatedVendors.map((v) => ({
+          label: v.name,
+          detail: "Forms outdated",
+          kind: "vendor",
+        })),
+        "No outdated vendor forms."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
+        "Employee forms needing attention",
+        expiringForms.map((f) => ({
+          label: f.techName,
+          detail: `${f.formType || f.originalName} — ${f.expiresAt < todayIso ? "expired" : "expires"} ${f.expiresAt}`,
+          kind: "tech-forms",
+          techId: f.techId,
+        })),
+        "No employee forms need attention."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
+        "Technicians missing UKG hours this week",
+        missingUkg.map((m) => ({
+          label: m.techName,
+          detail: `week of ${m.weekMonday}`,
+          kind: "missing-ukg",
+          techId: m.techId,
+          weekMonday: m.weekMonday,
+        })),
+        "Everyone has UKG hours entered for this week."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
+        "Weekend hours needing review",
+        weekendAddenda.map((a) => ({
+          label: a.techName,
+          detail: `week of ${a.weekMonday}`,
+          kind: "weekend",
+          techId: a.techId,
+          weekMonday: a.weekMonday,
+        })),
+        "No weekend hours pending review."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
+        "Months missing a report",
+        reportGaps.map((m) => ({
+          label: monthLabel(m),
+          detail: "No WOM/Labor/Financial/GL report saved",
+          kind: "report-gap",
+          month: m,
+        })),
+        "Reports are up to date for the last few months."
+      )
+    );
+
+    sections.querySelectorAll(".priority-view-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const { kind, tech, week, month } = btn.dataset;
+        if (kind === "vendor") {
+          vendorFilters.formsStatus = "outdated";
+          activeTab = "vendors";
+        } else if (kind === "tech-forms") {
+          jumpToTech = { techId: tech, subTab: "forms" };
+          activeTab = "technicians";
+        } else if (kind === "missing-ukg" || kind === "weekend") {
+          allocTechId = tech;
+          state.weekMonday = week;
+          activeTab = "techalloc";
+        } else if (kind === "report-gap") {
+          laborReportMonth = month;
+          activeTab = "laborreports";
+        }
+        await draw();
+      });
+    });
+  }
+
+  function renderPrioritySection(title, items, emptyText) {
+    const section = document.createElement("div");
+    section.className = "priority-section";
+    section.innerHTML = `
+      <div class="priority-section-title">${escapeHtml(title)} (${items.length})</div>
+      ${
+        items.length === 0
+          ? `<p class="empty-note">${escapeHtml(emptyText)}</p>`
+          : `<div class="priority-list">
+              ${items
+                .map(
+                  (item) => `
+                <div class="priority-row">
+                  <div class="priority-row-text">
+                    <span class="priority-row-label">${escapeHtml(item.label)}</span>
+                    <span class="priority-row-detail">${escapeHtml(item.detail)}</span>
+                  </div>
+                  <button
+                    class="btn btn-link priority-view-btn"
+                    type="button"
+                    data-kind="${escapeHtml(item.kind)}"
+                    ${item.techId ? `data-tech="${escapeHtml(item.techId)}"` : ""}
+                    ${item.weekMonday ? `data-week="${escapeHtml(item.weekMonday)}"` : ""}
+                    ${item.month ? `data-month="${escapeHtml(item.month)}"` : ""}
+                  >View</button>
+                </div>`
+                )
+                .join("")}
+            </div>`
+      }
+    `;
+    return section;
+  }
+
   const TREND_LABELS = { rising: "Rising", falling: "Falling", steady: "Steady" };
 
   async function drawOverview(content) {
@@ -700,19 +887,21 @@ export async function renderAdminReview(container) {
                   .map((row) => {
                     const loc = locationByCode[row.technician.homeLocationCode];
                     const delta = round2(row.ukgHours - 40);
+                    const flagLabel =
+                      row.flagReason === "short_hours" ? "Flag for RFM — short hours" : "Flag for RFM — OT not on WOM";
                     return `
                       <tr class="${row.flagged ? "overview-row-flagged" : ""}">
                         <td>${escapeHtml(row.technician.name)}</td>
                         <td>${loc ? escapeHtml(loc.name) : "—"}</td>
                         <td><span class="badge badge-${row.status}">${STATUS_LABELS[row.status]}</span></td>
                         <td>${row.ukgHours}h</td>
-                        <td class="${delta > 0 ? "warn" : ""}">${delta > 0 ? "+" : ""}${delta}</td>
+                        <td class="${delta > 0 || row.flagReason === "short_hours" ? "warn" : ""}">${delta > 0 ? "+" : ""}${delta}</td>
                         <td>${row.regularHours}</td>
                         <td>${row.otHours}</td>
                         <td>${row.otOnWom}</td>
-                        <td class="${row.flagged ? "danger" : ""}">${row.otNotOnWom}</td>
+                        <td class="${row.flagReason === "ot_not_on_wom" ? "danger" : ""}">${row.otNotOnWom}</td>
                         <td>
-                          ${row.flagged ? `<span class="rfm-flag">Flag for RFM</span>` : ""}
+                          ${row.flagged ? `<span class="rfm-flag">${flagLabel}</span>` : ""}
                           <button class="btn btn-link overview-view-btn" type="button" data-tech="${escapeHtml(row.technician.id)}">View</button>
                         </td>
                       </tr>

@@ -439,3 +439,137 @@ test("weekend hours addendum: log Sat/Sun on a locked week without unlocking", a
     assert.equal(forbidden.status, 403);
   });
 });
+
+test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const meta = await server.call("GET", "/api/meta/current-week");
+  const week = meta.body.weekMonday;
+
+  await t.test("a week short of 40 by more than 3 hours flags as short_hours (not ot_not_on_wom)", async () => {
+    const setHours = await server.call("PUT", `/api/admin/weeks/T1002/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: 6, Tue: 6, Wed: 6, Thu: 6, Fri: 6, Sat: 0, Sun: 0 } },
+    });
+    assert.equal(setHours.status, 200);
+
+    const put = await server.call("PUT", `/api/technicians/T1002/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"].map((day) => ({ day, type: "ef", locationCode: "GEORGETOWN", hours: 6 })),
+      },
+    });
+    assert.equal(put.status, 200);
+    const submit = await server.call("POST", `/api/technicians/T1002/weeks/${week}/submit`, { userId: "ADMIN" });
+    assert.equal(submit.status, 200);
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1002 = overview.body.find((r) => r.technician.id === "T1002");
+    assert.equal(t1002.ukgHours, 30);
+    assert.equal(t1002.flagged, true);
+    assert.equal(t1002.flagReason, "short_hours");
+
+    // A short week must never pollute the OT-specific trend, which is
+    // about a different concern (unexplained overtime, not a short week).
+    const trends = await server.call("GET", `/api/admin/ot-trends/${week}`, { userId: "ADMIN" });
+    assert.ok(!trends.body.some((t2) => t2.technician.id === "T1002"), "a short week shouldn't show up in OT trends");
+  });
+
+  await t.test("missing-ukg lists an active technician with zero UKG hours for the current week", async () => {
+    const zeroOut = await server.call("PUT", `/api/admin/weeks/T1003/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 } },
+    });
+    assert.equal(zeroOut.status, 200);
+
+    const missing = await server.call("GET", "/api/admin/missing-ukg", { userId: "ADMIN" });
+    assert.equal(missing.status, 200);
+    assert.ok(missing.body.some((r) => r.techId === "T1003"));
+    // T1002 has hours entered (from the short-hours test above), so it
+    // shouldn't show up here even though it's flagged for a different reason.
+    assert.ok(!missing.body.some((r) => r.techId === "T1002"));
+
+    const forbidden = await server.call("GET", "/api/admin/missing-ukg", { userId: "T1003" });
+    assert.equal(forbidden.status, 403);
+  });
+
+  await t.test("report-gaps lists trailing months with no report, and drops a month once one's uploaded", async () => {
+    const gaps = await server.call("GET", "/api/admin/report-gaps", { userId: "ADMIN" });
+    assert.equal(gaps.status, 200);
+    assert.equal(gaps.body.length, 3);
+
+    const [gapMonth] = gaps.body;
+    const upload = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "labor_report", relatedId: gapMonth, category: "labor_report" },
+      fileName: "labor.xlsx",
+      fileContent: "x",
+    });
+    assert.equal(upload.status, 201);
+
+    const gapsAfter = await server.call("GET", "/api/admin/report-gaps", { userId: "ADMIN" });
+    assert.ok(!gapsAfter.body.includes(gapMonth));
+    assert.equal(gapsAfter.body.length, 2);
+  });
+
+  await t.test("admin can create a new admin account with its own login", async () => {
+    const create = await server.call("POST", "/api/admin/admins", {
+      userId: "ADMIN",
+      body: { id: "ADMIN2", name: "Jordan Smith", pin: "4321" },
+    });
+    assert.equal(create.status, 201);
+    assert.equal(create.body.employmentStatus, "active");
+
+    const login = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "4321" } });
+    assert.equal(login.status, 200);
+
+    const list = await server.call("GET", "/api/admin/admins", { userId: "ADMIN" });
+    assert.equal(list.status, 200);
+    assert.ok(list.body.some((a) => a.id === "ADMIN2"));
+  });
+
+  await t.test("cannot create an admin account with an ID already in use", async () => {
+    const res = await server.call("POST", "/api/admin/admins", {
+      userId: "ADMIN",
+      body: { id: "T1001", name: "Someone", pin: "1111" },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("an admin cannot deactivate their own account", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN/employment-status", {
+      userId: "ADMIN",
+      body: { status: "inactive" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("deactivating another admin's account blocks their login without touching audit history", async () => {
+    const auditBefore = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const priorEntry = auditBefore.body.find((e) => e.action === "ADMIN_CREATED" && e.details.includes("Jordan Smith"));
+    assert.ok(priorEntry, "expected the earlier ADMIN_CREATED entry to exist");
+
+    const deactivate = await server.call("PATCH", "/api/admin/admins/ADMIN2/employment-status", {
+      userId: "ADMIN",
+      body: { status: "inactive" },
+    });
+    assert.equal(deactivate.status, 200);
+    assert.equal(deactivate.body.employmentStatus, "inactive");
+
+    const loginBlocked = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "4321" } });
+    assert.equal(loginBlocked.status, 401);
+
+    // The account is deactivated, but the history of what it did while
+    // active is untouched -- addAudit bakes the actor's name into the
+    // details text at write time, not a live lookup.
+    const auditAfter = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const stillThere = auditAfter.body.find((e) => e.action === "ADMIN_CREATED" && e.details.includes("Jordan Smith"));
+    assert.ok(stillThere, "the original ADMIN_CREATED entry should still be there, untouched");
+  });
+
+  await t.test("a technician cannot manage admin accounts", async () => {
+    const res = await server.call("GET", "/api/admin/admins", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+});

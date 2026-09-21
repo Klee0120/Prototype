@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { escapeHtml } from "../app.js";
+import { state, escapeHtml } from "../app.js";
 import { renderAttachments } from "./attachments.js";
 
 const PROFILE_TABS = [
@@ -38,6 +38,7 @@ export function renderTechniciansTab(content, openTo) {
   let profileTechId = openTo ? openTo.techId : null;
   let profileSubTab = openTo && openTo.subTab ? openTo.subTab : "basic";
   let showAddForm = false;
+  let showAdminAccounts = false;
   const filters = { location: "", status: "active" };
 
   draw();
@@ -79,8 +80,10 @@ export function renderTechniciansTab(content, openTo) {
           </select>
         </label>
         <button class="btn btn-secondary add-technician-toggle" type="button">${showAddForm ? "Cancel" : "+ Add technician"}</button>
+        <button class="btn btn-link admin-accounts-toggle" type="button">${showAdminAccounts ? "Hide admin accounts" : "Manage admin accounts"}</button>
       </div>
       ${showAddForm ? renderAddForm(locations) : ""}
+      <div id="admin-accounts-host"></div>
       <div class="roster-table-wrap">
         <table class="detail-table roster-table">
           <thead><tr><th>Name</th><th>UKG ID</th><th>Position</th><th>Location</th><th>Status</th></tr></thead>
@@ -117,12 +120,107 @@ export function renderTechniciansTab(content, openTo) {
     });
     const addForm = content.querySelector(".add-technician-form");
     if (addForm) wireAddForm(addForm);
+    content.querySelector(".admin-accounts-toggle").addEventListener("click", () => {
+      showAdminAccounts = !showAdminAccounts;
+      renderAdminAccountsPanel(content.querySelector(".admin-accounts-toggle"), content);
+    });
+    if (showAdminAccounts) await renderAdminAccountsPanel(content.querySelector(".admin-accounts-toggle"), content);
     content.querySelectorAll(".roster-row").forEach((row) => {
       row.addEventListener("click", () => {
         profileTechId = row.dataset.id;
         profileSubTab = "basic";
         draw();
       });
+    });
+  }
+
+  // A separate, own-PIN login per admin -- not the roster below (that's
+  // technicians only) -- so a departing admin's access can be turned off
+  // (see the employment-status action below) without anyone sharing
+  // credentials or losing the audit trail, which already has each past
+  // action's actor name baked into it regardless of the account's current
+  // state.
+  async function renderAdminAccountsPanel(toggleBtn, contentEl) {
+    toggleBtn.textContent = showAdminAccounts ? "Hide admin accounts" : "Manage admin accounts";
+    const host = contentEl.querySelector("#admin-accounts-host");
+    if (!showAdminAccounts) {
+      host.innerHTML = "";
+      return;
+    }
+
+    const admins = await api.get("/api/admin/admins");
+    host.innerHTML = `
+      <div class="admin-accounts-panel">
+        <div class="admin-accounts-title">Admin Accounts</div>
+        <p class="review-checklist-hint">
+          Each admin should have their own login rather than sharing one -- create a new one for an
+          incoming admin/RFM, then deactivate the outgoing one below once they're off. Deactivating
+          only blocks that login; it never touches past audit history, which already records that
+          person's name on everything they did.
+        </p>
+        <table class="detail-table admin-accounts-table">
+          <thead><tr><th>Name</th><th>ID</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${admins
+              .map(
+                (a) => `
+              <tr>
+                <td>${escapeHtml(a.name)}${a.id === state.user.id ? " (you)" : ""}</td>
+                <td>${escapeHtml(a.id)}</td>
+                <td>${statusBadge(a.employmentStatus)}</td>
+                <td>
+                  ${
+                    a.employmentStatus === "active"
+                      ? `<button class="btn btn-link danger-link admin-deactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Deactivate</button>`
+                      : `<button class="btn btn-link admin-reactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Reactivate</button>`
+                  }
+                </td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+        <form class="add-admin-form">
+          <div class="add-tech-grid">
+            <input name="id" placeholder="ID (e.g. ADMIN2)" required />
+            <input name="name" placeholder="Full name" required />
+            <input name="pin" placeholder="PIN" required inputmode="numeric" />
+          </div>
+          <button type="submit" class="btn btn-secondary">Add admin account</button>
+          <span class="save-message add-admin-message"></span>
+        </form>
+      </div>
+    `;
+
+    host.querySelectorAll(".admin-deactivate-btn, .admin-reactivate-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const status = btn.classList.contains("admin-deactivate-btn") ? "inactive" : "active";
+        if (status === "inactive" && !window.confirm("Deactivate this admin account? They won't be able to log in until reactivated.")) return;
+        btn.disabled = true;
+        try {
+          await api.patch(`/api/admin/admins/${encodeURIComponent(btn.dataset.id)}/employment-status`, { status });
+          await renderAdminAccountsPanel(toggleBtn, contentEl);
+        } catch (err) {
+          btn.disabled = false;
+          window.alert(err.message);
+        }
+      });
+    });
+
+    const addAdminForm = host.querySelector(".add-admin-form");
+    addAdminForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = addAdminForm.querySelector(".add-admin-message");
+      try {
+        await api.post("/api/admin/admins", {
+          id: addAdminForm.id.value.trim(),
+          name: addAdminForm.name.value.trim(),
+          pin: addAdminForm.pin.value.trim(),
+        });
+        await renderAdminAccountsPanel(toggleBtn, contentEl);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
     });
   }
 

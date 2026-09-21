@@ -610,6 +610,84 @@ button, input, select {
   border-bottom-color: var(--accent);
 }
 
+.tab-badge {
+  display: inline-block;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* ---- Priorities tab ---- */
+
+.priorities-focus {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 18px;
+}
+
+.priorities-focus-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.priorities-focus-item {
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.priority-section {
+  margin-bottom: 22px;
+}
+
+.priority-section-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.priority-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.priority-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.priority-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.priority-row-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.priority-row-detail {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* ---- Review rows (admin) ---- */
 
 .review-list {
@@ -959,6 +1037,26 @@ button, input, select {
   margin: 10px 0;
 }
 
+.hours-check-prompt {
+  background: var(--warn-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 10px 0;
+}
+
+.hours-check-question,
+.hours-check-note {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.hours-check-actions {
+  display: flex;
+  gap: 14px;
+}
+
 .wom-photo-prompt-header {
   display: flex;
   align-items: center;
@@ -1134,6 +1232,28 @@ button, input, select {
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.admin-accounts-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.admin-accounts-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.admin-accounts-table {
+  margin-bottom: 14px;
+}
+
+.add-admin-form .add-tech-grid {
+  margin-bottom: 8px;
 }
 
 .vendor-count {

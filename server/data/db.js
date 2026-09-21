@@ -424,6 +424,26 @@ function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId
   return findTechnician(id);
 }
 
+// ---- Admin accounts ----
+// Admins live in the same technicians table (role = 'admin') so login,
+// sessions, and the active/employment_status gate are all the exact same
+// mechanism already built for technicians -- deactivating a departing
+// admin's account (instead of deleting it) blocks their login without
+// touching any audit entry, since addAudit stores the actor's name in the
+// details string at write time, not a live lookup.
+
+function listAdmins() {
+  return db.prepare("SELECT * FROM technicians WHERE role = 'admin' ORDER BY rowid").all();
+}
+
+function createAdmin({ id, name, pin }) {
+  db.prepare(
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status)
+     VALUES (?, ?, ?, 'admin', 1, 'active')`
+  ).run(id, name, hashPin(pin));
+  return findTechnician(id);
+}
+
 function setTechnicianBasicInfo(techId, { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours }) {
   db.prepare(
     `UPDATE technicians
@@ -1163,6 +1183,26 @@ function listExpiringForms(daysAhead = 30) {
 // not scoped to the week currently open in Overview, since a weekend
 // callout on a prior week can sit unreviewed while admin's browsing a
 // different one.
+// Trailing completed calendar months (not counting the current one, which
+// is still in progress) with zero saved reports of ANY kind (WOM/Labor/
+// Financial/GL) -- for flagging a month that got skipped entirely, not for
+// evaluating the current month before it's even over.
+function listReportGapMonths(monthsBack = 3) {
+  const now = new Date();
+  const months = [];
+  for (let i = 1; i <= monthsBack; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  const existing = new Set(
+    db
+      .prepare("SELECT DISTINCT related_id AS relatedId FROM files WHERE related_type = 'labor_report'")
+      .all()
+      .map((r) => r.relatedId)
+  );
+  return months.filter((m) => !existing.has(m));
+}
+
 function listWeekendAddenda() {
   return db
     .prepare(
@@ -1184,6 +1224,8 @@ module.exports = {
   EMPLOYMENT_STATUSES,
   setEmploymentStatus,
   createTechnician,
+  listAdmins,
+  createAdmin,
   setTechnicianBasicInfo,
   NOTIFICATION_PREFS,
   setNotificationPref,
@@ -1246,4 +1288,5 @@ module.exports = {
   deleteFile,
   listExpiringForms,
   listWeekendAddenda,
+  listReportGapMonths,
 };

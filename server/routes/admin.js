@@ -1,7 +1,7 @@
 const express = require("express");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
-const { DAY_NAMES, shiftWeek } = require("../utils/week");
+const { DAY_NAMES, shiftWeek, currentWeekMonday } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 const { computeReceipt } = require("../utils/receipt");
 const mailer = require("../utils/mailer");
@@ -229,12 +229,27 @@ router.get("/weekend-addenda", (req, res) => {
   res.json(db.listWeekendAddenda());
 });
 
+const WEEKLY_HOURS_TARGET = 40;
+
 function computeWeekRow(tech, weekMonday) {
   const week = db.getWeek(tech.id, weekMonday);
   const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
   const ukgHours = round2(DAY_NAMES.reduce((sum, d) => sum + (ukgByDay[d] || 0), 0));
   const allocatedHours = round2(week.allocations.reduce((sum, a) => sum + Number(a.hours || 0), 0));
   const receipt = computeReceipt(week.allocations.map(presentAllocation));
+
+  // Two symmetric self-checks, both just a "have a look" nudge for RFM, not
+  // a rule violation: too much OT that isn't explained by any WOM project,
+  // or a week that came in well short of 40 with nothing on file (PTO/sick/
+  // unpaid) to explain the gap. Only one can apply at a time (one needs
+  // >40 total, the other <37), and the short check only fires once UKG
+  // hours actually exist -- 0 hours just means nothing's been entered yet,
+  // which is its own separate "missing UKG" case, not a short week.
+  const shortfall = round2(WEEKLY_HOURS_TARGET - ukgHours);
+  let flagReason = null;
+  if (receipt.otFromEf > OT_NOT_ON_WOM_FLAG_THRESHOLD) flagReason = "ot_not_on_wom";
+  else if (ukgHours > 0 && shortfall > OT_NOT_ON_WOM_FLAG_THRESHOLD) flagReason = "short_hours";
+
   return {
     technician: { id: tech.id, name: tech.name, homeLocationCode: tech.home_location_code },
     status: week.status,
@@ -244,7 +259,8 @@ function computeWeekRow(tech, weekMonday) {
     otHours: receipt.otTotal,
     otOnWom: receipt.otFromWom,
     otNotOnWom: receipt.otFromEf,
-    flagged: receipt.otFromEf > OT_NOT_ON_WOM_FLAG_THRESHOLD,
+    flagged: flagReason !== null,
+    flagReason,
     submittedAt: week.submittedAt,
     reviewedAt: week.reviewedAt,
     reviewedBy: week.reviewedBy,
@@ -274,7 +290,11 @@ router.get("/ot-trends/:weekMonday", (req, res) => {
     .map((tech) => {
       const weeks = weekMondays.map((wm) => {
         const row = computeWeekRow(tech, wm);
-        return { weekMonday: wm, otNotOnWom: row.otNotOnWom, flagged: row.flagged };
+        // OT Trends is specifically about OT-not-on-WOM patterns -- a short
+        // week is a different (and now separately flagged) concern, so it's
+        // deliberately excluded from this trend, not just from "flagged"
+        // here but from otherwise polluting a technician's OT history.
+        return { weekMonday: wm, otNotOnWom: row.otNotOnWom, flagged: row.flagReason === "ot_not_on_wom" };
       });
       const flaggedCount = weeks.filter((w) => w.flagged).length;
       const avgOtNotOnWom = round2(weeks.reduce((s, w) => s + w.otNotOnWom, 0) / weeks.length);
@@ -445,6 +465,78 @@ router.post("/weeks/:techId/:weekMonday/acknowledge-weekend", (req, res) => {
   db.acknowledgeWeekendAddendum(techId, weekMonday);
   db.addAudit(req.user.id, "WEEKEND_ADDENDUM_ACKNOWLEDGED", `${req.user.name} reviewed weekend hours for ${tech.name}, week ${weekMonday}`);
   res.json({ ok: true });
+});
+
+const REPORT_GAP_MONTHS_BACK = 3;
+
+// Trailing completed months with no report of any kind saved -- for the
+// Priorities tab, so a skipped month doesn't just quietly stay skipped.
+router.get("/report-gaps", (req, res) => {
+  res.json(db.listReportGapMonths(REPORT_GAP_MONTHS_BACK));
+});
+
+// Active technicians with zero UKG hours entered yet for the current week
+// -- these are stuck before allocation can even start, distinct from the
+// Weekly Review checklist (which tracks hours already entered but not yet
+// confirmed/approved).
+router.get("/missing-ukg", (req, res) => {
+  const weekMonday = currentWeekMonday();
+  const rows = db
+    .listTechnicians()
+    .filter((t) => t.employment_status === "active")
+    .map((t) => {
+      const ukgByDay = db.getUkgHoursByDay(t.id, weekMonday);
+      const ukgTotal = round2(DAY_NAMES.reduce((sum, d) => sum + (ukgByDay[d] || 0), 0));
+      return { techId: t.id, techName: t.name, weekMonday, ukgTotal };
+    })
+    .filter((r) => r.ukgTotal === 0);
+  res.json(rows);
+});
+
+// ---- Admin accounts (succession) ----
+// A separate login per admin (rather than one shared account) so a
+// departing admin's access can be turned off without anyone else losing
+// theirs, and without touching the audit trail -- every past entry already
+// has the acting admin's name baked into its details text at write time.
+
+function presentAdmin(a) {
+  return { id: a.id, name: a.name, employmentStatus: a.employment_status };
+}
+
+router.get("/admins", (req, res) => {
+  res.json(db.listAdmins().map(presentAdmin));
+});
+
+router.post("/admins", (req, res) => {
+  const { id, name, pin } = req.body || {};
+  if (!id || !name || !pin) return res.status(400).json({ error: "id, name, and pin are required" });
+  if (db.findTechnician(id)) return res.status(409).json({ error: "That ID is already in use" });
+
+  const admin = db.createAdmin({ id, name, pin });
+  db.addAudit(req.user.id, "ADMIN_CREATED", `${req.user.name} added admin account ${admin.name} (${admin.id})`);
+  res.status(201).json(presentAdmin(admin));
+});
+
+router.patch("/admins/:id/employment-status", (req, res) => {
+  const admin = db.findTechnician(req.params.id);
+  if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
+
+  const { status } = req.body || {};
+  if (!db.EMPLOYMENT_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${db.EMPLOYMENT_STATUSES.join(", ")}` });
+  }
+
+  // Blocking self-deactivation is enough on its own to guarantee at least
+  // one active admin always remains: only an active admin can reach this
+  // route at all (route-level requireAdmin), and if the caller can't touch
+  // their own account, they themselves stay active after this call.
+  if (status !== "active" && admin.id === req.user.id) {
+    return res.status(400).json({ error: "You can't deactivate your own account" });
+  }
+
+  db.setEmploymentStatus(admin.id, status);
+  db.addAudit(req.user.id, "ADMIN_STATUS_CHANGED", `${req.user.name} set admin account ${admin.name}'s status to ${status}`);
+  res.json(presentAdmin(db.findTechnician(admin.id)));
 });
 
 module.exports = router;

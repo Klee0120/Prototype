@@ -192,6 +192,43 @@ Demo logins:
   bottom without hunting through the others. File storage only for now; see
   "Where this stands" for the bigger reconciliation idea this could grow
   into.
+- **Priorities tab (admin)**: one calm, dedicated place gathering everything
+  that needs a look -- outdated vendor forms, expiring/missing employee
+  forms, technicians with zero UKG hours entered for the current week,
+  pending weekend-hours addenda, and trailing months with no report saved
+  at all. Deliberately not more banners scattered across other tabs -- the
+  only "in your face" surface is a small red count badge on the tab itself
+  (`GET /api/admin/report-gaps` and `/api/admin/missing-ukg` back the two
+  newer sections). A **Today's focus** box at the top suggests a concrete
+  daily target (try clearing 10 of however many outdated vendor/employee
+  forms are outstanding) and calls out Mondays specifically (timecards +
+  vendor case updates on ServiceEdge) -- fixed defaults for now, not yet
+  admin-configurable goal numbers; see "Where this stands."
+- **Short-hours flag, symmetric with the existing OT-not-on-WOM flag**: a
+  week that comes in more than 3 hours under 40 (and has UKG hours entered
+  at all, so this never fires on a week that's simply not been touched yet
+  -- that's the separate "missing UKG" case above) now flags for RFM
+  attention on Overview too, labeled distinctly ("short hours" vs. "OT not
+  on WOM") since a week can only ever be one or the other. The technician
+  sees the same two self-checks themselves, right on their own week, before
+  they submit -- a dismissible nudge ("Was this approved by your RFM? Any
+  additional WOM time to report?" for OT, or "Did you arrange to take these
+  hours unpaid?" for a short week), not a submission gate. Answering "this
+  is accurate" just tells them it'll show up flagged for RFM, since it
+  already will via the same Overview mechanism -- it doesn't create a
+  second, separate flag.
+- **Admin succession**: each admin gets their own login (id + PIN) rather
+  than sharing one account, via a small "Manage admin accounts" panel on
+  the Technicians tab. Admins live in the same `technicians` table as
+  everyone else (`role = 'admin'`), reusing the exact same active/inactive
+  gate already built for technicians -- deactivating a departing admin's
+  account blocks their login immediately without deleting anything or
+  touching the audit trail, since every past entry already has that
+  person's name baked into its details text at write time, not a live
+  lookup. An admin can't deactivate their own account (the one guard that
+  matters -- since only an active admin can reach this endpoint at all,
+  and they can't touch their own account, there's always at least one
+  active admin left after any call).
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
@@ -410,6 +447,12 @@ a missing code is obvious rather than silently blank.
   ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
   rate-limit is what actually prevents brute-forcing it online. Worth moving
   to longer PINs or real passwords before this holds anything sensitive.
+- **The Priorities tab's daily-focus goal numbers are fixed constants (10),
+  not admin-configurable.** `DAILY_GOAL_TARGET` in `adminReview.js` — the
+  suggestion text is generated from real backlog counts, but the "try
+  clearing 10 today" target itself is hardcoded, not a setting you can
+  change per admin or over time. A small settings form is the natural next
+  step if 10 turns out to be the wrong number for either category.
 - **Standard daily hours is stored but not used anywhere yet.** It's
   plain reference data on the profile right now — a natural next step
   would be using it to pre-fill the admin's UKG hours form (instead of
