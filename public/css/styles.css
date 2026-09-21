@@ -1338,6 +1338,41 @@ button, input, select {
   background: var(--bg);
 }
 
+.schedule-table-wrap {
+  overflow-x: auto;
+}
+
+.schedule-table {
+  min-width: 900px;
+}
+
+.schedule-table th,
+.schedule-table td {
+  vertical-align: top;
+}
+
+.schedule-tech-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.schedule-entry {
+  font-size: 12px;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.schedule-entry .badge {
+  font-size: 10px;
+  padding: 1px 6px;
+}
+
+.schedule-empty-cell {
+  color: var(--muted);
+}
+
 .profile-header {
   display: flex;
   align-items: center;

@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderAttachments } from "./attachments.js";
+import { renderSchedule } from "./schedule.js";
 
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
@@ -22,6 +23,7 @@ export async function renderTechHome(container) {
     container.innerHTML = `
       <div class="tabs">
         <button class="tab ${activeTab === "week" ? "active" : ""}" data-tab="week">My Week</button>
+        <button class="tab ${activeTab === "schedule" ? "active" : ""}" data-tab="schedule">Schedule</button>
         <button class="tab ${activeTab === "locations" ? "active" : ""}" data-tab="locations">Locations &amp; WOM</button>
         <button class="tab ${activeTab === "documents" ? "active" : ""}" data-tab="documents">My Documents</button>
       </div>
@@ -36,7 +38,8 @@ export async function renderTechHome(container) {
     });
 
     const content = container.querySelector("#tab-content");
-    if (activeTab === "locations") await drawLocationsAndWoms(content);
+    if (activeTab === "schedule") await renderSchedule(content);
+    else if (activeTab === "locations") await drawLocationsAndWoms(content);
     else if (activeTab === "documents") await drawMyDocuments(content);
     else await renderTechWeek(content);
   }

@@ -63,7 +63,8 @@ db.exec(`
     status TEXT NOT NULL,
     location_code TEXT,
     budget_hours REAL,
-    subsidiary_code TEXT
+    subsidiary_code TEXT,
+    smartsheet_reflected_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS ukg_hours (
@@ -290,6 +291,14 @@ if (!hasColumn("locations", "wom_job_number")) {
 }
 if (!hasColumn("woms", "subsidiary_code")) {
   db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
+}
+// Closing a WOM here doesn't touch the external Smartsheet tracker -- this
+// timestamps when admin has gone and reflected that closure there by hand.
+// NULL while status is 'closed' means "still needs that manual update";
+// cleared back to NULL if the WOM ever reopens, so a later re-close needs
+// its own fresh update too. See setWomStatus/markWomSmartsheetReflected.
+if (!hasColumn("woms", "smartsheet_reflected_at")) {
+  db.exec("ALTER TABLE woms ADD COLUMN smartsheet_reflected_at TEXT");
 }
 // Forms on File (tech_form uploads) can carry a type (e.g. "Certification",
 // "License") and an expiration date, so expired ones can be flagged for
@@ -950,8 +959,26 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode)
 const WOM_STATUSES = ["open", "invoiced", "closed"];
 
 function setWomStatus(code, status) {
-  if (!findWom(code)) return null;
+  const existing = findWom(code);
+  if (!existing) return null;
   db.prepare("UPDATE woms SET status = ? WHERE code = ?").run(status, code);
+  // Closing it here doesn't close it on the external Smartsheet tracker --
+  // clear any prior "reflected" mark so it shows up needing a manual update
+  // again. Moving away from closed (reopened) also clears it, so a later
+  // re-close starts fresh rather than staying marked from the last time.
+  // Only on an actual transition, though -- a redundant re-close (e.g. a
+  // double-submitted "mark complete") shouldn't wipe out a flag admin
+  // already cleared.
+  if (existing.status !== status) {
+    db.prepare("UPDATE woms SET smartsheet_reflected_at = NULL WHERE code = ?").run(code);
+  }
+  return findWom(code);
+}
+
+function markWomSmartsheetReflected(code) {
+  const wom = findWom(code);
+  if (!wom || wom.status !== "closed") return null;
+  db.prepare("UPDATE woms SET smartsheet_reflected_at = ? WHERE code = ?").run(new Date().toISOString(), code);
   return findWom(code);
 }
 
@@ -1349,6 +1376,7 @@ module.exports = {
   createWom,
   WOM_STATUSES,
   setWomStatus,
+  markWomSmartsheetReflected,
   setWomDetails,
   getUkgHoursByDay,
   setUkgHours,

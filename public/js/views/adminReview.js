@@ -4,6 +4,7 @@ import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
+import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 
 const STATUS_LABELS = {
@@ -100,6 +101,7 @@ export async function renderAdminReview(container) {
       <div class="tabs">
         <button class="tab ${activeTab === "priorities" ? "active" : ""}" data-tab="priorities">Priorities${priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}</button>
         <button class="tab ${activeTab === "techalloc" ? "active" : ""}" data-tab="techalloc">Tech Allocation</button>
+        <button class="tab ${activeTab === "schedule" ? "active" : ""}" data-tab="schedule">Schedule</button>
         <button class="tab ${activeTab === "overview" ? "active" : ""}" data-tab="overview">Overview</button>
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
         <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">E&amp;F Locations &amp; WOM</button>
@@ -125,6 +127,7 @@ export async function renderAdminReview(container) {
     const content = container.querySelector("#tab-content");
     if (activeTab === "priorities") await drawPriorities(content);
     else if (activeTab === "techalloc") await drawTechAllocation(content);
+    else if (activeTab === "schedule") await renderSchedule(content);
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
@@ -673,17 +676,25 @@ export async function renderAdminReview(container) {
   // calls fails.
   async function computePriorityCount() {
     try {
-      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg] = await Promise.all([
+      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms] = await Promise.all([
         api.get("/api/admin/expiring-forms"),
         api.get("/api/admin/vendors"),
         api.get("/api/admin/weekend-addenda"),
         api.get("/api/admin/report-gaps"),
         api.get("/api/admin/missing-ukg"),
+        api.get("/api/woms"),
       ]);
       const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
       const incompleteDocCount = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale).length;
+      const smartsheetGapCount = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
       return (
-        expiringForms.length + outdatedVendorCount + incompleteDocCount + weekendAddenda.length + reportGaps.length + missingUkg.length
+        expiringForms.length +
+        outdatedVendorCount +
+        incompleteDocCount +
+        weekendAddenda.length +
+        reportGaps.length +
+        missingUkg.length +
+        smartsheetGapCount
       );
     } catch {
       return 0;
@@ -695,15 +706,17 @@ export async function renderAdminReview(container) {
   // other tab. Each section below is its own quiet list; the only "in your
   // face" surface at all is the small count on the tab itself.
   async function drawPriorities(content) {
-    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg] = await Promise.all([
+    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms] = await Promise.all([
       api.get("/api/admin/expiring-forms"),
       api.get("/api/admin/vendors"),
       api.get("/api/admin/weekend-addenda"),
       api.get("/api/admin/report-gaps"),
       api.get("/api/admin/missing-ukg"),
+      api.get("/api/woms"),
     ]);
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
     const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale);
+    const womsNeedingSmartsheetUpdate = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt);
     const todayIso = new Date().toISOString().slice(0, 10);
     const isMonday = new Date().getDay() === 1;
 
@@ -806,6 +819,7 @@ export async function renderAdminReview(container) {
         "Reports are up to date for the last few months."
       )
     );
+    sections.appendChild(renderWomSmartsheetSection(content, womsNeedingSmartsheetUpdate));
 
     sections.querySelectorAll(".priority-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -864,6 +878,48 @@ export async function renderAdminReview(container) {
             </div>`
       }
     `;
+    return section;
+  }
+
+  // Closing a WOM here never touches the external Smartsheet tracker, so
+  // this is an action, not just a link -- "Mark updated" clears the flag
+  // right from here rather than sending admin elsewhere just to come back.
+  function renderWomSmartsheetSection(content, woms) {
+    const section = document.createElement("div");
+    section.className = "priority-section";
+    section.innerHTML = `
+      <div class="priority-section-title">WOM projects closed -- update Smartsheet (${woms.length})</div>
+      ${
+        woms.length === 0
+          ? `<p class="empty-note">Nothing closed here is waiting on a Smartsheet update.</p>`
+          : `<div class="priority-list">
+              ${woms
+                .map(
+                  (w) => `
+                <div class="priority-row">
+                  <div class="priority-row-text">
+                    <span class="priority-row-label">${escapeHtml(w.code)}</span>
+                    <span class="priority-row-detail">${escapeHtml(w.description)}</span>
+                  </div>
+                  <button class="btn btn-link wom-smartsheet-reflected-btn" type="button" data-code="${escapeHtml(w.code)}">Mark updated in Smartsheet</button>
+                </div>`
+                )
+                .join("")}
+            </div>`
+      }
+    `;
+    section.querySelectorAll(".wom-smartsheet-reflected-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/smartsheet-reflected`);
+          await drawPriorities(content);
+        } catch (err) {
+          btn.disabled = false;
+          window.alert(`Could not mark it: ${err.message}`);
+        }
+      });
+    });
     return section;
   }
 

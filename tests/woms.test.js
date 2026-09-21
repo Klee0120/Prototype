@@ -32,6 +32,54 @@ test("woms: open/closed status management", async (t) => {
     assert.equal(reopen.body.status, "open");
   });
 
+  await t.test("closing a WOM flags it as needing a manual Smartsheet update", async () => {
+    const close = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "closed" } });
+    assert.equal(close.status, 200);
+    assert.equal(close.body.smartsheetReflectedAt, null);
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const wom = list.body.find((w) => w.code === "WOM-4471");
+    assert.equal(wom.smartsheetReflectedAt, null);
+  });
+
+  await t.test("a technician cannot mark a WOM reflected in Smartsheet", async () => {
+    const res = await server.call("POST", "/api/woms/WOM-4471/smartsheet-reflected", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("marking a closed WOM reflected in Smartsheet sets a timestamp", async () => {
+    const res = await server.call("POST", "/api/woms/WOM-4471/smartsheet-reflected", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.smartsheetReflectedAt);
+  });
+
+  await t.test("marking an already-reflected (non-closed) WOM reflected again is rejected", async () => {
+    const reopen = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "open" } });
+    assert.equal(reopen.status, 200);
+    assert.equal(reopen.body.smartsheetReflectedAt, null);
+
+    const res = await server.call("POST", "/api/woms/WOM-4471/smartsheet-reflected", { userId: "ADMIN" });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("reopening and re-closing a WOM needs its own fresh Smartsheet update", async () => {
+    const close = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "closed" } });
+    assert.equal(close.status, 200);
+    assert.equal(close.body.smartsheetReflectedAt, null);
+
+    const reflect = await server.call("POST", "/api/woms/WOM-4471/smartsheet-reflected", { userId: "ADMIN" });
+    assert.equal(reflect.status, 200);
+    assert.ok(reflect.body.smartsheetReflectedAt);
+
+    // Restore for the rest of the suite.
+    await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "open" } });
+  });
+
+  await t.test("marking an unknown WOM reflected 404s", async () => {
+    const res = await server.call("POST", "/api/woms/WOM-NOPE/smartsheet-reflected", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
   await t.test("admin can set a WOM to invoiced independent of whether a technician marked it complete", async () => {
     const invoiced = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "invoiced" } });
     assert.equal(invoiced.status, 200);

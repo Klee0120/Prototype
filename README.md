@@ -200,6 +200,27 @@ Demo logins:
   Any box left unchecked (or a stale invoice date) marks that vendor
   "Doc checks incomplete" on the Vendors list and rolls up into the
   Priorities tab, same flagging idea as an outdated form.
+- **Schedule tab**: a read-only "who's where this week" grid (one row per
+  active technician, one column per day), showing each day's location/WOM/
+  time-off assignments at a glance -- built entirely from allocations
+  already in this app (`GET /api/schedule/:weekMonday`, `server/routes/schedule.js`),
+  and open to any logged-in user (not admin-only), since the point is
+  letting anyone check a teammate's already-committed work before assigning
+  them something else, without needing a live calendar connection. **Not a
+  Microsoft Teams/Outlook integration** — that would need Azure AD app
+  registration and IT approval before any of it could be built; this tab is
+  deliberately structured so a future "real availability" overlay could be
+  added later without a redesign, but for now it only reflects what's been
+  allocated here, not a technician's other real-world commitments. See
+  "Where this stands" for what that future integration would actually need.
+- **WOM projects closed here don't close on your external Smartsheet
+  tracker** — a new Priorities section ("WOM projects closed -- update
+  Smartsheet") lists every WOM that's been closed (by a technician's own
+  "mark complete" or admin's status dropdown) but not yet reflected there,
+  with a "Mark updated in Smartsheet" button that clears it once you've
+  gone and done that by hand. Reopening and re-closing a WOM flags it again
+  from scratch, so a second closure doesn't get silently skipped just
+  because the first one was already handled.
 - **Reports tab (admin)**: a month-by-month archive for four monthly report
   kinds -- **WOM Report, Labor Report, Financial Report, and GL Report** --
   saved here so each is kept alongside the timesheeting for that period, for
@@ -492,6 +513,18 @@ a missing code is obvious rather than silently blank.
   clearing 10 today" target itself is hardcoded, not a setting you can
   change per admin or over time. A small settings form is the natural next
   step if 10 turns out to be the wrong number for either category.
+- **The Schedule tab has no real Microsoft Teams/Outlook connection.** It
+  shows what's allocated in this app, not a technician's actual calendar --
+  so it can't yet prevent a real double-booking against a meeting or
+  commitment that only exists in Teams. Building that would need: an Azure
+  AD app registration (your Microsoft 365 admin's approval), Graph API
+  read access to calendars/shifts (delegated or application permissions,
+  whichever your IT prefers), and a decision on how to show "busy" time
+  from Teams without necessarily exposing what the appointment is about
+  (a free/busy overlay rather than pulling actual event titles/details is
+  usually the least-invasive way to do this). None of that is wired up —
+  today's grid is a same-system-visibility tool, not a real
+  availability check.
 - **Standard daily hours is stored but not used anywhere yet.** It's
   plain reference data on the profile right now — a natural next step
   would be using it to pre-fill the admin's UKG hours form (instead of
@@ -691,6 +724,7 @@ server/
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
                                   incl. formType/expiresAt for tech_form uploads
     vendors.js                  GET/POST/PATCH/DELETE vendor onboarding/compliance records (admin-only)
+    schedule.js                  GET /:weekMonday -- read-only who's-where-this-week grid (any logged-in user)
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -713,7 +747,10 @@ tests/
                               pending-punch flag, weekend hours addendum (log without
                               unlocking, no UKG-match required, admin adjust + acknowledge)
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
-  woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region
+  woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region,
+                                 Smartsheet-reflected flag (set on close, cleared on reopen, admin-only)
+  schedule.test.js               Read-only schedule grid: auth required, tech-visible, labels,
+                                    inactive techs excluded, no extra roster fields exposed
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
                                  (add/complete/edit), notification-pref, allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,

@@ -14,6 +14,7 @@ function presentWom(w) {
     subsidiaryCode: w.subsidiary_code,
     usedHours: w.usedHours,
     remainingHours: w.remainingHours,
+    smartsheetReflectedAt: w.smartsheet_reflected_at,
   };
 }
 
@@ -74,6 +75,21 @@ router.post("/:code/complete", requireAuth, (req, res) => {
   if (!wom) return res.status(404).json({ error: "WOM not found" });
 
   db.addAudit(req.user.id, "WOM_MARKED_COMPLETE", `${req.user.name} marked ${wom.code} complete`);
+  res.json(presentWom(wom));
+});
+
+// A WOM closed here doesn't close it on the external Smartsheet tracker --
+// admin goes and updates that by hand, then marks it done here so it drops
+// off the Priorities list instead of nagging forever.
+router.post("/:code/smartsheet-reflected", requireAuth, requireAdmin, (req, res) => {
+  const wom = db.markWomSmartsheetReflected(req.params.code);
+  if (!wom) {
+    const existing = db.findWom(req.params.code);
+    if (!existing) return res.status(404).json({ error: "WOM not found" });
+    return res.status(409).json({ error: `Only a closed WOM needs this (currently ${existing.status})` });
+  }
+
+  db.addAudit(req.user.id, "WOM_SMARTSHEET_REFLECTED", `${req.user.name} marked ${wom.code} as reflected closed in Smartsheet`);
   res.json(presentWom(wom));
 });
 
