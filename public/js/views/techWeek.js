@@ -103,6 +103,10 @@ export async function renderTechWeek(container, techIdOverride) {
     const locked = mode === "locked";
     const timeOffOnly = mode === "timeoff-only";
     const weekAllocated = round2(allocations.reduce((s, a) => s + Number(a.hours || 0), 0));
+    // Once a week is submitted/approved, Sat/Sun stay open for a weekend
+    // callout the tech gets asked to work after the fact -- logged via a
+    // dedicated endpoint that never touches the already-locked Mon-Fri rows.
+    const weekendEditable = locked;
 
     main.innerHTML = `
       <div class="week-nav">
@@ -139,6 +143,20 @@ export async function renderTechWeek(container, techIdOverride) {
             ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
             : ""
         }
+        ${
+          weekendEditable
+            ? `<div class="status-note">Called in on a weekend after this week was ${week.status}? You can still log Saturday/Sunday hours below — Mon-Fri stays exactly as ${week.status}.</div>`
+            : ""
+        }
+        ${
+          week.weekendAddendumAt
+            ? `<div class="status-note weekend-addendum-note">
+                <strong>Weekend hours added</strong> since this week was ${week.status}.
+                ${state.user.role === "admin" ? "Review and adjust the Sat/Sun hours below to match UKG, then mark it reviewed." : "Your admin will review these and adjust them to match UKG's actual time."}
+                ${state.user.role === "admin" ? `<button class="btn btn-link ack-weekend-btn" type="button">Mark reviewed</button>` : ""}
+              </div>`
+            : ""
+        }
       </div>
 
       ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
@@ -149,7 +167,14 @@ export async function renderTechWeek(container, techIdOverride) {
 
       <div id="receipt-host"></div>
 
-      ${locked ? "" : `
+      ${locked
+        ? weekendEditable
+          ? `<div class="action-row">
+              <button class="btn btn-secondary" id="save-weekend">Save weekend hours</button>
+              <span class="save-message">${escapeHtml(saveMessage)}</span>
+            </div>`
+          : ""
+        : `
         <div class="action-row">
           <button class="btn btn-secondary" id="save-draft">Save draft</button>
           ${timeOffOnly ? "" : `<button class="btn btn-primary" id="submit-week" ${canSubmitWeek() ? "" : "disabled"}>Submit for review</button>`}
@@ -173,7 +198,7 @@ export async function renderTechWeek(container, techIdOverride) {
     }
 
     const grid = main.querySelector("#day-grid");
-    DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, mode)));
+    DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, mode, weekendEditable)));
     if (!timeOffOnly) main.querySelector("#receipt-host").appendChild(renderReceipt());
 
     main.querySelector("#prev-week").addEventListener("click", () => {
@@ -203,6 +228,23 @@ export async function renderTechWeek(container, techIdOverride) {
       main.querySelector("#save-draft").addEventListener("click", () => saveDraft());
       const submitBtn = main.querySelector("#submit-week");
       if (submitBtn) submitBtn.addEventListener("click", submit);
+    } else if (weekendEditable) {
+      main.querySelector("#save-weekend").addEventListener("click", () => saveWeekendHours());
+    }
+
+    const ackWeekendBtn = main.querySelector(".ack-weekend-btn");
+    if (ackWeekendBtn) {
+      ackWeekendBtn.addEventListener("click", async () => {
+        ackWeekendBtn.disabled = true;
+        try {
+          await api.post(`/api/admin/weeks/${techId}/${state.weekMonday}/acknowledge-weekend`);
+          week.weekendAddendumAt = null;
+          draw();
+        } catch (err) {
+          ackWeekendBtn.disabled = false;
+          window.alert(`Could not mark reviewed: ${err.message}`);
+        }
+      });
     }
 
     const prefSelect = main.querySelector(".notification-pref-select");
@@ -243,9 +285,13 @@ export async function renderTechWeek(container, techIdOverride) {
     `;
   }
 
-  function renderDayCard(day, mode) {
-    const locked = mode === "locked";
-    const full = mode === "full";
+  function renderDayCard(day, mode, weekendEditable) {
+    const isWeekendDay = day === "Sat" || day === "Sun";
+    // A locked week still opens Sat/Sun back up for a weekend-callout
+    // addendum -- Mon-Fri (and non-weekend-editable weeks) stay fully locked.
+    const dayReopened = weekendEditable && isWeekendDay;
+    const locked = mode === "locked" && !dayReopened;
+    const full = mode === "full" || dayReopened;
     const timeOffOnly = mode === "timeoff-only";
     const card = document.createElement("div");
     card.className = "day-card";
@@ -259,7 +305,7 @@ export async function renderTechWeek(container, techIdOverride) {
 
     card.innerHTML = `
       <div class="day-card-header">
-        <span class="day-name">${day}</span>
+        <span class="day-name">${day}${dayReopened ? ` <span class="badge badge-draft">Weekend entry</span>` : ""}</span>
         <span class="day-ukg-actual">UKG ACTUAL: <strong>${ukgActual}h</strong></span>
       </div>
       ${pendingPunch ? `<p class="pending-punch-note">⚠ Pending punch correction in UKG — this day's hours aren't final yet.</p>` : ""}
@@ -538,6 +584,23 @@ export async function renderTechWeek(container, techIdOverride) {
     try {
       await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/allocations`, { allocations });
       saveMessage = "Draft saved.";
+    } catch (err) {
+      saveMessage = err.message;
+    }
+    draw();
+  }
+
+  // Only ever sends Sat/Sun rows -- the already-submitted/approved Mon-Fri
+  // rows are never part of this request, matching the endpoint's own
+  // restriction to weekend days only.
+  async function saveWeekendHours() {
+    const weekendAllocations = allocations.filter((a) => a.day === "Sat" || a.day === "Sun");
+    try {
+      const result = await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/weekend-allocations`, {
+        allocations: weekendAllocations,
+      });
+      week.weekendAddendumAt = result.weekendAddendumAt;
+      saveMessage = "Weekend hours saved -- your admin will review and adjust as needed.";
     } catch (err) {
       saveMessage = err.message;
     }

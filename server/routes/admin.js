@@ -223,6 +223,12 @@ router.get("/expiring-forms", (req, res) => {
   res.json(db.listExpiringForms(FORM_EXPIRY_WARNING_DAYS));
 });
 
+// Weeks with an unreviewed weekend-hours addendum, across all technicians
+// and weeks -- for the Overview tab's attention banner.
+router.get("/weekend-addenda", (req, res) => {
+  res.json(db.listWeekendAddenda());
+});
+
 function computeWeekRow(tech, weekMonday) {
   const week = db.getWeek(tech.id, weekMonday);
   const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
@@ -419,6 +425,26 @@ router.post("/weeks/:techId/:weekMonday/unlock", (req, res) => {
   db.unlockWeek(techId, weekMonday, req.user.id);
   db.addAudit(req.user.id, "WEEK_UNLOCKED", `${req.user.name} unlocked ${week.status} week ${weekMonday} for ${tech.name} for correction`);
   res.json({ ok: true, status: "draft" });
+});
+
+// Clears the "needs a look" flag left by a tech logging weekend hours on an
+// already-submitted/approved week. Admin adjusts the Sat/Sun hours to match
+// UKG's actual time first (via PUT .../weekend-allocations, which admin can
+// also call), then acknowledges here once it's right -- the flag itself
+// never blocks anything, it's just a signal admin hasn't looked yet.
+router.post("/weeks/:techId/:weekMonday/acknowledge-weekend", (req, res) => {
+  const { techId, weekMonday } = req.params;
+  const tech = db.findTechnician(techId);
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
+
+  const week = db.getWeek(techId, weekMonday);
+  if (!week.weekendAddendumAt) {
+    return res.status(409).json({ error: "This week has no weekend addendum to acknowledge" });
+  }
+
+  db.acknowledgeWeekendAddendum(techId, weekMonday);
+  db.addAudit(req.user.id, "WEEKEND_ADDENDUM_ACKNOWLEDGED", `${req.user.name} reviewed weekend hours for ${tech.name}, week ${weekMonday}`);
+  res.json({ ok: true });
 });
 
 module.exports = router;

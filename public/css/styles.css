@@ -192,6 +192,18 @@ button, input, select {
   margin-bottom: 14px;
 }
 
+.report-month-year-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.report-month-year-nav select {
+  font-size: 14px;
+  padding: 6px 10px;
+}
+
 .tech-alloc-switcher {
   display: flex;
   align-items: center;
@@ -984,6 +996,22 @@ button, input, select {
   flex-direction: column;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.attachments-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.attachments-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-bottom: 6px;
 }
 
 .attachments-error {

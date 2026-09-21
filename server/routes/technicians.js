@@ -91,6 +91,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
     reviewedAt: week.reviewedAt,
     reviewedBy: week.reviewedBy,
     note: week.note,
+    weekendAddendumAt: week.weekendAddendumAt,
   });
 });
 
@@ -116,6 +117,50 @@ router.patch("/:id/notification-pref", requireAuth, (req, res) => {
   res.json({ notificationPref: updated.notification_pref });
 });
 
+// Shared by the normal PUT allocations route and the weekend-addendum
+// route below -- validates and reshapes a raw allocations array into the
+// { day, type, locationCode, womCode, hours } rows db.saveAllocations (or
+// db.saveWeekendAllocations) expects. Returns { error } on the first
+// problem found, or { normalized } on success.
+function normalizeAllocations(allocations) {
+  const normalized = [];
+  for (const a of allocations) {
+    if (!DAY_NAMES.includes(a.day)) return { error: `Invalid day: ${a.day}` };
+    if (!["ef", "wom", "timeoff"].includes(a.type)) {
+      return { error: `Invalid split type: ${a.type}` };
+    }
+    const hours = Number(a.hours);
+    if (!Number.isFinite(hours) || hours < 0) {
+      return { error: `Invalid hours on ${a.day}` };
+    }
+
+    if (a.type === "timeoff") {
+      if (!TIME_OFF_TYPES.includes(a.timeOffType)) {
+        return { error: `Invalid time off type: ${a.timeOffType}` };
+      }
+      normalized.push({ day: a.day, type: "timeoff", locationCode: null, womCode: a.timeOffType, hours: round2(hours) });
+      continue;
+    }
+
+    if (!a.locationCode || !db.findLocation(a.locationCode)) {
+      return { error: `Unknown location: ${a.locationCode}` };
+    }
+
+    if (a.type === "wom") {
+      const wom = db.findWom(a.womCode);
+      if (!wom) return { error: `Unknown WOM: ${a.womCode}` };
+      if (wom.status !== "open") return { error: `WOM ${a.womCode} is not open` };
+      if (wom.location_code !== a.locationCode) {
+        return { error: `WOM ${a.womCode} does not belong to location ${a.locationCode}` };
+      }
+      normalized.push({ day: a.day, type: "wom", locationCode: a.locationCode, womCode: a.womCode, hours: round2(hours) });
+    } else {
+      normalized.push({ day: a.day, type: "ef", locationCode: a.locationCode, womCode: null, hours: round2(hours) });
+    }
+  }
+  return { normalized };
+}
+
 router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {
   const { id, weekMonday } = req.params;
   if (!canView(req, id)) {
@@ -136,47 +181,57 @@ router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {
     return res.status(400).json({ error: "This week isn't open yet -- only time off can be entered in advance" });
   }
 
-  const normalized = [];
-  for (const a of allocations) {
-    if (!DAY_NAMES.includes(a.day)) return res.status(400).json({ error: `Invalid day: ${a.day}` });
-    if (!["ef", "wom", "timeoff"].includes(a.type)) {
-      return res.status(400).json({ error: `Invalid split type: ${a.type}` });
-    }
-    const hours = Number(a.hours);
-    if (!Number.isFinite(hours) || hours < 0) {
-      return res.status(400).json({ error: `Invalid hours on ${a.day}` });
-    }
-
-    if (a.type === "timeoff") {
-      if (!TIME_OFF_TYPES.includes(a.timeOffType)) {
-        return res.status(400).json({ error: `Invalid time off type: ${a.timeOffType}` });
-      }
-      normalized.push({ day: a.day, type: "timeoff", locationCode: null, womCode: a.timeOffType, hours: round2(hours) });
-      continue;
-    }
-
-    if (!a.locationCode || !db.findLocation(a.locationCode)) {
-      return res.status(400).json({ error: `Unknown location: ${a.locationCode}` });
-    }
-
-    if (a.type === "wom") {
-      const wom = db.findWom(a.womCode);
-      if (!wom) return res.status(400).json({ error: `Unknown WOM: ${a.womCode}` });
-      if (wom.status !== "open") return res.status(400).json({ error: `WOM ${a.womCode} is not open` });
-      if (wom.location_code !== a.locationCode) {
-        return res.status(400).json({ error: `WOM ${a.womCode} does not belong to location ${a.locationCode}` });
-      }
-      normalized.push({ day: a.day, type: "wom", locationCode: a.locationCode, womCode: a.womCode, hours: round2(hours) });
-    } else {
-      normalized.push({ day: a.day, type: "ef", locationCode: a.locationCode, womCode: null, hours: round2(hours) });
-    }
-  }
+  const { error, normalized } = normalizeAllocations(allocations);
+  if (error) return res.status(400).json({ error });
 
   db.saveAllocations(id, weekMonday, normalized);
   const onBehalf = req.user.role === "admin" && req.user.id !== id ? ` for ${id}` : "";
   db.addAudit(req.user.id, "ALLOCATIONS_SAVED", `${req.user.name} saved allocations${onBehalf} for week ${weekMonday}`);
 
   res.json({ ok: true });
+});
+
+// Lets a technician (or admin) log Saturday/Sunday hours for a week that's
+// already submitted or approved -- e.g. a weekend callout that happened
+// after the rest of the week was already locked in. Only Sat/Sun are
+// touched (Mon-Fri stays exactly as already submitted/approved), and this
+// always flags the week's weekend_addendum_at so admin has a clear signal
+// something changed and needs a look, without silently reopening the
+// whole week's approval.
+router.put("/:id/weeks/:weekMonday/weekend-allocations", requireAuth, (req, res) => {
+  const { id, weekMonday } = req.params;
+  if (!canView(req, id)) {
+    return res.status(403).json({ error: "Only the technician or an admin can edit these allocations" });
+  }
+
+  const tech = db.findTechnician(id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const allocations = Array.isArray(req.body && req.body.allocations) ? req.body.allocations : null;
+  if (!allocations) return res.status(400).json({ error: "allocations array is required" });
+
+  const weekendOnly = allocations.filter((a) => a.day !== "Sat" && a.day !== "Sun");
+  if (weekendOnly.length > 0) {
+    return res.status(400).json({ error: "This endpoint only accepts Saturday/Sunday allocations" });
+  }
+
+  const { error, normalized } = normalizeAllocations(allocations);
+  if (error) return res.status(400).json({ error });
+
+  // Deliberately no UKG-match check here -- unlike the normal weekly
+  // submission, a tech logging a weekend callout may not know their exact
+  // UKG hours yet (or UKG may not have caught up). They log what they
+  // worked, it's flagged via weekend_addendum_at, and admin reviews and
+  // adjusts it to match UKG's actual time before acknowledging it.
+  const week = db.saveWeekendAllocations(id, weekMonday, normalized);
+  const onBehalf = req.user.role === "admin" && req.user.id !== id ? ` for ${id}` : "";
+  db.addAudit(
+    req.user.id,
+    "WEEKEND_ALLOCATIONS_SAVED",
+    `${req.user.name} logged weekend hours${onBehalf} for week ${weekMonday} (flagged for review)`
+  );
+
+  res.json({ ok: true, weekendAddendumAt: week.weekendAddendumAt });
 });
 
 router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {

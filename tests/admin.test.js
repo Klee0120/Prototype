@@ -329,3 +329,113 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     assert.equal(forbidden.status, 403);
   });
 });
+
+test("weekend hours addendum: log Sat/Sun on a locked week without unlocking", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const meta = await server.call("GET", "/api/meta/current-week");
+  const week = meta.body.weekMonday;
+
+  await t.test("setup: submit and approve T1001's week", async () => {
+    // Test files each get their own DB, but top-level tests within one file
+    // share it -- T1001's week may already be submitted/approved/rejected
+    // from the earlier test in this file. Unlock first (a no-op 409 if it's
+    // already draft/rejected) so submit always starts from a clean slate.
+    await server.call("POST", `/api/admin/weeks/T1001/${week}/unlock`, { userId: "ADMIN" });
+
+    const submit = await submitFullWeek(server, "T1001", week, "PRINCETON");
+    assert.equal(submit.status, 200);
+    const approve = await server.call("POST", `/api/admin/weeks/T1001/${week}/approve`, { userId: "ADMIN" });
+    assert.equal(approve.status, 200);
+  });
+
+  await t.test("rejects a payload that includes a weekday", async () => {
+    const res = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/weekend-allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Mon", type: "ef", locationCode: "PRINCETON", hours: 8 }] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("another technician cannot log weekend hours on someone else's week", async () => {
+    const res = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/weekend-allocations`, {
+      userId: "T1002",
+      body: { allocations: [{ day: "Sat", type: "ef", locationCode: "PRINCETON", hours: 4 }] },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("technician can log Sat/Sun hours without unlocking, and it doesn't need to match UKG", async () => {
+    // Deliberately doesn't match UKG (which is 0 for Sat/Sun here) -- the
+    // tech just logs what they worked; matching UKG is admin's job at
+    // review time, not a save-time gate here.
+    const res = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/weekend-allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Sat", type: "ef", locationCode: "PRINCETON", hours: 5 }] },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.weekendAddendumAt);
+
+    const detail = await server.call("GET", `/api/technicians/T1001/weeks/${week}`, { userId: "T1001" });
+    assert.equal(detail.body.status, "approved");
+    assert.ok(detail.body.weekendAddendumAt);
+    const sat = detail.body.allocations.find((a) => a.day === "Sat");
+    assert.ok(sat, "Sat allocation should have been saved");
+    assert.equal(sat.hours, 5);
+
+    // Mon-Fri stays exactly as already approved.
+    const monday = detail.body.allocations.find((a) => a.day === "Mon");
+    assert.equal(monday.locationCode, "PRINCETON");
+  });
+
+  await t.test("admin can acknowledge the addendum, clearing the flag", async () => {
+    const ack = await server.call("POST", `/api/admin/weeks/T1001/${week}/acknowledge-weekend`, { userId: "ADMIN" });
+    assert.equal(ack.status, 200);
+
+    const detail = await server.call("GET", `/api/technicians/T1001/weeks/${week}`, { userId: "T1001" });
+    assert.equal(detail.body.weekendAddendumAt, null);
+  });
+
+  await t.test("acknowledging again with nothing pending is rejected", async () => {
+    const res = await server.call("POST", `/api/admin/weeks/T1001/${week}/acknowledge-weekend`, { userId: "ADMIN" });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("a technician cannot acknowledge (admin-only)", async () => {
+    await server.call("PUT", `/api/technicians/T1001/weeks/${week}/weekend-allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Sun", type: "ef", locationCode: "PRINCETON", hours: 3 }] },
+    });
+    const res = await server.call("POST", `/api/admin/weeks/T1001/${week}/acknowledge-weekend`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("admin can adjust the weekend hours to match UKG, then acknowledge", async () => {
+    const adjust = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/weekend-allocations`, {
+      userId: "ADMIN",
+      body: { allocations: [{ day: "Sun", type: "ef", locationCode: "PRINCETON", hours: 6 }] },
+    });
+    assert.equal(adjust.status, 200);
+
+    const detail = await server.call("GET", `/api/technicians/T1001/weeks/${week}`, { userId: "T1001" });
+    const sun = detail.body.allocations.find((a) => a.day === "Sun");
+    assert.equal(sun.hours, 6);
+    // Adjusting via this endpoint replaces just Sat/Sun -- the earlier Sat
+    // row from a prior save is gone since this call's payload only included Sun.
+    const sat = detail.body.allocations.find((a) => a.day === "Sat");
+    assert.equal(sat, undefined);
+
+    const ack = await server.call("POST", `/api/admin/weeks/T1001/${week}/acknowledge-weekend`, { userId: "ADMIN" });
+    assert.equal(ack.status, 200);
+  });
+
+  await t.test("weekend-addenda list only shows weeks with a pending flag", async () => {
+    const list = await server.call("GET", "/api/admin/weekend-addenda", { userId: "ADMIN" });
+    assert.equal(list.status, 200);
+    assert.ok(!list.body.some((a) => a.techId === "T1001" && a.weekMonday === week));
+
+    const forbidden = await server.call("GET", "/api/admin/weekend-addenda", { userId: "T1001" });
+    assert.equal(forbidden.status, 403);
+  });
+});

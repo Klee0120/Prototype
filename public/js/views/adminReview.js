@@ -40,16 +40,31 @@ function currentMonthISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function shiftMonth(monthIso, delta) {
-  const [y, m] = monthIso.split("-").map(Number);
-  const d = new Date(y, m - 1 + delta, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-}
-
 function monthLabel(monthIso) {
   const [y, m] = monthIso.split("-").map(Number);
   const d = new Date(y, m - 1, 1);
   return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// A jump-to-any-month picker beats paging Prev/Next one month at a time
+// when reports need to be pulled up for a specific past period. The range
+// is generous on the past side (reports get filed for a while) and gives
+// one year of runway forward; a stored month outside this range (shouldn't
+// happen, but cheap to guard) is added in so it's never silently unselectable.
+function reportYearOptions(selectedYear) {
+  const current = new Date().getFullYear();
+  const years = new Set();
+  for (let y = current - 6; y <= current + 1; y++) years.add(y);
+  years.add(selectedYear);
+  return [...years]
+    .sort((a, b) => a - b)
+    .map((y) => `<option value="${y}" ${y === selectedYear ? "selected" : ""}>${y}</option>`)
+    .join("");
 }
 
 export async function renderAdminReview(container) {
@@ -118,16 +133,20 @@ export async function renderAdminReview(container) {
     else await drawAudit(content);
   }
 
-  // Four report kinds (WOM, Labor, Financial, GL), each filed by month/year
-  // in one combined list for now -- kept together deliberately (per-type
-  // tabs/sections is a "later" ask, not today's), distinguished by the
-  // category label shown on each file's row.
+  // Four report kinds (WOM, Labor, Financial, GL), filed by month/year and
+  // each kept in its own section (in this fixed order) so a given kind's
+  // history reads top-to-bottom without hunting through the others.
   async function drawLaborReports(content) {
+    const [reportYear, reportMonthNum] = laborReportMonth.split("-").map(Number);
+
     content.innerHTML = `
-      <div class="week-nav">
-        <button class="btn btn-ghost" id="prev-month">&larr; Prev</button>
-        <div class="week-range">${monthLabel(laborReportMonth)}</div>
-        <button class="btn btn-ghost" id="next-month">Next &rarr;</button>
+      <div class="report-month-year-nav">
+        <label class="report-month-picker">
+          <select id="report-month-select">${MONTH_NAMES.map((name, i) => `<option value="${i + 1}" ${i + 1 === reportMonthNum ? "selected" : ""}>${name}</option>`).join("")}</select>
+        </label>
+        <label class="report-year-picker">
+          <select id="report-year-select">${reportYearOptions(reportYear)}</select>
+        </label>
       </div>
       <p class="review-checklist-hint">
         Save your monthly reports here -- WOM, Labor, Financial, and GL -- filed by month/year so
@@ -137,17 +156,17 @@ export async function renderAdminReview(container) {
       <div id="labor-report-attachments"></div>
     `;
 
-    content.querySelector("#prev-month").addEventListener("click", () => {
-      laborReportMonth = shiftMonth(laborReportMonth, -1);
+    content.querySelector("#report-month-select").addEventListener("change", (e) => {
+      laborReportMonth = `${reportYear}-${String(Number(e.target.value)).padStart(2, "0")}`;
       draw();
     });
-    content.querySelector("#next-month").addEventListener("click", () => {
-      laborReportMonth = shiftMonth(laborReportMonth, 1);
+    content.querySelector("#report-year-select").addEventListener("change", (e) => {
+      laborReportMonth = `${e.target.value}-${String(reportMonthNum).padStart(2, "0")}`;
       draw();
     });
 
     await renderAttachments(content.querySelector("#labor-report-attachments"), {
-      title: "Monthly Reports",
+      title: `Monthly Reports -- ${monthLabel(laborReportMonth)}`,
       relatedType: "labor_report",
       relatedId: laborReportMonth,
       categories: [
@@ -157,7 +176,7 @@ export async function renderAdminReview(container) {
         { value: "gl_report", label: "GL Report" },
       ],
       canUpload: true,
-      emptyText: "No reports saved for this month yet.",
+      groupByCategory: true,
     });
   }
 
@@ -592,12 +611,13 @@ export async function renderAdminReview(container) {
   const TREND_LABELS = { rising: "Rising", falling: "Falling", steady: "Steady" };
 
   async function drawOverview(content) {
-    const [rows, locations, expiringForms, otTrends, vendors] = await Promise.all([
+    const [rows, locations, expiringForms, otTrends, vendors, weekendAddenda] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
       api.get("/api/admin/expiring-forms"),
       api.get(`/api/admin/ot-trends/${state.weekMonday}`),
       api.get("/api/admin/vendors"),
+      api.get("/api/admin/weekend-addenda"),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -637,6 +657,22 @@ export async function renderAdminReview(container) {
                 <span>${outdatedVendorCount} vendor${outdatedVendorCount === 1 ? "" : "s"} on file ${outdatedVendorCount === 1 ? "has" : "have"} outdated forms.</span>
                 <button class="btn btn-link overview-view-outdated-vendors-btn" type="button">View</button>
               </div>
+            </div>`
+      }
+      ${
+        weekendAddenda.length === 0
+          ? ""
+          : `<div class="expiring-forms-banner">
+              <div class="expiring-forms-title">Weekend hours added -- needs review</div>
+              ${weekendAddenda
+                .map(
+                  (a) => `<div class="expiring-forms-row">
+                    <span class="rfm-flag">Weekend</span>
+                    <span>${escapeHtml(a.techName)} added Sat/Sun hours for the week of ${escapeHtml(a.weekMonday)} -- adjust to match UKG and mark reviewed.</span>
+                    <button class="btn btn-link weekend-addendum-view-btn" type="button" data-tech="${escapeHtml(a.techId)}" data-week="${escapeHtml(a.weekMonday)}">View</button>
+                  </div>`
+                )
+                .join("")}
             </div>`
       }
       <div class="week-nav">
@@ -753,6 +789,18 @@ export async function renderAdminReview(container) {
         await draw();
       });
     }
+    content.querySelectorAll(".weekend-addendum-view-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        // Tech Allocation is where admin can actually see/edit a specific
+        // technician's specific week (the day-card weekend editing lives in
+        // techWeek.js), so route the addendum flag there rather than into
+        // Weekly Review's per-status detail table.
+        allocTechId = btn.dataset.tech;
+        state.weekMonday = btn.dataset.week;
+        activeTab = "techalloc";
+        await draw();
+      });
+    });
   }
 
   async function drawReview(content) {

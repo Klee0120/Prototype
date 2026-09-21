@@ -38,7 +38,10 @@ function expiryBadge(expiresAt) {
  * Renders a self-contained attachments list + upload form into `host`.
  * options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,
  *            trackExpiration: true adds Type + Expiration date fields to the upload form and
- *            shows them (with an Expired/Expires badge) on each file row -- used for Forms on File. }
+ *            shows them (with an Expired/Expires badge) on each file row -- used for Forms on File.
+ *            groupByCategory: true splits the list into one section per category (in `categories`
+ *            order) instead of one combined list -- used for Reports, where WOM/Labor/Financial/GL
+ *            need to each stay together and in order rather than interleaved by upload date. }
  */
 export async function renderAttachments(host, opts) {
   await refresh();
@@ -57,16 +60,36 @@ export async function renderAttachments(host, opts) {
     host.innerHTML = `
       <div class="attachments-panel">
         <div class="attachments-title">${escapeHtml(opts.title)}</div>
-        <div class="attachments-list"></div>
+        ${opts.groupByCategory ? `<div class="attachments-sections"></div>` : `<div class="attachments-list"></div>`}
         ${loadError ? `<p class="attachments-error">${escapeHtml(loadError)}</p>` : ""}
         ${opts.canUpload ? renderUploadForm() : ""}
       </div>
     `;
 
-    const list = host.querySelector(".attachments-list");
-    if (!loadError && files.length === 0) {
-      list.innerHTML = `<p class="empty-note">${escapeHtml(opts.emptyText || "No files yet.")}</p>`;
+    if (opts.groupByCategory) {
+      const sectionsHost = host.querySelector(".attachments-sections");
+      const byCategory = new Map(opts.categories.map((c) => [c.value, []]));
+      for (const f of files) {
+        if (!byCategory.has(f.category)) byCategory.set(f.category, []);
+        byCategory.get(f.category).push(f);
+      }
+      for (const [catValue, catFiles] of byCategory) {
+        const catLabel = (opts.categories.find((c) => c.value === catValue) || {}).label || catValue;
+        const section = document.createElement("div");
+        section.className = "attachments-section";
+        section.innerHTML = `<div class="attachments-section-title">${escapeHtml(catLabel)}</div><div class="attachments-list"></div>`;
+        const list = section.querySelector(".attachments-list");
+        if (catFiles.length === 0) {
+          list.innerHTML = `<p class="empty-note">No ${escapeHtml(catLabel.toLowerCase())}s saved for this month yet.</p>`;
+        } else {
+          catFiles.forEach((f) => list.appendChild(renderFileRow(f)));
+        }
+        sectionsHost.appendChild(section);
+      }
+    } else if (!loadError && files.length === 0) {
+      host.querySelector(".attachments-list").innerHTML = `<p class="empty-note">${escapeHtml(opts.emptyText || "No files yet.")}</p>`;
     } else {
+      const list = host.querySelector(".attachments-list");
       files.forEach((f) => list.appendChild(renderFileRow(f)));
     }
 

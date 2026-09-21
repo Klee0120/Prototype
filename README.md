@@ -182,11 +182,16 @@ Demo logins:
   or updates vendor records from a JSON file — built for importing an
   existing vendor tracker spreadsheet once, safe to re-run (matches
   existing vendors by JDE # or name and updates them instead of duplicating).
-- **Labor Reports tab (admin)**: a simple month-by-month archive for the
-  labor report finance sends over, saved here so it's kept alongside the
-  timesheeting for that period — for comparing against what this app
-  tracked. File storage only for now; see "Where this stands" for the
-  bigger reconciliation idea this could grow into.
+- **Reports tab (admin)**: a month-by-month archive for four monthly report
+  kinds -- **WOM Report, Labor Report, Financial Report, and GL Report** --
+  saved here so each is kept alongside the timesheeting for that period, for
+  comparing against what this app tracked. A **Month/Year dropdown picker**
+  jumps straight to any period (rather than paging Prev/Next one month at a
+  time), and each report kind gets its **own section**, always in the same
+  WOM/Labor/Financial/GL order, so a given kind's history reads top to
+  bottom without hunting through the others. File storage only for now; see
+  "Where this stands" for the bigger reconciliation idea this could grow
+  into.
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
@@ -256,7 +261,28 @@ Demo logins:
   technician. Marking it moves that technician into a separate "Completed"
   list (undo-able) so Weekly Review always shows who still needs attention.
 - Week locking: a submitted/approved week can't be edited by the technician
-  until an admin rejects or unlocks it
+  until an admin rejects or unlocks it. **Unlock works on a merely-submitted
+  week, not just an approved one** — the case that matters is admin
+  correcting a technician's UKG hours after they've already submitted but
+  before anyone's approved it, which used to leave the week stuck mismatched
+  with no way back in (Reject would bounce it to the technician instead of
+  letting admin fix it directly)
+- **Weekend hours addendum**: if a technician gets called in over the
+  weekend on a week that's already submitted/approved, they can still log
+  Saturday/Sunday hours directly on their locked week — a "Weekend Entry"
+  badge appears on the Sat/Sun day cards, which stay fully editable (add
+  split, default to home, remove) with their own **Save weekend hours**
+  button, while Monday–Friday stays exactly as already
+  submitted/approved. No unlock needed, and the hours don't have to match
+  UKG at save time — the technician just logs what they worked. Saving sets
+  a flag (surfaced as a red "Weekend hours added -- needs review" banner on
+  the admin's **Overview** tab, with a "View" link straight into that
+  technician's Tech Allocation week) so admin knows to look, adjust the
+  Sat/Sun hours to match UKG's actual time (via the same Tech Allocation
+  screen — admin can edit those rows directly, or unlock the whole week if
+  Mon-Fri also needs a fix), and click "Mark reviewed" to clear it. The
+  underlying week status (draft/submitted/approved) never changes as part
+  of this — it's a separate flag, not a status transition
 - Audit trail of logins, allocation saves, submissions, approvals,
   rejections, unlocks, WOM status changes, home-location/employment-status
   changes, technician creation, UKG hour entries, and file uploads/deletes
@@ -495,10 +521,11 @@ a missing code is obvious rather than silently blank.
   If the intent was instead for tech-complete to land on Invoiced (pending
   admin's own close-out), that's a one-line change in
   `server/routes/woms.js`'s `/:code/complete` handler.
-- **Labor Reports is storage only — there's no comparison logic yet.** It
-  saves the monthly file finance sends so it's kept next to the
-  timesheeting for that period; nothing in the app reads its contents or
-  checks it against tracked hours. The real labor report (seen live use)
+- **Reports is storage only — there's no comparison logic yet.** It
+  saves the monthly file finance sends (WOM/Labor/Financial/GL, each in
+  its own section) so it's kept next to the timesheeting for that period;
+  nothing in the app reads its contents or checks it against tracked hours.
+  The real labor report (seen live use)
   breaks hours down by employee and WOM/subledger into ST/OT/Holiday/
   Sick/Vacation columns — close enough to what `computeReceipt` already
   produces that a real reconciliation (export our numbers in the same
@@ -528,13 +555,16 @@ server/
   middleware/auth.js     Verifies the x-session-token header against the sessions table
   routes/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
-    technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
+    technicians.js        GET/PUT/POST week + allocations + submit (per-day validation),
+                              PUT weekend-allocations (Sat/Sun addendum on a locked week)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
                               POST :code/complete (tech-facing)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
                               pattern), UKG hours, pending-punch flag, UKG-confirmed checklist,
                               roster, profile (basic info, onboarding, devices + IT requests,
                               allocation history, expiring-forms list), approve/reject/unlock
+                              (works on submitted OR approved), weekend-addenda list +
+                              acknowledge-weekend
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -557,8 +587,10 @@ tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking
-  admin.test.js             Approve / reject / unlock, Overview report OT-flagging, ot-trends,
-                              UKG-confirmed checklist, pending-punch flag
+  admin.test.js             Approve / reject / unlock (incl. on a merely-submitted week),
+                              Overview report OT-flagging, ot-trends, UKG-confirmed checklist,
+                              pending-punch flag, weekend hours addendum (log without
+                              unlocking, no UKG-match required, admin adjust + acknowledge)
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests

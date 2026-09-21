@@ -82,6 +82,7 @@ db.exec(`
     reviewed_at TEXT,
     reviewed_by TEXT,
     note TEXT DEFAULT '',
+    weekend_addendum_at TEXT,
     PRIMARY KEY (tech_id, week_monday)
   );
 
@@ -228,6 +229,13 @@ if (!hasColumn("technicians", "employment_status")) {
 if (!hasColumn("weeks", "ukg_confirmed_at")) {
   db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_at TEXT");
   db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_by TEXT");
+}
+// Set when a technician adds/changes Sat/Sun hours on a week that's already
+// submitted/approved (a weekend callout after the rest of the week was
+// already locked in) -- see saveWeekendAllocations. Flags the week for
+// admin's attention without touching its already-locked Mon-Fri status.
+if (!hasColumn("weeks", "weekend_addendum_at")) {
+  db.exec("ALTER TABLE weeks ADD COLUMN weekend_addendum_at TEXT");
 }
 
 // Flags a specific day as waiting on a real UKG punch correction (a missed
@@ -894,7 +902,9 @@ function setPendingPunch(techId, weekMonday, day, flagged) {
 function getWeek(techId, weekMonday) {
   const row = db
     .prepare(
-      "SELECT status, submitted_at, reviewed_at, reviewed_by, note, ukg_confirmed_at, ukg_confirmed_by FROM weeks WHERE tech_id = ? AND week_monday = ?"
+      `SELECT status, submitted_at, reviewed_at, reviewed_by, note, ukg_confirmed_at, ukg_confirmed_by,
+              weekend_addendum_at
+       FROM weeks WHERE tech_id = ? AND week_monday = ?`
     )
     .get(techId, weekMonday);
   const allocations = db
@@ -914,6 +924,7 @@ function getWeek(techId, weekMonday) {
       note: "",
       ukgConfirmedAt: null,
       ukgConfirmedBy: null,
+      weekendAddendumAt: null,
     };
   }
   return {
@@ -925,7 +936,37 @@ function getWeek(techId, weekMonday) {
     note: row.note || "",
     ukgConfirmedAt: row.ukg_confirmed_at,
     ukgConfirmedBy: row.ukg_confirmed_by,
+    weekendAddendumAt: row.weekend_addendum_at,
   };
+}
+
+// Replaces just a technician's Saturday/Sunday allocation rows -- used when
+// they were called in over the weekend after the rest of the week was
+// already submitted/approved, so the already-locked Mon-Fri record is never
+// touched. Always stamps weekend_addendum_at so admin has a clear "this
+// changed after the fact" signal to review, regardless of the week's
+// current status.
+function saveWeekendAllocations(techId, weekMonday, allocations) {
+  ensureWeekRow(techId, weekMonday);
+  db.prepare("DELETE FROM allocations WHERE tech_id = ? AND week_monday = ? AND day IN ('Sat', 'Sun')").run(techId, weekMonday);
+  const insert = db.prepare(
+    "INSERT INTO allocations (tech_id, week_monday, day, type, location_code, wom_code, hours) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const a of allocations) {
+    insert.run(techId, weekMonday, a.day, a.type, a.locationCode || null, a.womCode || null, a.hours);
+  }
+  db.prepare("UPDATE weeks SET weekend_addendum_at = ? WHERE tech_id = ? AND week_monday = ?").run(
+    new Date().toISOString(),
+    techId,
+    weekMonday
+  );
+  return getWeek(techId, weekMonday);
+}
+
+function acknowledgeWeekendAddendum(techId, weekMonday) {
+  ensureWeekRow(techId, weekMonday);
+  db.prepare("UPDATE weeks SET weekend_addendum_at = NULL WHERE tech_id = ? AND week_monday = ?").run(techId, weekMonday);
+  return getWeek(techId, weekMonday);
 }
 
 function setUkgConfirmed(techId, weekMonday, adminId, confirmed) {
@@ -1117,6 +1158,23 @@ function listExpiringForms(daysAhead = 30) {
     .all(cutoffStr);
 }
 
+// Every week across every technician that's still flagged for admin's
+// attention after a weekend-hours addendum (see saveWeekendAllocations) --
+// not scoped to the week currently open in Overview, since a weekend
+// callout on a prior week can sit unreviewed while admin's browsing a
+// different one.
+function listWeekendAddenda() {
+  return db
+    .prepare(
+      `SELECT w.tech_id AS techId, t.name AS techName, w.week_monday AS weekMonday, w.weekend_addendum_at AS weekendAddendumAt
+       FROM weeks w
+       JOIN technicians t ON t.id = w.tech_id
+       WHERE w.weekend_addendum_at IS NOT NULL
+       ORDER BY w.weekend_addendum_at ASC`
+    )
+    .all();
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -1170,6 +1228,8 @@ module.exports = {
   setPendingPunch,
   getWeek,
   saveAllocations,
+  saveWeekendAllocations,
+  acknowledgeWeekendAddendum,
   setUkgConfirmed,
   submitWeek,
   approveWeek,
@@ -1185,4 +1245,5 @@ module.exports = {
   getFile,
   deleteFile,
   listExpiringForms,
+  listWeekendAddenda,
 };
