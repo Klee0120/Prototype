@@ -1,11 +1,12 @@
 const express = require("express");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
-const { DAY_NAMES } = require("../utils/week");
+const { DAY_NAMES, shiftWeek } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 const { computeReceipt } = require("../utils/receipt");
 
 const OT_NOT_ON_WOM_FLAG_THRESHOLD = 3;
+const OT_TREND_WEEKS = 8;
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -220,33 +221,75 @@ router.get("/expiring-forms", (req, res) => {
   res.json(db.listExpiringForms(FORM_EXPIRY_WARNING_DAYS));
 });
 
+function computeWeekRow(tech, weekMonday) {
+  const week = db.getWeek(tech.id, weekMonday);
+  const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
+  const ukgHours = round2(DAY_NAMES.reduce((sum, d) => sum + (ukgByDay[d] || 0), 0));
+  const allocatedHours = round2(week.allocations.reduce((sum, a) => sum + Number(a.hours || 0), 0));
+  const receipt = computeReceipt(week.allocations.map(presentAllocation));
+  return {
+    technician: { id: tech.id, name: tech.name, homeLocationCode: tech.home_location_code },
+    status: week.status,
+    ukgHours,
+    allocatedHours,
+    regularHours: receipt.regularTotal,
+    otHours: receipt.otTotal,
+    otOnWom: receipt.otFromWom,
+    otNotOnWom: receipt.otFromEf,
+    flagged: receipt.otFromEf > OT_NOT_ON_WOM_FLAG_THRESHOLD,
+    submittedAt: week.submittedAt,
+    reviewedAt: week.reviewedAt,
+    reviewedBy: week.reviewedBy,
+    note: week.note,
+    ukgConfirmedAt: week.ukgConfirmedAt,
+    ukgConfirmedBy: week.ukgConfirmedBy,
+  };
+}
+
 router.get("/weeks/:weekMonday", (req, res) => {
   const { weekMonday } = req.params;
-  const rows = db.listTechnicians().map((tech) => {
-    const week = db.getWeek(tech.id, weekMonday);
-    const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
-    const ukgHours = round2(DAY_NAMES.reduce((sum, d) => sum + (ukgByDay[d] || 0), 0));
-    const allocatedHours = round2(week.allocations.reduce((sum, a) => sum + Number(a.hours || 0), 0));
-    const receipt = computeReceipt(week.allocations.map(presentAllocation));
-    return {
-      technician: { id: tech.id, name: tech.name, homeLocationCode: tech.home_location_code },
-      status: week.status,
-      ukgHours,
-      allocatedHours,
-      regularHours: receipt.regularTotal,
-      otHours: receipt.otTotal,
-      otOnWom: receipt.otFromWom,
-      otNotOnWom: receipt.otFromEf,
-      flagged: receipt.otFromEf > OT_NOT_ON_WOM_FLAG_THRESHOLD,
-      submittedAt: week.submittedAt,
-      reviewedAt: week.reviewedAt,
-      reviewedBy: week.reviewedBy,
-      note: week.note,
-      ukgConfirmedAt: week.ukgConfirmedAt,
-      ukgConfirmedBy: week.ukgConfirmedBy,
-    };
-  });
+  const rows = db.listTechnicians().map((tech) => computeWeekRow(tech, weekMonday));
   res.json(rows);
+});
+
+// Per-technician OT-not-on-WOM across the trailing OT_TREND_WEEKS weeks
+// (ending at weekMonday), for the Overview tab's "Employee OT Trends"
+// section -- only technicians flagged at least once in that window are
+// included, so the list stays focused on who's actually worth watching.
+router.get("/ot-trends/:weekMonday", (req, res) => {
+  const { weekMonday } = req.params;
+  const weekMondays = [];
+  for (let i = OT_TREND_WEEKS - 1; i >= 0; i--) weekMondays.push(shiftWeek(weekMonday, -i));
+
+  const trends = db
+    .listTechnicians()
+    .map((tech) => {
+      const weeks = weekMondays.map((wm) => {
+        const row = computeWeekRow(tech, wm);
+        return { weekMonday: wm, otNotOnWom: row.otNotOnWom, flagged: row.flagged };
+      });
+      const flaggedCount = weeks.filter((w) => w.flagged).length;
+      const avgOtNotOnWom = round2(weeks.reduce((s, w) => s + w.otNotOnWom, 0) / weeks.length);
+
+      const half = Math.floor(weeks.length / 2);
+      const earlierAvg = weeks.slice(0, half).reduce((s, w) => s + w.otNotOnWom, 0) / half;
+      const recentAvg = weeks.slice(half).reduce((s, w) => s + w.otNotOnWom, 0) / (weeks.length - half);
+      let trendDirection = "steady";
+      if (recentAvg > earlierAvg + 0.5) trendDirection = "rising";
+      else if (recentAvg < earlierAvg - 0.5) trendDirection = "falling";
+
+      return {
+        technician: { id: tech.id, name: tech.name },
+        weeks,
+        flaggedCount,
+        avgOtNotOnWom,
+        trendDirection,
+      };
+    })
+    .filter((t) => t.flaggedCount > 0)
+    .sort((a, b) => b.flaggedCount - a.flaggedCount || b.avgOtNotOnWom - a.avgOtNotOnWom);
+
+  res.json(trends);
 });
 
 // Admin's own three-step checklist for a technician's week: UKG hours

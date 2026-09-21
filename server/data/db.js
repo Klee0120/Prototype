@@ -39,6 +39,7 @@ db.exec(`
     code TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     ef_job_number TEXT,
+    wom_job_number TEXT,
     region TEXT
   );
 
@@ -204,6 +205,13 @@ if (!hasColumn("locations", "ef_job_number")) {
 }
 if (!hasColumn("locations", "region")) {
   db.exec("ALTER TABLE locations ADD COLUMN region TEXT");
+}
+// A location's E1 WOM Job Number (from the same JDE lookup table as the E&F
+// Contract Job Number) -- the base job number WOM work at that location
+// posts to; combined with a WOM's own subsidiary code to form its full
+// accounting code, the same way efJobNumber + EF_SUBSIDIARY_CODE do for E&F.
+if (!hasColumn("locations", "wom_job_number")) {
+  db.exec("ALTER TABLE locations ADD COLUMN wom_job_number TEXT");
 }
 if (!hasColumn("woms", "subsidiary_code")) {
   db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
@@ -470,22 +478,24 @@ function findLocation(code) {
   return db.prepare("SELECT * FROM locations WHERE code = ?").get(code);
 }
 
-function createLocation(code, name, efJobNumber, region) {
-  db.prepare("INSERT INTO locations (code, name, ef_job_number, region) VALUES (?, ?, ?, ?)").run(
+function createLocation(code, name, efJobNumber, region, womJobNumber) {
+  db.prepare("INSERT INTO locations (code, name, ef_job_number, region, wom_job_number) VALUES (?, ?, ?, ?, ?)").run(
     code,
     name,
     efJobNumber || null,
-    region || null
+    region || null,
+    womJobNumber || null
   );
   return findLocation(code);
 }
 
-function setLocationDetails(code, { name, efJobNumber, region } = {}) {
+function setLocationDetails(code, { name, efJobNumber, region, womJobNumber } = {}) {
   if (!findLocation(code)) return null;
-  db.prepare("UPDATE locations SET name = ?, ef_job_number = ?, region = ? WHERE code = ?").run(
+  db.prepare("UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ? WHERE code = ?").run(
     name,
     efJobNumber || null,
     region || null,
+    womJobNumber || null,
     code
   );
   return findLocation(code);

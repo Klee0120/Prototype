@@ -58,7 +58,7 @@ export async function renderAdminReview(container) {
         <button class="tab ${activeTab === "techalloc" ? "active" : ""}" data-tab="techalloc">Tech Allocation</button>
         <button class="tab ${activeTab === "overview" ? "active" : ""}" data-tab="overview">Overview</button>
         <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
-        <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">WOM Status</button>
+        <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">E&amp;F Locations &amp; WOM</button>
         <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
         <button class="tab ${activeTab === "laborreports" ? "active" : ""}" data-tab="laborreports">Labor Reports</button>
         <button class="tab ${activeTab === "audit" ? "active" : ""}" data-tab="audit">Audit Trail</button>
@@ -159,11 +159,14 @@ export async function renderAdminReview(container) {
     await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId);
   }
 
+  const TREND_LABELS = { rising: "Rising", falling: "Falling", steady: "Steady" };
+
   async function drawOverview(content) {
-    const [rows, locations, expiringForms] = await Promise.all([
+    const [rows, locations, expiringForms, otTrends] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
       api.get("/api/admin/expiring-forms"),
+      api.get(`/api/admin/ot-trends/${state.weekMonday}`),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -238,6 +241,41 @@ export async function renderAdminReview(container) {
           }
         </tbody>
       </table>
+
+      <h3>Employee OT Trends</h3>
+      <p class="overview-hint">
+        OT not charged to a WOM project, week by week, over the last ${otTrends.length > 0 ? otTrends[0].weeks.length : 8}
+        weeks (ending this week) — for spotting a pattern, not just a one-off. Only shows technicians flagged at
+        least once in that window.
+      </p>
+      ${
+        otTrends.length === 0
+          ? `<p class="empty-note">Nobody's been flagged in the last several weeks.</p>`
+          : `<table class="detail-table overview-table ot-trends-table">
+              <thead>
+                <tr><th>Employee</th><th>Weekly OT not on WOM</th><th>Flagged weeks</th><th>Avg</th><th>Trend</th><th></th></tr>
+              </thead>
+              <tbody>
+                ${otTrends
+                  .map((t) => {
+                    const sparkline = t.weeks
+                      .map((w) => `<span class="ot-trend-bar ${w.flagged ? "flagged" : ""}" title="${escapeHtml(w.weekMonday)}: ${w.otNotOnWom}h">${w.otNotOnWom}</span>`)
+                      .join("");
+                    return `
+                      <tr>
+                        <td>${escapeHtml(t.technician.name)}</td>
+                        <td><div class="ot-trend-sparkline">${sparkline}</div></td>
+                        <td>${t.flaggedCount} / ${t.weeks.length}</td>
+                        <td>${t.avgOtNotOnWom}h</td>
+                        <td class="ot-trend-${t.trendDirection}">${TREND_LABELS[t.trendDirection]}</td>
+                        <td><button class="btn btn-link overview-view-btn" type="button" data-tech="${escapeHtml(t.technician.id)}">View</button></td>
+                      </tr>
+                    `;
+                  })
+                  .join("")}
+              </tbody>
+            </table>`
+      }
     `;
 
     content.querySelector("#prev-week").addEventListener("click", () => {
@@ -265,11 +303,13 @@ export async function renderAdminReview(container) {
   }
 
   async function drawReview(content) {
-    const [rows, locations] = await Promise.all([
+    const [rows, locations, woms] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
+      api.get("/api/woms"),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const womByCode = Object.fromEntries(woms.map((w) => [w.code, w]));
 
     const needsAttention = rows.filter((r) => !r.ukgConfirmedAt);
     const completed = rows.filter((r) => r.ukgConfirmedAt);
@@ -305,17 +345,17 @@ export async function renderAdminReview(container) {
     const openList = content.querySelector("#review-list-open");
     if (needsAttention.length === 0) openList.innerHTML = `<p class="empty-note">Nothing needs attention this week.</p>`;
     for (const row of needsAttention) {
-      openList.appendChild(await renderReviewRow(row, content, locationByCode));
+      openList.appendChild(await renderReviewRow(row, content, locationByCode, womByCode));
     }
 
     const doneList = content.querySelector("#review-list-done");
     if (completed.length === 0) doneList.innerHTML = `<p class="empty-note">Nobody confirmed yet.</p>`;
     for (const row of completed) {
-      doneList.appendChild(await renderReviewRow(row, content, locationByCode));
+      doneList.appendChild(await renderReviewRow(row, content, locationByCode, womByCode));
     }
   }
 
-  async function renderReviewRow(row, content, locationByCode) {
+  async function renderReviewRow(row, content, locationByCode, womByCode) {
     const el = document.createElement("div");
     const balanced = row.ukgHours > 0 && Math.abs(row.allocatedHours - row.ukgHours) < 0.01;
     const stage1 = row.ukgHours > 0; // UKG hours entered
@@ -376,7 +416,7 @@ export async function renderAdminReview(container) {
       const detailEl = el.querySelector(`#detail-${row.technician.id}`);
       detailEl.innerHTML =
         renderUkgForm(detail, justSavedUkg.has(row.technician.id)) +
-        renderDetailTable(detail, locationByCode) +
+        renderDetailTable(detail, locationByCode, womByCode) +
         renderReviewActions(row) +
         `<div class="review-attachments"></div>`;
       wireUkgForm(detailEl, row, content);
@@ -517,16 +557,35 @@ export async function renderAdminReview(container) {
     return `E&F — ${loc ? loc.name : a.locationCode}`;
   }
 
-  function renderDetailTable(detail, locationByCode) {
+  // The JDE accounting code a day's hours actually post to: a location's E&F
+  // Job Number + the standard E&F subsidiary code for E&F time, or a WOM's
+  // own location's WOM Job Number + that WOM's own subsidiary code for WOM
+  // time -- "?" wherever one of those hasn't been entered yet, so a missing
+  // code is obvious rather than silently blank.
+  function accountingCode(a, locationByCode, womByCode) {
+    if (a.type === "timeoff") return "—";
+    if (a.type === "wom") {
+      const wom = womByCode[a.womCode];
+      const loc = wom ? locationByCode[wom.locationCode] : null;
+      return `${(loc && loc.womJobNumber) || "?"}.${(wom && wom.subsidiaryCode) || "?"}`;
+    }
+    const loc = locationByCode[a.locationCode];
+    return `${(loc && loc.efJobNumber) || "?"}.${(loc && loc.efSubsidiaryCode) || "20920000"}`;
+  }
+
+  function renderDetailTable(detail, locationByCode, womByCode) {
     if (detail.allocations.length === 0) {
       return `<p class="empty-note">No hours allocated.</p>`;
     }
     const rows = detail.allocations
-      .map((a) => `<tr><td>${a.day}</td><td>${escapeHtml(describeAllocation(a, locationByCode))}</td><td>${a.hours}h</td></tr>`)
+      .map(
+        (a) =>
+          `<tr><td>${a.day}</td><td>${escapeHtml(describeAllocation(a, locationByCode))}</td><td>${escapeHtml(accountingCode(a, locationByCode, womByCode))}</td><td>${a.hours}h</td></tr>`
+      )
       .join("");
     return `
       <table class="detail-table">
-        <thead><tr><th>Day</th><th>Allocation</th><th>Hours</th></tr></thead>
+        <thead><tr><th>Day</th><th>Allocation</th><th>Accounting Code</th><th>Hours</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     `;
@@ -601,15 +660,17 @@ export async function renderAdminReview(container) {
     content.innerHTML = `
       <h3>Locations</h3>
       <p class="review-checklist-hint">
-        Each location has its own E&amp;F Contract Job Number (from the JDE lookup). E&amp;F time always uses the
-        standard subsidiary code <strong>${escapeHtml(efSubsidiary)}</strong> at every location — that part never
-        changes location to location. Region is used to match this location up against the monthly labor report.
+        Each location has its own E&amp;F Contract Job Number and WOM Job Number (from the JDE lookup). E&amp;F time
+        always uses the standard subsidiary code <strong>${escapeHtml(efSubsidiary)}</strong> at every location —
+        that part never changes location to location; WOM subsidiary codes vary by project and are set on each WOM
+        below. Region is used to match this location up against the monthly labor report.
       </p>
       <div class="review-list" id="location-list"></div>
       <form id="add-location-form" class="add-wom-form">
         <input name="code" placeholder="Location code" required />
         <input name="name" placeholder="Location name" required />
         <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" />
+        <input name="womJobNumber" placeholder="WOM Job Number" />
         <input name="region" placeholder="Region (e.g. Southeast)" />
         <button type="submit" class="btn btn-primary">Add location</button>
         <span class="save-message" id="location-message"></span>
@@ -647,6 +708,7 @@ export async function renderAdminReview(container) {
           code: form.code.value.trim(),
           name: form.name.value.trim(),
           efJobNumber: form.efJobNumber.value.trim() || null,
+          womJobNumber: form.womJobNumber.value.trim() || null,
           region: form.region.value.trim() || null,
         });
         await drawWoms(content);
@@ -683,6 +745,7 @@ export async function renderAdminReview(container) {
           <span class="review-row-name">${escapeHtml(l.code)}</span>
           <input name="name" value="${escapeHtml(l.name)}" required />
           <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" value="${escapeHtml(l.efJobNumber || "")}" />
+          <input name="womJobNumber" placeholder="WOM Job Number" value="${escapeHtml(l.womJobNumber || "")}" />
           <input name="region" placeholder="Region" value="${escapeHtml(l.region || "")}" />
           <button type="submit" class="btn btn-primary">Save</button>
           <button type="button" class="btn btn-link cancel-edit">Cancel</button>
@@ -701,6 +764,7 @@ export async function renderAdminReview(container) {
           await api.patch(`/api/locations/${encodeURIComponent(l.code)}`, {
             name: form.name.value.trim(),
             efJobNumber: form.efJobNumber.value.trim() || null,
+            womJobNumber: form.womJobNumber.value.trim() || null,
             region: form.region.value.trim() || null,
           });
           locationEditing.delete(l.code);
@@ -713,10 +777,11 @@ export async function renderAdminReview(container) {
     }
 
     const jobLabel = l.efJobNumber ? `E&amp;F Job # ${escapeHtml(l.efJobNumber)}` : "No E&amp;F Job # on file";
+    const womJobLabel = l.womJobNumber ? ` &middot; WOM Job # ${escapeHtml(l.womJobNumber)}` : " &middot; No WOM Job # on file";
     const regionLabel = l.region ? ` &middot; ${escapeHtml(l.region)}` : "";
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${regionLabel}</span></div>
+        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${regionLabel}</span></div>
         <button class="btn btn-link edit-location-btn" type="button">Edit</button>
       </div>
     `;

@@ -4,7 +4,7 @@ import { escapeHtml } from "../app.js";
 // Shown right after a submit (technician) or a "marked entered in UKG"
 // confirmation (admin) that involved WOM hours -- an optional, dismissible
 // nudge to attach a work photo, reusing the same WOM documents store the
-// WOM Status tab already has (relatedType "wom", category "wom_doc").
+// E&F Locations & WOM tab already has (relatedType "wom", category "wom_doc").
 export function renderWomPhotoPrompt(womCodes, onDismiss) {
   const wrap = document.createElement("div");
   wrap.className = "wom-photo-prompt";

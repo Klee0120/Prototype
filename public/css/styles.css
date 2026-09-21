@@ -776,6 +776,33 @@ button, input, select {
   color: var(--muted);
 }
 
+.ot-trend-sparkline {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.ot-trend-bar {
+  display: inline-block;
+  min-width: 20px;
+  text-align: center;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--muted);
+}
+
+.ot-trend-bar.flagged {
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ot-trend-rising { color: var(--danger); font-weight: 600; }
+.ot-trend-falling { color: var(--ok, #1a7f37); font-weight: 600; }
+.ot-trend-steady { color: var(--muted); }
+
 .empty-note {
   color: var(--muted);
   font-size: 13px;

@@ -117,16 +117,23 @@ test("locations: E&F job number and region tracking", async (t) => {
     assert.equal(res.status, 403);
   });
 
-  await t.test("admin can create a location with an E&F job number and region", async () => {
+  await t.test("admin can create a location with an E&F job number, WOM job number, and region", async () => {
     const create = await server.call("POST", "/api/locations", {
       userId: "ADMIN",
-      body: { code: "LOC-GTOWN", name: "TLS Georgetown", efJobNumber: "100110042963", region: "Southeast" },
+      body: {
+        code: "LOC-GTOWN",
+        name: "TLS Georgetown",
+        efJobNumber: "100110042963",
+        womJobNumber: "100110007530",
+        region: "Southeast",
+      },
     });
     assert.equal(create.status, 201);
 
     const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
     const created = list.body.find((l) => l.code === "LOC-GTOWN");
     assert.equal(created.efJobNumber, "100110042963");
+    assert.equal(created.womJobNumber, "100110007530");
     assert.equal(created.region, "Southeast");
   });
 
@@ -141,11 +148,12 @@ test("locations: E&F job number and region tracking", async (t) => {
   await t.test("admin can edit a location's name/job number/region", async () => {
     const res = await server.call("PATCH", "/api/locations/LOC-GTOWN", {
       userId: "ADMIN",
-      body: { name: "TLS Georgetown Updated", efJobNumber: "100110043044", region: "Region 1" },
+      body: { name: "TLS Georgetown Updated", efJobNumber: "100110043044", womJobNumber: "100110041403", region: "Region 1" },
     });
     assert.equal(res.status, 200);
     assert.equal(res.body.name, "TLS Georgetown Updated");
     assert.equal(res.body.efJobNumber, "100110043044");
+    assert.equal(res.body.womJobNumber, "100110041403");
     assert.equal(res.body.region, "Region 1");
   });
 

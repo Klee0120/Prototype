@@ -117,6 +117,14 @@ Demo logins:
   entry on the Weekly Review tab — hour-by-hour detail, approve/reject, and
   the UKG screenshot/receipt attachments — so admin/RFM can pull whatever
   they need from one table instead of opening each technician individually
+- **Employee OT Trends** (below the Overview table): the same OT-not-on-WOM
+  number as the main table, but across the trailing 8 weeks per technician
+  (`OT_TREND_WEEKS` in `server/routes/admin.js`), so a repeat pattern is
+  visible instead of just this week's snapshot. Only lists technicians
+  flagged at least once in that window, with a flagged-weeks count, the
+  8-week average, and a simple Rising/Falling/Steady trend (comparing the
+  first half of the window's average to the second half's) — a "View" jumps
+  to that technician on Weekly Review the same as the main table's does
 - **Pending punch correction flag**: admin can flag a specific day (right
   next to that day's UKG hours field) as waiting on a real UKG punch fix
   (a missed clock-out, etc.). The technician sees a clear note on that
@@ -127,11 +135,11 @@ Demo logins:
   a dismissible prompt (shown *before* Submit, right alongside the day cards,
   not as an after-the-fact step with nothing left to do) offers to attach a
   work photo for each WOM touched that week — reusing the same WOM documents
-  store as the WOM Status tab's Documents panel, so a photo added either way
+  store as the E&F Locations & WOM tab's Documents panel, so a photo added either way
   shows up in both places. It's the technician's own reminder, so it's never
   shown to an admin (allocating on a technician's behalf on Tech Allocation,
   or confirming "entered in UKG" on Weekly Review) — an admin who wants to
-  attach a WOM photo does it from the WOM Status tab's Documents panel.
+  attach a WOM photo does it from the E&F Locations & WOM tab's Documents panel.
 - **Labor Reports tab (admin)**: a simple month-by-month archive for the
   labor report finance sends over, saved here so it's kept alongside the
   timesheeting for that period — for comparing against what this app
@@ -218,7 +226,7 @@ Demo logins:
   - UKG timesheet screenshots and receipts/invoices — attached by a
     technician to their own week (Attachments panel on the week screen)
   - Work order documents/photos — attached by any technician or admin to a
-    WOM (Documents panel on admin's WOM Status tab)
+    WOM (Documents panel on admin's E&F Locations & WOM tab)
   - Technician forms/certifications — admin-managed, attached to a
     technician's record (admin's Technicians tab)
 - Mobile-friendly responsive layout
@@ -243,19 +251,29 @@ these tables from the older flat schema if it finds one (safe at this stage
 since only mock data has ever been in them).
 
 **JDE accounting codes.** Each location carries its own real E&F Contract Job
-Number (from the JDE location lookup table) and a Region label (e.g.
-"Southeast", "Region 1") used to match the location up against the monthly
-labor-report/financial file. E&F general time itself always posts to a
-single standard subsidiary/service code — `20920000` — the same at every
-location; that's a fixed constant (`EF_SUBSIDIARY_CODE` in
+Number *and* WOM Job Number (both from the JDE location lookup table) and a
+Region label (e.g. "Southeast", "Region 1") used to match the location up
+against the monthly labor-report/financial file. E&F general time itself
+always posts to a single standard subsidiary/service code — `20920000` — the
+same at every location; that's a fixed constant (`EF_SUBSIDIARY_CODE` in
 `server/routes/locations.js`), not per-location data, and is surfaced to the
 client as `efSubsidiaryCode` on every location so it's visible without being
 editable. WOM projects are different: each WOM has its *own* subsidiary code
 that varies project to project, entered by an admin when the WOM is created
-or edited. Both fields are managed from the "WOM Status" tab, which now has
-a Locations section above the WOM list (add/edit a location's name, E&F Job
-Number, and Region) and lets the WOM add form and each WOM row's Edit button
-set/change the subsidiary code.
+or edited. All of this is managed from the **"E&F Locations & WOM"** tab
+(named for what it actually covers, not just WOM status), which has a
+Locations section above the WOM list (add/edit a location's name, E&F Job
+Number, WOM Job Number, and Region) and lets the WOM add form and each WOM
+row's Edit button set/change the subsidiary code.
+
+A day's actual accounting code (Job Number + subsidiary code, e.g.
+`100110042963.20920000` for E&F or `100110007530.20520001` for a WOM) is
+computed and shown per allocation row when a technician's week is expanded
+on Weekly Review — an "Accounting Code" column next to Day/Allocation/Hours,
+so you can see exactly what a submitted day will post to without needing to
+cross-reference the WOM Status list separately. It shows `?` in place of
+whichever number (job number or subsidiary code) hasn't been entered yet, so
+a missing code is obvious rather than silently blank.
 
 ## Where this stands
 
@@ -330,6 +348,12 @@ set/change the subsidiary code.
   not a rule you gave us.** It's easy to change
   (`OT_NOT_ON_WOM_FLAG_THRESHOLD` in `server/routes/admin.js`) if 3 hours is
   too sensitive or not sensitive enough in practice.
+- **OT Trends' "Rising/Falling/Steady" is a simple heuristic, not a
+  statistical trend line.** It compares the average of the first half of the
+  8-week window to the second half's average (more than half an hour apart
+  either way calls it rising/falling) — good enough to eyeball a pattern,
+  not a forecast. The window length is also a named constant
+  (`OT_TREND_WEEKS`) if 8 weeks isn't the right lookback.
 - **Overview doesn't (yet) replace the call-in tracking or the Smartsheet
   before/after screenshot process.** It shows the same UKG screenshot and
   receipt/invoice attachments the technician's own week already has,
@@ -414,12 +438,12 @@ server/
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
                               POST :code/complete (tech-facing)
-    admin.js               Weekly review + Overview report, UKG hours, pending-punch flag,
-                              UKG-confirmed checklist, roster, profile (basic info, onboarding,
-                              devices + IT requests, allocation history, expiring-forms list),
-                              approve/reject/unlock
-    locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F Job
-                              Number/Region and the standard EF_SUBSIDIARY_CODE constant
+    admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
+                              pattern), UKG hours, pending-punch flag, UKG-confirmed checklist,
+                              roster, profile (basic info, onboarding, devices + IT requests,
+                              allocation history, expiring-forms list), approve/reject/unlock
+    locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
+                              Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
                                   incl. formType/expiresAt for tech_form uploads
@@ -435,10 +459,10 @@ tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking
-  admin.test.js             Approve / reject / unlock, Overview report OT-flagging, UKG-confirmed
-                              checklist, pending-punch flag
+  admin.test.js             Approve / reject / unlock, Overview report OT-flagging, ot-trends,
+                              UKG-confirmed checklist, pending-punch flag
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
-  woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F Job Number/Region
+  woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region
   roster.test.js              Basic info, onboarding, devices + IT requests (add/complete/edit),
                                  allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,

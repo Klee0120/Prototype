@@ -248,4 +248,36 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
     });
     assert.equal(res.status, 400);
   });
+
+  await t.test("ot-trends surfaces a technician flagged in the trailing window and excludes never-flagged ones", async () => {
+    const setHours = await server.call("PUT", `/api/admin/weeks/T1001/${week}/ukg-hours`, {
+      userId: "ADMIN",
+      body: { hours: { Mon: 8, Tue: 8, Wed: 8, Thu: 8, Fri: 8, Sat: 6 } },
+    });
+    assert.equal(setHours.status, 200);
+
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+      userId: "T1001",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+          .map((day) => ({ day, type: "ef", locationCode: "CINCINNATI", hours: 8 }))
+          .concat([{ day: "Sat", type: "ef", locationCode: "CINCINNATI", hours: 6 }]),
+      },
+    });
+    assert.equal(put.status, 200);
+    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001" });
+    assert.equal(submit.status, 200);
+
+    const trends = await server.call("GET", `/api/admin/ot-trends/${week}`, { userId: "ADMIN" });
+    assert.equal(trends.status, 200);
+    const t1001 = trends.body.find((t) => t.technician.id === "T1001");
+    assert.ok(t1001, "T1001 should show up since flagged this week");
+    assert.ok(t1001.flaggedCount >= 1);
+    assert.equal(t1001.weeks.length, 8);
+    assert.ok(["rising", "falling", "steady"].includes(t1001.trendDirection));
+    assert.ok(!trends.body.some((t) => t.technician.id === "T1002"), "never-flagged technicians shouldn't be listed");
+
+    const forbidden = await server.call("GET", `/api/admin/ot-trends/${week}`, { userId: "T1001" });
+    assert.equal(forbidden.status, 403);
+  });
 });
