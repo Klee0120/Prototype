@@ -283,6 +283,44 @@ Demo logins:
   Mon-Fri also needs a fix), and click "Mark reviewed" to clear it. The
   underlying week status (draft/submitted/approved) never changes as part
   of this — it's a separate flag, not a status transition
+- **Sat/Sun don't have to match UKG hours to submit, even on a still-open
+  week** — the same leniency as the weekend addendum above, just for the
+  ordinary case where a technician gets called in on a weekend during a
+  week that hasn't been submitted yet and UKG hasn't caught up (or picks up
+  hours in odd non-15-minute punch times). Monday–Friday still has to
+  balance exactly; only the weekend days are exempt from the check, both in
+  the "Submit for review" button's enabled state and on the server. Admin's
+  normal approve step is unaffected — a technician submits and admin
+  approves through the exact same flow either way, no separate action
+  needed for a weekend callout in an open week
+- **Hours fields keep the cursor where you left it and no fixed step
+  interval.** Every allocation edit re-renders the whole day grid live (to
+  keep balance pills/totals/remaining-hours current), which used to fight
+  with typing into an hours box mid-keystroke — losing focus, resetting the
+  page's scroll position, and (since these were HTML number inputs)
+  restricting values to quarter-hour steps and blocking the browser's own
+  cursor-selection API. Fixed by switching these to plain text inputs
+  (`inputmode="decimal"` for a numeric keyboard on mobile) with no step
+  restriction at all — a WOM charged only its share of overtime can be
+  something like 5h4m (5.07h), and there's no reason that should be hard to
+  type — plus a small focus-preservation mechanism in `techWeek.js` that
+  remembers which field (and exact cursor position) was focused before a
+  re-render and restores both afterward, so the page never jumps and typing
+  never gets interrupted. Clicking into a field also selects its whole
+  current value, so typing immediately overwrites it instead of inserting
+  wherever the cursor lands
+- **A WOM that's closed after being picked no longer looks like a live
+  selection.** A split row's WOM dropdown only ever listed *open* WOMs at
+  that location — if the WOM you'd already picked was later closed or
+  invoiced by someone else, it silently vanished from the list and the
+  `<select>` fell back to showing whatever open WOM happened to be listed
+  first, while the actual saved allocation still pointed at the closed one.
+  That mismatch was only surfaced at submit time, as a generic "WOM ...
+  is not open" error with no visual cue for which row caused it. Now the
+  stale WOM stays visible in its own row's dropdown (disabled, labeled
+  "closed — choose another"), with a red inline warning right under that
+  row, so the discrepancy is obvious and localized instead of a mystery
+  error after clicking Submit
 - Audit trail of logins, allocation saves, submissions, approvals,
   rejections, unlocks, WOM status changes, home-location/employment-status
   changes, technician creation, UKG hour entries, and file uploads/deletes
@@ -586,7 +624,8 @@ scripts/
 tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
-  allocation.test.js       Hour validation, WOM gating, locking
+  allocation.test.js       Hour validation, WOM gating, locking, Sat/Sun exempt from the
+                              UKG-match check at submit time
   admin.test.js             Approve / reject / unlock (incl. on a merely-submitted week),
                               Overview report OT-flagging, ot-trends, UKG-confirmed checklist,
                               pending-punch flag, weekend hours addendum (log without

@@ -8,6 +8,10 @@ const router = express.Router();
 
 const TIME_OFF_TYPES = ["vacation", "sick", "bereavement", "holiday"];
 
+// Sat/Sun are exempt from the submit-time UKG-match check -- see the
+// mismatches loop in the submit route below.
+const WEEKDAY_NAMES = DAY_NAMES.filter((d) => d !== "Sat" && d !== "Sun");
+
 function canView(req, techId) {
   return req.user.role === "admin" || req.user.id === techId;
 }
@@ -253,8 +257,13 @@ router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
   const ukgByDay = db.getUkgHoursByDay(id, weekMonday);
   const allocatedByDay = sumByDay(week.allocations);
 
+  // Sat/Sun are exempt from the match requirement -- a weekend callout is
+  // often allocated before UKG has caught up (or worked in odd, non-15-min
+  // punch times admin will true up later), so it shouldn't block submitting
+  // the rest of an otherwise-balanced week. Same leniency as the weekend
+  // addendum endpoint; admin reconciles it at approval time either way.
   const mismatches = [];
-  for (const day of DAY_NAMES) {
+  for (const day of WEEKDAY_NAMES) {
     const target = ukgByDay[day] || 0;
     const actual = allocatedByDay[day] || 0;
     if (Math.abs(target - actual) > 0.01) {

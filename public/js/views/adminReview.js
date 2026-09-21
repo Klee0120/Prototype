@@ -954,7 +954,7 @@ export async function renderAdminReview(container) {
       return `
         <label class="ukg-day-field ${pending ? "ukg-day-field-pending" : ""}">
           <span>${day}</span>
-          <input type="number" min="0" step="0.25" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" />
+          <input type="text" inputmode="decimal" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" />
           <button type="button" class="btn btn-link ukg-pending-punch-btn" data-day="${day}" data-flagged="${pending}" title="Flag or clear a pending punch correction for this day">${pending ? "⚠ Pending" : "Flag punch"}</button>
         </label>`;
     }).join("");

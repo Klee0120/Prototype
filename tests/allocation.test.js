@@ -159,6 +159,28 @@ test("allocation: per-day hour validation, splits, and locking", async (t) => {
     assert.ok(entry, "expected an on-behalf-of audit entry naming T1003");
   });
 
+  await t.test("a Sat/Sun mismatch against UKG doesn't block submit -- only Mon-Fri has to match", async () => {
+    const unlock = await server.call("POST", `/api/admin/weeks/T1003/${week}/unlock`, { userId: "ADMIN" });
+    assert.equal(unlock.status, 200);
+
+    const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: ["Mon", "Tue", "Wed", "Thu", "Fri"].map((day) => ({ day, type: "ef", locationCode: "CINCINNATI", hours: 8 })).concat([
+          // T1003's seeded UKG Sat hours are 4 -- deliberately allocate something
+          // else, since a weekend callout is often logged before UKG catches up
+          // (or worked in odd non-15-min punch times), and shouldn't block
+          // submitting the rest of an otherwise-balanced week.
+          { day: "Sat", type: "ef", locationCode: "CINCINNATI", hours: 9 },
+        ]),
+      },
+    });
+    assert.equal(put.status, 200);
+
+    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "ADMIN" });
+    assert.equal(submit.status, 200);
+  });
+
   await t.test("a different technician still cannot touch someone else's allocations", async () => {
     const res = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
       userId: "T1002",

@@ -93,12 +93,58 @@ export async function renderTechWeek(container, techIdOverride) {
     }
   }
 
+  // Sat/Sun don't have to match UKG to submit -- a weekend callout is often
+  // allocated before UKG has caught up, or worked in odd non-15-min punch
+  // times admin will true up at approval. Same leniency as the weekend
+  // addendum flow on an already-locked week; here it just means the normal
+  // submit/approve path already covers it, so there's nothing extra a
+  // technician needs to do differently for a weekend callout in an
+  // still-open week.
   function canSubmitWeek() {
     if (week.locked) return false;
-    return DAY_NAMES.every((day) => Math.abs(dayTotal(day) - (week.ukgHoursByDay[day] || 0)) < 0.01);
+    return DAY_NAMES.filter((day) => day !== "Sat" && day !== "Sun").every(
+      (day) => Math.abs(dayTotal(day) - (week.ukgHoursByDay[day] || 0)) < 0.01
+    );
+  }
+
+  // Every edit re-renders the whole day-grid from scratch (see draw()), which
+  // would otherwise yank focus (and the page's scroll position) out from
+  // under someone mid-keystroke in an hours field. Tag the field being typed
+  // into with a stable key, remember it and the cursor position right before
+  // the rebuild, then re-find and refocus the matching field afterward
+  // (preventScroll so the page doesn't jump) with the same cursor position.
+  function captureFocusState() {
+    const active = document.activeElement;
+    if (!active || !main.contains(active) || !active.dataset.focusKey) return null;
+    return {
+      key: active.dataset.focusKey,
+      // The exact text as typed so far -- restored verbatim below, so a
+      // rebuild mid-keystroke (e.g. right after typing the "." in "5.07")
+      // never gets overwritten back to the last fully-parsed number before
+      // the rest of the digits are in.
+      rawValue: active.value,
+      selectionStart: typeof active.selectionStart === "number" ? active.selectionStart : null,
+      selectionEnd: typeof active.selectionEnd === "number" ? active.selectionEnd : null,
+    };
+  }
+
+  function restoreFocusState(saved) {
+    if (!saved) return;
+    const el = main.querySelector(`[data-focus-key="${saved.key}"]`);
+    if (!el) return;
+    if (saved.rawValue != null) el.value = saved.rawValue;
+    el.focus({ preventScroll: true });
+    if (saved.selectionStart != null) {
+      try {
+        el.setSelectionRange(saved.selectionStart, saved.selectionEnd);
+      } catch {
+        // Harmless to skip -- focus (and the value) are already restored.
+      }
+    }
   }
 
   function draw() {
+    const focusState = captureFocusState();
     const mode = week.editMode || (week.locked ? "locked" : "full");
     const locked = mode === "locked";
     const timeOffOnly = mode === "timeoff-only";
@@ -262,6 +308,8 @@ export async function renderTechWeek(container, techIdOverride) {
         }
       });
     }
+
+    restoreFocusState(focusState);
   }
 
   // How the technician wants to hear "your hours are ready to allocate" --
@@ -410,12 +458,24 @@ export async function renderTechWeek(container, techIdOverride) {
       .join("");
 
     const womOptionsForLocation = openWomsAt(row.locationCode);
-    const womOptions = womOptionsForLocation
+    let womOptions = womOptionsForLocation
       .map((w) => {
         const remainingLabel = w.remainingHours == null ? "" : ` (${w.remainingHours}h left)`;
         return `<option value="${escapeHtml(w.code)}" ${w.code === row.womCode ? "selected" : ""}>${escapeHtml(w.code)} — ${escapeHtml(w.description)}${remainingLabel}</option>`;
       })
       .join("");
+    // If this row's saved WOM isn't in the open list (someone closed/invoiced
+    // it after it was picked), the <select> would otherwise silently default
+    // to whatever option happens to come first -- showing the tech a WOM
+    // that isn't actually what's saved. Keep the real one visible (clearly
+    // marked, not selectable-again) so the dropdown never lies about state;
+    // they still have to explicitly pick a different, open WOM to fix it.
+    const womIsStale = row.type === "wom" && row.womCode && !womOptionsForLocation.some((w) => w.code === row.womCode);
+    if (womIsStale) {
+      const staleWom = womByCode[row.womCode];
+      const staleLabel = staleWom ? `${row.womCode} — ${staleWom.description} (closed — choose another)` : `${row.womCode} (no longer available — choose another)`;
+      womOptions = `<option value="${escapeHtml(row.womCode)}" selected disabled>${escapeHtml(staleLabel)}</option>` + womOptions;
+    }
 
     rowEl.innerHTML = `
       <div class="split-row-fields">
@@ -425,11 +485,12 @@ export async function renderTechWeek(container, techIdOverride) {
         </select>
         <select class="split-location-select">${locationOptions}</select>
         ${row.type === "wom" ? `<select class="split-wom-select">${womOptions || `<option value="">No open WOMs at this location</option>`}</select>` : ""}
-        <input class="split-hours-input" type="number" min="0" step="0.25" value="${row.hours}" />
+        <input class="split-hours-input" type="text" inputmode="decimal" value="${row.hours}" data-focus-key="split-hours:${idx}" />
         <button class="btn btn-icon remove-split" type="button" aria-label="Remove split">&times;</button>
       </div>
+      ${womIsStale ? `<p class="split-row-warning">This WOM is no longer open -- pick a different one before you can submit.</p>` : ""}
       ${
-        row.type === "wom" && row.womCode
+        row.type === "wom" && row.womCode && !womIsStale
           ? row._markComplete
             ? `<span class="mark-complete-pending">Will mark ${escapeHtml(row.womCode)} complete after you submit.</span> <button class="btn btn-link undo-complete-btn" type="button">Undo</button>`
             : `<button class="btn btn-link mark-complete-btn" type="button">Mark this WOM project complete</button>`
@@ -465,11 +526,19 @@ export async function renderTechWeek(container, techIdOverride) {
         draw();
       });
     }
-    rowEl.querySelector(".split-hours-input").addEventListener("input", (e) => {
+    const hoursInput = rowEl.querySelector(".split-hours-input");
+    hoursInput.addEventListener("input", (e) => {
       delete allocations[idx]._isAutoDefault;
-      allocations[idx].hours = e.target.value === "" ? 0 : Number(e.target.value);
+      allocations[idx].hours = parseHoursInput(e.target.value, allocations[idx].hours);
       draw();
     });
+    // Grab the whole value on focus so typing (or a paste) overwrites it
+    // outright, instead of inserting into wherever the cursor happens to land.
+    hoursInput.addEventListener("focus", (e) => e.target.select());
+    // Once they're done with the field, snap its text back to the clean
+    // parsed number (e.g. a stray trailing "." or leading zeros) -- this
+    // field is otherwise never re-rendered from state while it's focused.
+    hoursInput.addEventListener("blur", () => draw());
     rowEl.querySelector(".remove-split").addEventListener("click", () => {
       allocations.splice(idx, 1);
       draw();
@@ -503,7 +572,7 @@ export async function renderTechWeek(container, techIdOverride) {
     wrap.innerHTML = `
       <label class="time-off-label">Time off</label>
       <select class="time-off-select">${options}</select>
-      <input class="time-off-hours-input" type="number" min="0" step="0.25" value="${timeOff ? timeOff.hours : ""}" ${timeOff ? "" : "disabled"} />
+      <input class="time-off-hours-input" type="text" inputmode="decimal" value="${timeOff ? timeOff.hours : ""}" data-focus-key="timeoff-hours:${day}" ${timeOff ? "" : "disabled"} />
     `;
 
     wrap.querySelector(".time-off-select").addEventListener("change", (e) => {
@@ -524,11 +593,16 @@ export async function renderTechWeek(container, techIdOverride) {
       }
       draw();
     });
-    wrap.querySelector(".time-off-hours-input").addEventListener("input", (e) => {
+    const timeOffHoursInput = wrap.querySelector(".time-off-hours-input");
+    timeOffHoursInput.addEventListener("input", (e) => {
       const existingIdx = allocations.findIndex((a) => a.day === day && a.type === "timeoff");
-      if (existingIdx !== -1) allocations[existingIdx].hours = e.target.value === "" ? 0 : Number(e.target.value);
+      if (existingIdx !== -1) {
+        allocations[existingIdx].hours = parseHoursInput(e.target.value, allocations[existingIdx].hours);
+      }
       draw();
     });
+    timeOffHoursInput.addEventListener("focus", (e) => e.target.select());
+    timeOffHoursInput.addEventListener("blur", () => draw());
 
     return wrap;
   }
@@ -631,6 +705,20 @@ export async function renderTechWeek(container, techIdOverride) {
 
 function round2(n) {
   return Math.round(n * 100) / 100;
+}
+
+// Lenient parse for an hours text field: blank counts as 0, a bad or
+// negative value keeps whatever was there before (rather than blowing up
+// the day's total to NaN) -- lets mid-typing states like "5." or "" pass
+// through harmlessly until a full number lands. No rounding to any fixed
+// step (e.g. quarter-hour) -- a real punch can be an odd number of minutes
+// (5h4m of OT charged to a WOM, say), and this shouldn't get in the way of
+// entering that exactly.
+function parseHoursInput(raw, fallback) {
+  if (raw.trim() === "") return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
 }
 
 const WEEKLY_OT_THRESHOLD = 40;

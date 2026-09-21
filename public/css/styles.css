@@ -376,6 +376,16 @@ button, input, select {
   margin: 0 0 8px;
 }
 
+.split-row-warning {
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 6px 0 0;
+}
+
 .ukg-day-field-pending input {
   border-color: var(--warn);
 }
