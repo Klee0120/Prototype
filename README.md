@@ -75,6 +75,15 @@ Demo logins:
 ## Features
 
 - Technician login (mock ID + PIN)
+- **Technician's own tabs**: "My Week" (the allocation screen below),
+  **"Locations & WOM"** (view-only — every location and every WOM project,
+  including closed/invoiced ones, so a technician can see what's out there
+  and what they've worked on historically; no add/edit/close controls at
+  all), and **"My Documents"** (view-only Forms & Certifications and
+  Documents from their own profile — the same records an admin manages from
+  the Technicians tab, just read-only here). Technicians can view their own
+  stuff but can't delete anything anywhere in the app, including their own
+  uploads — deleting is admin-only, full stop.
 - **Admin enters UKG hours per day, per technician** (Weekly Review → a
   technician's Details) — this is the actual source-of-truth input, not mock
   data; it's what the tech's target is checked against
@@ -101,8 +110,14 @@ Demo logins:
 - A technician can mark a WOM project complete from their own allocation
   screen — it closes the WOM (for everyone) only once they successfully
   submit that week, not the moment they click it, so it can't lock them
-  out of submitting their own in-progress draft; an admin can
-  open/close/reopen any WOM directly at any time
+  out of submitting their own in-progress draft. **WOM status is a
+  three-state lifecycle — Open → Invoiced → Closed** — and an admin can set
+  a WOM directly to any of those three at any time from the E&F Locations
+  & WOM tab's status dropdown, completely independent of whether (or when)
+  a technician ever marked it complete. "Invoiced" is there specifically
+  for the moment the invoice actually goes out, distinct from fully
+  closing the job out — a technician can't allocate new hours to a WOM
+  once it's Invoiced or Closed, same as before
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day, with a live
   **Total** readout next to the day fields in both decimal (e.g. `42.5`)
@@ -464,6 +479,22 @@ a missing code is obvious rather than silently blank.
   the search would want to move server-side (SQL `LIKE`/status filtering
   in `server/routes/vendors.js`) rather than shipping the whole table to
   the browser on every visit.
+- **The technician's read-only Locations & WOM tab deliberately hides JDE
+  accounting codes.** It shows location name/region and WOM code/
+  description/location/status/budget — not E&F/WOM Job Numbers or
+  subsidiary codes, which are internal accounting data with no bearing on
+  a technician's own work. If that turns out to be wanted after all, it's
+  a small addition to `techHome.js`'s read-only rendering (the data is
+  already tech-readable via the same `/api/locations`/`/api/woms`
+  endpoints admin uses — this is a display choice, not a permission one).
+- **"Invoiced" as a WOM status was a judgment call, not a spec you gave
+  us.** The three-state Open/Invoiced/Closed lifecycle assumes a
+  technician's own "mark complete" action should still set a WOM straight
+  to Closed (unchanged from before) while Invoiced is purely an
+  admin-driven middle state for tracking billing progress independently.
+  If the intent was instead for tech-complete to land on Invoiced (pending
+  admin's own close-out), that's a one-line change in
+  `server/routes/woms.js`'s `/:code/complete` handler.
 - **Labor Reports is storage only — there's no comparison logic yet.** It
   saves the monthly file finance sends so it's kept next to the
   timesheeting for that period; nothing in the app reads its contents or
@@ -546,6 +577,8 @@ public/
     weekUtil.js            Client-side week date helpers
     views/
       login.js
+      techHome.js            Technician's own tab shell: My Week (techWeek.js) / Locations & WOM
+                                (view-only) / My Documents (view-only Forms & Documents)
       techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
       adminReview.js         Admin review / Overview report / WOM docs / Vendors tracker / Labor
                               Reports archive / audit / Tech Allocation switcher / Technicians tab entry

@@ -698,6 +698,12 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode)
   return findWom(code);
 }
 
+// "invoiced" sits between open and closed -- work is done and billed, but
+// not yet formally closed out. Any status is settable by an admin at any
+// time (see routes/woms.js), independent of a technician's own "mark
+// complete" action, which only ever sets "closed" directly.
+const WOM_STATUSES = ["open", "invoiced", "closed"];
+
 function setWomStatus(code, status) {
   if (!findWom(code)) return null;
   db.prepare("UPDATE woms SET status = ? WHERE code = ?").run(status, code);
@@ -1019,6 +1025,7 @@ module.exports = {
   listWoms,
   findWom,
   createWom,
+  WOM_STATUSES,
   setWomStatus,
   setWomDetails,
   getUkgHoursByDay,

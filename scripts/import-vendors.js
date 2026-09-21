@@ -2,7 +2,13 @@
 // One-time bulk import of vendor records into the live database.
 //
 // Usage:
-//   node scripts/import-vendors.js path/to/vendors.json
+//   node scripts/import-vendors.js [path/to/vendors.json]
+//
+// With no argument, defaults to scripts/data/vendors_import_291.json (the
+// committed export of the Midwest vendor tracker) -- kept as a no-argument
+// default specifically so this can be pasted as one short word with no
+// space in it, since some terminals (the DigitalOcean web console among
+// them) have mangled a pasted space into " && " in practice.
 //
 // The JSON file is an array of objects shaped like the vendor fields the
 // app itself uses (name, jdeVendorNumber, cwStatus, toyotaStatus,
@@ -20,9 +26,12 @@ const fs = require("fs");
 const path = require("path");
 const db = require("../server/data/db");
 
-const inputPath = process.argv[2];
-if (!inputPath) {
-  console.error("Usage: node scripts/import-vendors.js path/to/vendors.json");
+const DEFAULT_INPUT_PATH = path.join(__dirname, "data", "vendors_import_291.json");
+
+const inputPath = process.argv[2] || DEFAULT_INPUT_PATH;
+if (!fs.existsSync(inputPath)) {
+  console.error(`File not found: ${inputPath}`);
+  console.error("Usage: node scripts/import-vendors.js [path/to/vendors.json]");
   process.exit(1);
 }
 

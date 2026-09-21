@@ -32,6 +32,34 @@ test("woms: open/closed status management", async (t) => {
     assert.equal(reopen.body.status, "open");
   });
 
+  await t.test("admin can set a WOM to invoiced independent of whether a technician marked it complete", async () => {
+    const invoiced = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "invoiced" } });
+    assert.equal(invoiced.status, 200);
+    assert.equal(invoiced.body.status, "invoiced");
+
+    const closed = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "closed" } });
+    assert.equal(closed.status, 200);
+    assert.equal(closed.body.status, "closed");
+
+    // Restore for the rest of the suite.
+    await server.call("PATCH", "/api/woms/WOM-4471", { userId: "ADMIN", body: { status: "open" } });
+  });
+
+  await t.test("a technician cannot allocate to an invoiced WOM", async () => {
+    const invoiced = await server.call("PATCH", "/api/woms/WOM-4502", { userId: "ADMIN", body: { status: "invoiced" } });
+    assert.equal(invoiced.status, 200);
+
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const res = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "WOM-4502", hours: 4 }] },
+    });
+    assert.equal(res.status, 400);
+
+    await server.call("PATCH", "/api/woms/WOM-4502", { userId: "ADMIN", body: { status: "open" } });
+  });
+
   await t.test("admin can create a new WOM, which starts open", async () => {
     const create = await server.call("POST", "/api/woms", {
       userId: "ADMIN",

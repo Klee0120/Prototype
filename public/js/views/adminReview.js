@@ -17,6 +17,9 @@ const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bere
 const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
 const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
 const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
+const WOM_STATUSES = ["open", "invoiced", "closed"];
+const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
+
 const VENDOR_STATUS_BADGE_CLASS = {
   active: "approved",
   approved: "approved",
@@ -1130,12 +1133,17 @@ export async function renderAdminReview(container) {
       return el;
     }
 
+    const statusBadgeClass = { open: "approved", invoiced: "submitted", closed: "rejected" }[w.status] || "draft";
+    const statusOptions = WOM_STATUSES.map(
+      (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
+    ).join("");
+
     el.innerHTML = `
       <div class="review-row-summary">
         <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}${subsidiaryLabel}</span></div>
-        <span class="badge badge-${w.status === "open" ? "approved" : "rejected"}">${w.status}</span>
+        <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
+        <select class="wom-status-select">${statusOptions}</select>
         <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
-        <button class="btn btn-link toggle-wom" type="button">${w.status === "open" ? "Close" : "Reopen"}</button>
         <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
       </div>
       <div class="review-row-detail"></div>
@@ -1146,13 +1154,17 @@ export async function renderAdminReview(container) {
       await drawWoms(content);
     });
 
-    el.querySelector(".toggle-wom").addEventListener("click", async () => {
-      const nextStatus = w.status === "open" ? "closed" : "open";
+    // Admin can move a WOM to any status at any time -- e.g. straight to
+    // Invoiced or Closed the moment the invoice goes out, independent of
+    // whether a technician ever marked it complete from their own screen.
+    el.querySelector(".wom-status-select").addEventListener("change", async (e) => {
+      const nextStatus = e.target.value;
       try {
         await api.patch(`/api/woms/${encodeURIComponent(w.code)}`, { status: nextStatus });
         await drawWoms(content);
       } catch (err) {
         window.alert(`Could not update ${w.code}: ${err.message}`);
+        e.target.value = w.status;
       }
     });
 

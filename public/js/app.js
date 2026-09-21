@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { renderLogin } from "./views/login.js";
-import { renderTechWeek } from "./views/techWeek.js";
+import { renderTechHome } from "./views/techHome.js";
 import { renderAdminReview } from "./views/adminReview.js";
 
 export const state = {
@@ -80,7 +80,7 @@ export async function render() {
   if (state.user.role === "admin") {
     await renderAdminReview(content);
   } else {
-    await renderTechWeek(content);
+    await renderTechHome(content);
   }
 }
 

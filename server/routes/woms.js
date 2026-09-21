@@ -36,7 +36,9 @@ router.post("/", requireAuth, requireAdmin, (req, res) => {
 
 router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
   const { status } = req.body || {};
-  if (!["open", "closed"].includes(status)) return res.status(400).json({ error: "status must be open or closed" });
+  if (!db.WOM_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status must be one of: ${db.WOM_STATUSES.join(", ")}` });
+  }
 
   const wom = db.setWomStatus(req.params.code, status);
   if (!wom) return res.status(404).json({ error: "WOM not found" });
