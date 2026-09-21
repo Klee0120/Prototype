@@ -45,6 +45,8 @@ export async function renderAdminReview(container) {
   // another tab, etc.). Detail is always fetched fresh when rendering.
   const expanded = new Set();
   const womsExpanded = new Set();
+  const womEditing = new Set();
+  const locationEditing = new Set();
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   const photoPromptFor = new Map(); // techId -> WOM codes worked, shown right after confirming "entered in UKG"
   let laborReportMonth = currentMonthISO();
@@ -585,23 +587,64 @@ export async function renderAdminReview(container) {
     const [woms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
+    const efSubsidiary = locations[0] ? locations[0].efSubsidiaryCode : "20920000";
 
     content.innerHTML = `
+      <h3>Locations</h3>
+      <p class="review-checklist-hint">
+        Each location has its own E&amp;F Contract Job Number (from the JDE lookup). E&amp;F time always uses the
+        standard subsidiary code <strong>${escapeHtml(efSubsidiary)}</strong> at every location — that part never
+        changes location to location. Region is used to match this location up against the monthly labor report.
+      </p>
+      <div class="review-list" id="location-list"></div>
+      <form id="add-location-form" class="add-wom-form">
+        <input name="code" placeholder="Location code" required />
+        <input name="name" placeholder="Location name" required />
+        <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" />
+        <input name="region" placeholder="Region (e.g. Southeast)" />
+        <button type="submit" class="btn btn-primary">Add location</button>
+        <span class="save-message" id="location-message"></span>
+      </form>
+
+      <h3>WOM Projects</h3>
       <div class="review-list" id="wom-list"></div>
       <form id="add-wom-form" class="add-wom-form">
         <input name="code" placeholder="WOM code" required />
         <input name="description" placeholder="Description" required />
         <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
         <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs (optional)" />
+        <input name="subsidiaryCode" placeholder="Subsidiary code" />
         <button type="submit" class="btn btn-primary">Add WOM</button>
         <span class="save-message" id="wom-message"></span>
       </form>
     `;
 
+    const locationList = content.querySelector("#location-list");
+    for (const l of locations) {
+      locationList.appendChild(renderLocationRow(l, content));
+    }
+
     const list = content.querySelector("#wom-list");
     for (const w of woms) {
-      list.appendChild(await renderWomRow(w, content, locationByCode));
+      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
     }
+
+    content.querySelector("#add-location-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const msg = content.querySelector("#location-message");
+      try {
+        await api.post("/api/locations", {
+          code: form.code.value.trim(),
+          name: form.name.value.trim(),
+          efJobNumber: form.efJobNumber.value.trim() || null,
+          region: form.region.value.trim() || null,
+        });
+        await drawWoms(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
 
     content.querySelector("#add-wom-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -613,6 +656,7 @@ export async function renderAdminReview(container) {
           description: form.description.value.trim(),
           locationCode: form.locationCode.value || null,
           budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
+          subsidiaryCode: form.subsidiaryCode.value.trim() || null,
         });
         await drawWoms(content);
       } catch (err) {
@@ -621,20 +665,121 @@ export async function renderAdminReview(container) {
     });
   }
 
-  async function renderWomRow(w, content, locationByCode) {
+  function renderLocationRow(l, content) {
+    const el = document.createElement("div");
+    el.className = "review-row";
+    if (locationEditing.has(l.code)) {
+      el.innerHTML = `
+        <form class="edit-location-form review-row-summary">
+          <span class="review-row-name">${escapeHtml(l.code)}</span>
+          <input name="name" value="${escapeHtml(l.name)}" required />
+          <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" value="${escapeHtml(l.efJobNumber || "")}" />
+          <input name="region" placeholder="Region" value="${escapeHtml(l.region || "")}" />
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-link cancel-edit">Cancel</button>
+          <span class="save-message"></span>
+        </form>
+      `;
+      el.querySelector(".cancel-edit").addEventListener("click", async () => {
+        locationEditing.delete(l.code);
+        await drawWoms(content);
+      });
+      el.querySelector(".edit-location-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const msg = el.querySelector(".save-message");
+        try {
+          await api.patch(`/api/locations/${encodeURIComponent(l.code)}`, {
+            name: form.name.value.trim(),
+            efJobNumber: form.efJobNumber.value.trim() || null,
+            region: form.region.value.trim() || null,
+          });
+          locationEditing.delete(l.code);
+          await drawWoms(content);
+        } catch (err) {
+          msg.textContent = err.message;
+        }
+      });
+      return el;
+    }
+
+    const jobLabel = l.efJobNumber ? `E&amp;F Job # ${escapeHtml(l.efJobNumber)}` : "No E&amp;F Job # on file";
+    const regionLabel = l.region ? ` &middot; ${escapeHtml(l.region)}` : "";
+    el.innerHTML = `
+      <div class="review-row-summary">
+        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${regionLabel}</span></div>
+        <button class="btn btn-link edit-location-btn" type="button">Edit</button>
+      </div>
+    `;
+    el.querySelector(".edit-location-btn").addEventListener("click", async () => {
+      locationEditing.add(l.code);
+      await drawWoms(content);
+    });
+    return el;
+  }
+
+  async function renderWomRow(w, content, locationByCode, locations) {
     const el = document.createElement("div");
     el.className = "review-row";
     const loc = locationByCode[w.locationCode];
     const budgetLabel = w.budgetHours == null ? "" : ` &middot; ${w.remainingHours}h left of ${w.budgetHours}h`;
+    const subsidiaryLabel = w.subsidiaryCode ? ` &middot; Subsidiary ${escapeHtml(w.subsidiaryCode)}` : " &middot; No subsidiary code on file";
+
+    if (womEditing.has(w.code)) {
+      const locationOptions = locations
+        .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === w.locationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
+        .join("");
+      el.innerHTML = `
+        <form class="edit-wom-form review-row-summary">
+          <span class="review-row-name">${escapeHtml(w.code)}</span>
+          <input name="description" value="${escapeHtml(w.description)}" required />
+          <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
+          <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
+          <input name="subsidiaryCode" placeholder="Subsidiary code" value="${escapeHtml(w.subsidiaryCode || "")}" />
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-link cancel-edit">Cancel</button>
+          <span class="save-message"></span>
+        </form>
+      `;
+      el.querySelector(".cancel-edit").addEventListener("click", async () => {
+        womEditing.delete(w.code);
+        await drawWoms(content);
+      });
+      el.querySelector(".edit-wom-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const msg = el.querySelector(".save-message");
+        try {
+          await api.patch(`/api/woms/${encodeURIComponent(w.code)}/details`, {
+            description: form.description.value.trim(),
+            locationCode: form.locationCode.value || null,
+            budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
+            subsidiaryCode: form.subsidiaryCode.value.trim() || null,
+          });
+          womEditing.delete(w.code);
+          await drawWoms(content);
+        } catch (err) {
+          msg.textContent = err.message;
+        }
+      });
+      return el;
+    }
+
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}</span></div>
+        <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}${subsidiaryLabel}</span></div>
         <span class="badge badge-${w.status === "open" ? "approved" : "rejected"}">${w.status}</span>
+        <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
         <button class="btn btn-link toggle-wom" type="button">${w.status === "open" ? "Close" : "Reopen"}</button>
         <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
       </div>
       <div class="review-row-detail"></div>
     `;
+
+    el.querySelector(".edit-wom-btn").addEventListener("click", async () => {
+      womEditing.add(w.code);
+      await drawWoms(content);
+    });
 
     el.querySelector(".toggle-wom").addEventListener("click", async () => {
       const nextStatus = w.status === "open" ? "closed" : "open";

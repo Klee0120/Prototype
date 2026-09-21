@@ -37,7 +37,9 @@ if (tableExists("woms") && !hasColumn("woms", "location_code")) {
 db.exec(`
   CREATE TABLE IF NOT EXISTS locations (
     code TEXT PRIMARY KEY,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    ef_job_number TEXT,
+    region TEXT
   );
 
   CREATE TABLE IF NOT EXISTS technicians (
@@ -58,7 +60,8 @@ db.exec(`
     description TEXT NOT NULL,
     status TEXT NOT NULL,
     location_code TEXT,
-    budget_hours REAL
+    budget_hours REAL,
+    subsidiary_code TEXT
   );
 
   CREATE TABLE IF NOT EXISTS ukg_hours (
@@ -186,6 +189,22 @@ if (!hasColumn("ukg_hours", "pending_punch")) {
 // single free-text field was actually labeled.
 if (!hasColumn("tech_devices", "device_type")) {
   db.exec("ALTER TABLE tech_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'phone'");
+}
+
+// Real JDE accounting codes: each location's own job number for general
+// (E&F) time, and each WOM's own subsidiary/service code -- these vary per
+// WOM project, unlike the E&F subsidiary code, which is a single standard
+// value across every location (see EF_SUBSIDIARY_CODE in routes/locations.js).
+// Region (e.g. "Southeast", "Region 1") groups locations for matching against
+// the monthly labor-report/financial file, which is organized by region.
+if (!hasColumn("locations", "ef_job_number")) {
+  db.exec("ALTER TABLE locations ADD COLUMN ef_job_number TEXT");
+}
+if (!hasColumn("locations", "region")) {
+  db.exec("ALTER TABLE locations ADD COLUMN region TEXT");
+}
+if (!hasColumn("woms", "subsidiary_code")) {
+  db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
 }
 
 seedIfEmpty();
@@ -430,8 +449,24 @@ function findLocation(code) {
   return db.prepare("SELECT * FROM locations WHERE code = ?").get(code);
 }
 
-function createLocation(code, name) {
-  db.prepare("INSERT INTO locations (code, name) VALUES (?, ?)").run(code, name);
+function createLocation(code, name, efJobNumber, region) {
+  db.prepare("INSERT INTO locations (code, name, ef_job_number, region) VALUES (?, ?, ?, ?)").run(
+    code,
+    name,
+    efJobNumber || null,
+    region || null
+  );
+  return findLocation(code);
+}
+
+function setLocationDetails(code, { name, efJobNumber, region } = {}) {
+  if (!findLocation(code)) return null;
+  db.prepare("UPDATE locations SET name = ?, ef_job_number = ?, region = ? WHERE code = ?").run(
+    name,
+    efJobNumber || null,
+    region || null,
+    code
+  );
   return findLocation(code);
 }
 
@@ -452,12 +487,15 @@ function findWom(code) {
   return womWithRemaining(db.prepare("SELECT * FROM woms WHERE code = ?").get(code));
 }
 
-function createWom(code, description, locationCode, budgetHours) {
-  db.prepare("INSERT INTO woms (code, description, status, location_code, budget_hours) VALUES (?, ?, 'open', ?, ?)").run(
+function createWom(code, description, locationCode, budgetHours, subsidiaryCode) {
+  db.prepare(
+    "INSERT INTO woms (code, description, status, location_code, budget_hours, subsidiary_code) VALUES (?, ?, 'open', ?, ?, ?)"
+  ).run(
     code,
     description,
     locationCode || null,
-    budgetHours == null ? null : Number(budgetHours)
+    budgetHours == null ? null : Number(budgetHours),
+    subsidiaryCode || null
   );
   return findWom(code);
 }
@@ -465,6 +503,20 @@ function createWom(code, description, locationCode, budgetHours) {
 function setWomStatus(code, status) {
   if (!findWom(code)) return null;
   db.prepare("UPDATE woms SET status = ? WHERE code = ?").run(status, code);
+  return findWom(code);
+}
+
+function setWomDetails(code, { description, locationCode, budgetHours, subsidiaryCode } = {}) {
+  if (!findWom(code)) return null;
+  db.prepare(
+    "UPDATE woms SET description = ?, location_code = ?, budget_hours = ?, subsidiary_code = ? WHERE code = ?"
+  ).run(
+    description,
+    locationCode || null,
+    budgetHours == null ? null : Number(budgetHours),
+    subsidiaryCode || null,
+    code
+  );
   return findWom(code);
 }
 
@@ -731,10 +783,12 @@ module.exports = {
   listLocations,
   findLocation,
   createLocation,
+  setLocationDetails,
   listWoms,
   findWom,
   createWom,
   setWomStatus,
+  setWomDetails,
   getUkgHoursByDay,
   setUkgHours,
   getPendingPunchByDay,

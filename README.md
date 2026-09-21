@@ -227,6 +227,21 @@ per-day balance check possible. `server/data/db.js` auto-detects and rebuilds
 these tables from the older flat schema if it finds one (safe at this stage
 since only mock data has ever been in them).
 
+**JDE accounting codes.** Each location carries its own real E&F Contract Job
+Number (from the JDE location lookup table) and a Region label (e.g.
+"Southeast", "Region 1") used to match the location up against the monthly
+labor-report/financial file. E&F general time itself always posts to a
+single standard subsidiary/service code — `20920000` — the same at every
+location; that's a fixed constant (`EF_SUBSIDIARY_CODE` in
+`server/routes/locations.js`), not per-location data, and is surfaced to the
+client as `efSubsidiaryCode` on every location so it's visible without being
+editable. WOM projects are different: each WOM has its *own* subsidiary code
+that varies project to project, entered by an admin when the WOM is created
+or edited. Both fields are managed from the "WOM Status" tab, which now has
+a Locations section above the WOM list (add/edit a location's name, E&F Job
+Number, and Region) and lets the WOM add form and each WOM row's Edit button
+set/change the subsidiary code.
+
 ## Where this stands
 
 - **Storage is real, deployment isn't.** The database and file storage are
@@ -351,6 +366,15 @@ since only mock data has ever been in them).
   produces that a real reconciliation (export our numbers in the same
   shape, or actually diff against a pasted-in report) is very buildable
   once there's a settled target format to build against.
+- **Only Region and the E&F Job Number are tracked from the real JDE lookup
+  table, not the whole sheet.** The real table (per the Midwest region
+  screenshot) also has a PPS Contract Job Number, separate WMBE GMP/NON GMP
+  job numbers, a Toyota Reference Code, and address/city/state/zip per
+  location — none of that is captured yet since nothing in the app needs it
+  today. Region was added now specifically because it's what the monthly
+  labor report will need to be matched up against; the rest is a bigger
+  "site directory" feature to build only if/when it's actually needed for
+  reconciliation or reporting.
 
 ## Folder structure
 
@@ -367,11 +391,13 @@ server/
   routes/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation)
-    woms.js               GET/POST/PATCH WOM list + status, POST :code/complete (tech-facing)
+    woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
+                              POST :code/complete (tech-facing)
     admin.js               Weekly review + Overview report, UKG hours, pending-punch flag,
                               UKG-confirmed checklist, roster, profile (basic info, onboarding,
                               devices, allocation history), approve/reject/unlock
-    locations.js             GET (any user) / POST (admin) locations
+    locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F Job
+                              Number/Region and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report)
   utils/
@@ -389,7 +415,7 @@ tests/
   admin.test.js             Approve / reject / unlock, Overview report OT-flagging, UKG-confirmed
                               checklist, pending-punch flag
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
-  woms.test.js               WOM CRUD + authorization
+  woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F Job Number/Region
   roster.test.js              Basic info, onboarding, devices, allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only
   audit.test.js                   Audit log writes and admin-only read access

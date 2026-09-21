@@ -11,6 +11,7 @@ function presentWom(w) {
     status: w.status,
     locationCode: w.location_code,
     budgetHours: w.budget_hours,
+    subsidiaryCode: w.subsidiary_code,
     usedHours: w.usedHours,
     remainingHours: w.remainingHours,
   };
@@ -21,14 +22,14 @@ router.get("/", requireAuth, (req, res) => {
 });
 
 router.post("/", requireAuth, requireAdmin, (req, res) => {
-  const { code, description, locationCode, budgetHours } = req.body || {};
+  const { code, description, locationCode, budgetHours, subsidiaryCode } = req.body || {};
   if (!code || !description) return res.status(400).json({ error: "code and description are required" });
   if (db.findWom(code)) return res.status(409).json({ error: "WOM code already exists" });
   if (locationCode && !db.findLocation(locationCode)) {
     return res.status(400).json({ error: `Unknown location: ${locationCode}` });
   }
 
-  db.createWom(code, description, locationCode || null, budgetHours === "" ? null : budgetHours);
+  db.createWom(code, description, locationCode || null, budgetHours === "" ? null : budgetHours, subsidiaryCode || null);
   db.addAudit(req.user.id, "WOM_CREATED", `${req.user.name} created WOM ${code}: ${description}`);
   res.status(201).json({ ok: true });
 });
@@ -41,6 +42,25 @@ router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
   if (!wom) return res.status(404).json({ error: "WOM not found" });
 
   db.addAudit(req.user.id, "WOM_STATUS_CHANGED", `${req.user.name} set ${wom.code} to ${status}`);
+  res.json(presentWom(wom));
+});
+
+router.patch("/:code/details", requireAuth, requireAdmin, (req, res) => {
+  const { description, locationCode, budgetHours, subsidiaryCode } = req.body || {};
+  const existing = db.findWom(req.params.code);
+  if (!existing) return res.status(404).json({ error: "WOM not found" });
+  if (!description) return res.status(400).json({ error: "description is required" });
+  if (locationCode && !db.findLocation(locationCode)) {
+    return res.status(400).json({ error: `Unknown location: ${locationCode}` });
+  }
+
+  const wom = db.setWomDetails(req.params.code, {
+    description,
+    locationCode: locationCode || null,
+    budgetHours: budgetHours === "" ? null : budgetHours,
+    subsidiaryCode: subsidiaryCode || null,
+  });
+  db.addAudit(req.user.id, "WOM_UPDATED", `${req.user.name} updated WOM ${wom.code}`);
   res.json(presentWom(wom));
 });
 
