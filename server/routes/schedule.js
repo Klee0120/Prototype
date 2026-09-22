@@ -56,6 +56,7 @@ router.get("/:month", requireAuth, (req, res) => {
           budgetHours: w ? w.budget_hours : null,
           remainingHours: w ? w.remainingHours : null,
           subsidiaryCode: w ? w.subsidiary_code : null,
+          maximoNumber: w ? w.maximo_number : null,
           estimatedPrice: w ? w.estimated_price : null,
           appliedPrice: w ? w.applied_price : null,
         });

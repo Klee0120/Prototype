@@ -247,9 +247,11 @@ Demo logins:
   — no E&F time and no time off, since the point is seeing what's already
   scheduled project-wise, not a general timesheet view (Tech Allocation and
   Weekly Review already cover that). Each day's cell lists every
-  technician's WOM assignment landing on that actual calendar date (WOM
-  code, hours, technician name, and site), built entirely from allocations
-  already in this app (`GET /api/schedule/:month`, `server/routes/schedule.js`,
+  technician's WOM assignment landing on that actual calendar date, headlined
+  by the **project name and technician's own name** (the WOM code and Maximo
+  # are secondary, shown on the smaller line below along with hours and
+  site), built entirely from allocations already in this app
+  (`GET /api/schedule/:month`, `server/routes/schedule.js`,
   month as `YYYY-MM`) with **Prev/Next month** navigation, and open to any
   logged-in user (not admin-only), since the point is letting anyone check
   what's already on the books before scheduling more onto a project or a
@@ -789,14 +791,29 @@ a missing code is obvious rather than silently blank.
     `appliedPrice` refreshed. A sync **never overwrites a status an admin
     set by hand** here (e.g. `closed`) back to `open`, `requested`, or
     `pending`.
-  A sync never writes anything back to Smartsheet — it only ever reads. The
-  two dollar columns are located by keyword (`findColumn` in `smartsheet.js`
-  looks for a column whose title contains "estimate"/"wom"/"$" or
-  "applied"/"wom"/"$"), the description by "project"/"name", and the
-  requested-status column by "date"/"requested" (matches the real tracker's
-  own `Date Requested (Auto)` column, filled in automatically there when RFM
-  checks its `Order WOM/PO` box), all tolerant of the sheet's exact
-  punctuation rather than a hardcoded literal string. If no column matches
+  A sync never writes anything back to Smartsheet — it only ever reads. Every
+  column is located by keyword (`findColumn` in `smartsheet.js`, tolerant of
+  the sheet's exact punctuation rather than a hardcoded literal string) — the
+  two dollar columns by "estimate"/"wom"/"$" or "applied"/"wom"/"$", the
+  description by "project"/"name", the requested-status column by
+  "date"/"requested" (matches the real tracker's own `Date Requested (Auto)`
+  column, filled in automatically there when RFM checks its `Order WOM/PO`
+  box), the Maximo work order # by "maximo", and the JDE subsidiary/service
+  code by "subsidiary"/"code" (a real column on the tracker in its own
+  right — pulled in as-is, not derived from anything). **Location is the one
+  exception**: the sheet only has a plain site name ("Site Location"), no
+  notion of this app's own location codes, so it's matched by name against
+  `db.listLocations()` — an exact case-insensitive match first, then
+  tolerant of a shortened form either direction (the sheet often drops a
+  suffix, e.g. "NAPCK" for "NAPCK Georgetown"). No match means the site
+  likely doesn't exist here yet, so it's left null rather than guessed at —
+  and once a location is matched once, a later sync never overwrites it (in
+  case that guess needs a manual correction). This location match matters
+  for billing, not just display: a WOM's own accounting code is its
+  location's **WOM Job Number** + that WOM's own subsidiary code — a
+  completely different code from the same location's E&F Job Number, since
+  WOM work is Toyota-billed and E&F is this contract's own yearly budget
+  (see `accountingCode` in `adminReview.js`). If no column matches
   "date"/"requested", every not-yet-open row just stays `pending` — sync
   still works, it just can't tell `pending` and `requested` apart. A WOM
   without a Smartsheet match yet can still have pricing
@@ -900,9 +917,10 @@ server/
                               smartsheet/sync-woms (creates open WOMs from rows with a real
                               WOM #, pending/requested WOMs from rows without one yet based on
                               whether Date Requested is filled in, promotes a pending or requested
-                              WOM once its row gets a real WOM #, and refreshes estimated/applied
-                              pricing on every synced WOM), technicians/bulk (paste-many
-                              technician creation, one generated PIN per row, per-row errors)
+                              WOM once its row gets a real WOM #, refreshes estimated/applied
+                              pricing/Maximo #/subsidiary code on every synced WOM, and matches +
+                              fills in location by name, once, on any WOM missing one), technicians/bulk
+                              (paste-many technician creation, one generated PIN per row, per-row errors)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -975,7 +993,10 @@ tests/
                                         (still invisible to techs) automatically, a pending or
                                         requested row later getting a real WOM# promotes it without
                                         duplicating, re-syncing never reverts an admin's own status
-                                        change, admin-only, hand-entered pricing survives until a
+                                        change, Site Location/Subsidiary Code/Maximo # all sync in
+                                        (location matched by name, tolerant of a shortened form, left
+                                        null rather than guessed at if nothing matches), admin-only,
+                                        hand-entered pricing survives until a
                                         real sync
 public/
   index.html

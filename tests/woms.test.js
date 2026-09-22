@@ -134,27 +134,29 @@ test("woms: open/closed status management", async (t) => {
     assert.equal(res.status, 400);
   });
 
-  await t.test("admin can set a subsidiary code when creating a WOM", async () => {
+  await t.test("admin can set a subsidiary code and Maximo # when creating a WOM", async () => {
     const create = await server.call("POST", "/api/woms", {
       userId: "ADMIN",
-      body: { code: "WOM-8001", description: "Roof repair", subsidiaryCode: "16101025721" },
+      body: { code: "WOM-8001", description: "Roof repair", subsidiaryCode: "16101025721", maximoNumber: "19781019" },
     });
     assert.equal(create.status, 201);
 
     const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
     const created = list.body.find((w) => w.code === "WOM-8001");
     assert.equal(created.subsidiaryCode, "16101025721");
+    assert.equal(created.maximoNumber, "19781019");
   });
 
-  await t.test("admin can edit a WOM's description/location/budget/subsidiary code", async () => {
+  await t.test("admin can edit a WOM's description/location/budget/subsidiary code/Maximo #", async () => {
     const res = await server.call("PATCH", "/api/woms/WOM-8001/details", {
       userId: "ADMIN",
-      body: { description: "Roof repair - updated", budgetHours: 40, subsidiaryCode: "16101025788" },
+      body: { description: "Roof repair - updated", budgetHours: 40, subsidiaryCode: "16101025788", maximoNumber: "19781020" },
     });
     assert.equal(res.status, 200);
     assert.equal(res.body.description, "Roof repair - updated");
     assert.equal(res.body.budgetHours, 40);
     assert.equal(res.body.subsidiaryCode, "16101025788");
+    assert.equal(res.body.maximoNumber, "19781020");
   });
 
   await t.test("a technician cannot edit WOM details", async () => {

@@ -12,6 +12,7 @@ function presentWom(w) {
     locationCode: w.location_code,
     budgetHours: w.budget_hours,
     subsidiaryCode: w.subsidiary_code,
+    maximoNumber: w.maximo_number,
     usedHours: w.usedHours,
     remainingHours: w.remainingHours,
     smartsheetReflectedAt: w.smartsheet_reflected_at,
@@ -26,14 +27,14 @@ router.get("/", requireAuth, (req, res) => {
 });
 
 router.post("/", requireAuth, requireAdmin, (req, res) => {
-  const { code, description, locationCode, budgetHours, subsidiaryCode } = req.body || {};
+  const { code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber } = req.body || {};
   if (!code || !description) return res.status(400).json({ error: "code and description are required" });
   if (db.findWom(code)) return res.status(409).json({ error: "WOM code already exists" });
   if (locationCode && !db.findLocation(locationCode)) {
     return res.status(400).json({ error: `Unknown location: ${locationCode}` });
   }
 
-  db.createWom(code, description, locationCode || null, budgetHours === "" ? null : budgetHours, subsidiaryCode || null);
+  db.createWom(code, description, locationCode || null, budgetHours === "" ? null : budgetHours, subsidiaryCode || null, maximoNumber || null);
   db.addAudit(req.user.id, "WOM_CREATED", `${req.user.name} created WOM ${code}: ${description}`);
   res.status(201).json({ ok: true });
 });
@@ -72,7 +73,7 @@ router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
 });
 
 router.patch("/:code/details", requireAuth, requireAdmin, (req, res) => {
-  const { description, locationCode, budgetHours, subsidiaryCode } = req.body || {};
+  const { description, locationCode, budgetHours, subsidiaryCode, maximoNumber } = req.body || {};
   const existing = db.findWom(req.params.code);
   if (!existing) return res.status(404).json({ error: "WOM not found" });
   if (!description) return res.status(400).json({ error: "description is required" });
@@ -85,6 +86,7 @@ router.patch("/:code/details", requireAuth, requireAdmin, (req, res) => {
     locationCode: locationCode || null,
     budgetHours: budgetHours === "" ? null : budgetHours,
     subsidiaryCode: subsidiaryCode || null,
+    maximoNumber: maximoNumber || null,
   });
   db.addAudit(req.user.id, "WOM_UPDATED", `${req.user.name} updated WOM ${wom.code}`);
   res.json(presentWom(wom));

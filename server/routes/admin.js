@@ -517,17 +517,33 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
     if (!womColumn) {
       return res.status(502).json({ error: 'Could not find a "WOM #" column in the connected sheet' });
     }
-    const estimateColumn = smartsheet.findColumn(sheet.columns, ["estimate", "wom", "$"]);
-    const appliedColumn = smartsheet.findColumn(sheet.columns, ["applied", "wom", "$"]);
-    const descriptionColumn = smartsheet.findColumn(sheet.columns, ["project", "name"]);
-    const dateRequestedColumn = smartsheet.findColumn(sheet.columns, ["date", "requested"]);
-    const result = db.syncWomsFromSheetRows(sheet.rows, womColumn, estimateColumn, appliedColumn, descriptionColumn, dateRequestedColumn);
+    const columns = {
+      wom: womColumn,
+      estimate: smartsheet.findColumn(sheet.columns, ["estimate", "wom", "$"]),
+      applied: smartsheet.findColumn(sheet.columns, ["applied", "wom", "$"]),
+      description: smartsheet.findColumn(sheet.columns, ["project", "name"]),
+      dateRequested: smartsheet.findColumn(sheet.columns, ["date", "requested"]),
+      maximo: smartsheet.findColumn(sheet.columns, ["maximo"]),
+      location: smartsheet.findColumn(sheet.columns, ["site", "location"]),
+      subsidiary: smartsheet.findColumn(sheet.columns, ["subsidiary", "code"]),
+    };
+    const result = db.syncWomsFromSheetRows(sheet.rows, columns);
     db.addAudit(
       req.user.id,
       "SMARTSHEET_WOMS_SYNCED",
       `${req.user.name} synced WOMs from Smartsheet (${result.created} created, ${result.promoted} promoted from pending, ${result.updated} updated)`
     );
-    res.json({ ...result, womColumn, estimateColumn, appliedColumn, descriptionColumn, dateRequestedColumn });
+    res.json({
+      ...result,
+      womColumn: columns.wom,
+      estimateColumn: columns.estimate,
+      appliedColumn: columns.applied,
+      descriptionColumn: columns.description,
+      dateRequestedColumn: columns.dateRequested,
+      maximoColumn: columns.maximo,
+      locationColumn: columns.location,
+      subsidiaryColumn: columns.subsidiary,
+    });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }

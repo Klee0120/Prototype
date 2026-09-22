@@ -1592,15 +1592,12 @@ button, input, select {
 
 .schedule-entry {
   font-size: 11px;
-  margin-bottom: 3px;
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  flex-wrap: wrap;
+  margin-bottom: 4px;
+  display: block;
   width: 100%;
   border: none;
   background: none;
-  padding: 2px 0;
+  padding: 3px 4px;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -1612,13 +1609,28 @@ button, input, select {
   background: var(--bg);
 }
 
+.schedule-entry-main {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-entry-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .schedule-entry .badge {
   font-size: 10px;
   padding: 1px 6px;
 }
 
 .schedule-entry-site {
-  font-size: 10px;
   color: var(--muted);
 }
 

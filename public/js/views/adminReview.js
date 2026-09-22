@@ -1872,7 +1872,11 @@ export async function renderAdminReview(container) {
             <strong>${result.updated}</strong> existing WOM${result.updated === 1 ? "" : "s"} refreshed — out of ${result.total} sheet rows.
             Matched by "${escapeHtml(result.womColumn)}", pricing from ${escapeHtml(result.estimateColumn || "no estimate column found")} /
             ${escapeHtml(result.appliedColumn || "no applied column found")}, "requested" status from
-            ${escapeHtml(result.dateRequestedColumn || "no Date Requested column found")}.
+            ${escapeHtml(result.dateRequestedColumn || "no Date Requested column found")}, location from
+            ${escapeHtml(result.locationColumn || "no Site Location column found")} (matched by name against your own
+            locations -- add a location here if one doesn't match), subsidiary code from
+            ${escapeHtml(result.subsidiaryColumn || "no Subsidiary Code column found")}, Maximo # from
+            ${escapeHtml(result.maximoColumn || "no Maximo column found")}.
           </p>
         `;
         // The WOM Projects list below needs to show the freshly-synced
@@ -1963,6 +1967,7 @@ export async function renderAdminReview(container) {
         <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
         <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs (optional)" />
         <input name="subsidiaryCode" placeholder="Subsidiary code" />
+        <input name="maximoNumber" placeholder="Maximo #" />
         <button type="submit" class="btn btn-primary">Add WOM</button>
         <span class="save-message" id="wom-message"></span>
       </form>
@@ -2029,6 +2034,7 @@ export async function renderAdminReview(container) {
           locationCode: form.locationCode.value || null,
           budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
           subsidiaryCode: form.subsidiaryCode.value.trim() || null,
+          maximoNumber: form.maximoNumber.value.trim() || null,
         });
         await drawWoms(content);
       } catch (err) {
@@ -2100,6 +2106,7 @@ export async function renderAdminReview(container) {
     const metaParts = [];
     if (w.budgetHours != null) metaParts.push(`${w.remainingHours}h left of ${w.budgetHours}h`);
     metaParts.push(w.subsidiaryCode ? `Subsidiary ${escapeHtml(w.subsidiaryCode)}` : "No subsidiary code on file");
+    metaParts.push(w.maximoNumber ? `Maximo #${escapeHtml(w.maximoNumber)}` : "No Maximo # on file");
     if (w.estimatedPrice != null || w.appliedPrice != null) {
       metaParts.push(
         `Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}${w.smartsheetSyncedAt ? " (Smartsheet)" : ""}`
@@ -2118,6 +2125,7 @@ export async function renderAdminReview(container) {
           <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
           <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
           <input name="subsidiaryCode" placeholder="Subsidiary code" value="${escapeHtml(w.subsidiaryCode || "")}" />
+          <input name="maximoNumber" placeholder="Maximo #" value="${escapeHtml(w.maximoNumber || "")}" />
           <button type="submit" class="btn btn-primary">Save</button>
           <button type="button" class="btn btn-link cancel-edit">Cancel</button>
           <span class="save-message"></span>
@@ -2137,6 +2145,7 @@ export async function renderAdminReview(container) {
             locationCode: form.locationCode.value || null,
             budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
             subsidiaryCode: form.subsidiaryCode.value.trim() || null,
+            maximoNumber: form.maximoNumber.value.trim() || null,
           });
           womEditing.delete(w.code);
           await drawWoms(content);

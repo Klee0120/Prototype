@@ -346,6 +346,14 @@ if (!hasColumn("woms", "smartsheet_synced_at")) {
 if (!hasColumn("woms", "smartsheet_row_id")) {
   db.exec("ALTER TABLE woms ADD COLUMN smartsheet_row_id TEXT");
 }
+// The Maximo work order # a WOM traces back to -- a separate identifier
+// from the WOM # itself, the C&W PO #, and the Toyota PO # on the real PSE
+// tracker (see syncWomsFromSheetRows). Hand-editable here same as
+// subsidiary code; a later sync overwrites it once a "Maximo #" column is
+// found there.
+if (!hasColumn("woms", "maximo_number")) {
+  db.exec("ALTER TABLE woms ADD COLUMN maximo_number TEXT");
+}
 // Forms on File (tech_form uploads) can carry a type (e.g. "Certification",
 // "License") and an expiration date, so expired ones can be flagged for
 // admin/RFM attention on the Overview tab -- see listExpiringForms below.
@@ -985,15 +993,16 @@ function findWom(code) {
   return womWithRemaining(db.prepare("SELECT * FROM woms WHERE code = ?").get(code));
 }
 
-function createWom(code, description, locationCode, budgetHours, subsidiaryCode) {
+function createWom(code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber) {
   db.prepare(
-    "INSERT INTO woms (code, description, status, location_code, budget_hours, subsidiary_code) VALUES (?, ?, 'open', ?, ?, ?)"
+    "INSERT INTO woms (code, description, status, location_code, budget_hours, subsidiary_code, maximo_number) VALUES (?, ?, 'open', ?, ?, ?, ?)"
   ).run(
     code,
     description,
     locationCode || null,
     budgetHours == null ? null : Number(budgetHours),
-    subsidiaryCode || null
+    subsidiaryCode || null,
+    maximoNumber || null
   );
   return findWom(code);
 }
@@ -1069,15 +1078,16 @@ function markWomSmartsheetReflected(code) {
   return findWom(code);
 }
 
-function setWomDetails(code, { description, locationCode, budgetHours, subsidiaryCode } = {}) {
+function setWomDetails(code, { description, locationCode, budgetHours, subsidiaryCode, maximoNumber } = {}) {
   if (!findWom(code)) return null;
   db.prepare(
-    "UPDATE woms SET description = ?, location_code = ?, budget_hours = ?, subsidiary_code = ? WHERE code = ?"
+    "UPDATE woms SET description = ?, location_code = ?, budget_hours = ?, subsidiary_code = ?, maximo_number = ? WHERE code = ?"
   ).run(
     description,
     locationCode || null,
     budgetHours == null ? null : Number(budgetHours),
     subsidiaryCode || null,
+    maximoNumber || null,
     code
   );
   return findWom(code);
@@ -1133,7 +1143,34 @@ function findWomBySmartsheetRowId(rowId) {
 //     code, just a status update.
 //   Once a WOM reaches 'open', this never touches its status again -- an
 //   admin's later invoiced/closed doesn't get overwritten by a sync.
-function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, descriptionColumn, dateRequestedColumn) {
+// Matches a Smartsheet "Site Location" cell (a plain name like "NAPCK" or
+// "TLS Georgetown") against this app's own locations by name, since the
+// sheet has no notion of our internal location codes. Exact match first,
+// then tolerant of a shortened form either direction (the sheet often
+// drops a suffix, e.g. "NAPCK" for "NAPCK Georgetown"). Returns null (not a
+// guess) if nothing lines up -- that location likely just doesn't exist
+// here yet.
+function matchLocationCodeByName(rawName) {
+  const clean = rawName != null ? String(rawName).trim() : "";
+  if (!clean || clean === "-") return null;
+  const lower = clean.toLowerCase();
+  const locations = listLocations();
+  const exact = locations.find((l) => l.name.toLowerCase() === lower);
+  if (exact) return exact.code;
+  const partial = locations.find((l) => l.name.toLowerCase().includes(lower) || lower.includes(l.name.toLowerCase()));
+  return partial ? partial.code : null;
+}
+
+// `columns` names each Smartsheet column to pull from, as found by
+// findColumn in server/utils/smartsheet.js: { wom, estimate, applied,
+// description, dateRequested, maximo, location, subsidiary }. Any of them
+// can be null if that column wasn't found -- that field is just skipped,
+// same as before this became an options object (this used to be a long
+// positional-argument list; a plain object stopped that from growing
+// unreadable every time another sheet column needed pulling in).
+function syncWomsFromSheetRows(rows, columns) {
+  const { wom: womColumn, estimate: estimateColumn, applied: appliedColumn, description: descriptionColumn } = columns;
+  const { dateRequested: dateRequestedColumn, maximo: maximoColumn, location: locationColumn, subsidiary: subsidiaryColumn } = columns;
   let created = 0;
   let promoted = 0;
   let updated = 0;
@@ -1150,6 +1187,9 @@ function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, d
     const description = (descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim()) || `Smartsheet request (row ${rowId})`;
     const estimatedPrice = estimateColumn ? parseDollarAmount(row[estimateColumn]) : null;
     const appliedPrice = appliedColumn ? parseDollarAmount(row[appliedColumn]) : null;
+    const maximoNumber = (maximoColumn && row[maximoColumn] && String(row[maximoColumn]).trim()) || null;
+    const subsidiaryCode = (subsidiaryColumn && row[subsidiaryColumn] && String(row[subsidiaryColumn]).trim()) || null;
+    const matchedLocationCode = locationColumn ? matchLocationCodeByName(row[locationColumn]) : null;
 
     const existing = findWomBySmartsheetRowId(rowId);
 
@@ -1161,41 +1201,43 @@ function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, d
       const collision = findWom(code);
       if (collision) {
         db.prepare(
-          "UPDATE woms SET estimated_price = ?, applied_price = ?, smartsheet_synced_at = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?"
-        ).run(estimatedPrice, appliedPrice, stamp, rowId, code);
+          `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
+           location_code = COALESCE(location_code, ?), smartsheet_synced_at = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
+        ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, stamp, rowId, code);
         updated++;
         continue;
       }
       const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
-        "INSERT INTO woms (code, description, status, estimated_price, applied_price, smartsheet_row_id, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      ).run(code, description, status, estimatedPrice, appliedPrice, String(rowId), stamp);
+        `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
+         location_code, smartsheet_row_id, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(code, description, status, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, String(rowId), stamp);
       created++;
       continue;
     }
 
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
       db.prepare(
-        "UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?"
-      ).run(realCode, estimatedPrice, appliedPrice, stamp, existing.code);
+        `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_synced_at = ? WHERE code = ?`
+      ).run(realCode, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, stamp, existing.code);
       promoted++;
       continue;
     }
 
     if (existing.status === "pending" && requested) {
       db.prepare(
-        "UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?"
-      ).run(estimatedPrice, appliedPrice, stamp, existing.code);
+        `UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, maximo_number = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_synced_at = ? WHERE code = ?`
+      ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, stamp, existing.code);
       updated++;
       continue;
     }
 
-    db.prepare("UPDATE woms SET estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?").run(
-      estimatedPrice,
-      appliedPrice,
-      stamp,
-      existing.code
-    );
+    db.prepare(
+      `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
+       location_code = COALESCE(location_code, ?), smartsheet_synced_at = ? WHERE code = ?`
+    ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, stamp, existing.code);
     updated++;
   }
 

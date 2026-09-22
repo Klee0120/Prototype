@@ -149,14 +149,19 @@ export async function renderSchedule(container) {
                     <td class="schedule-calendar-cell ${inMonth ? "" : "schedule-calendar-outside"}">
                       <div class="schedule-calendar-daynum">${dd}</div>
                       ${entries
-                        .map(
-                          (e, i) =>
-                            `<button type="button" class="schedule-entry" data-key="${dateIso}|${i}" title="Click for WOM details">
-                              <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.womCode)} — ${escapeHtml(e.techName)}
-                              ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
-                              <span class="schedule-entry-tentative">Tentative</span>
-                            </button>`
-                        )
+                        .map((e, i) => {
+                          const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
+                          return `<button type="button" class="schedule-entry" data-key="${dateIso}|${i}" title="Click for WOM details">
+                              <div class="schedule-entry-main">
+                                <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.description || e.womCode)} — ${escapeHtml(e.techName)}
+                              </div>
+                              <div class="schedule-entry-sub">
+                                ${escapeHtml(e.womCode)}${maximoLabel}
+                                ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
+                                <span class="schedule-entry-tentative">Tentative</span>
+                              </div>
+                            </button>`;
+                        })
                         .join("")}
                     </td>`;
                 })
@@ -202,6 +207,7 @@ export async function renderSchedule(container) {
           <div class="schedule-detail-tentative">Tentative -- ${escapeHtml(dateLabel)}, ${e.hours}h planned by ${escapeHtml(e.techName)}</div>
           <div>${e.locationName ? escapeHtml(e.locationName) : "No location on file"}</div>
           ${e.status ? `<div>Status: ${escapeHtml(WOM_STATUS_LABELS[e.status] || e.status)}</div>` : ""}
+          ${e.maximoNumber ? `<div>Maximo #${escapeHtml(e.maximoNumber)}</div>` : ""}
           ${e.subsidiaryCode ? `<div>Subsidiary ${escapeHtml(e.subsidiaryCode)}</div>` : ""}
           ${budgetLine}
           ${priceLine}

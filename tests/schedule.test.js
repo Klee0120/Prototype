@@ -90,6 +90,8 @@ test("schedule: WOM-only calendar by date", async (t) => {
     // (null when the WOM doesn't have them), not just the bare code.
     assert.ok("budgetHours" in entry);
     assert.ok("estimatedPrice" in entry);
+    assert.ok("maximoNumber" in entry);
+    assert.equal(entry.description, "HVAC Replacement - Bldg 3");
   });
 
   await t.test("filtering by site only shows that site's WOM work", async () => {

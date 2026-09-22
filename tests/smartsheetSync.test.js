@@ -30,6 +30,9 @@ const COLUMNS = [
   { id: 3, title: "Applied WOM $ - Project Summary" },
   { id: 4, title: "Project Name" },
   { id: 5, title: "Date Requested" },
+  { id: 6, title: "Site Location" },
+  { id: 7, title: "Subsidiary Code" },
+  { id: 8, title: "Maximo #" },
 ];
 
 function sheetWith(rows) {
@@ -87,6 +90,57 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.equal(created.description, "Roof leak repair");
       assert.equal(created.estimatedPrice, 1710.71);
       assert.equal(created.appliedPrice, 1983.71);
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("a row's Site Location, Subsidiary Code, and Maximo # all sync in too", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 505,
+            cells: [
+              { columnId: 1, value: "20777777", displayValue: "20777777" },
+              { columnId: 4, value: "Electrical install", displayValue: "Electrical install" },
+              // Sheet only says "Princeton" -- tolerant matching should still
+              // find "TLS Princeton" (code PRINCETON) among this app's own
+              // locations without an exact string match.
+              { columnId: 6, value: "Princeton", displayValue: "Princeton" },
+              { columnId: 7, value: "22052000 Electrical Installation", displayValue: "22052000 Electrical Installation" },
+              { columnId: 8, value: "19781019", displayValue: "19781019" },
+            ],
+          },
+          {
+            id: 506,
+            cells: [
+              { columnId: 1, value: "20777778", displayValue: "20777778" },
+              { columnId: 4, value: "Somewhere unknown", displayValue: "Somewhere unknown" },
+              // No location in this app matches "Nowhereville" -- left null
+              // rather than guessed at.
+              { columnId: 6, value: "Nowhereville", displayValue: "Nowhereville" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.created, 2);
+      assert.equal(res.body.locationColumn, "Site Location");
+      assert.equal(res.body.subsidiaryColumn, "Subsidiary Code");
+      assert.equal(res.body.maximoColumn, "Maximo #");
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const matched = list.body.find((w) => w.code === "20777777");
+      assert.equal(matched.locationCode, "PRINCETON");
+      assert.equal(matched.subsidiaryCode, "22052000 Electrical Installation");
+      assert.equal(matched.maximoNumber, "19781019");
+
+      const unmatched = list.body.find((w) => w.code === "20777778");
+      assert.equal(unmatched.locationCode, null);
     } finally {
       restore();
     }
