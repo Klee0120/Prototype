@@ -51,6 +51,67 @@ router.post("/technicians", (req, res) => {
   res.status(201).json(presentTechnician(tech));
 });
 
+function randomPin() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+// For onboarding a whole real roster at once instead of one form per
+// person. Each row gets its own randomly-generated PIN (nobody types one
+// in), which only ever appears in this response -- like the row's own
+// one-time password -- since a technician logs in with it and it isn't
+// otherwise retrievable afterward (same reason PATCH /technicians/:id
+// never echoes a pin back). A bad row (missing id/name, duplicate id,
+// unknown location) is skipped with its own error rather than failing the
+// whole batch, so one typo doesn't block everyone else in the paste.
+router.post("/technicians/bulk", (req, res) => {
+  const { rows } = req.body || {};
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: "rows must be a non-empty array" });
+  }
+
+  const created = [];
+  const errors = [];
+  const seenIds = new Set();
+  rows.forEach((row, i) => {
+    const rowNumber = i + 1;
+    const id = (row && row.id ? String(row.id) : "").trim();
+    const name = (row && row.name ? String(row.name) : "").trim();
+    const homeLocationCode = row && row.homeLocationCode ? String(row.homeLocationCode).trim() : "";
+    const email = row && row.email ? String(row.email).trim() : "";
+    const position = row && row.position ? String(row.position).trim() : "";
+    const ukgId = row && row.ukgId ? String(row.ukgId).trim() : id;
+
+    if (!id || !name) {
+      errors.push({ row: rowNumber, id: id || null, error: "id and name are required" });
+      return;
+    }
+    if (seenIds.has(id) || db.findTechnician(id)) {
+      errors.push({ row: rowNumber, id, error: "That ID is already in use" });
+      return;
+    }
+    if (homeLocationCode && !db.findLocation(homeLocationCode)) {
+      errors.push({ row: rowNumber, id, error: `Unknown location: ${homeLocationCode}` });
+      return;
+    }
+
+    const pin = randomPin();
+    const tech = db.createTechnician({ id, name, pin, homeLocationCode: homeLocationCode || null, email, ukgId, position });
+    seenIds.add(id);
+    created.push({ id: tech.id, name: tech.name, pin });
+  });
+
+  if (created.length > 0) {
+    db.addAudit(
+      req.user.id,
+      "TECHNICIANS_BULK_CREATED",
+      `${req.user.name} added ${created.length} technician${created.length === 1 ? "" : "s"} via bulk import${
+        errors.length > 0 ? ` (${errors.length} row${errors.length === 1 ? "" : "s"} skipped)` : ""
+      }`
+    );
+  }
+  res.status(created.length > 0 ? 201 : 400).json({ created, errors });
+});
+
 router.get("/technicians/:id", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });

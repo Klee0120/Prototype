@@ -381,6 +381,19 @@ Demo logins:
 - **Add technician**: a form on the roster (ID, name, PIN, position,
   home location, contact info) creates a new technician who can log in
   immediately
+- **Bulk add technicians**: for onboarding a whole real roster at once
+  instead of one form per person. Paste one technician per line — `ID,
+  Name, Position, Email, Location code` (tab or comma separated; a
+  straight paste from a spreadsheet column selection works), location
+  code optional — and `POST /api/admin/technicians/bulk` creates all of
+  them, generating a random 4-digit PIN for each row rather than making
+  anyone type one in. The response is the *only* place those PINs are ever
+  shown — same as any password, there's no way to look one back up
+  afterward — so the UI's result table has a **Copy list** button and a
+  reminder to save it immediately. A bad row (missing id/name, a duplicate
+  ID, an unknown location code) is skipped with its own per-row error
+  rather than failing the whole batch, so one typo doesn't block everyone
+  else in the paste.
 - **Admin can allocate on a technician's behalf** (new "Tech Allocation"
   tab): the exact same day-by-day splitting screen a technician sees, with
   an employee switcher (dropdown + Prev/Next) to move through the roster —
@@ -888,7 +901,8 @@ server/
                               WOM #, pending/requested WOMs from rows without one yet based on
                               whether Date Requested is filled in, promotes a pending or requested
                               WOM once its row gets a real WOM #, and refreshes estimated/applied
-                              pricing on every synced WOM)
+                              pricing on every synced WOM), technicians/bulk (paste-many
+                              technician creation, one generated PIN per row, per-row errors)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -944,7 +958,9 @@ tests/
                                     inactive techs excluded, entries carry WOM detail for the
                                     click-to-view panel, ?location= filter narrows to one site
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
-                                 (add/complete/edit), notification-pref, allocation history
+                                 (add/complete/edit), notification-pref, allocation history,
+                                 bulk-create technicians (admin-only, generated PIN actually logs
+                                 in, bad rows skipped with their own error, 400 if all rows fail)
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
                                     tech_form type/expiration + admin expiring-forms list
   vendors.test.js                 Vendor CRUD + authorization + audit logging

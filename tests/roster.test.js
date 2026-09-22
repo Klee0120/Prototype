@@ -275,4 +275,75 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.ok(res.body.length > 0);
     assert.ok(res.body.every((row) => "weekMonday" in row && "hours" in row && "weekStatus" in row));
   });
+
+  await t.test("a technician cannot bulk-create technicians", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/bulk", {
+      userId: "T1001",
+      body: { rows: [{ id: "T-BULK-1", name: "Bulk One" }] },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("admin can bulk-create technicians, each with its own generated PIN", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/bulk", {
+      userId: "ADMIN",
+      body: {
+        rows: [
+          { id: "T-BULK-1", name: "Bulk One", position: "Maintenance Technician", email: "one@example.com" },
+          { id: "T-BULK-2", name: "Bulk Two", homeLocationCode: "PRINCETON" },
+        ],
+      },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.created.length, 2);
+    assert.equal(res.body.errors.length, 0);
+    // Each row gets its own randomly-generated 4-digit PIN, not a shared one.
+    const [one, two] = res.body.created;
+    assert.match(one.pin, /^\d{4}$/);
+    assert.match(two.pin, /^\d{4}$/);
+    assert.notEqual(one.pin === two.pin && one.id === two.id, true);
+
+    // The generated PIN actually works to log in.
+    const login = await server.call("POST", "/api/auth/login", { body: { id: "T-BULK-1", pin: one.pin } });
+    assert.equal(login.status, 200);
+
+    const list = await server.call("GET", "/api/admin/technicians", { userId: "ADMIN" });
+    assert.ok(list.body.some((t) => t.id === "T-BULK-1" && t.position === "Maintenance Technician"));
+    assert.ok(list.body.some((t) => t.id === "T-BULK-2" && t.homeLocationCode === "PRINCETON"));
+  });
+
+  await t.test("bulk-create skips a bad row (missing name, duplicate id, unknown location) without failing the rest", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/bulk", {
+      userId: "ADMIN",
+      body: {
+        rows: [
+          { id: "T-BULK-3", name: "Bulk Three" },
+          { id: "T-BULK-1", name: "Duplicate Of One" },
+          { id: "", name: "No Id" },
+          { id: "T-BULK-4", name: "Bulk Four", homeLocationCode: "NOPE" },
+        ],
+      },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.created.length, 1);
+    assert.equal(res.body.created[0].id, "T-BULK-3");
+    assert.equal(res.body.errors.length, 3);
+    assert.ok(res.body.errors.some((e) => e.id === "T-BULK-1" && /already in use/.test(e.error)));
+    assert.ok(res.body.errors.some((e) => e.error === "id and name are required"));
+    assert.ok(res.body.errors.some((e) => e.id === "T-BULK-4" && /Unknown location/.test(e.error)));
+  });
+
+  await t.test("bulk-create 400s if every row fails", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/bulk", {
+      userId: "ADMIN",
+      body: { rows: [{ id: "T-BULK-1", name: "Still Duplicate" }] },
+    });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.created.length, 0);
+  });
+
+  await t.test("bulk-create rejects an empty or missing rows array", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/bulk", { userId: "ADMIN", body: { rows: [] } });
+    assert.equal(res.status, 400);
+  });
 });

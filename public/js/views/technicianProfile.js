@@ -38,6 +38,8 @@ export function renderTechniciansTab(content, openTo) {
   let profileTechId = openTo ? openTo.techId : null;
   let profileSubTab = openTo && openTo.subTab ? openTo.subTab : "basic";
   let showAddForm = false;
+  let showBulkAddForm = false;
+  let bulkAddResult = null;
   let showAdminAccounts = false;
   const filters = { location: "", status: "active" };
 
@@ -80,9 +82,12 @@ export function renderTechniciansTab(content, openTo) {
           </select>
         </label>
         <button class="btn btn-secondary add-technician-toggle" type="button">${showAddForm ? "Cancel" : "+ Add technician"}</button>
+        <button class="btn btn-link bulk-add-toggle" type="button">${showBulkAddForm ? "Cancel bulk add" : "Bulk add technicians"}</button>
         <button class="btn btn-link admin-accounts-toggle" type="button">${showAdminAccounts ? "Hide admin accounts" : "Manage admin accounts"}</button>
       </div>
       ${showAddForm ? renderAddForm(locations) : ""}
+      ${showBulkAddForm ? renderBulkAddForm() : ""}
+      ${bulkAddResult ? renderBulkAddResult() : ""}
       <div id="admin-accounts-host"></div>
       <div class="roster-table-wrap">
         <table class="detail-table roster-table">
@@ -120,6 +125,22 @@ export function renderTechniciansTab(content, openTo) {
     });
     const addForm = content.querySelector(".add-technician-form");
     if (addForm) wireAddForm(addForm);
+    content.querySelector(".bulk-add-toggle").addEventListener("click", () => {
+      showBulkAddForm = !showBulkAddForm;
+      bulkAddResult = null;
+      draw();
+    });
+    const bulkAddForm = content.querySelector(".bulk-add-technician-form");
+    if (bulkAddForm) wireBulkAddForm(bulkAddForm);
+    const copyBtn = content.querySelector(".bulk-add-copy-btn");
+    if (copyBtn) wireBulkAddCopy(copyBtn);
+    const dismissBtn = content.querySelector(".bulk-add-dismiss");
+    if (dismissBtn) {
+      dismissBtn.addEventListener("click", () => {
+        bulkAddResult = null;
+        draw();
+      });
+    }
     content.querySelector(".admin-accounts-toggle").addEventListener("click", () => {
       showAdminAccounts = !showAdminAccounts;
       renderAdminAccountsPanel(content.querySelector(".admin-accounts-toggle"), content);
@@ -263,6 +284,108 @@ export function renderTechniciansTab(content, openTo) {
         await draw();
       } catch (err) {
         msg.textContent = err.message;
+      }
+    });
+  }
+
+  // One technician per line -- ID, Name, Position, Email, Location code (in
+  // that order), separated by tabs (a straight paste from a spreadsheet
+  // column selection) or commas. Location code is optional and left blank
+  // if the site isn't known yet; it can always be set later from the
+  // technician's own profile. A PIN is generated for every row rather than
+  // typed in, since assigning ~20 by hand one at a time is exactly the
+  // tedium this exists to skip.
+  function renderBulkAddForm() {
+    return `
+      <form class="bulk-add-technician-form">
+        <p class="review-checklist-hint">
+          One technician per line: <strong>ID, Name, Position, Email, Location code</strong> (tab or comma
+          separated -- pasting straight from a spreadsheet works). Location code is optional. A PIN is
+          generated for each row automatically -- you'll get the full ID/PIN list to copy once these are
+          created, since a PIN can't be looked back up afterward.
+        </p>
+        <textarea class="bulk-add-textarea" rows="8" placeholder="6114371, James Balli, HVAC - Maintenance Tech, James.Balli@cwservices.com&#10;6134285, Phillip Bush, Maintenance Technician, Phillip.Bush@cwservices.com" required></textarea>
+        <button type="submit" class="btn btn-primary">Create these technicians</button>
+        <span class="save-message bulk-add-message"></span>
+      </form>
+    `;
+  }
+
+  function parseBulkAddLine(line) {
+    const cells = (line.includes("\t") ? line.split("\t") : line.split(",")).map((c) => c.trim());
+    const [id, name, position, email, homeLocationCode] = cells;
+    return { id, name, position, email, homeLocationCode };
+  }
+
+  function wireBulkAddForm(form) {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".bulk-add-message");
+      const lines = form.querySelector(".bulk-add-textarea").value.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+      if (lines.length === 0) {
+        msg.textContent = "Paste at least one technician.";
+        return;
+      }
+      const rows = lines.map(parseBulkAddLine);
+      try {
+        const result = await api.post("/api/admin/technicians/bulk", { rows });
+        bulkAddResult = result;
+        showBulkAddForm = false;
+        await draw();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  function renderBulkAddResult() {
+    const { created, errors } = bulkAddResult;
+    return `
+      <div class="bulk-add-result">
+        <div class="bulk-add-result-title">
+          ${created.length} technician${created.length === 1 ? "" : "s"} created
+          ${errors.length > 0 ? ` -- ${errors.length} row${errors.length === 1 ? "" : "s"} skipped` : ""}
+        </div>
+        <p class="review-checklist-hint">
+          <strong>Copy this list now</strong> -- these PINs won't be shown again anywhere in the app. Give
+          each technician their own ID and PIN to log in with.
+        </p>
+        ${
+          created.length > 0
+            ? `<table class="detail-table">
+                <thead><tr><th>Name</th><th>ID</th><th>PIN</th></tr></thead>
+                <tbody>
+                  ${created
+                    .map((c) => `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.id)}</td><td>${escapeHtml(c.pin)}</td></tr>`)
+                    .join("")}
+                </tbody>
+              </table>
+              <button type="button" class="btn btn-secondary bulk-add-copy-btn">Copy list</button>`
+            : ""
+        }
+        ${
+          errors.length > 0
+            ? `<div class="bulk-add-errors">
+                ${errors.map((e) => `<div>Row ${e.row}${e.id ? ` (${escapeHtml(e.id)})` : ""}: ${escapeHtml(e.error)}</div>`).join("")}
+              </div>`
+            : ""
+        }
+        <button type="button" class="btn btn-link bulk-add-dismiss">Dismiss</button>
+      </div>
+    `;
+  }
+
+  function wireBulkAddCopy(btn) {
+    btn.addEventListener("click", async () => {
+      const lines = bulkAddResult.created.map((c) => `${c.name}\t${c.id}\t${c.pin}`);
+      try {
+        await navigator.clipboard.writeText(["Name\tID\tPIN", ...lines].join("\n"));
+        btn.textContent = "Copied!";
+        setTimeout(() => {
+          btn.textContent = "Copy list";
+        }, 1500);
+      } catch {
+        window.alert("Couldn't copy automatically -- select the table text and copy it by hand.");
       }
     });
   }

@@ -1482,6 +1482,37 @@ button, input, select {
   resize: vertical;
 }
 
+.bulk-add-technician-form textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+
+.bulk-add-result {
+  margin: 10px 0 16px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.bulk-add-result-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.bulk-add-errors {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .vendor-edit-actions {
   display: flex;
   align-items: center;
