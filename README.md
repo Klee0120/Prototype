@@ -265,19 +265,30 @@ Demo logins:
   entry** opens that WOM's own detail inline (status, location, budget/
   remaining hours, estimated/applied pricing) without leaving the calendar —
   the schedule API embeds this straight from the underlying WOM record on
-  each entry, so no second request is needed. A **`+` on any date**
-  schedules a new WOM there — a technician for themselves, admin/RFM for
-  anyone — without leaving the calendar for Tech Allocation/My Week: pick a
-  technician (admin only; a technician can only schedule their own time),
-  an open WOM, and hours, and it's added as a normal allocation alongside
-  whatever else that technician already has that day (never replacing it),
-  the same day/week reused by every other allocation-editing screen. This
-  is exactly `PUT /api/technicians/:id/weeks/:weekMonday/allocations` —
-  the same endpoint and the same rules Tech Allocation/My Week already
-  enforce (an open WOM, a matching location, the week's own edit
-  lock/window) — so a locked or not-yet-open week surfaces the same clear
-  error here as it would there, rather than the calendar quietly allowing
-  something the rest of the app wouldn't. **Not a Microsoft Teams/Outlook
+  each entry, so no second request is needed. A single **"+ Schedule a
+  WOM"** button in the calendar's own nav bar (not a `+` scattered on every
+  day) opens a form to put a WOM on the calendar — a technician for
+  themselves, admin/RFM for anyone — without leaving the calendar for Tech
+  Allocation/My Week: pick a technician (admin only; a technician can only
+  schedule their own time), then a **location, then that location's project
+  name** (the same two-step location-first cascade Tech Allocation's own
+  add-technician flow uses), hours per day, and a **first/last day date
+  range** (one day is just a range of one), and it's added as a normal
+  allocation alongside whatever else each technician already has on those
+  days (never replacing it), the same days/weeks reused by every other
+  allocation-editing screen. A range spanning more than one calendar week is
+  split by the client into one batch per week (Monday-Sunday) since
+  allocations are stored and saved a week at a time; each week is fetched,
+  merged, and saved independently (capped at 62 days/~2 months per request),
+  so if one week in the range is locked or not yet open the rest of the
+  range still goes through, with the response naming exactly which week(s)
+  failed and why. Saving is exactly repeated calls to
+  `PUT /api/technicians/:id/weeks/:weekMonday/allocations` — the same
+  endpoint and the same rules Tech Allocation/My Week already enforce (an
+  open WOM, a matching location, the week's own edit lock/window) — so a
+  locked or not-yet-open week surfaces the same clear error here as it
+  would there, rather than the calendar quietly allowing something the rest
+  of the app wouldn't. **Not a Microsoft Teams/Outlook
   integration** — that would need Azure AD app registration and IT approval
   before any of it could be built; for now it only reflects what's been
   allocated here, not a technician's other real-world commitments. See

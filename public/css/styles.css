@@ -1588,28 +1588,6 @@ button, input, select {
   font-weight: 600;
   font-size: 12px;
   margin-bottom: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.schedule-add-btn {
-  border: none;
-  background: var(--bg);
-  color: var(--accent);
-  font-weight: 700;
-  font-size: 12px;
-  width: 16px;
-  height: 16px;
-  line-height: 14px;
-  border-radius: 4px;
-  cursor: pointer;
-  padding: 0;
-}
-
-.schedule-add-btn:hover {
-  background: var(--accent);
-  color: #fff;
 }
 
 .schedule-add-field {
@@ -1622,6 +1600,15 @@ button, input, select {
   display: block;
   color: var(--muted);
   margin-bottom: 3px;
+}
+
+.schedule-add-daterange {
+  display: flex;
+  gap: 10px;
+}
+
+.schedule-add-daterange .schedule-add-field {
+  flex: 1;
 }
 
 .schedule-add-field select,
