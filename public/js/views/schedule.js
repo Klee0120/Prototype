@@ -40,6 +40,17 @@ function addDaysIso(iso, n) {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
 }
 
+// 0 = Monday .. 6 = Sunday, matching DAY_HEADERS -- JS's own getDay() is
+// Sunday-first (0..6), so this just rotates it.
+function mondayIndexOf(dateIso) {
+  const [y, m, d] = dateIso.split("-").map(Number);
+  return (new Date(y, m - 1, d).getDay() + 6) % 7;
+}
+
+function mondayOfIso(dateIso) {
+  return addDaysIso(dateIso, -mondayIndexOf(dateIso));
+}
+
 // A month calendar of WOM project work only (no E&F, no time off) -- shared
 // by the admin and technician shells, and open to any logged-in user, since
 // the point is letting anyone see what's already scheduled before adding
@@ -54,19 +65,26 @@ export async function renderSchedule(container) {
   if (!state.scheduleMonth) state.scheduleMonth = currentMonthIso();
   if (state.scheduleLocation === undefined) state.scheduleLocation = "";
 
+  const isAdmin = state.user && state.user.role === "admin";
   let detailEntry = null;
+  let addDate = null;
+  let addMessage = "";
   let entriesByKey = {};
 
   draw();
 
   async function draw() {
-    let locations;
+    let locations, woms, technicians;
     try {
-      locations = await api.get("/api/locations");
+      [locations, woms] = await Promise.all([api.get("/api/locations"), api.get("/api/woms")]);
+      technicians = isAdmin ? await api.get("/api/admin/technicians") : null;
     } catch (err) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
     }
+    const openWoms = woms.filter((w) => w.status === "open");
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const activeTechnicians = isAdmin ? technicians.filter((t) => t.employmentStatus === "active") : null;
 
     const locationOptions = locations
       .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === state.scheduleLocation ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
@@ -84,7 +102,8 @@ export async function renderSchedule(container) {
         aren't shown here (see Tech Allocation or Weekly Review for those). These are
         <strong>tentative dates</strong> -- each technician's own planned allocation for that day, not a
         locked commitment -- so treat them as a working plan, not a confirmed schedule. Click an entry
-        for that WOM's own details.
+        for that WOM's own details, or the <strong>+</strong> on any date to schedule one
+        ${isAdmin ? "for any technician" : "for yourself"}.
       </p>
       <div id="schedule-calendar-host"></div>
       <div id="schedule-detail-host"></div>
@@ -93,16 +112,19 @@ export async function renderSchedule(container) {
     container.querySelector("#schedule-prev-month").addEventListener("click", () => {
       state.scheduleMonth = shiftMonth(state.scheduleMonth, -1);
       detailEntry = null;
+      addDate = null;
       draw();
     });
     container.querySelector("#schedule-next-month").addEventListener("click", () => {
       state.scheduleMonth = shiftMonth(state.scheduleMonth, 1);
       detailEntry = null;
+      addDate = null;
       draw();
     });
     container.querySelector("#schedule-location-filter").addEventListener("change", (e) => {
       state.scheduleLocation = e.target.value;
       detailEntry = null;
+      addDate = null;
       draw();
     });
 
@@ -147,7 +169,10 @@ export async function renderSchedule(container) {
                   const entries = data.byDate[dateIso] || [];
                   return `
                     <td class="schedule-calendar-cell ${inMonth ? "" : "schedule-calendar-outside"}">
-                      <div class="schedule-calendar-daynum">${dd}</div>
+                      <div class="schedule-calendar-daynum">
+                        ${dd}
+                        <button type="button" class="schedule-add-btn" data-date="${dateIso}" title="Schedule a WOM on this date">+</button>
+                      </div>
                       ${entries
                         .map((e, i) => {
                           const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
@@ -176,6 +201,16 @@ export async function renderSchedule(container) {
     host.querySelectorAll(".schedule-entry").forEach((btn) => {
       btn.addEventListener("click", () => {
         detailEntry = entriesByKey[btn.dataset.key];
+        addDate = null;
+        renderDetail();
+      });
+    });
+
+    host.querySelectorAll(".schedule-add-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        addDate = btn.dataset.date;
+        detailEntry = null;
+        addMessage = "";
         renderDetail();
       });
     });
@@ -183,6 +218,10 @@ export async function renderSchedule(container) {
     renderDetail();
 
     function renderDetail() {
+      if (addDate) {
+        renderAddForm();
+        return;
+      }
       if (!detailEntry) {
         detailHost.innerHTML = "";
         return;
@@ -216,6 +255,87 @@ export async function renderSchedule(container) {
       detailHost.querySelector(".schedule-detail-close").addEventListener("click", () => {
         detailEntry = null;
         renderDetail();
+      });
+    }
+
+    // Scheduling a WOM here is just adding a normal allocation for that
+    // date -- same data, same rules (open WOM, matching location, week not
+    // locked) as Tech Allocation/My Week, just entered from the calendar
+    // instead. A technician can only do this for themselves; admin/RFM can
+    // do it for anyone, matching who can already edit a given week's
+    // allocations server-side.
+    function renderAddForm() {
+      const dateIso = addDate;
+      const [ady, adm, add] = dateIso.split("-").map(Number);
+      const dateLabel = new Date(ady, adm - 1, add).toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      });
+      const techOptions = isAdmin
+        ? activeTechnicians.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("")
+        : "";
+      const womOptions = openWoms
+        .map((w) => {
+          const loc = locationByCode[w.locationCode];
+          return `<option value="${escapeHtml(w.code)}">${escapeHtml(w.description)} (${escapeHtml(w.code)})${loc ? ` — ${escapeHtml(loc.name)}` : ""}</option>`;
+        })
+        .join("");
+
+      detailHost.innerHTML = `
+        <div class="schedule-detail-panel">
+          <button type="button" class="btn btn-link schedule-detail-close">Close</button>
+          <div class="schedule-detail-title">Schedule a WOM -- ${escapeHtml(dateLabel)}</div>
+          <form class="schedule-add-form">
+            ${
+              isAdmin
+                ? `<label class="schedule-add-field"><span>Technician</span><select name="techId" required><option value="">Choose one</option>${techOptions}</select></label>`
+                : `<div>For: ${escapeHtml(state.user.name)}</div>`
+            }
+            <label class="schedule-add-field">
+              <span>WOM</span>
+              <select name="womCode" required><option value="">Choose one</option>${womOptions}</select>
+            </label>
+            <label class="schedule-add-field"><span>Hours</span><input name="hours" type="number" min="0.5" step="0.5" required /></label>
+            <button type="submit" class="btn btn-primary">Add to schedule</button>
+            <span class="save-message schedule-add-message">${escapeHtml(addMessage)}</span>
+          </form>
+        </div>
+      `;
+      detailHost.querySelector(".schedule-detail-close").addEventListener("click", () => {
+        addDate = null;
+        renderDetail();
+      });
+      if (openWoms.length === 0) {
+        detailHost.querySelector(".schedule-add-message").textContent = "No open WOMs to schedule -- a WOM needs a real WOM # before hours can be charged to it.";
+      }
+      detailHost.querySelector(".schedule-add-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const msg = form.querySelector(".schedule-add-message");
+        const techId = isAdmin ? form.techId.value : state.user.id;
+        const womCode = form.womCode.value;
+        const hours = Number(form.hours.value);
+        if (!techId || !womCode || !hours) {
+          msg.textContent = "Choose a technician, WOM, and hours.";
+          return;
+        }
+        const wom = openWoms.find((w) => w.code === womCode);
+        const weekMonday = mondayOfIso(dateIso);
+        const dayName = DAY_HEADERS[mondayIndexOf(dateIso)];
+        try {
+          const week = await api.get(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}`);
+          const allocations = [
+            ...week.allocations,
+            { day: dayName, type: "wom", locationCode: wom.locationCode, womCode, hours },
+          ];
+          await api.put(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}/allocations`, { allocations });
+          addDate = null;
+          addMessage = "";
+          await draw();
+        } catch (err) {
+          msg.textContent = err.message;
+        }
       });
     }
   }

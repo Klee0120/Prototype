@@ -243,14 +243,14 @@ Demo logins:
   Any box left unchecked (or a stale invoice date) marks that vendor
   "Doc checks incomplete" on the Vendors list and rolls up into the
   Priorities tab, same flagging idea as an outdated form.
-- **Schedule tab**: a read-only month calendar of **WOM project work only**
-  — no E&F time and no time off, since the point is seeing what's already
-  scheduled project-wise, not a general timesheet view (Tech Allocation and
-  Weekly Review already cover that). Each day's cell lists every
-  technician's WOM assignment landing on that actual calendar date, headlined
-  by the **project name and technician's own name** (the WOM code and Maximo
-  # are secondary, shown on the smaller line below along with hours and
-  site), built entirely from allocations already in this app
+- **Schedule tab**: a month calendar of **WOM project work only** — no E&F
+  time and no time off, since the point is seeing what's already scheduled
+  project-wise, not a general timesheet view (Tech Allocation and Weekly
+  Review already cover that). Each day's cell lists every technician's WOM
+  assignment landing on that actual calendar date, headlined by the
+  **project name and technician's own name** (the WOM code and Maximo # are
+  secondary, shown on the smaller line below along with hours and site),
+  built entirely from allocations already in this app
   (`GET /api/schedule/:month`, `server/routes/schedule.js`,
   month as `YYYY-MM`) with **Prev/Next month** navigation, and open to any
   logged-in user (not admin-only), since the point is letting anyone check
@@ -265,12 +265,23 @@ Demo logins:
   entry** opens that WOM's own detail inline (status, location, budget/
   remaining hours, estimated/applied pricing) without leaving the calendar —
   the schedule API embeds this straight from the underlying WOM record on
-  each entry, so no second request is needed. **Not a Microsoft
-  Teams/Outlook integration** — that would need Azure AD app registration
-  and IT approval before any of it could be built; for now it only reflects
-  what's been allocated here, not a technician's other real-world
-  commitments. See "Where this stands" for what that future integration
-  would actually need.
+  each entry, so no second request is needed. A **`+` on any date**
+  schedules a new WOM there — a technician for themselves, admin/RFM for
+  anyone — without leaving the calendar for Tech Allocation/My Week: pick a
+  technician (admin only; a technician can only schedule their own time),
+  an open WOM, and hours, and it's added as a normal allocation alongside
+  whatever else that technician already has that day (never replacing it),
+  the same day/week reused by every other allocation-editing screen. This
+  is exactly `PUT /api/technicians/:id/weeks/:weekMonday/allocations` —
+  the same endpoint and the same rules Tech Allocation/My Week already
+  enforce (an open WOM, a matching location, the week's own edit
+  lock/window) — so a locked or not-yet-open week surfaces the same clear
+  error here as it would there, rather than the calendar quietly allowing
+  something the rest of the app wouldn't. **Not a Microsoft Teams/Outlook
+  integration** — that would need Azure AD app registration and IT approval
+  before any of it could be built; for now it only reflects what's been
+  allocated here, not a technician's other real-world commitments. See
+  "Where this stands" for what that future integration would actually need.
 - **WOM projects closed here don't close on your external Smartsheet
   tracker** — a new Priorities section ("WOM projects closed -- update
   Smartsheet") lists every WOM that's been closed (by a technician's own

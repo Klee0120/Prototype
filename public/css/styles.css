@@ -1588,6 +1588,49 @@ button, input, select {
   font-weight: 600;
   font-size: 12px;
   margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.schedule-add-btn {
+  border: none;
+  background: var(--bg);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12px;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.schedule-add-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.schedule-add-field {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.schedule-add-field span {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.schedule-add-field select,
+.schedule-add-field input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
 }
 
 .schedule-entry {
