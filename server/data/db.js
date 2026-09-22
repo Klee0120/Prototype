@@ -322,6 +322,21 @@ if (!hasColumn("woms", "subsidiary_code")) {
 if (!hasColumn("woms", "smartsheet_reflected_at")) {
   db.exec("ALTER TABLE woms ADD COLUMN smartsheet_reflected_at TEXT");
 }
+// Estimated/applied dollar figures pulled in from the Smartsheet WOM
+// tracker (matched by WOM code -- see syncWomPricingFromSmartsheet in
+// server/utils/smartsheet.js). Still manually editable here for a WOM that
+// doesn't have a Smartsheet match yet; a later sync overwrites both
+// whenever that WOM code is found there, since these are meant to mirror
+// Smartsheet once a match exists, not be independently maintained here.
+if (!hasColumn("woms", "estimated_price")) {
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_price REAL");
+}
+if (!hasColumn("woms", "applied_price")) {
+  db.exec("ALTER TABLE woms ADD COLUMN applied_price REAL");
+}
+if (!hasColumn("woms", "smartsheet_synced_at")) {
+  db.exec("ALTER TABLE woms ADD COLUMN smartsheet_synced_at TEXT");
+}
 // Forms on File (tech_form uploads) can carry a type (e.g. "Certification",
 // "License") and an expiration date, so expired ones can be flagged for
 // admin/RFM attention on the Overview tab -- see listExpiringForms below.
@@ -1018,6 +1033,63 @@ function setWomDetails(code, { description, locationCode, budgetHours, subsidiar
   return findWom(code);
 }
 
+// A WOM without a Smartsheet match yet can still have pricing entered by
+// hand; a later sync overwrites both fields once that WOM code is found
+// there, since they're meant to mirror Smartsheet once a match exists.
+function setWomPricing(code, { estimatedPrice, appliedPrice } = {}) {
+  if (!findWom(code)) return null;
+  db.prepare("UPDATE woms SET estimated_price = ?, applied_price = ? WHERE code = ?").run(
+    estimatedPrice == null || estimatedPrice === "" ? null : Number(estimatedPrice),
+    appliedPrice == null || appliedPrice === "" ? null : Number(appliedPrice),
+    code
+  );
+  return findWom(code);
+}
+
+function parseDollarAmount(raw) {
+  if (raw == null) return null;
+  const cleaned = String(raw).replace(/[$,]/g, "").trim();
+  if (cleaned === "") return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Applies a Smartsheet pull: rows already simplified to {ColumnTitle:
+// value} by server/utils/smartsheet.js. Matches each row's WOM # column
+// value directly against this app's own WOM codes (which need to be the
+// same real JDE-style numbers for this to work) -- never creates a new WOM
+// record, only updates ones that already exist here, and skips rows with
+// no WOM # assigned yet (still just a request, not a real job) or whose
+// WOM # this app doesn't have a record for.
+function syncWomPricingFromSheetRows(rows, womColumn, estimateColumn, appliedColumn) {
+  let matched = 0;
+  let skippedNoWomNumber = 0;
+  let skippedNoMatch = 0;
+  const stamp = new Date().toISOString();
+  for (const row of rows) {
+    const rawCode = row[womColumn];
+    const code = rawCode != null ? String(rawCode).trim() : "";
+    if (!code || code === "0") {
+      skippedNoWomNumber++;
+      continue;
+    }
+    if (!findWom(code)) {
+      skippedNoMatch++;
+      continue;
+    }
+    const estimatedPrice = estimateColumn ? parseDollarAmount(row[estimateColumn]) : null;
+    const appliedPrice = appliedColumn ? parseDollarAmount(row[appliedColumn]) : null;
+    db.prepare("UPDATE woms SET estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?").run(
+      estimatedPrice,
+      appliedPrice,
+      stamp,
+      code
+    );
+    matched++;
+  }
+  return { matched, skippedNoWomNumber, skippedNoMatch, total: rows.length };
+}
+
 // ---- UKG hours (per-day source of truth) ----
 
 function getUkgHoursByDay(techId, weekMonday) {
@@ -1509,6 +1581,8 @@ module.exports = {
   setWomStatus,
   markWomSmartsheetReflected,
   setWomDetails,
+  setWomPricing,
+  syncWomPricingFromSheetRows,
   getUkgHoursByDay,
   setUkgHours,
   getPendingPunchByDay,

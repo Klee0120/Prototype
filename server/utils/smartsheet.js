@@ -48,4 +48,14 @@ async function fetchSimplifiedSheet() {
   return simplifySheet(await fetchSheet());
 }
 
-module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet };
+// Finds the column whose title contains every given keyword (case-
+// insensitive substring match) -- tolerant of whatever exact punctuation or
+// line-wrapping the real sheet uses (e.g. "Estimate WOM $ - Project
+// Total"), since that can't be hardcoded byte-for-byte without seeing the
+// live sheet. Returns null if no column matches all the keywords.
+function findColumn(columns, keywords) {
+  const lower = keywords.map((k) => k.toLowerCase());
+  return columns.find((c) => lower.every((k) => c.toLowerCase().includes(k))) || null;
+}
+
+module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet, findColumn };

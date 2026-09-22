@@ -42,6 +42,13 @@ test("smartsheet: simplifySheet reshapes Smartsheet's column-id-keyed cells", ()
   assert.equal(simplified.rows[1].Description, undefined);
 });
 
+test("smartsheet: findColumn is tolerant of exact punctuation/wrapping", () => {
+  const columns = ["WOM #", "Estimate WOM $ - Project Total", "Applied WOM $ - Project Summary", "Technician"];
+  assert.equal(smartsheet.findColumn(columns, ["estimate", "wom", "$"]), "Estimate WOM $ - Project Total");
+  assert.equal(smartsheet.findColumn(columns, ["applied", "wom", "$"]), "Applied WOM $ - Project Summary");
+  assert.equal(smartsheet.findColumn(columns, ["nonexistent"]), null);
+});
+
 test("smartsheet: admin routes when not yet connected (the default, un-configured state)", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

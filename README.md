@@ -691,11 +691,11 @@ a missing code is obvious rather than silently blank.
   (a Microsoft 365/Google Workspace mailbox's SMTP settings, or a
   transactional provider like SendGrid) — this app doesn't care which, it
   just needs standard SMTP auth.
-- **Smartsheet connection is a read-only preview so far, not a live
-  field sync yet.** `server/utils/smartsheet.js` is a thin, opt-in client
-  (same no-crash-until-configured pattern as the mailer above) for a
-  one-way pull from a single Smartsheet sheet — the external WOM project
-  tracker. Set two environment variables before starting the app:
+- **Smartsheet connection: read-only pull of WOM pricing, matched by WOM #.**
+  `server/utils/smartsheet.js` is a thin, opt-in client (same
+  no-crash-until-configured pattern as the mailer above) for a one-way pull
+  from a single Smartsheet sheet — the external WOM/PSE project tracker.
+  Set two environment variables before starting the app:
   `SMARTSHEET_API_TOKEN` (a personal access token — in Smartsheet, click
   your account icon → **Apps & Integrations** → **API Access** → **Generate
   new access token**; it's shown once, so copy it immediately) and
@@ -707,15 +707,31 @@ a missing code is obvious rather than silently blank.
   possibly edit) every sheet it can see. Set both on the server itself (the
   systemd service file, or a `.env` your process manager loads), the same
   way the SMTP credentials above are set, then restart the app.
-  Once connected, the **E&F Locations & WOM tab** shows a "Smartsheet
-  Connection" panel with a **Preview data** button — pulls the sheet's real
-  column names and its first 5 rows, so the actual structure is visible
-  before any column gets mapped to a WOM field (estimated pricing,
-  description, etc.). This app never writes anything back to Smartsheet;
-  every call here is read-only. The next step — actually matching sheet
-  rows to WOM records by WOM #/code and pulling specific fields in — is a
-  distinct follow-on piece once the real column names are visible in that
-  preview, not built yet.
+  The **E&F Locations & WOM tab** shows a "Smartsheet Connection" panel
+  with a **Preview data** button (the sheet's real column names and first 5
+  rows, useful for confirming the connection and checking column names) and
+  a **Sync WOM pricing now** button. Syncing matches every sheet row's
+  **`WOM #`** column value directly against this app's own WOM codes — for
+  this to work, a WOM's code here needs to actually be the real numeric
+  JDE/WOM # (e.g. `20313211`), not an arbitrary label, since the match is an
+  exact string comparison. It **never creates a new WOM record** and never
+  writes anything back to Smartsheet — it only updates the `estimatedPrice`
+  and `appliedPrice` fields on a WOM that already exists here, and only for
+  rows that already have a WOM # assigned (per the real PSE process, a
+  Smartsheet row exists from the initial request onward but doesn't get a
+  WOM # until admin actually creates the WOM and issues the PO, so a blank
+  or `0` WOM # just means "still a request, not a job yet" -- those rows
+  are skipped, same as a WOM # that doesn't match anything on file here). The two dollar columns are located by
+  keyword (`findColumn` in `smartsheet.js` looks for a column whose title
+  contains "estimate"/"wom"/"$" or "applied"/"wom"/"$"), tolerant of the
+  sheet's exact punctuation rather than a hardcoded literal string. A WOM
+  without a Smartsheet match yet can still have pricing hand-entered
+  (`PATCH /api/woms/:code/pricing`) — a later sync overwrites both fields
+  once that WOM code is found there, since they're meant to mirror
+  Smartsheet once a match exists, not be independently maintained here.
+  **Admin-triggered for now, not on a schedule** — click "Sync WOM pricing
+  now" whenever you want the latest numbers; automatic periodic syncing is
+  a natural next step once this has been used successfully a few times.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have
@@ -795,14 +811,17 @@ server/
                               POST resolve-punch-issue (admin-only: correct one day's hours +
                               allocation and clear the flag, without unlocking the rest of the week)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
-                              POST :code/complete (tech-facing)
+                              :code/pricing (hand-entered estimated/applied $, overwritten by a
+                              later Smartsheet sync), POST :code/complete (tech-facing)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
                               pattern), UKG hours, pending-punch flag, UKG-confirmed checklist,
                               roster, profile (basic info, onboarding, devices + IT requests,
                               allocation history, expiring-forms list), approve/reject/unlock
                               (works on submitted OR approved), weekend-addenda list +
                               acknowledge-weekend, punch-issues list (tech-reported only),
-                              smartsheet/status + smartsheet/preview (read-only sheet preview)
+                              smartsheet/status + smartsheet/preview (read-only sheet preview),
+                              smartsheet/sync-wom-pricing (matches sheet rows to WOM records
+                              by WOM #, pulls in estimated/applied pricing)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -858,8 +877,12 @@ tests/
   vendors.test.js                 Vendor CRUD + authorization + audit logging
   audit.test.js                   Audit log writes and admin-only read access
   mailer.test.js                   Email is a safe no-op (not a crash) when SMTP isn't configured
-  smartsheet.test.js                 simplifySheet's column-id-to-title reshaping, safe 409
-                                        (not a crash) when Smartsheet isn't configured, admin-only
+  smartsheet.test.js                 simplifySheet's column-id-to-title reshaping, findColumn's
+                                        keyword tolerance, safe 409 (not a crash) when Smartsheet
+                                        isn't configured, admin-only
+  smartsheetSync.test.js               WOM pricing sync: matches by WOM #, skips a blank/"0" WOM #
+                                        and an unmatched WOM #, admin-only, hand-entered pricing on
+                                        an unmatched WOM survives until a real sync overwrites it
 public/
   index.html
   css/styles.css

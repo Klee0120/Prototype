@@ -1148,6 +1148,12 @@ button, input, select {
   color: var(--muted);
 }
 
+.smartsheet-sync-summary {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 8px 0;
+}
+
 .ukg-paste-row {
   display: flex;
   gap: 8px;

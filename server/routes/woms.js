@@ -15,6 +15,9 @@ function presentWom(w) {
     usedHours: w.usedHours,
     remainingHours: w.remainingHours,
     smartsheetReflectedAt: w.smartsheet_reflected_at,
+    estimatedPrice: w.estimated_price,
+    appliedPrice: w.applied_price,
+    smartsheetSyncedAt: w.smartsheet_synced_at,
   };
 }
 
@@ -64,6 +67,17 @@ router.patch("/:code/details", requireAuth, requireAdmin, (req, res) => {
     subsidiaryCode: subsidiaryCode || null,
   });
   db.addAudit(req.user.id, "WOM_UPDATED", `${req.user.name} updated WOM ${wom.code}`);
+  res.json(presentWom(wom));
+});
+
+// Hand-entering pricing for a WOM without a Smartsheet match yet -- a later
+// sync overwrites both fields once that WOM code is found there.
+router.patch("/:code/pricing", requireAuth, requireAdmin, (req, res) => {
+  const { estimatedPrice, appliedPrice } = req.body || {};
+  const wom = db.setWomPricing(req.params.code, { estimatedPrice, appliedPrice });
+  if (!wom) return res.status(404).json({ error: "WOM not found" });
+
+  db.addAudit(req.user.id, "WOM_PRICING_UPDATED", `${req.user.name} updated pricing for WOM ${wom.code}`);
   res.json(presentWom(wom));
 });
 

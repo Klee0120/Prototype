@@ -16,6 +16,11 @@ const STATUS_LABELS = {
 
 const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
 
+function formatMoney(n) {
+  if (n == null) return "—";
+  return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
 const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
 const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
@@ -1788,7 +1793,7 @@ export async function renderAdminReview(container) {
   // (column names and a few sample rows) -- lets admin confirm the link
   // works before any column ever gets mapped to a WOM field. This app
   // never writes anything back to Smartsheet.
-  async function renderSmartsheetPanel(container) {
+  async function renderSmartsheetPanel(container, content) {
     let status;
     try {
       status = await api.get("/api/admin/smartsheet/status");
@@ -1811,9 +1816,39 @@ export async function renderAdminReview(container) {
       <div class="smartsheet-status smartsheet-status-on">
         <strong>Connected.</strong>
         <button class="btn btn-link smartsheet-preview-btn" type="button">Preview data</button>
+        <button class="btn btn-secondary smartsheet-sync-btn" type="button">Sync WOM pricing now</button>
       </div>
+      <div class="smartsheet-sync-result"></div>
       <div class="smartsheet-preview"></div>
     `;
+
+    container.querySelector(".smartsheet-sync-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const resultEl = container.querySelector(".smartsheet-sync-result");
+      btn.disabled = true;
+      resultEl.innerHTML = `<p class="empty-note">Syncing…</p>`;
+      try {
+        const result = await api.post("/api/admin/smartsheet/sync-wom-pricing");
+        const summaryHtml = `
+          <p class="smartsheet-sync-summary">
+            <strong>${result.matched}</strong> WOM${result.matched === 1 ? "" : "s"} updated from "${escapeHtml(result.womColumn)}"
+            (matching against ${escapeHtml(result.estimateColumn || "no estimate column found")} /
+            ${escapeHtml(result.appliedColumn || "no applied column found")}) — ${result.skippedNoWomNumber} row${result.skippedNoWomNumber === 1 ? "" : "s"}
+            had no WOM # yet, ${result.skippedNoMatch} row${result.skippedNoMatch === 1 ? "" : "s"} had a WOM # not on file here.
+          </p>
+        `;
+        // The WOM Projects list below needs to show the freshly-synced
+        // prices right away, not just after a manual page reload -- a full
+        // redraw rebuilds this whole panel too, so re-find it afterward to
+        // keep the summary message visible.
+        await drawWoms(content);
+        const freshResultEl = content.querySelector(".smartsheet-sync-result");
+        if (freshResultEl) freshResultEl.innerHTML = summaryHtml;
+      } catch (err) {
+        resultEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        btn.disabled = false;
+      }
+    });
 
     container.querySelector(".smartsheet-preview-btn").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -1890,7 +1925,7 @@ export async function renderAdminReview(container) {
       </form>
     `;
 
-    await renderSmartsheetPanel(content.querySelector("#smartsheet-panel"));
+    await renderSmartsheetPanel(content.querySelector("#smartsheet-panel"), content);
 
     const locationList = content.querySelector("#location-list");
     for (const l of locations) {
@@ -2001,6 +2036,12 @@ export async function renderAdminReview(container) {
     const loc = locationByCode[w.locationCode];
     const budgetLabel = w.budgetHours == null ? "" : ` &middot; ${w.remainingHours}h left of ${w.budgetHours}h`;
     const subsidiaryLabel = w.subsidiaryCode ? ` &middot; Subsidiary ${escapeHtml(w.subsidiaryCode)}` : " &middot; No subsidiary code on file";
+    const priceLabel =
+      w.estimatedPrice == null && w.appliedPrice == null
+        ? ""
+        : ` &middot; Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}${
+            w.smartsheetSyncedAt ? " (Smartsheet)" : ""
+          }`;
 
     if (womEditing.has(w.code)) {
       const locationOptions = locations
@@ -2049,7 +2090,7 @@ export async function renderAdminReview(container) {
 
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}${subsidiaryLabel}</span></div>
+        <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}${subsidiaryLabel}${priceLabel}</span></div>
         <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
         <select class="wom-status-select">${statusOptions}</select>
         <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
