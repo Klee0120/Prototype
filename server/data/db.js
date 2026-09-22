@@ -998,6 +998,33 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode)
   return findWom(code);
 }
 
+// budget_hours can be null (womWithRemaining then leaves usedHours null too),
+// so this is the one place that always answers "does this WOM actually have
+// any hours logged against it" regardless of whether a budget was ever set.
+function countWomAllocatedHours(code) {
+  const { total } = db.prepare("SELECT COALESCE(SUM(hours), 0) AS total FROM allocations WHERE wom_code = ?").get(code);
+  return total;
+}
+
+// A WOM created by mistake (a test entry, a typo) should just go away
+// rather than sit around forever with a status. Deleting one that already
+// has hours allocated against it would silently pull those hours out from
+// under whatever technician week they're on, so that's blocked unless the
+// caller explicitly passes force -- at which point those allocation rows
+// are removed right along with it.
+function deleteWom(code, { force = false } = {}) {
+  if (!findWom(code)) return { error: "not_found" };
+  const allocatedHours = countWomAllocatedHours(code);
+  if (allocatedHours > 0 && !force) {
+    return { error: "has_allocations", allocatedHours };
+  }
+  if (allocatedHours > 0) {
+    db.prepare("DELETE FROM allocations WHERE wom_code = ?").run(code);
+  }
+  db.prepare("DELETE FROM woms WHERE code = ?").run(code);
+  return { ok: true, allocatedHoursRemoved: allocatedHours };
+}
+
 // "pending" is a WOM request that's been added to the Smartsheet tracker but
 // that RFM hasn't yet requested a Toyota PO for. "requested" is the next
 // step -- RFM has asked Toyota to generate the WOM/PO (the tracker's own
@@ -1662,6 +1689,7 @@ module.exports = {
   listWoms,
   findWom,
   createWom,
+  deleteWom,
   WOM_STATUSES,
   setWomStatus,
   markWomSmartsheetReflected,

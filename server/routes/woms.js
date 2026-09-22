@@ -38,6 +38,26 @@ router.post("/", requireAuth, requireAdmin, (req, res) => {
   res.status(201).json({ ok: true });
 });
 
+// For a WOM created by mistake -- a test entry, a typo -- rather than
+// leaving it sitting around under some status forever. Blocked by default
+// if hours are already allocated against it (force: true removes those
+// allocation rows too, so use with care -- see db.deleteWom).
+router.delete("/:code", requireAuth, requireAdmin, (req, res) => {
+  const force = Boolean((req.body || {}).force);
+  const result = db.deleteWom(req.params.code, { force });
+  if (result.error === "not_found") return res.status(404).json({ error: "WOM not found" });
+  if (result.error === "has_allocations") {
+    return res.status(409).json({
+      error: `${result.allocatedHours}h already allocated against ${req.params.code} -- deleting it will remove those hours from technician timesheets too`,
+      allocatedHours: result.allocatedHours,
+    });
+  }
+
+  const note = result.allocatedHoursRemoved > 0 ? ` (removed ${result.allocatedHoursRemoved}h of allocated hours along with it)` : "";
+  db.addAudit(req.user.id, "WOM_DELETED", `${req.user.name} deleted WOM ${req.params.code}${note}`);
+  res.json({ ok: true });
+});
+
 router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
   const { status } = req.body || {};
   if (!db.WOM_STATUSES.includes(status)) {

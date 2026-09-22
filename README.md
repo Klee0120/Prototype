@@ -125,7 +125,14 @@ Demo logins:
   and Closed together, since both mean the job was billed), and
   **Cancelled**. Each row leads with the **project name** and a **location**
   tag — the two things people actually recognize — with the WOM code shown
-  small and secondary, since it mostly matters for keying into JDE/UKG
+  small and secondary, since it mostly matters for keying into JDE/UKG.
+  A WOM can also be **deleted** outright (its own button on the row,
+  admin-only, `DELETE /api/woms/:code`) for one created by mistake — a test
+  entry, a typo — rather than leaving it sitting under some status forever.
+  Blocked with a clear error if hours are already allocated against it
+  anywhere (deleting would otherwise silently pull those hours out from
+  under a technician's timesheet); the confirm dialog surfaces that and asks
+  again before forcing it through, which also removes those allocation rows
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day, with a live
   **Total** readout in both decimal (e.g. `42.5`) and UKG's own clock format
@@ -852,7 +859,9 @@ server/
                               allocation and clear the flag, without unlocking the rest of the week)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
                               :code/pricing (hand-entered estimated/applied $, overwritten by a
-                              later Smartsheet sync), POST :code/complete (tech-facing)
+                              later Smartsheet sync), POST :code/complete (tech-facing),
+                              DELETE :code (admin-only, blocked if hours are already allocated
+                              against it unless force is passed)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
                               pattern), UKG hours, pending-punch flag, UKG-confirmed checklist,
                               roster, profile (basic info, onboarding, devices + IT requests,
@@ -910,7 +919,9 @@ tests/
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region,
                                  Smartsheet-reflected flag (set on close, cleared on reopen, admin-only),
-                                 cancelling a WOM blocks technician allocation same as any non-open status
+                                 cancelling a WOM blocks technician allocation same as any non-open status,
+                                 deleting a WOM (admin-only, 404 unknown, blocked with allocated hours
+                                 unless forced, force removes those allocations too)
   schedule.test.js               WOM-only month calendar: auth required, malformed-month rejected,
                                     tech-visible, E&F/time-off excluded, correct calendar date,
                                     inactive techs excluded

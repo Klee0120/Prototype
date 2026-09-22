@@ -2170,6 +2170,7 @@ export async function renderAdminReview(container) {
         <select class="wom-status-select">${statusOptions}</select>
         <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
         <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
+        <button class="btn btn-link delete-wom-btn" type="button">Delete</button>
       </div>
       <div class="wom-desc">${metaLine}</div>
       <div class="review-row-detail"></div>
@@ -2178,6 +2179,32 @@ export async function renderAdminReview(container) {
     el.querySelector(".edit-wom-btn").addEventListener("click", async () => {
       womEditing.add(w.code);
       await drawWoms(content);
+    });
+
+    // A WOM created by mistake (a test entry, a typo) should just go away.
+    // Blocked with a 409 if hours are already allocated against it -- ask
+    // to confirm that specific, scarier consequence before forcing it.
+    el.querySelector(".delete-wom-btn").addEventListener("click", async () => {
+      if (!window.confirm(`Delete "${w.description}" (${w.code})? This can't be undone.`)) return;
+      try {
+        await api.delete(`/api/woms/${encodeURIComponent(w.code)}`);
+        await drawWoms(content);
+      } catch (err) {
+        if (err.status === 409 && err.payload && err.payload.allocatedHours != null) {
+          const forceConfirmed = window.confirm(
+            `${err.payload.allocatedHours}h already allocated against ${w.code} on technician timesheets. Deleting it removes those hours too -- delete anyway?`
+          );
+          if (!forceConfirmed) return;
+          try {
+            await api.delete(`/api/woms/${encodeURIComponent(w.code)}`, { force: true });
+            await drawWoms(content);
+          } catch (err2) {
+            window.alert(`Could not delete ${w.code}: ${err2.message}`);
+          }
+        } else {
+          window.alert(`Could not delete ${w.code}: ${err.message}`);
+        }
+      }
     });
 
     // Admin can move a WOM to any status at any time -- e.g. straight to

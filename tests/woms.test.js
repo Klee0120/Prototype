@@ -188,6 +188,54 @@ test("woms: open/closed status management", async (t) => {
     });
     assert.equal(alloc.status, 400);
   });
+
+  await t.test("admin can delete a WOM that was created by mistake (no hours allocated)", async () => {
+    const create = await server.call("POST", "/api/woms", {
+      userId: "ADMIN",
+      body: { code: "WOM-DELETE-ME", description: "Test entry", locationCode: "PRINCETON" },
+    });
+    assert.equal(create.status, 201);
+
+    const forbidden = await server.call("DELETE", "/api/woms/WOM-DELETE-ME", { userId: "T1001" });
+    assert.equal(forbidden.status, 403);
+
+    const del = await server.call("DELETE", "/api/woms/WOM-DELETE-ME", { userId: "ADMIN" });
+    assert.equal(del.status, 200);
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    assert.ok(!list.body.some((w) => w.code === "WOM-DELETE-ME"));
+  });
+
+  await t.test("deleting an unknown WOM 404s", async () => {
+    const res = await server.call("DELETE", "/api/woms/WOM-NOPE", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("deleting a WOM with hours already allocated is blocked unless forced", async () => {
+    const create = await server.call("POST", "/api/woms", {
+      userId: "ADMIN",
+      body: { code: "WOM-DELETE-USED", description: "Test entry with hours", locationCode: "PRINCETON" },
+    });
+    assert.equal(create.status, 201);
+
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const alloc = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "WOM-DELETE-USED", hours: 4 }] },
+    });
+    assert.equal(alloc.status, 200);
+
+    const blocked = await server.call("DELETE", "/api/woms/WOM-DELETE-USED", { userId: "ADMIN" });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.allocatedHours, 4);
+
+    const forced = await server.call("DELETE", "/api/woms/WOM-DELETE-USED", { userId: "ADMIN", body: { force: true } });
+    assert.equal(forced.status, 200);
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    assert.ok(!list.body.some((w) => w.code === "WOM-DELETE-USED"));
+  });
 });
 
 test("locations: E&F job number and region tracking", async (t) => {
