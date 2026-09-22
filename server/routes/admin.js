@@ -277,6 +277,7 @@ function computeWeekRow(tech, weekMonday) {
     ukgConfirmedBy: week.ukgConfirmedBy,
     hasTimeOff: week.allocations.some((a) => a.type === "timeoff"),
     purelyhrVerifiedAt: week.purelyhrVerifiedAt,
+    weekendAddendumAt: week.weekendAddendumAt,
   };
 }
 

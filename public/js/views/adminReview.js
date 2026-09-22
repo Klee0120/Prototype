@@ -1208,10 +1208,19 @@ export async function renderAdminReview(container) {
     const stage2 = balanced; // allocation split matches UKG
     const stage3 = Boolean(row.ukgConfirmedAt); // admin confirmed it's in the real UKG system
     const stage4 = Boolean(row.purelyhrVerifiedAt); // time off checked against PurelyHR (only applies if hasTimeOff)
-    const isDone = stage3 && (!row.hasTimeOff || stage4);
+    const hasWeekendAddendum = Boolean(row.weekendAddendumAt); // tech added Sat/Sun hours after this week was already locked
+    const isDone = stage3 && (!row.hasTimeOff || stage4) && !hasWeekendAddendum;
     el.className = `review-row ${isDone ? "review-row-ready" : "review-row-pending"}`;
 
     el.innerHTML = `
+      ${
+        hasWeekendAddendum
+          ? `<div class="weekend-addendum-note">
+              <strong>Weekend hours added</strong> since this week was ${row.status} -- review and adjust to match UKG in Tech Allocation.
+              <button class="btn btn-link review-view-weekend-btn" type="button">Review in Tech Allocation</button>
+            </div>`
+          : ""
+      }
       <div class="review-row-summary">
         <div class="review-row-name">${escapeHtml(row.technician.name)}</div>
         <div class="review-steps">
@@ -1279,6 +1288,15 @@ export async function renderAdminReview(container) {
           purelyhrBtn.disabled = false;
           window.alert(`Could not update: ${err.message}`);
         }
+      });
+    }
+
+    const weekendBtn = el.querySelector(".review-view-weekend-btn");
+    if (weekendBtn) {
+      weekendBtn.addEventListener("click", async () => {
+        allocTechId = row.technician.id;
+        activeTab = "techalloc";
+        await draw();
       });
     }
 

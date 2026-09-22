@@ -380,7 +380,12 @@ Demo logins:
   screen — admin can edit those rows directly, or unlock the whole week if
   Mon-Fri also needs a fix), and click "Mark reviewed" to clear it. The
   underlying week status (draft/submitted/approved) never changes as part
-  of this — it's a separate flag, not a status transition
+  of this — it's a separate flag, not a status transition. **Also surfaced
+  directly on Weekly Review**, not just Overview — a technician's row there
+  shows the same "Weekend hours added -- needs review" banner with a
+  "Review in Tech Allocation" button, since Weekly Review is the screen
+  admin is usually already looking at week-by-week and previously had no
+  indication a weekend addendum existed at all beyond a raw hours mismatch
 - **Sat/Sun don't have to match UKG hours to submit, even on a still-open
   week** — the same leniency as the weekend addendum above, just for the
   ordinary case where a technician gets called in on a weekend during a

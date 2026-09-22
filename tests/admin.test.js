@@ -387,6 +387,13 @@ test("weekend hours addendum: log Sat/Sun on a locked week without unlocking", a
     // Mon-Fri stays exactly as already approved.
     const monday = detail.body.allocations.find((a) => a.day === "Mon");
     assert.equal(monday.locationCode, "PRINCETON");
+
+    // Weekly Review's own data source (not just the technician's own week
+    // detail) needs this too -- otherwise admin has no way to see the flag
+    // from the screen they're actually looking at.
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001Row = overview.body.find((r) => r.technician.id === "T1001");
+    assert.ok(t1001Row.weekendAddendumAt);
   });
 
   await t.test("admin can acknowledge the addendum, clearing the flag", async () => {

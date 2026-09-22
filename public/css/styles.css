@@ -376,6 +376,18 @@ button, input, select {
   margin: 0 0 8px;
 }
 
+/* Standalone (not nested in .status-banner) -- used on Weekly Review's row,
+   which has no colored banner wrapper of its own. */
+.review-row .weekend-addendum-note {
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
 .split-row-warning {
   background: var(--danger-bg);
   color: var(--danger);
