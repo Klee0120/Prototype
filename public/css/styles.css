@@ -376,9 +376,10 @@ button, input, select {
   margin: 0 0 8px;
 }
 
-/* Standalone (not nested in .status-banner) -- used on Weekly Review's row,
-   which has no colored banner wrapper of its own. */
-.review-row .weekend-addendum-note {
+/* Standalone (not nested in .status-banner) -- used on Weekly Review's row
+   and inside the weekend section on the week screen, neither of which has a
+   colored banner wrapper of its own. */
+.weekend-addendum-note {
   background: var(--warn-bg);
   color: var(--warn);
   font-size: 13px;
@@ -386,6 +387,33 @@ button, input, select {
   padding: 8px 10px;
   border-radius: 6px;
   margin-bottom: 8px;
+}
+
+/* The weekend-hours section on the week screen -- deliberately its own
+   bordered/tinted box, not just another day card, so a technician sees it
+   right away instead of scrolling past a full Mon-Fri grid to find it. */
+.weekend-section {
+  background: var(--card);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.weekend-section-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.weekend-section-hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+.weekend-day-grid {
+  margin-bottom: 10px;
 }
 
 .split-row-warning {
@@ -829,6 +857,17 @@ button, input, select {
   font-size: 12px;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.weekend-edit-hours {
+  width: 64px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.weekend-edit-table {
+  margin-bottom: 10px;
 }
 
 .audit-table {

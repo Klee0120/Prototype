@@ -447,6 +447,80 @@ test("weekend hours addendum: log Sat/Sun on a locked week without unlocking", a
   });
 });
 
+// Weekly Review's inline editor uses this endpoint to correct (if needed)
+// and accept a weekend-hours addendum in one step, rather than the plain
+// acknowledge-weekend endpoint above (which just clears the flag with no
+// way to fix the hours first).
+test("accept-weekend-hours: admin corrects and accepts in one step", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const meta = await server.call("GET", "/api/meta/current-week");
+  const week = meta.body.weekMonday;
+
+  await t.test("setup: submit and approve T1001's week, then log a weekend addendum", async () => {
+    await server.call("POST", `/api/admin/weeks/T1001/${week}/unlock`, { userId: "ADMIN" });
+    const submit = await submitFullWeek(server, "T1001", week, "PRINCETON");
+    assert.equal(submit.status, 200);
+    const approve = await server.call("POST", `/api/admin/weeks/T1001/${week}/approve`, { userId: "ADMIN" });
+    assert.equal(approve.status, 200);
+
+    const logged = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/weekend-allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Sat", type: "ef", locationCode: "PRINCETON", hours: 5 }] },
+    });
+    assert.equal(logged.status, 200);
+    assert.ok(logged.body.weekendAddendumAt);
+  });
+
+  await t.test("rejects with no pending addendum", async () => {
+    // Use a week that was never touched for weekend hours -- no addendum
+    // to accept.
+    const otherWeek = meta.body.weekMonday;
+    const res = await server.call("POST", `/api/technicians/T1002/weeks/${otherWeek}/accept-weekend-hours`, {
+      userId: "ADMIN",
+      body: { allocations: [] },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("a technician cannot accept (admin-only)", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/accept-weekend-hours`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Sat", type: "ef", locationCode: "PRINCETON", hours: 5 }] },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects a payload that includes a weekday", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/accept-weekend-hours`, {
+      userId: "ADMIN",
+      body: { allocations: [{ day: "Mon", type: "ef", locationCode: "PRINCETON", hours: 8 }] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("admin corrects the hours and accepts in one call -- flag clears immediately", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/accept-weekend-hours`, {
+      userId: "ADMIN",
+      body: { allocations: [{ day: "Sat", type: "ef", locationCode: "PRINCETON", hours: 4.5 }] },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.weekendAddendumAt, null);
+
+    const detail = await server.call("GET", `/api/technicians/T1001/weeks/${week}`, { userId: "T1001" });
+    assert.equal(detail.body.weekendAddendumAt, null);
+    const sat = detail.body.allocations.find((a) => a.day === "Sat");
+    assert.equal(sat.hours, 4.5);
+
+    // No separate acknowledge call needed -- the flag is already clear, and
+    // it doesn't require anything from the technician's side either.
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const t1001Row = overview.body.find((r) => r.technician.id === "T1001");
+    assert.equal(t1001Row.weekendAddendumAt, null);
+  });
+});
+
 test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

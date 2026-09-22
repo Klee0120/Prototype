@@ -18,6 +18,9 @@ const TIME_OFF_OPTIONS = [
   { value: "holiday", label: "Holiday" },
 ];
 
+const WEEKEND_DAYS = ["Sat", "Sun"];
+const REGULAR_DAY_NAMES = DAY_NAMES.filter((d) => !WEEKEND_DAYS.includes(d));
+
 const WEEKLY_HOURS_TARGET = 40;
 // Mirrors OT_NOT_ON_WOM_FLAG_THRESHOLD / the short-hours check in
 // server/routes/admin.js -- same number, so what the technician sees here
@@ -211,23 +214,36 @@ export async function renderTechWeek(container, techIdOverride) {
             ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
             : ""
         }
-        ${
-          weekendEditable
-            ? `<div class="status-note">Called in on a weekend after this week was ${week.status}? You can still log Saturday/Sunday hours below — Mon-Fri stays exactly as ${week.status}.</div>`
-            : ""
-        }
-        ${
-          week.weekendAddendumAt
-            ? `<div class="status-note weekend-addendum-note">
-                <strong>Weekend hours added</strong> since this week was ${week.status}.
-                ${state.user.role === "admin" ? "Review and adjust the Sat/Sun hours below to match UKG, then mark it reviewed." : "Your admin will review these and adjust them to match UKG's actual time."}
-                ${state.user.role === "admin" ? `<button class="btn btn-link ack-weekend-btn" type="button">Mark reviewed</button>` : ""}
-              </div>`
-            : ""
-        }
       </div>
 
       ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
+
+      ${
+        weekendEditable
+          ? `<div class="weekend-section">
+              <div class="weekend-section-title">Weekend hours</div>
+              <p class="weekend-section-hint">Called in after this week was already ${week.status}? Log Saturday/Sunday
+                here — Mon-Fri below stays exactly as ${week.status}.</p>
+              ${
+                week.weekendAddendumAt
+                  ? `<div class="weekend-addendum-note">
+                      <strong>Weekend hours added</strong> since this week was ${week.status}.
+                      ${
+                        state.user.role === "admin"
+                          ? "Accept these (and correct the hours if needed) from Weekly Review."
+                          : "Your admin will review these and adjust them to match UKG's actual time."
+                      }
+                    </div>`
+                  : ""
+              }
+              <div class="day-grid weekend-day-grid" id="weekend-day-grid"></div>
+              <div class="action-row">
+                <button class="btn btn-primary" id="save-weekend">Save weekend hours</button>
+                <span class="save-message">${escapeHtml(saveMessage)}</span>
+              </div>
+            </div>`
+          : ""
+      }
 
       <div id="wom-photo-prompt-host"></div>
       <div id="hours-check-host"></div>
@@ -236,20 +252,17 @@ export async function renderTechWeek(container, techIdOverride) {
 
       <div id="receipt-host"></div>
 
-      ${locked
-        ? weekendEditable
-          ? `<div class="action-row">
-              <button class="btn btn-secondary" id="save-weekend">Save weekend hours</button>
-              <span class="save-message">${escapeHtml(saveMessage)}</span>
-            </div>`
-          : ""
-        : `
+      ${
+        locked
+          ? ""
+          : `
         <div class="action-row">
           <button class="btn btn-secondary" id="save-draft">Save draft</button>
           ${timeOffOnly ? "" : `<button class="btn btn-primary" id="submit-week" ${canSubmitWeek() ? "" : "disabled"}>Submit for review</button>`}
           <span class="save-message">${escapeHtml(saveMessage)}</span>
         </div>
-      `}
+      `
+      }
     `;
 
     // Admins allocating on a technician's behalf don't need this nudge --
@@ -307,7 +320,14 @@ export async function renderTechWeek(container, techIdOverride) {
     }
 
     const grid = main.querySelector("#day-grid");
-    DAY_NAMES.forEach((day) => grid.appendChild(renderDayCard(day, mode, weekendEditable)));
+    // Once Sat/Sun move into their own dedicated weekend section (see below),
+    // this grid is just the regular Mon-Fri week -- for a still-open week
+    // (not weekendEditable), Sat/Sun stay here same as any other day.
+    (weekendEditable ? REGULAR_DAY_NAMES : DAY_NAMES).forEach((day) => grid.appendChild(renderDayCard(day, mode, false)));
+    if (weekendEditable) {
+      const weekendGrid = main.querySelector("#weekend-day-grid");
+      WEEKEND_DAYS.forEach((day) => weekendGrid.appendChild(renderDayCard(day, mode, true)));
+    }
     if (!timeOffOnly) main.querySelector("#receipt-host").appendChild(renderReceipt());
 
     main.querySelector("#prev-week").addEventListener("click", () => {
@@ -337,23 +357,9 @@ export async function renderTechWeek(container, techIdOverride) {
       main.querySelector("#save-draft").addEventListener("click", () => saveDraft());
       const submitBtn = main.querySelector("#submit-week");
       if (submitBtn) submitBtn.addEventListener("click", submit);
-    } else if (weekendEditable) {
-      main.querySelector("#save-weekend").addEventListener("click", () => saveWeekendHours());
     }
-
-    const ackWeekendBtn = main.querySelector(".ack-weekend-btn");
-    if (ackWeekendBtn) {
-      ackWeekendBtn.addEventListener("click", async () => {
-        ackWeekendBtn.disabled = true;
-        try {
-          await api.post(`/api/admin/weeks/${techId}/${state.weekMonday}/acknowledge-weekend`);
-          week.weekendAddendumAt = null;
-          draw();
-        } catch (err) {
-          ackWeekendBtn.disabled = false;
-          window.alert(`Could not mark reviewed: ${err.message}`);
-        }
-      });
+    if (weekendEditable) {
+      main.querySelector("#save-weekend").addEventListener("click", () => saveWeekendHours());
     }
 
     const prefSelect = main.querySelector(".notification-pref-select");

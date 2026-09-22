@@ -238,6 +238,46 @@ router.put("/:id/weeks/:weekMonday/weekend-allocations", requireAuth, (req, res)
   res.json({ ok: true, weekendAddendumAt: week.weekendAddendumAt });
 });
 
+// Admin-only: correct the Sat/Sun hours a technician logged (if UKG's
+// actual time came out different) and accept the addendum in the same
+// step -- no separate "acknowledge" round trip, and never bounces back to
+// the technician for their own re-approval. Whatever's sent here becomes
+// the final Sat/Sun record; if admin didn't need to change anything, the
+// UI just resubmits what the technician already logged.
+router.post("/:id/weeks/:weekMonday/accept-weekend-hours", requireAuth, (req, res) => {
+  const { id, weekMonday } = req.params;
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+
+  const tech = db.findTechnician(id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const week = db.getWeek(id, weekMonday);
+  if (!week.weekendAddendumAt) {
+    return res.status(409).json({ error: "This week has no pending weekend-hours addendum" });
+  }
+
+  const allocations = Array.isArray(req.body && req.body.allocations) ? req.body.allocations : null;
+  if (!allocations) return res.status(400).json({ error: "allocations array is required" });
+
+  const weekendOnly = allocations.filter((a) => a.day !== "Sat" && a.day !== "Sun");
+  if (weekendOnly.length > 0) {
+    return res.status(400).json({ error: "This endpoint only accepts Saturday/Sunday allocations" });
+  }
+
+  const { error, normalized } = normalizeAllocations(allocations);
+  if (error) return res.status(400).json({ error });
+
+  db.saveWeekendAllocations(id, weekMonday, normalized);
+  const updated = db.acknowledgeWeekendAddendum(id, weekMonday);
+  db.addAudit(
+    req.user.id,
+    "WEEKEND_HOURS_ACCEPTED",
+    `${req.user.name} corrected and accepted weekend hours for ${tech.name}, week ${weekMonday}`
+  );
+
+  res.json({ ok: true, weekendAddendumAt: updated.weekendAddendumAt, allocations: updated.allocations.map(presentAllocation) });
+});
+
 router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
   const { id, weekMonday } = req.params;
   if (!canView(req, id)) {

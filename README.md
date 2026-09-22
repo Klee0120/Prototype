@@ -369,25 +369,27 @@ Demo logins:
   letting admin fix it directly)
 - **Weekend hours addendum**: if a technician gets called in over the
   weekend on a week that's already submitted/approved, they can still log
-  Saturday/Sunday hours directly on their locked week — a "Weekend Entry"
-  badge appears on the Sat/Sun day cards, which stay fully editable (add
-  split, default to home, remove) with their own **Save weekend hours**
-  button, while Monday–Friday stays exactly as already
-  submitted/approved. No unlock needed, and the hours don't have to match
-  UKG at save time — the technician just logs what they worked. Saving sets
-  a flag (surfaced as a red "Weekend hours added -- needs review" banner on
-  the admin's **Overview** tab, with a "View" link straight into that
-  technician's Tech Allocation week) so admin knows to look, adjust the
-  Sat/Sun hours to match UKG's actual time (via the same Tech Allocation
-  screen — admin can edit those rows directly, or unlock the whole week if
-  Mon-Fri also needs a fix), and click "Mark reviewed" to clear it. The
-  underlying week status (draft/submitted/approved) never changes as part
-  of this — it's a separate flag, not a status transition. **Also surfaced
-  directly on Weekly Review**, not just Overview — a technician's row there
-  shows the same "Weekend hours added -- needs review" banner with a
-  "Review in Tech Allocation" button, since Weekly Review is the screen
-  admin is usually already looking at week-by-week and previously had no
-  indication a weekend addendum existed at all beyond a raw hours mismatch
+  Saturday/Sunday hours directly on their locked week — no unlock needed,
+  and the hours don't have to match UKG at save time, since the technician
+  just logs what they worked and admin true's it up at review time.
+  Deliberately its own **Weekend hours** box (accent-bordered, own "Save
+  weekend hours" button) placed right after the status banner — above the
+  Mon-Fri grid, not buried in it and not at the bottom of the page — since
+  this is meant to feel like a distinct add-on for an unplanned callout, not
+  just another day card, and a technician shouldn't have to scroll past a
+  whole locked week to find where to log it. Saving flags the week (a red
+  "Weekend hours added -- needs review" banner on the admin's **Overview**
+  tab, with a "View" link) so admin knows to look. **Correcting and
+  accepting are one step, right on Weekly Review**: the flagged row there
+  shows the actual Sat/Sun entries inline — allocation, accounting code, and
+  an editable hours field — so admin can fix the hours to match UKG's actual
+  time (if needed) and click **Accept weekend hours** in a single action.
+  That one click both saves the correction and clears the flag; it never
+  bounces anything back to the technician for their own re-approval, and
+  never requires a separate "acknowledge" click or a detour to Tech
+  Allocation. The underlying week status (draft/submitted/approved) never
+  changes as part of any of this — it's a separate flag, not a status
+  transition.
 - **Sat/Sun don't have to match UKG hours to submit, even on a still-open
   week** — the same leniency as the weekend addendum above, just for the
   ordinary case where a technician gets called in on a weekend during a
@@ -737,7 +739,8 @@ server/
   routes/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation),
-                              PUT weekend-allocations (Sat/Sun addendum on a locked week)
+                              PUT weekend-allocations (Sat/Sun addendum on a locked week),
+                              POST accept-weekend-hours (admin-only: correct + accept in one step)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
                               POST :code/complete (tech-facing)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
@@ -774,6 +777,8 @@ tests/
                               Overview report OT-flagging, ot-trends, UKG-confirmed checklist,
                               pending-punch flag, weekend hours addendum (log without
                               unlocking, no UKG-match required, admin adjust + acknowledge),
+                              accept-weekend-hours (admin-only correct + accept in one step,
+                              rejects with no pending addendum, rejects a weekday payload),
                               short-hours flag (symmetric with OT, excluded from OT trends),
                               missing-UKG list, report-gap months, admin account
                               create/deactivate/self-deactivation-blocked, PurelyHR

@@ -853,10 +853,14 @@ export async function renderAdminReview(container) {
         } else if (kind === "tech-forms") {
           jumpToTech = { techId: tech, subTab: "forms" };
           activeTab = "technicians";
-        } else if (kind === "missing-ukg" || kind === "weekend") {
+        } else if (kind === "missing-ukg") {
           allocTechId = tech;
           state.weekMonday = week;
           activeTab = "techalloc";
+        } else if (kind === "weekend") {
+          state.weekMonday = week;
+          expanded.add(tech);
+          activeTab = "review";
         } else if (kind === "report-gap") {
           laborReportMonth = month;
           activeTab = "laborreports";
@@ -1132,13 +1136,12 @@ export async function renderAdminReview(container) {
     }
     content.querySelectorAll(".weekend-addendum-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        // Tech Allocation is where admin can actually see/edit a specific
-        // technician's specific week (the day-card weekend editing lives in
-        // techWeek.js), so route the addendum flag there rather than into
-        // Weekly Review's per-status detail table.
-        allocTechId = btn.dataset.tech;
+        // Weekly Review now has its own inline weekend-hours editor right
+        // on the row (correct + accept in one step), so route there instead
+        // of Tech Allocation.
         state.weekMonday = btn.dataset.week;
-        activeTab = "techalloc";
+        activeTab = "review";
+        expanded.add(btn.dataset.tech);
         await draw();
       });
     });
@@ -1216,8 +1219,9 @@ export async function renderAdminReview(container) {
       ${
         hasWeekendAddendum
           ? `<div class="weekend-addendum-note">
-              <strong>Weekend hours added</strong> since this week was ${row.status} -- review and adjust to match UKG in Tech Allocation.
-              <button class="btn btn-link review-view-weekend-btn" type="button">Review in Tech Allocation</button>
+              <strong>Weekend hours added</strong> since this week was ${row.status} -- correct the hours below if
+              they don't match UKG yet, then accept. Accepting doesn't send anything back to ${escapeHtml(row.technician.name.split(" ")[0])} for re-approval.
+              <div class="weekend-edit-rows" id="weekend-edit-${row.technician.id}">Loading weekend hours…</div>
             </div>`
           : ""
       }
@@ -1291,13 +1295,8 @@ export async function renderAdminReview(container) {
       });
     }
 
-    const weekendBtn = el.querySelector(".review-view-weekend-btn");
-    if (weekendBtn) {
-      weekendBtn.addEventListener("click", async () => {
-        allocTechId = row.technician.id;
-        activeTab = "techalloc";
-        await draw();
-      });
+    if (hasWeekendAddendum) {
+      await renderWeekendEditor(el.querySelector(`#weekend-edit-${row.technician.id}`), row, content, locationByCode, womByCode);
     }
 
     el.querySelector(".expand-btn").addEventListener("click", async () => {
@@ -1494,6 +1493,73 @@ export async function renderAdminReview(container) {
         <tbody>${rows}</tbody>
       </table>
     `;
+  }
+
+  // The Sat/Sun hours a technician logged after this week was already
+  // locked -- shown inline (with the same accounting codes as the main
+  // detail table, since that's what gets keyed into UKG) so admin can
+  // correct the hours to match UKG's actual time and accept in one click,
+  // without leaving Weekly Review or bouncing anything back to the tech.
+  async function renderWeekendEditor(container, row, content, locationByCode, womByCode) {
+    const techId = row.technician.id;
+    let detail;
+    try {
+      detail = await api.get(`/api/technicians/${techId}/weeks/${state.weekMonday}`);
+    } catch (err) {
+      container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    const weekendAllocs = detail.allocations.filter((a) => a.day === "Sat" || a.day === "Sun");
+    if (weekendAllocs.length === 0) {
+      container.innerHTML = `<p class="empty-note">No weekend hours logged.</p>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <table class="detail-table weekend-edit-table">
+        <thead><tr><th>Day</th><th>Allocation</th><th>Accounting Code</th><th>Hours</th></tr></thead>
+        <tbody>
+          ${weekendAllocs
+            .map(
+              (a, i) => `
+            <tr>
+              <td>${a.day}</td>
+              <td>${escapeHtml(describeAllocation(a, locationByCode))}</td>
+              <td>${escapeHtml(accountingCode(a, locationByCode, womByCode))}</td>
+              <td><input type="text" inputmode="decimal" class="weekend-edit-hours" data-idx="${i}" value="${a.hours}" /></td>
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <button class="btn btn-primary weekend-accept-btn" type="button">Accept weekend hours</button>
+      <span class="save-message weekend-accept-message"></span>
+    `;
+
+    container.querySelector(".weekend-accept-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const msg = container.querySelector(".weekend-accept-message");
+      btn.disabled = true;
+      msg.textContent = "";
+      const allocations = weekendAllocs.map((a, i) => {
+        const input = container.querySelector(`.weekend-edit-hours[data-idx="${i}"]`);
+        return {
+          day: a.day,
+          type: a.type,
+          locationCode: a.locationCode || null,
+          womCode: a.type === "wom" ? a.womCode : null,
+          timeOffType: a.type === "timeoff" ? a.timeOffType : undefined,
+          hours: Number(input.value),
+        };
+      });
+      try {
+        await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/accept-weekend-hours`, { allocations });
+        await drawReview(content);
+      } catch (err) {
+        btn.disabled = false;
+        msg.textContent = err.message;
+      }
+    });
   }
 
   function renderReviewActions(row) {
