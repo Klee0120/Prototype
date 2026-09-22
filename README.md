@@ -120,9 +120,20 @@ Demo logins:
   once it's Invoiced or Closed, same as before
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day, with a live
-  **Total** readout next to the day fields in both decimal (e.g. `42.5`)
-  and UKG's own clock format (`42:30`), so it's easy to eyeball against
-  the UKG screenshot you're transcribing from
+  **Total** readout in both decimal (e.g. `42.5`) and UKG's own clock format
+  (`42:30`), so it's easy to eyeball against the UKG screenshot you're
+  transcribing from — each individual day field shows this same live
+  decimal/clock pairing too, not just the total.
+- **UKG hours fields accept clock format directly, not just decimal.**
+  Typing the number straight off a UKG timesheet screenshot into a
+  decimal-only field is a trap: `8.25` decimal is 8h **15m**, not 8h25m, so
+  naively typing "8.25" to mean "8:25" silently saves the wrong value on any
+  punch that isn't a clean quarter hour. Every UKG hours field (the main
+  per-day fields, the bulk-paste box, and the corrected-hours field when
+  resolving a punch issue) now accepts either form — type `8:25` and it
+  converts to the correct decimal (`8.42`) the moment you leave the field,
+  or keep typing plain decimals as before. The live clock readout underneath
+  each field is the way to sanity-check either way.
 - Admin review screen: approve, reject (with note, returns to technician), or
   unlock an approved week for correction; UKG screenshots/receipts for that
   week are visible right there, not just on the technician's own screen

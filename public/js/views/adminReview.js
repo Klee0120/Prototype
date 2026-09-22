@@ -1239,24 +1239,6 @@ export async function renderAdminReview(container) {
     el.className = `review-row ${isDone ? "review-row-ready" : "review-row-pending"}`;
 
     el.innerHTML = `
-      ${
-        hasWeekendAddendum
-          ? `<div class="weekend-addendum-note">
-              <strong>Weekend hours added</strong> since this week was ${row.status} -- correct the hours below if
-              they don't match UKG yet, then accept. Accepting doesn't send anything back to ${escapeHtml(row.technician.name.split(" ")[0])} for re-approval.
-              <div class="weekend-edit-rows" id="weekend-edit-${row.technician.id}">Loading weekend hours…</div>
-            </div>`
-          : ""
-      }
-      ${
-        pendingPunchDays.length > 0
-          ? `<div class="weekend-addendum-note" id="punch-issue-edit-${row.technician.id}">
-              <strong>Punch issue flagged</strong> (${pendingPunchDays.join(", ")}) -- correct the hours below and resolve.
-              Resolving fixes just that day, without unlocking the rest of this ${row.status} week.
-              <div class="punch-issue-rows">Loading…</div>
-            </div>`
-          : ""
-      }
       <div class="review-row-summary">
         <div class="review-row-name">${escapeHtml(row.technician.name)}</div>
         <div class="review-steps">
@@ -1293,6 +1275,24 @@ export async function renderAdminReview(container) {
         }
         <button class="btn btn-link expand-btn" type="button">${expanded.has(row.technician.id) ? "Hide" : "Details"}</button>
       </div>
+      ${
+        hasWeekendAddendum
+          ? `<div class="weekend-addendum-note">
+              <strong>Weekend hours added</strong> since this week was ${row.status} -- correct the hours below if
+              they don't match UKG yet, then accept. Accepting doesn't send anything back to ${escapeHtml(row.technician.name.split(" ")[0])} for re-approval.
+              <div class="weekend-edit-rows" id="weekend-edit-${row.technician.id}">Loading weekend hours…</div>
+            </div>`
+          : ""
+      }
+      ${
+        pendingPunchDays.length > 0
+          ? `<div class="weekend-addendum-note" id="punch-issue-edit-${row.technician.id}">
+              <strong>Punch issue flagged</strong> (${pendingPunchDays.join(", ")}) -- correct the hours below and resolve.
+              Resolving fixes just that day, without unlocking the rest of this ${row.status} week.
+              <div class="punch-issue-rows">Loading…</div>
+            </div>`
+          : ""
+      }
       <div class="review-row-detail" id="detail-${row.technician.id}"></div>
     `;
 
@@ -1384,6 +1384,26 @@ export async function renderAdminReview(container) {
     return `${h}:${String(m).padStart(2, "0")}`;
   }
 
+  // Accepts either a UKG-style clock time ("8:25" -- 8 hours 25 minutes) or
+  // a plain decimal ("8.25"). Critical that these two formats are never
+  // confused: decimal 8.25 is 8h15m, not 8h25m, so typing the clock number
+  // straight off a timesheet screenshot into a decimal-only field would
+  // silently save the wrong value on any punch that isn't a clean quarter
+  // hour. A colon is the only signal needed to tell them apart.
+  function parseHoursOrClock(raw) {
+    const trimmed = String(raw).trim();
+    if (trimmed === "") return 0;
+    if (trimmed.includes(":")) {
+      const [hPart, mPart] = trimmed.split(":");
+      const h = Number(hPart);
+      const m = Number(mPart);
+      if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+      return round2(h + m / 60);
+    }
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function renderUkgForm(detail, justSaved) {
     const inputs = DAY_NAMES.map((day) => {
       const pending = Boolean(detail.pendingPunchByDay && detail.pendingPunchByDay[day]);
@@ -1391,7 +1411,7 @@ export async function renderAdminReview(container) {
       return `
         <label class="ukg-day-field ${pending ? "ukg-day-field-pending" : ""}">
           <span>${day}</span>
-          <input type="text" inputmode="decimal" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" />
+          <input type="text" inputmode="decimal" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" title="Type either a decimal (8.25) or UKG's clock time (8:15)" />
           <span class="ukg-day-clock" data-day-clock="${day}">${hoursToClock(dayHours)}</span>
           <button type="button" class="btn btn-link ukg-pending-punch-btn" data-day="${day}" data-flagged="${pending}" title="Flag or clear a pending punch correction for this day">${pending ? "⚠ Pending" : "Flag punch"}</button>
         </label>`;
@@ -1400,6 +1420,7 @@ export async function renderAdminReview(container) {
     return `
       <form class="ukg-hours-form">
         <div class="ukg-hours-title">UKG hours (from timesheet)</div>
+        <p class="ukg-hours-hint">Type either a decimal (8.25) or UKG's own clock time (8:15) -- it converts automatically.</p>
         <div class="ukg-day-fields">
           ${inputs}
           <div class="ukg-day-field ukg-total-field">
@@ -1411,7 +1432,7 @@ export async function renderAdminReview(container) {
           </div>
         </div>
         <div class="ukg-paste-row">
-          <input type="text" class="ukg-paste-input" placeholder="Paste 7 values, Mon→Sun (e.g. 8 8 8 7 9 0 0)" />
+          <input type="text" class="ukg-paste-input" placeholder="Paste 7 values, Mon→Sun (e.g. 8 8 8:15 7 9 0 0)" />
           <button type="button" class="btn btn-link ukg-fill-week">Fill week</button>
         </div>
         <button type="submit" class="btn btn-secondary">Save UKG hours</button>
@@ -1426,7 +1447,7 @@ export async function renderAdminReview(container) {
 
     function updateTotal() {
       const total = round2(
-        [...form.querySelectorAll("input[data-day]")].reduce((s, input) => s + (Number(input.value) || 0), 0)
+        [...form.querySelectorAll("input[data-day]")].reduce((s, input) => s + parseHoursOrClock(input.value), 0)
       );
       form.querySelector(".ukg-total-decimal").textContent = total;
       form.querySelector(".ukg-total-clock").textContent = hoursToClock(total);
@@ -1435,12 +1456,20 @@ export async function renderAdminReview(container) {
     function updateDayClock(input) {
       const day = input.dataset.day;
       const clockEl = form.querySelector(`[data-day-clock="${day}"]`);
-      if (clockEl) clockEl.textContent = hoursToClock(Number(input.value) || 0);
+      if (clockEl) clockEl.textContent = hoursToClock(parseHoursOrClock(input.value));
     }
 
     form.querySelectorAll("input[data-day]").forEach((input) => {
       input.addEventListener("input", () => {
         justSavedUkg.delete(row.technician.id);
+        updateDayClock(input);
+        updateTotal();
+      });
+      // Settle whatever was typed -- clock format included -- into plain
+      // decimal once the field is left, so what's on screen always matches
+      // what Save will actually send.
+      input.addEventListener("blur", () => {
+        input.value = parseHoursOrClock(input.value);
         updateDayClock(input);
         updateTotal();
       });
@@ -1464,13 +1493,14 @@ export async function renderAdminReview(container) {
     form.querySelector(".ukg-fill-week").addEventListener("click", () => {
       const raw = form.querySelector(".ukg-paste-input").value.trim();
       const values = raw.split(/[\s,]+/).filter((v) => v !== "");
-      if (values.length !== 7 || values.some((v) => Number.isNaN(Number(v)))) {
-        msg.textContent = "Paste exactly 7 numbers (Mon through Sun).";
+      const isValidToken = (v) => v.includes(":") ? /^\d{1,2}:\d{1,2}$/.test(v) : !Number.isNaN(Number(v));
+      if (values.length !== 7 || !values.every(isValidToken)) {
+        msg.textContent = "Paste exactly 7 numbers or clock times (Mon through Sun), e.g. 8 8 8:15 7 9 0 0.";
         return;
       }
       const inputs = form.querySelectorAll("input[data-day]");
       inputs.forEach((input, i) => {
-        input.value = values[i];
+        input.value = parseHoursOrClock(values[i]);
         updateDayClock(input);
       });
       justSavedUkg.delete(row.technician.id);
@@ -1483,7 +1513,7 @@ export async function renderAdminReview(container) {
       e.preventDefault();
       const hours = {};
       form.querySelectorAll("input[data-day]").forEach((input) => {
-        hours[input.dataset.day] = Number(input.value) || 0;
+        hours[input.dataset.day] = parseHoursOrClock(input.value);
       });
       try {
         await api.put(`/api/admin/weeks/${row.technician.id}/${state.weekMonday}/ukg-hours`, { hours });
@@ -1634,7 +1664,7 @@ export async function renderAdminReview(container) {
             }
             <label class="punch-issue-ukg-label">
               Corrected UKG hours for ${day}:
-              <input type="text" inputmode="decimal" class="punch-issue-ukg-hours" value="${currentUkg}" />
+              <input type="text" inputmode="decimal" class="punch-issue-ukg-hours" value="${currentUkg}" title="Type either a decimal (8.25) or UKG's clock time (8:15)" />
             </label>
             ${
               dayAllocs.length === 0
@@ -1670,7 +1700,7 @@ export async function renderAdminReview(container) {
         const msg = dayEl.querySelector(".punch-issue-message");
         btn.disabled = true;
         msg.textContent = "";
-        const hours = Number(dayEl.querySelector(".punch-issue-ukg-hours").value);
+        const hours = parseHoursOrClock(dayEl.querySelector(".punch-issue-ukg-hours").value);
         const allocations = dayAllocs.map((a, i) => {
           const input = dayEl.querySelector(`.punch-issue-edit-hours[data-idx="${i}"]`);
           return {

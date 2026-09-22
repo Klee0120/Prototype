@@ -410,6 +410,7 @@ button, input, select {
   font-weight: 600;
   padding: 8px 10px;
   border-radius: 6px;
+  margin-top: 8px;
   margin-bottom: 8px;
 }
 
@@ -1067,6 +1068,12 @@ button, input, select {
   text-transform: uppercase;
   color: var(--muted);
   margin-bottom: 8px;
+}
+
+.ukg-hours-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 10px;
 }
 
 .ukg-day-fields {
