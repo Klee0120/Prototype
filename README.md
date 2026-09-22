@@ -815,8 +815,12 @@ a missing code is obvious rather than silently blank.
   "date"/"requested" (matches the real tracker's own `Date Requested (Auto)`
   column, filled in automatically there when RFM checks its `Order WOM/PO`
   box), the Maximo work order # by "maximo", and the JDE subsidiary/service
-  code by "subsidiary"/"code" (a real column on the tracker in its own
-  right — pulled in as-is, not derived from anything). **Location is the one
+  code by "subsid"/"code" — deliberately the truncated root "subsid" rather
+  than "subsidiary", since the real tracker's own column is spelled
+  "Subsidary Code" (missing the second "i"); "subsid" matches both the
+  correct and the misspelled version, so a later fix to the sheet's spelling
+  wouldn't break the match either way (a real column on the tracker in its
+  own right — pulled in as-is, not derived from anything). **Location is the one
   exception**: the sheet only has a plain site name ("Site Location"), no
   notion of this app's own location codes, so it's matched by name against
   `db.listLocations()` — an exact case-insensitive match first, then

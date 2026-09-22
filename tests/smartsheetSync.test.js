@@ -31,7 +31,9 @@ const COLUMNS = [
   { id: 4, title: "Project Name" },
   { id: 5, title: "Date Requested" },
   { id: 6, title: "Site Location" },
-  { id: 7, title: "Subsidiary Code" },
+  // Misspelled exactly as it is on the real tracker (missing the second
+  // "i") -- findColumn's keyword for this field has to tolerate that.
+  { id: 7, title: "Subsidary Code" },
   { id: 8, title: "Maximo #" },
 ];
 
@@ -130,7 +132,7 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.equal(res.status, 200);
       assert.equal(res.body.created, 2);
       assert.equal(res.body.locationColumn, "Site Location");
-      assert.equal(res.body.subsidiaryColumn, "Subsidiary Code");
+      assert.equal(res.body.subsidiaryColumn, "Subsidary Code");
       assert.equal(res.body.maximoColumn, "Maximo #");
 
       const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });

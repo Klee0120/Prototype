@@ -545,7 +545,10 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       dateRequested: smartsheet.findColumn(sheet.columns, ["date", "requested"]),
       maximo: smartsheet.findColumn(sheet.columns, ["maximo"]),
       location: smartsheet.findColumn(sheet.columns, ["site", "location"]),
-      subsidiary: smartsheet.findColumn(sheet.columns, ["subsidiary", "code"]),
+      // "subsid" (not "subsidiary") on purpose -- the real tracker's column
+      // is misspelled "Subsidary Code" (missing the second "i"), and this
+      // shorter root matches both the correct and the misspelled version.
+      subsidiary: smartsheet.findColumn(sheet.columns, ["subsid", "code"]),
     };
     const result = db.syncWomsFromSheetRows(sheet.rows, columns);
     db.addAudit(
