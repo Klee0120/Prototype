@@ -998,27 +998,18 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode)
   return findWom(code);
 }
 
-// "pending" is a WOM request that's been added to the Smartsheet tracker but
-// that RFM hasn't yet approved sending to Toyota -- technicians can't
-// allocate hours against one. "requested" is the step after that: RFM has
-// approved it and it's been sent to Toyota to generate the WOM/PO, so field
-// work can reasonably start even though there's no real WOM # yet -- this
-// status IS allocatable (see WOM_ALLOCATABLE_STATUSES below), same as
-// "open". Neither a sync nor anything else sets "requested" automatically --
-// Smartsheet has no column telling us RFM made that call, so it's a manual
-// status change an admin/RFM makes here once they've actually sent it (same
-// mechanism as any other status change, routes/woms.js's PATCH :code). Once
-// the real WOM # shows up on a later sync, a "pending" or "requested" WOM is
-// promoted straight to "open" either way. "invoiced" sits between open and
-// closed -- work is done and billed, but not yet formally closed out. Any
-// status is settable by an admin at any time, independent of a technician's
-// own "mark complete" action, which only ever sets "closed" directly.
-const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "closed"];
-
-// The statuses a technician can allocate hours against -- "open" (a real WOM
-// # exists) and "requested" (no real WOM # yet, but RFM has already sent the
-// request to Toyota, so work can start ahead of the paperwork catching up).
-const WOM_ALLOCATABLE_STATUSES = ["open", "requested"];
+// "pending" is a WOM request that's been added to the Smartsheet tracker
+// but hasn't reached the point in the real PSE process where admin creates
+// the actual WOM and issues the PO with a real WOM # (steps 1-8 of the
+// process; the WOM # only exists from step 9 onward) -- technicians can't
+// allocate hours against one (same "must be open" check as any other
+// non-open WOM), it exists here purely so admin/RFM can track and act on
+// it before it's a real job. "invoiced" sits between open and closed --
+// work is done and billed, but not yet formally closed out. Any status is
+// settable by an admin at any time (see routes/woms.js), independent of a
+// technician's own "mark complete" action, which only ever sets "closed"
+// directly.
+const WOM_STATUSES = ["pending", "open", "invoiced", "closed"];
 
 function setWomStatus(code, status) {
   const existing = findWom(code);
@@ -1090,17 +1081,16 @@ function findWomBySmartsheetRowId(rowId) {
 // after its code changes:
 //   - A row with a real WOM # assigned syncs as a normal 'open' WOM, coded
 //     with that real number.
-//   - A row with no WOM # yet (still just a request) syncs as a 'pending'
-//     WOM instead, coded "PENDING-<row id>" since there's no real number
-//     yet. A technician can't allocate against a 'pending' WOM -- it needs
-//     an admin/RFM to first decide to send it to Toyota (moving it to
-//     'requested' by hand, see WOM_ALLOCATABLE_STATUSES above) before any
-//     time can be charged to it.
+//   - A row with no WOM # yet (still just a request -- per the real PSE
+//     process, that only exists from the point admin creates the WOM and
+//     issues the PO onward) syncs as a 'pending' WOM instead, coded
+//     "PENDING-<row id>" since there's no real number yet. Technicians
+//     can't allocate hours against a non-open WOM, so this is purely
+//     visible/trackable for admin/RFM until it's a real job.
 //   - The first time a later sync finds a real WOM # for a row that's
-//     still 'pending' or 'requested' here, that record is "promoted":
-//     renamed to the real code and moved to 'open'. After that, this never
-//     touches status again -- an admin's later invoiced/closed doesn't get
-//     overwritten.
+//     still 'pending' here, that record is "promoted": renamed to the real
+//     code and moved to 'open'. After that, this never touches status
+//     again -- an admin's later invoiced/closed doesn't get overwritten.
 function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, descriptionColumn) {
   let created = 0;
   let promoted = 0;
@@ -1140,7 +1130,7 @@ function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, d
       continue;
     }
 
-    if ((existing.status === "pending" || existing.status === "requested") && realCode) {
+    if (existing.status === "pending" && realCode) {
       db.prepare(
         "UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?"
       ).run(realCode, estimatedPrice, appliedPrice, stamp, existing.code);
@@ -1648,7 +1638,6 @@ module.exports = {
   findWom,
   createWom,
   WOM_STATUSES,
-  WOM_ALLOCATABLE_STATUSES,
   setWomStatus,
   markWomSmartsheetReflected,
   setWomDetails,

@@ -155,7 +155,7 @@ function normalizeAllocations(allocations) {
     if (a.type === "wom") {
       const wom = db.findWom(a.womCode);
       if (!wom) return { error: `Unknown WOM: ${a.womCode}` };
-      if (!db.WOM_ALLOCATABLE_STATUSES.includes(wom.status)) return { error: `WOM ${a.womCode} is not open` };
+      if (wom.status !== "open") return { error: `WOM ${a.womCode} is not open` };
       if (wom.location_code !== a.locationCode) {
         return { error: `WOM ${a.womCode} does not belong to location ${a.locationCode}` };
       }
@@ -412,7 +412,7 @@ router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
   for (const a of week.allocations) {
     if (a.type !== "wom") continue;
     const wom = db.findWom(a.womCode);
-    if (!wom || !db.WOM_ALLOCATABLE_STATUSES.includes(wom.status)) {
+    if (!wom || wom.status !== "open") {
       return res.status(400).json({ error: `WOM ${a.womCode} is no longer open; update allocation before submitting` });
     }
   }

@@ -24,19 +24,8 @@ function formatMoney(n) {
 const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
 const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
 const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
-const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "closed"];
-// "pending" = logged on Smartsheet, not yet allocatable -- RFM hasn't
-// approved sending it to Toyota. "requested" = RFM approved and sent it to
-// Toyota to generate the WOM/PO; no real WOM # yet, but a technician CAN
-// charge time to it. Set "requested" here by hand once that's actually
-// been sent -- nothing sets it automatically.
-const WOM_STATUS_LABELS = {
-  pending: "Awaiting RFM approval",
-  requested: "Requested from Toyota (no WOM # yet)",
-  open: "Open",
-  invoiced: "Invoiced",
-  closed: "Closed",
-};
+const WOM_STATUSES = ["pending", "open", "invoiced", "closed"];
+const WOM_STATUS_LABELS = { pending: "Pending Toyota approval", open: "Open", invoiced: "Invoiced", closed: "Closed" };
 
 const VENDOR_STATUS_BADGE_CLASS = {
   active: "approved",
@@ -864,14 +853,14 @@ export async function renderAdminReview(container) {
     sections.appendChild(renderWomSmartsheetSection(content, womsNeedingSmartsheetUpdate));
     sections.appendChild(
       renderPrioritySection(
-        "WOM requests awaiting RFM approval to send to Toyota",
+        "WOM requests pending Toyota approval",
         pendingWoms.map((w) => ({
           label: w.description,
           detail: w.estimatedPrice != null ? `Est. $${formatMoney(w.estimatedPrice)}` : "No estimate yet",
           kind: "wom-pending",
           womCode: w.code,
         })),
-        "Nothing waiting on RFM approval right now."
+        "Nothing waiting on Toyota approval right now."
       )
     );
     sections.appendChild(
@@ -2114,7 +2103,7 @@ export async function renderAdminReview(container) {
       return el;
     }
 
-    const statusBadgeClass = { open: "approved", requested: "submitted", invoiced: "submitted", closed: "rejected" }[w.status] || "draft";
+    const statusBadgeClass = { open: "approved", invoiced: "submitted", closed: "rejected" }[w.status] || "draft";
     const statusOptions = WOM_STATUSES.map(
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
     ).join("");
