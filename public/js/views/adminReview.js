@@ -2159,11 +2159,17 @@ export async function renderAdminReview(container) {
     const locationTag = loc
       ? `<span class="wom-location">${escapeHtml(loc.name)}</span>`
       : `<span class="wom-location wom-location-missing">No location on file</span>`;
+    // A WOM a Smartsheet sync has never touched (created by hand here, or
+    // left over from testing) has no smartsheetSyncedAt at all -- flagging
+    // that distinguishes "real WOMs not synced yet" from "we never actually
+    // imported this one" at a glance, since those are exactly the ones
+    // worth reviewing for deletion.
+    const sourceTag = w.smartsheetSyncedAt == null ? `<span class="wom-source-tag">Not imported from Smartsheet</span>` : "";
 
     el.innerHTML = `
       <div class="review-row-summary">
         <div class="review-row-name">
-          ${escapeHtml(w.description)}${locationTag}
+          ${escapeHtml(w.description)}${locationTag}${sourceTag}
           <span class="wom-code">${escapeHtml(w.code)}</span>
         </div>
         <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>

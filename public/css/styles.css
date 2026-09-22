@@ -996,6 +996,20 @@ button, input, select {
   font-style: italic;
 }
 
+.wom-source-tag {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-radius: 999px;
+  padding: 2px 9px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
 .wom-code {
   font-weight: 400;
   font-size: 12px;

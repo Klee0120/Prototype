@@ -132,7 +132,11 @@ Demo logins:
   Blocked with a clear error if hours are already allocated against it
   anywhere (deleting would otherwise silently pull those hours out from
   under a technician's timesheet); the confirm dialog surfaces that and asks
-  again before forcing it through, which also removes those allocation rows
+  again before forcing it through, which also removes those allocation rows.
+  A row also flags **"Not imported from Smartsheet"** whenever no sync has
+  ever touched it (`smartsheetSyncedAt` is still null) — those are exactly
+  the ones worth a look when cleaning up test entries or typos, since a
+  real WOM in active use almost always has a sync behind it
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day, with a live
   **Total** readout in both decimal (e.g. `42.5`) and UKG's own clock format
