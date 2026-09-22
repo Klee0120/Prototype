@@ -721,18 +721,28 @@ a missing code is obvious rather than silently blank.
     tracker but hasn't reached Toyota approval / PO issuance yet — creates a
     **pending** WOM instead (code `PENDING-<smartsheet row id>`, e.g.
     `PENDING-501`). A pending WOM is invisible to technicians (it fails the
-    same "must be open" check every other non-open WOM does when a
+    same "must be allocatable" check every other non-open WOM does when a
     technician tries to allocate against it) and doesn't count toward the
-    admin Priorities badge, but shows up in its own **"WOM requests pending
-    Toyota approval"** Priorities section so the RFM can track what's still
-    working its way through the approval steps.
+    admin Priorities badge, but shows up in its own **"WOM requests awaiting
+    RFM approval to send to Toyota"** Priorities section so the RFM can track
+    what's still waiting on that decision.
+  - There's a third status in between, **`requested`**: RFM has looked at a
+    pending request and decided to actually send it to Toyota to generate the
+    WOM/PO, so field work can reasonably start even though there's still no
+    real WOM #. Nothing sets this automatically — Smartsheet has no column
+    that tells this app RFM made that call — so an admin/RFM sets it by hand
+    (the same status dropdown used for any other WOM, on the E&F Locations &
+    WOM tab). A `requested` WOM **is** allocatable, exactly like `open`; only
+    `pending` blocks a technician.
   - Sync tracks each row by Smartsheet's own row id (not the WOM # cell), so
-    when a pending row's request is later approved and gets a real WOM #
-    assigned, the *same* WOM record is renamed and promoted to `open` —
-    it's never duplicated, and the old `PENDING-...` code disappears.
+    when a `pending` or `requested` row's request is later approved and gets
+    a real WOM # assigned, the *same* WOM record is renamed and promoted to
+    `open` — it's never duplicated, and the old `PENDING-...` code
+    disappears.
   - A row that's already synced before just gets its `estimatedPrice` /
     `appliedPrice` refreshed. A sync **never overwrites a status an admin
-    set by hand** here (e.g. `closed`) back to `open` or `pending`.
+    set by hand** here (e.g. `closed`, or `requested`) back to `open` or
+    `pending`.
   A sync never writes anything back to Smartsheet — it only ever reads. The
   two dollar columns are located by keyword (`findColumn` in `smartsheet.js`
   looks for a column whose title contains "estimate"/"wom"/"$" or
@@ -897,10 +907,12 @@ tests/
                                         keyword tolerance, safe 409 (not a crash) when Smartsheet
                                         isn't configured, admin-only
   smartsheetSync.test.js               WOM sync: a real-WOM# row creates an open WOM, a blank/"0"
-                                        WOM# row creates a pending WOM invisible to techs, a pending
-                                        row later getting a real WOM# promotes it without duplicating,
-                                        re-syncing never reverts an admin's own status change,
-                                        admin-only, hand-entered pricing survives until a real sync
+                                        WOM# row creates a pending WOM invisible to techs, RFM
+                                        approving it (pending -> requested) makes it allocatable with
+                                        no real WOM# yet, a pending or requested row later getting a
+                                        real WOM# promotes it without duplicating, re-syncing never
+                                        reverts an admin's own status change, admin-only, hand-entered
+                                        pricing survives until a real sync
 public/
   index.html
   css/styles.css

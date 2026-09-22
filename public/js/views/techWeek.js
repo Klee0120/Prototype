@@ -91,8 +91,12 @@ export async function renderTechWeek(container, techIdOverride) {
     emptyText: "No UKG screenshots or receipts attached yet.",
   });
 
+  // "open" (a real WOM # exists) and "requested" (RFM has already sent the
+  // request to Toyota, so work can start ahead of a real WOM # showing up)
+  // are both allocatable; "pending" isn't -- RFM hasn't approved sending it
+  // to Toyota yet.
   function openWomsAt(locationCode) {
-    return woms.filter((w) => w.status === "open" && w.locationCode === locationCode);
+    return woms.filter((w) => (w.status === "open" || w.status === "requested") && w.locationCode === locationCode);
   }
 
   function dayTotal(day) {
