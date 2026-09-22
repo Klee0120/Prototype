@@ -1,48 +1,54 @@
 const express = require("express");
 const db = require("../data/db");
 const { requireAuth } = require("../middleware/auth");
-const { DAY_NAMES } = require("../utils/week");
+const { DAY_NAMES, mondayOf, datesForWeek, shiftWeek } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 
 const router = express.Router();
 
-const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
+// A calendar of WOM project work by actual date, across all technicians --
+// deliberately WOM-only (no E&F, no time off), since this is meant to show
+// what's scheduled out project-wise, not a general timesheet view. Open to
+// any logged-in user, not admin-only, same reasoning as the rest of this
+// route: anyone should be able to see what's already on the books before
+// scheduling more.
+router.get("/:month", requireAuth, (req, res) => {
+  const { month } = req.params; // "YYYY-MM"
+  const [y, m] = month.split("-").map(Number);
+  if (!y || !m || m < 1 || m > 12) return res.status(400).json({ error: "month must be in YYYY-MM form" });
 
-// Read-only "who's where this week" grid -- open to any logged-in user (not
-// admin-only) since the whole point is letting anyone, tech or admin, see a
-// teammate's already-committed work before assigning them something else,
-// without a live Teams/Outlook connection (not built yet -- see README).
-// Deliberately exposes only id/name/day assignments, not the rest of a
-// technician's roster profile.
-router.get("/:weekMonday", requireAuth, (req, res) => {
-  const { weekMonday } = req.params;
-  const locationByCode = Object.fromEntries(db.listLocations().map((l) => [l.code, l]));
+  const firstOfMonth = new Date(y, m - 1, 1);
+  const lastOfMonth = new Date(y, m, 0);
+  const gridStartMonday = mondayOf(firstOfMonth);
+  const lastMonday = mondayOf(lastOfMonth);
+
   const womByCode = Object.fromEntries(db.listWoms().map((w) => [w.code, w]));
+  const techs = db.listTechnicians().filter((t) => t.employment_status === "active");
 
-  const rows = db
-    .listTechnicians()
-    .filter((t) => t.employment_status === "active")
-    .map((t) => {
-      const week = db.getWeek(t.id, weekMonday);
-      const days = Object.fromEntries(DAY_NAMES.map((d) => [d, []]));
+  const byDate = {};
+  let weekMonday = gridStartMonday;
+  while (weekMonday <= lastMonday) {
+    const dates = datesForWeek(weekMonday);
+    for (const tech of techs) {
+      const week = db.getWeek(tech.id, weekMonday);
       for (const raw of week.allocations) {
         const a = presentAllocation(raw);
-        let label;
-        if (a.type === "wom") {
-          const w = womByCode[a.womCode];
-          label = `${a.womCode}${w ? ` — ${w.description}` : ""}`;
-        } else if (a.type === "ef") {
-          const l = locationByCode[a.locationCode];
-          label = l ? l.name : a.locationCode;
-        } else {
-          label = TIME_OFF_LABELS[a.timeOffType] || a.timeOffType;
-        }
-        days[a.day].push({ kind: a.type, label, hours: a.hours });
+        if (a.type !== "wom") continue;
+        const dateIso = dates[DAY_NAMES.indexOf(a.day)];
+        if (!byDate[dateIso]) byDate[dateIso] = [];
+        const w = womByCode[a.womCode];
+        byDate[dateIso].push({
+          womCode: a.womCode,
+          description: w ? w.description : "",
+          techName: tech.name,
+          hours: a.hours,
+        });
       }
-      return { techId: t.id, techName: t.name, days };
-    });
+    }
+    weekMonday = shiftWeek(weekMonday, 1);
+  }
 
-  res.json(rows);
+  res.json({ gridStart: gridStartMonday, gridEnd: datesForWeek(lastMonday)[6], byDate });
 });
 
 module.exports = router;

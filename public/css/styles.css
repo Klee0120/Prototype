@@ -1350,39 +1350,46 @@ button, input, select {
   background: var(--bg);
 }
 
-.schedule-table-wrap {
-  overflow-x: auto;
-}
-
-.schedule-table {
+.schedule-calendar {
+  table-layout: fixed;
   min-width: 900px;
 }
 
-.schedule-table th,
-.schedule-table td {
+.schedule-calendar th,
+.schedule-calendar td {
   vertical-align: top;
+  width: 14.28%;
 }
 
-.schedule-tech-name {
+.schedule-calendar-cell {
+  height: 90px;
+  padding: 6px !important;
+  overflow-y: auto;
+}
+
+.schedule-calendar-outside {
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.schedule-calendar-daynum {
   font-weight: 600;
-  white-space: nowrap;
+  font-size: 12px;
+  margin-bottom: 4px;
 }
 
 .schedule-entry {
-  font-size: 12px;
-  margin-bottom: 4px;
+  font-size: 11px;
+  margin-bottom: 3px;
   display: flex;
   align-items: baseline;
-  gap: 5px;
+  gap: 4px;
+  flex-wrap: wrap;
 }
 
 .schedule-entry .badge {
   font-size: 10px;
   padding: 1px 6px;
-}
-
-.schedule-empty-cell {
-  color: var(--muted);
 }
 
 .profile-header {

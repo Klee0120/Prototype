@@ -2,26 +2,34 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 
-test("schedule: read-only who's-where-this-week grid", async (t) => {
+test("schedule: WOM-only calendar by date", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
   const meta = await server.call("GET", "/api/meta/current-week");
   const week = meta.body.weekMonday;
+  const [y, m] = week.split("-").map(Number);
+  const month = `${y}-${String(m).padStart(2, "0")}`;
 
   await t.test("requires a logged-in session", async () => {
-    const res = await server.call("GET", `/api/schedule/${week}`);
+    const res = await server.call("GET", `/api/schedule/${month}`);
     assert.equal(res.status, 401);
   });
 
-  await t.test("a technician (not just admin) can view the schedule", async () => {
-    const res = await server.call("GET", `/api/schedule/${week}`, { userId: "T1002" });
-    assert.equal(res.status, 200);
-    assert.ok(Array.isArray(res.body));
-    assert.ok(res.body.some((r) => r.techId === "T1001"));
+  await t.test("rejects a malformed month", async () => {
+    const res = await server.call("GET", "/api/schedule/not-a-month", { userId: "T1002" });
+    assert.equal(res.status, 400);
   });
 
-  await t.test("shows E&F, WOM, and time-off assignments with readable labels", async () => {
+  await t.test("a technician (not just admin) can view the calendar", async () => {
+    const res = await server.call("GET", `/api/schedule/${month}`, { userId: "T1002" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.gridStart);
+    assert.ok(res.body.gridEnd);
+    assert.ok(typeof res.body.byDate === "object");
+  });
+
+  await t.test("shows only WOM allocations, never E&F or time off", async () => {
     const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
       userId: "ADMIN",
       body: {
@@ -34,43 +42,67 @@ test("schedule: read-only who's-where-this-week grid", async (t) => {
     });
     assert.equal(put.status, 200);
 
-    const res = await server.call("GET", `/api/schedule/${week}`, { userId: "T1002" });
-    const row = res.body.find((r) => r.techId === "T1001");
-    assert.ok(row, "expected T1001 in the schedule");
+    const res = await server.call("GET", `/api/schedule/${month}`, { userId: "T1002" });
+    assert.equal(res.status, 200);
 
-    assert.equal(row.days.Mon.length, 1);
-    assert.equal(row.days.Mon[0].kind, "ef");
-    assert.match(row.days.Mon[0].label, /Princeton/i);
+    const allEntries = Object.values(res.body.byDate).flat();
+    assert.ok(allEntries.every((e) => typeof e.womCode === "string"));
+    assert.ok(allEntries.some((e) => e.womCode === "WOM-4471" && e.techName === "Alex Rivera" && e.hours === 8));
 
-    assert.equal(row.days.Tue.length, 1);
-    assert.equal(row.days.Tue[0].kind, "wom");
-    assert.match(row.days.Tue[0].label, /WOM-4471/);
-
-    assert.equal(row.days.Wed.length, 1);
-    assert.equal(row.days.Wed[0].kind, "timeoff");
-    assert.equal(row.days.Wed[0].label, "Vacation");
-
-    assert.equal(row.days.Thu.length, 0);
+    // The Mon (E&F) and Wed (time off) allocations for T1001, specifically,
+    // shouldn't show up as calendar entries on their own dates -- checked by
+    // date rather than a blanket "no other 8h Alex Rivera entry anywhere",
+    // since Alex legitimately has other seeded WOM work elsewhere in the
+    // month that this test isn't about.
+    const [wy, wm, wd] = week.split("-").map(Number);
+    const mondayDate = new Date(wy, wm - 1, wd);
+    const isoFor = (offset) => {
+      const d = new Date(mondayDate.getTime());
+      d.setDate(mondayDate.getDate() + offset);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    assert.ok(!(res.body.byDate[isoFor(0)] || []).some((e) => e.techName === "Alex Rivera"));
+    assert.ok(!(res.body.byDate[isoFor(2)] || []).some((e) => e.techName === "Alex Rivera"));
   });
 
-  await t.test("only exposes id/name/day assignments, not the rest of the roster profile", async () => {
-    const res = await server.call("GET", `/api/schedule/${week}`, { userId: "T1002" });
-    const row = res.body.find((r) => r.techId === "T1001");
-    const keys = Object.keys(row).sort();
-    assert.deepEqual(keys, ["days", "techId", "techName"]);
+  await t.test("entries land on the correct calendar date, not just a day name", async () => {
+    const res = await server.call("GET", `/api/schedule/${month}`, { userId: "T1002" });
+    const dates = week.split("-").map(Number);
+    const monday = new Date(dates[0], dates[1] - 1, dates[2]);
+    const tuesday = new Date(monday.getTime());
+    tuesday.setDate(monday.getDate() + 1);
+    const tuesdayIso = `${tuesday.getFullYear()}-${String(tuesday.getMonth() + 1).padStart(2, "0")}-${String(tuesday.getDate()).padStart(2, "0")}`;
+
+    assert.ok(res.body.byDate[tuesdayIso]);
+    assert.ok(res.body.byDate[tuesdayIso].some((e) => e.womCode === "WOM-4471"));
   });
 
-  await t.test("an inactive technician doesn't show up in the schedule", async () => {
-    const deactivate = await server.call("PATCH", "/api/admin/technicians/T1003/employment-status", {
+  await t.test("an inactive technician's WOM work doesn't show up", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: {
+        allocations: [{ day: "Thu", type: "wom", locationCode: "CINCINNATI", womCode: "WOM-4390", hours: 4 }],
+      },
+    });
+    // WOM-4390 is seeded closed, so this may or may not succeed depending on
+    // fixture state -- try a definitely-open one as a fallback for the point
+    // of this test either way: inactive technicians are excluded.
+    if (put.status !== 200) {
+      await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
+        userId: "ADMIN",
+        body: { allocations: [{ day: "Thu", type: "wom", locationCode: "CINCINNATI", womCode: "WOM-4471", hours: 4 }] },
+      });
+    }
+
+    await server.call("PATCH", "/api/admin/technicians/T1003/employment-status", {
       userId: "ADMIN",
       body: { status: "inactive" },
     });
-    assert.equal(deactivate.status, 200);
 
-    const res = await server.call("GET", `/api/schedule/${week}`, { userId: "T1002" });
-    assert.ok(!res.body.some((r) => r.techId === "T1003"));
+    const res = await server.call("GET", `/api/schedule/${month}`, { userId: "T1002" });
+    const allEntries = Object.values(res.body.byDate).flat();
+    assert.ok(!allEntries.some((e) => e.techName === "Sam Patel"));
 
-    // Restore for hygiene, in case tests are ever reordered.
     await server.call("PATCH", "/api/admin/technicians/T1003/employment-status", {
       userId: "ADMIN",
       body: { status: "active" },

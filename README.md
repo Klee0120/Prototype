@@ -200,19 +200,21 @@ Demo logins:
   Any box left unchecked (or a stale invoice date) marks that vendor
   "Doc checks incomplete" on the Vendors list and rolls up into the
   Priorities tab, same flagging idea as an outdated form.
-- **Schedule tab**: a read-only "who's where this week" grid (one row per
-  active technician, one column per day), showing each day's location/WOM/
-  time-off assignments at a glance -- built entirely from allocations
-  already in this app (`GET /api/schedule/:weekMonday`, `server/routes/schedule.js`),
-  and open to any logged-in user (not admin-only), since the point is
-  letting anyone check a teammate's already-committed work before assigning
-  them something else, without needing a live calendar connection. **Not a
-  Microsoft Teams/Outlook integration** — that would need Azure AD app
-  registration and IT approval before any of it could be built; this tab is
-  deliberately structured so a future "real availability" overlay could be
-  added later without a redesign, but for now it only reflects what's been
-  allocated here, not a technician's other real-world commitments. See
-  "Where this stands" for what that future integration would actually need.
+- **Schedule tab**: a read-only month calendar of **WOM project work only**
+  — no E&F time and no time off, since the point is seeing what's already
+  scheduled project-wise, not a general timesheet view (Tech Allocation and
+  Weekly Review already cover that). Each day's cell lists every
+  technician's WOM assignment landing on that actual calendar date (WOM
+  code, hours, technician name), built entirely from allocations already in
+  this app (`GET /api/schedule/:month`, `server/routes/schedule.js`, month
+  as `YYYY-MM`) with **Prev/Next month** navigation, and open to any
+  logged-in user (not admin-only), since the point is letting anyone check
+  what's already on the books before scheduling more onto a project or a
+  person's plate. **Not a Microsoft Teams/Outlook integration** — that would
+  need Azure AD app registration and IT approval before any of it could be
+  built; for now it only reflects what's been allocated here, not a
+  technician's other real-world commitments. See "Where this stands" for
+  what that future integration would actually need.
 - **WOM projects closed here don't close on your external Smartsheet
   tracker** — a new Priorities section ("WOM projects closed -- update
   Smartsheet") lists every WOM that's been closed (by a technician's own
@@ -750,7 +752,7 @@ server/
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
                                   incl. formType/expiresAt for tech_form uploads
     vendors.js                  GET/POST/PATCH/DELETE vendor onboarding/compliance records (admin-only)
-    schedule.js                  GET /:weekMonday -- read-only who's-where-this-week grid (any logged-in user)
+    schedule.js                  GET /:month -- read-only WOM-only month calendar, by actual date (any logged-in user)
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -780,8 +782,9 @@ tests/
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region,
                                  Smartsheet-reflected flag (set on close, cleared on reopen, admin-only)
-  schedule.test.js               Read-only schedule grid: auth required, tech-visible, labels,
-                                    inactive techs excluded, no extra roster fields exposed
+  schedule.test.js               WOM-only month calendar: auth required, malformed-month rejected,
+                                    tech-visible, E&F/time-off excluded, correct calendar date,
+                                    inactive techs excluded
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
                                  (add/complete/edit), notification-pref, allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
