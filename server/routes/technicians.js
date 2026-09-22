@@ -268,6 +268,20 @@ router.post("/:id/weeks/:weekMonday/accept-weekend-hours", requireAuth, (req, re
   if (error) return res.status(400).json({ error });
 
   db.saveWeekendAllocations(id, weekMonday, normalized);
+
+  // The hours admin just typed/confirmed here ARE this day's UKG total as
+  // far as this app knows right now -- default the UKG hours field to match
+  // so the row balances immediately instead of silently staying off until
+  // admin remembers to separately retype the same number into UKG hours
+  // (from timesheet) below. Still fully editable there afterward if the
+  // real UKG punch comes out slightly different once admin keys it into
+  // the actual UKG system.
+  const ukgByDay = {};
+  for (const a of normalized) {
+    ukgByDay[a.day] = round2((ukgByDay[a.day] || 0) + a.hours);
+  }
+  if (Object.keys(ukgByDay).length > 0) db.setUkgHours(id, weekMonday, ukgByDay);
+
   const updated = db.acknowledgeWeekendAddendum(id, weekMonday);
   db.addAudit(
     req.user.id,

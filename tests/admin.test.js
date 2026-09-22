@@ -513,6 +513,11 @@ test("accept-weekend-hours: admin corrects and accepts in one step", async (t) =
     const sat = detail.body.allocations.find((a) => a.day === "Sat");
     assert.equal(sat.hours, 4.5);
 
+    // UKG hours for Sat should default to match what was just accepted, so
+    // the row balances immediately instead of staying off until admin
+    // separately retypes the same number into the UKG hours field.
+    assert.equal(detail.body.ukgHoursByDay.Sat, 4.5);
+
     // No separate acknowledge call needed -- the flag is already clear, and
     // it doesn't require anything from the technician's side either.
     const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });

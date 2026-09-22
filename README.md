@@ -389,7 +389,14 @@ Demo logins:
   never requires a separate "acknowledge" click or a detour to Tech
   Allocation. The underlying week status (draft/submitted/approved) never
   changes as part of any of this — it's a separate flag, not a status
-  transition.
+  transition. **Accepting also defaults that day's UKG hours (from
+  timesheet) to match** — otherwise the allocated total would jump by the
+  accepted hours while UKG stayed at 0, leaving the row looking unbalanced
+  until admin remembered to separately retype the same number into the UKG
+  hours field. It's still just a default: the UKG hours form is always
+  editable regardless of week status (never gated by the lock, on the
+  client or the server), so admin can adjust it further once the real UKG
+  punch is keyed in and comes out slightly different.
 - **Sat/Sun don't have to match UKG hours to submit, even on a still-open
   week** — the same leniency as the weekend addendum above, just for the
   ordinary case where a technician gets called in on a weekend during a
