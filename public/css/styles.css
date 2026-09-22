@@ -1039,6 +1039,28 @@ button, input, select {
   font-size: 13px;
 }
 
+.smartsheet-status {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  font-size: 14px;
+}
+
+.smartsheet-status-on {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.smartsheet-status-off {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.smartsheet-preview-table {
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
 .add-wom-form {
   display: flex;
   gap: 8px;

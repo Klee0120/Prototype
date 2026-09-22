@@ -691,6 +691,31 @@ a missing code is obvious rather than silently blank.
   (a Microsoft 365/Google Workspace mailbox's SMTP settings, or a
   transactional provider like SendGrid) — this app doesn't care which, it
   just needs standard SMTP auth.
+- **Smartsheet connection is a read-only preview so far, not a live
+  field sync yet.** `server/utils/smartsheet.js` is a thin, opt-in client
+  (same no-crash-until-configured pattern as the mailer above) for a
+  one-way pull from a single Smartsheet sheet — the external WOM project
+  tracker. Set two environment variables before starting the app:
+  `SMARTSHEET_API_TOKEN` (a personal access token — in Smartsheet, click
+  your account icon → **Apps & Integrations** → **API Access** → **Generate
+  new access token**; it's shown once, so copy it immediately) and
+  `SMARTSHEET_SHEET_ID` (the numeric ID of the specific sheet — visible via
+  the sheet's own **File → Properties**, or by right-clicking the sheet tab).
+  **Never paste the access token into a chat, an email, or anywhere outside
+  the server's own environment** — treat it exactly like a password, since
+  anyone who has it can read (and, depending on the token's own permissions,
+  possibly edit) every sheet it can see. Set both on the server itself (the
+  systemd service file, or a `.env` your process manager loads), the same
+  way the SMTP credentials above are set, then restart the app.
+  Once connected, the **E&F Locations & WOM tab** shows a "Smartsheet
+  Connection" panel with a **Preview data** button — pulls the sheet's real
+  column names and its first 5 rows, so the actual structure is visible
+  before any column gets mapped to a WOM field (estimated pricing,
+  description, etc.). This app never writes anything back to Smartsheet;
+  every call here is read-only. The next step — actually matching sheet
+  rows to WOM records by WOM #/code and pulling specific fields in — is a
+  distinct follow-on piece once the real column names are visible in that
+  preview, not built yet.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have
@@ -776,7 +801,8 @@ server/
                               roster, profile (basic info, onboarding, devices + IT requests,
                               allocation history, expiring-forms list), approve/reject/unlock
                               (works on submitted OR approved), weekend-addenda list +
-                              acknowledge-weekend, punch-issues list (tech-reported only)
+                              acknowledge-weekend, punch-issues list (tech-reported only),
+                              smartsheet/status + smartsheet/preview (read-only sheet preview)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -792,6 +818,9 @@ server/
     receipt.js               Server-side copy of the Reg/OT computeReceipt calculation (admin Overview)
     mailer.js                 Opt-in SMTP email (no-op until SMTP_* env vars are set) for the
                                  "your hours are ready" notification
+    smartsheet.js              Opt-in, read-only Smartsheet client (no-op until
+                                  SMARTSHEET_API_TOKEN/SMARTSHEET_SHEET_ID are set) --
+                                  fetchSheet/fetchSimplifiedSheet/simplifySheet
 scripts/
   deploy.sh               One-shot droplet setup: Node 22, app, systemd service, firewall
   import-vendors.js         One-time/repeatable bulk import of vendor records from a JSON
@@ -829,6 +858,8 @@ tests/
   vendors.test.js                 Vendor CRUD + authorization + audit logging
   audit.test.js                   Audit log writes and admin-only read access
   mailer.test.js                   Email is a safe no-op (not a crash) when SMTP isn't configured
+  smartsheet.test.js                 simplifySheet's column-id-to-title reshaping, safe 409
+                                        (not a crash) when Smartsheet isn't configured, admin-only
 public/
   index.html
   css/styles.css

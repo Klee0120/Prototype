@@ -1784,6 +1784,67 @@ export async function renderAdminReview(container) {
     }
   }
 
+  // Connection status + a read-only preview of the actual Smartsheet data
+  // (column names and a few sample rows) -- lets admin confirm the link
+  // works before any column ever gets mapped to a WOM field. This app
+  // never writes anything back to Smartsheet.
+  async function renderSmartsheetPanel(container) {
+    let status;
+    try {
+      status = await api.get("/api/admin/smartsheet/status");
+    } catch (err) {
+      container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    if (!status.connected) {
+      container.innerHTML = `
+        <div class="smartsheet-status smartsheet-status-off">
+          <strong>Not connected.</strong> Needs SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID set on the server,
+          then a restart.
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="smartsheet-status smartsheet-status-on">
+        <strong>Connected.</strong>
+        <button class="btn btn-link smartsheet-preview-btn" type="button">Preview data</button>
+      </div>
+      <div class="smartsheet-preview"></div>
+    `;
+
+    container.querySelector(".smartsheet-preview-btn").addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const previewEl = container.querySelector(".smartsheet-preview");
+      btn.disabled = true;
+      previewEl.innerHTML = `<p class="empty-note">Loading…</p>`;
+      try {
+        const preview = await api.get("/api/admin/smartsheet/preview");
+        previewEl.innerHTML = `
+          <p class="review-checklist-hint">
+            <strong>${escapeHtml(preview.sheetName)}</strong> — ${preview.rowCount} row${preview.rowCount === 1 ? "" : "s"},
+            ${preview.columns.length} column${preview.columns.length === 1 ? "" : "s"}. Showing the first
+            ${Math.min(5, preview.sampleRows.length)}.
+          </p>
+          <table class="detail-table smartsheet-preview-table">
+            <thead><tr>${preview.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${preview.sampleRows
+                .map((row) => `<tr>${preview.columns.map((c) => `<td>${escapeHtml(row[c] != null ? String(row[c]) : "")}</td>`).join("")}</tr>`)
+                .join("")}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        previewEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   async function drawWoms(content) {
     const [woms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
@@ -1791,6 +1852,13 @@ export async function renderAdminReview(container) {
     const efSubsidiary = locations[0] ? locations[0].efSubsidiaryCode : "20920000";
 
     content.innerHTML = `
+      <h3>Smartsheet Connection</h3>
+      <p class="review-checklist-hint">
+        A one-way, read-only link to your WOM tracker in Smartsheet -- this app only ever reads from it, never
+        writes back. Preview the connection here before any column gets mapped to a WOM field.
+      </p>
+      <div id="smartsheet-panel"></div>
+
       <h3>Locations</h3>
       <p class="review-checklist-hint">
         Each location has its own E&amp;F Contract Job Number and WOM Job Number (from the JDE lookup). E&amp;F time
@@ -1821,6 +1889,8 @@ export async function renderAdminReview(container) {
         <span class="save-message" id="wom-message"></span>
       </form>
     `;
+
+    await renderSmartsheetPanel(content.querySelector("#smartsheet-panel"));
 
     const locationList = content.querySelector("#location-list");
     for (const l of locations) {

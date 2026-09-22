@@ -5,6 +5,7 @@ const { DAY_NAMES, shiftWeek, currentWeekMonday } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 const { computeReceipt } = require("../utils/receipt");
 const mailer = require("../utils/mailer");
+const smartsheet = require("../utils/smartsheet");
 
 const OT_NOT_ON_WOM_FLAG_THRESHOLD = 3;
 const OT_TREND_WEEKS = 8;
@@ -415,6 +416,28 @@ router.patch("/weeks/:techId/:weekMonday/pending-punch", (req, res) => {
 // isn't currently looking at.
 router.get("/punch-issues", (req, res) => {
   res.json(db.listPendingPunchReports());
+});
+
+// Whether Smartsheet is connected (env vars set) -- lets the UI show a
+// simple status without exposing the token or sheet ID themselves.
+router.get("/smartsheet/status", (req, res) => {
+  res.json({ connected: smartsheet.isConfigured() });
+});
+
+// Read-only preview of the connected sheet: its actual column names and a
+// few sample rows. This app never writes back to Smartsheet -- the point
+// here is just confirming the connection works and seeing real column
+// names before any column-to-WOM-field mapping gets built on top of this.
+router.get("/smartsheet/preview", async (req, res) => {
+  if (!smartsheet.isConfigured()) {
+    return res.status(409).json({ error: "Smartsheet isn't connected yet -- set SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID" });
+  }
+  try {
+    const sheet = await smartsheet.fetchSimplifiedSheet();
+    res.json({ sheetName: sheet.sheetName, columns: sheet.columns, sampleRows: sheet.rows.slice(0, 5), rowCount: sheet.rows.length });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 router.post("/weeks/:techId/:weekMonday/approve", (req, res) => {

@@ -1,0 +1,51 @@
+// Thin, read-only client for a one-way pull from a single Smartsheet sheet
+// (the WOM project tracker). Opt-in via environment variables, same pattern
+// as server/utils/mailer.js -- if they aren't set, every call here fails
+// clearly rather than silently, and nothing elsewhere in the app depends on
+// it. This app never writes back to Smartsheet; it only ever reads.
+const SMARTSHEET_API_TOKEN = process.env.SMARTSHEET_API_TOKEN;
+const SMARTSHEET_SHEET_ID = process.env.SMARTSHEET_SHEET_ID;
+const SMARTSHEET_API_BASE = "https://api.smartsheet.com/2.0";
+
+function isConfigured() {
+  return Boolean(SMARTSHEET_API_TOKEN && SMARTSHEET_SHEET_ID);
+}
+
+// The raw Smartsheet shape: { name, columns: [{id, title, ...}], rows: [{id, cells: [{columnId, value, displayValue}]}] }
+async function fetchSheet() {
+  if (!isConfigured()) {
+    throw new Error("Smartsheet isn't connected -- set SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID");
+  }
+  const res = await fetch(`${SMARTSHEET_API_BASE}/sheets/${SMARTSHEET_SHEET_ID}`, {
+    headers: { Authorization: `Bearer ${SMARTSHEET_API_TOKEN}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Smartsheet API error ${res.status}: ${body || res.statusText}`);
+  }
+  return res.json();
+}
+
+// Reshapes the raw column-id-keyed cell arrays into { sheetName, columns:
+// ["Title", ...], rows: [{Title: value, ...}] } -- both easier for a human
+// (the admin preview) and for future column-to-WOM-field mapping logic to
+// work with than Smartsheet's own shape.
+function simplifySheet(rawSheet) {
+  const titleByColumnId = Object.fromEntries((rawSheet.columns || []).map((c) => [c.id, c.title]));
+  const columns = (rawSheet.columns || []).map((c) => c.title);
+  const rows = (rawSheet.rows || []).map((row) => {
+    const obj = {};
+    for (const cell of row.cells || []) {
+      const title = titleByColumnId[cell.columnId];
+      if (title) obj[title] = cell.displayValue !== undefined ? cell.displayValue : cell.value;
+    }
+    return obj;
+  });
+  return { sheetName: rawSheet.name, columns, rows };
+}
+
+async function fetchSimplifiedSheet() {
+  return simplifySheet(await fetchSheet());
+}
+
+module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet };
