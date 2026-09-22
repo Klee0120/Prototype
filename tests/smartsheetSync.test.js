@@ -140,6 +140,12 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.equal(matched.locationCode, "PRINCETON");
       assert.equal(matched.subsidiaryCode, "22052000 Electrical Installation");
       assert.equal(matched.maximoNumber, "19781019");
+      // Every column from the row, not just the ones this app's own logic
+      // reads directly -- verbatim, for the WOM's own "Smartsheet detail"
+      // panel.
+      assert.equal(matched.smartsheetData["WOM #"], "20777777");
+      assert.equal(matched.smartsheetData["Site Location"], "Princeton");
+      assert.equal(matched.smartsheetData["Subsidary Code"], "22052000 Electrical Installation");
 
       const unmatched = list.body.find((w) => w.code === "20777778");
       assert.equal(unmatched.locationCode, null);

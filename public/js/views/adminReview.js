@@ -99,6 +99,7 @@ export async function renderAdminReview(container) {
   // another tab, etc.). Detail is always fetched fresh when rendering.
   const expanded = new Set();
   const womsExpanded = new Set();
+  const womsSmartsheetExpanded = new Set();
   const womEditing = new Set();
   const locationEditing = new Set();
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
@@ -2199,10 +2200,16 @@ export async function renderAdminReview(container) {
         <select class="wom-status-select">${statusOptions}</select>
         <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
         <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
+        ${
+          w.smartsheetData
+            ? `<button class="btn btn-link smartsheet-detail-btn" type="button">${womsSmartsheetExpanded.has(w.code) ? "Hide Smartsheet detail" : "Smartsheet detail"}</button>`
+            : ""
+        }
         <button class="btn btn-link delete-wom-btn" type="button">Delete</button>
       </div>
       <div class="wom-desc">${metaLine}</div>
-      <div class="review-row-detail"></div>
+      <div class="review-row-detail wom-documents-detail"></div>
+      <div class="review-row-detail wom-smartsheet-detail"></div>
     `;
 
     el.querySelector(".edit-wom-btn").addEventListener("click", async () => {
@@ -2257,7 +2264,7 @@ export async function renderAdminReview(container) {
     });
 
     if (womsExpanded.has(w.code)) {
-      await renderAttachments(el.querySelector(".review-row-detail"), {
+      await renderAttachments(el.querySelector(".wom-documents-detail"), {
         title: "Documents & Photos",
         relatedType: "wom",
         relatedId: w.code,
@@ -2265,6 +2272,34 @@ export async function renderAdminReview(container) {
         canUpload: true,
         emptyText: "No documents attached yet.",
       });
+    }
+
+    const smartsheetDetailBtn = el.querySelector(".smartsheet-detail-btn");
+    if (smartsheetDetailBtn) {
+      smartsheetDetailBtn.addEventListener("click", async () => {
+        if (womsSmartsheetExpanded.has(w.code)) womsSmartsheetExpanded.delete(w.code);
+        else womsSmartsheetExpanded.add(w.code);
+        await drawWoms(content);
+      });
+    }
+
+    // Every column from the tracker's own row, verbatim -- not just the
+    // handful this app's own logic reads directly (pricing, Maximo #,
+    // subsidiary code, location). Covers every estimate/applied line item,
+    // PO/invoice/batch tracking, RFM/PSE approval flags, whatever else is on
+    // the sheet, without a dedicated field or a code change every time the
+    // sheet grows a column.
+    if (womsSmartsheetExpanded.has(w.code) && w.smartsheetData) {
+      const rows = Object.entries(w.smartsheetData)
+        .filter(([key]) => key !== "__smartsheetRowId")
+        .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(value == null || value === "" ? "—" : String(value))}</td></tr>`)
+        .join("");
+      el.querySelector(".wom-smartsheet-detail").innerHTML = `
+        <table class="detail-table wom-smartsheet-table">
+          <thead><tr><th>Column</th><th>Value</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
     }
 
     return el;

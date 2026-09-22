@@ -5,6 +5,14 @@ const { requireAuth, requireAdmin } = require("../middleware/auth");
 const router = express.Router();
 
 function presentWom(w) {
+  let smartsheetData = null;
+  if (w.smartsheet_raw_data) {
+    try {
+      smartsheetData = JSON.parse(w.smartsheet_raw_data);
+    } catch {
+      smartsheetData = null;
+    }
+  }
   return {
     code: w.code,
     description: w.description,
@@ -19,6 +27,12 @@ function presentWom(w) {
     estimatedPrice: w.estimated_price,
     appliedPrice: w.applied_price,
     smartsheetSyncedAt: w.smartsheet_synced_at,
+    // Every column from the tracker's own row, verbatim -- every estimate/
+    // applied line item, PO numbers, invoice/batch tracking, RFM/PSE
+    // approval flags, whatever else the sheet has -- not just the handful
+    // of fields this app's own logic reads directly. null for a WOM a sync
+    // has never touched.
+    smartsheetData,
   };
 }
 

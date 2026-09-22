@@ -835,10 +835,20 @@ a missing code is obvious rather than silently blank.
   WOM work is Toyota-billed and E&F is this contract's own yearly budget
   (see `accountingCode` in `adminReview.js`). If no column matches
   "date"/"requested", every not-yet-open row just stays `pending` — sync
-  still works, it just can't tell `pending` and `requested` apart. A WOM
-  without a Smartsheet match yet can still have pricing
-  hand-entered (`PATCH /api/woms/:code/pricing`) — a later sync overwrites
-  both fields once that WOM code is found there, since they're meant to
+  still works, it just can't tell `pending` and `requested` apart.
+  **Every other column on the tracker** — every estimate/applied line item
+  (labor, materials, contracted services, other direct costs, sales tax,
+  contingency), PO numbers, invoice/batch tracking, RFM/PSE approval flags,
+  whatever else is there — is kept too, verbatim, as one JSON blob
+  (`smartsheet_raw_data`) rather than a dedicated database column per field;
+  most of the ~75 columns on the real tracker will only ever matter for a
+  handful of WOMs, and the sheet gains new columns over time. The WOM
+  Projects tab has a **"Smartsheet detail"** button on any row a sync has
+  touched, showing every column/value pair from that row's own last sync —
+  covers "I want to see every column" without a schema change every time
+  the sheet grows one. A WOM without a Smartsheet match yet can still have
+  pricing hand-entered (`PATCH /api/woms/:code/pricing`) — a later sync
+  overwrites both fields once that WOM code is found there, since they're meant to
   mirror Smartsheet once a match exists, not be independently maintained
   here. **Admin-triggered for now, not on a schedule** — click "Sync WOMs
   from Smartsheet" whenever you want the latest numbers; automatic periodic
@@ -1023,7 +1033,8 @@ tests/
                                         duplicating, re-syncing never reverts an admin's own status
                                         change, Site Location/Subsidiary Code/Maximo # all sync in
                                         (location matched by name, tolerant of a shortened form, left
-                                        null rather than guessed at if nothing matches), admin-only,
+                                        null rather than guessed at if nothing matches), every column
+                                        from the row kept verbatim as smartsheetData, admin-only,
                                         hand-entered pricing survives until a
                                         real sync
 public/
