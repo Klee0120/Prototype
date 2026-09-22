@@ -231,7 +231,7 @@ export async function renderTechWeek(container, techIdOverride) {
                       ${
                         state.user.role === "admin"
                           ? "Accept these (and correct the hours if needed) from Weekly Review."
-                          : "Your admin will review these and adjust them to match UKG's actual time."
+                          : "Your admin will review these, correct them to match UKG's actual time if needed, and accept them -- no action needed from you."
                       }
                     </div>`
                   : ""
@@ -759,7 +759,7 @@ export async function renderTechWeek(container, techIdOverride) {
         allocations: weekendAllocations,
       });
       week.weekendAddendumAt = result.weekendAddendumAt;
-      saveMessage = "Weekend hours saved -- your admin will review and adjust as needed.";
+      saveMessage = "Weekend hours saved -- your admin will review, correct if needed, and accept them.";
     } catch (err) {
       saveMessage = err.message;
     }
