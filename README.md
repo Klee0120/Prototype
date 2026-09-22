@@ -248,16 +248,27 @@ Demo logins:
   scheduled project-wise, not a general timesheet view (Tech Allocation and
   Weekly Review already cover that). Each day's cell lists every
   technician's WOM assignment landing on that actual calendar date (WOM
-  code, hours, technician name), built entirely from allocations already in
-  this app (`GET /api/schedule/:month`, `server/routes/schedule.js`, month
-  as `YYYY-MM`) with **Prev/Next month** navigation, and open to any
+  code, hours, technician name, and site), built entirely from allocations
+  already in this app (`GET /api/schedule/:month`, `server/routes/schedule.js`,
+  month as `YYYY-MM`) with **Prev/Next month** navigation, and open to any
   logged-in user (not admin-only), since the point is letting anyone check
   what's already on the books before scheduling more onto a project or a
-  person's plate. **Not a Microsoft Teams/Outlook integration** — that would
-  need Azure AD app registration and IT approval before any of it could be
-  built; for now it only reflects what's been allocated here, not a
-  technician's other real-world commitments. See "Where this stands" for
-  what that future integration would actually need.
+  person's plate. A **site filter** (`?location=CODE` on the same endpoint)
+  narrows the whole calendar down to one location at a time, since a
+  mixed-site day is hard to read at a glance — every entry also always shows
+  its site regardless of the filter, for when "All sites" is selected.
+  Every date shown is explicitly labeled **"Tentative"**: a technician's own
+  planned allocation for that day, not a locked commitment, so the calendar
+  reads as a working plan rather than a confirmed schedule. **Clicking an
+  entry** opens that WOM's own detail inline (status, location, budget/
+  remaining hours, estimated/applied pricing) without leaving the calendar —
+  the schedule API embeds this straight from the underlying WOM record on
+  each entry, so no second request is needed. **Not a Microsoft
+  Teams/Outlook integration** — that would need Azure AD app registration
+  and IT approval before any of it could be built; for now it only reflects
+  what's been allocated here, not a technician's other real-world
+  commitments. See "Where this stands" for what that future integration
+  would actually need.
 - **WOM projects closed here don't close on your external Smartsheet
   tracker** — a new Priorities section ("WOM projects closed -- update
   Smartsheet") lists every WOM that's been closed (by a technician's own
@@ -884,7 +895,9 @@ server/
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
                                   incl. formType/expiresAt for tech_form uploads
     vendors.js                  GET/POST/PATCH/DELETE vendor onboarding/compliance records (admin-only)
-    schedule.js                  GET /:month -- read-only WOM-only month calendar, by actual date (any logged-in user)
+    schedule.js                  GET /:month -- read-only WOM-only month calendar, by actual date (any logged-in
+                                     user), optional ?location=CODE filter, each entry carries its WOM's own
+                                     status/budget/pricing detail for click-to-view on the client
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -928,7 +941,8 @@ tests/
                                  unless forced, force removes those allocations too)
   schedule.test.js               WOM-only month calendar: auth required, malformed-month rejected,
                                     tech-visible, E&F/time-off excluded, correct calendar date,
-                                    inactive techs excluded
+                                    inactive techs excluded, entries carry WOM detail for the
+                                    click-to-view panel, ?location= filter narrows to one site
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
                                  (add/complete/edit), notification-pref, allocation history
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,

@@ -77,6 +77,40 @@ test("schedule: WOM-only calendar by date", async (t) => {
     assert.ok(res.body.byDate[tuesdayIso].some((e) => e.womCode === "WOM-4471"));
   });
 
+  await t.test("each entry carries its own WOM's detail, for a click-to-see-more panel", async () => {
+    const res = await server.call("GET", `/api/schedule/${month}`, { userId: "T1002" });
+    const entry = Object.values(res.body.byDate)
+      .flat()
+      .find((e) => e.womCode === "WOM-4471");
+    assert.ok(entry);
+    assert.equal(entry.locationCode, "PRINCETON");
+    assert.ok(entry.locationName);
+    assert.equal(entry.status, "open");
+    // budgetHours/remainingHours/estimatedPrice/appliedPrice ride along too
+    // (null when the WOM doesn't have them), not just the bare code.
+    assert.ok("budgetHours" in entry);
+    assert.ok("estimatedPrice" in entry);
+  });
+
+  await t.test("filtering by site only shows that site's WOM work", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1002/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: { allocations: [{ day: "Fri", type: "wom", locationCode: "GEORGETOWN", womCode: "WOM-4610", hours: 3 }] },
+    });
+    assert.equal(put.status, 200);
+
+    const princeton = await server.call("GET", `/api/schedule/${month}?location=PRINCETON`, { userId: "T1002" });
+    const princetonEntries = Object.values(princeton.body.byDate).flat();
+    assert.ok(princetonEntries.every((e) => e.locationCode === "PRINCETON"));
+    assert.ok(princetonEntries.some((e) => e.womCode === "WOM-4471"));
+
+    const georgetown = await server.call("GET", `/api/schedule/${month}?location=GEORGETOWN`, { userId: "T1002" });
+    const georgetownEntries = Object.values(georgetown.body.byDate).flat();
+    assert.ok(georgetownEntries.every((e) => e.locationCode === "GEORGETOWN"));
+    assert.ok(georgetownEntries.some((e) => e.womCode === "WOM-4610"));
+    assert.ok(!georgetownEntries.some((e) => e.womCode === "WOM-4471"));
+  });
+
   await t.test("an inactive technician's WOM work doesn't show up", async () => {
     const put = await server.call("PUT", `/api/technicians/T1003/weeks/${week}/allocations`, {
       userId: "ADMIN",

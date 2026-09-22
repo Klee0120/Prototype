@@ -1566,11 +1566,64 @@ button, input, select {
   align-items: baseline;
   gap: 4px;
   flex-wrap: wrap;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  border-radius: 4px;
+}
+
+.schedule-entry:hover {
+  background: var(--bg);
 }
 
 .schedule-entry .badge {
   font-size: 10px;
   padding: 1px 6px;
+}
+
+.schedule-entry-site {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.schedule-entry-tentative {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--warn);
+}
+
+.schedule-detail-panel {
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  position: relative;
+}
+
+.schedule-detail-panel .schedule-detail-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+}
+
+.schedule-detail-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.schedule-detail-tentative {
+  font-size: 12px;
+  color: var(--warn);
+  font-weight: 600;
+  margin-bottom: 8px;
 }
 
 .profile-header {
