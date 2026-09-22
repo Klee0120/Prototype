@@ -314,4 +314,32 @@ test("locations: E&F job number and region tracking", async (t) => {
     });
     assert.equal(res.status, 404);
   });
+
+  await t.test("a technician cannot delete a location", async () => {
+    const res = await server.call("DELETE", "/api/locations/LOC-GTOWN", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("deleting an unknown location 404s", async () => {
+    const res = await server.call("DELETE", "/api/locations/LOC-NOPE", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("a location referenced by a WOM, a technician, or an allocation can't be deleted", async () => {
+    // PRINCETON is referenced by WOM-4471/T1001's home location/seeded
+    // allocations, so it should be blocked on every count at once.
+    const res = await server.call("DELETE", "/api/locations/PRINCETON", { userId: "ADMIN" });
+    assert.equal(res.status, 409);
+    assert.ok(res.body.technicianCount > 0);
+    assert.ok(res.body.womCount > 0);
+    assert.match(res.body.error, /reassign those first/);
+  });
+
+  await t.test("admin can delete a location with nothing pointing at it", async () => {
+    const del = await server.call("DELETE", "/api/locations/LOC-GTOWN", { userId: "ADMIN" });
+    assert.equal(del.status, 200);
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.ok(!list.body.some((l) => l.code === "LOC-GTOWN"));
+  });
 });

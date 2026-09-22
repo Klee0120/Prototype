@@ -396,6 +396,22 @@ Demo logins:
   ID, an unknown location code) is skipped with its own per-row error
   rather than failing the whole batch, so one typo doesn't block everyone
   else in the paste.
+- **Delete technician**: for one created by mistake — a test entry, real
+  data typed into the wrong row — rather than leaving it under some
+  employment status forever (own **Delete** button on the technician's
+  profile, admin-only, `DELETE /api/admin/technicians/:id`). Blocked with a
+  409 if they have any allocated hours on record; forcing it through
+  removes that whole history along with them (allocations, UKG hours,
+  weeks, onboarding progress, devices/device requests, any active session)
+  but never their uploaded files/forms, same as a WOM's own documents
+  surviving a WOM delete — those aren't the technician's identity, just
+  attachments. Never touches an admin account; this only ever looks at
+  `role = 'tech'` rows, same as every other `/technicians/:id` route.
+- **Delete location**: same idea, but with no force option — a location in
+  use by a whole set of technicians/WOMs/allocations is too large a blast
+  radius for one confirm click, so it's blocked outright (409, naming
+  exactly how many of each) until those are reassigned elsewhere first
+  (`DELETE /api/locations/:code`, admin-only).
 - **Admin can allocate on a technician's behalf** (new "Tech Allocation"
   tab): the exact same day-by-day splitting screen a technician sees, with
   an employee switcher (dropdown + Prev/Next) to move through the roster —
@@ -920,9 +936,12 @@ server/
                               WOM once its row gets a real WOM #, refreshes estimated/applied
                               pricing/Maximo #/subsidiary code on every synced WOM, and matches +
                               fills in location by name, once, on any WOM missing one), technicians/bulk
-                              (paste-many technician creation, one generated PIN per row, per-row errors)
+                              (paste-many technician creation, one generated PIN per row, per-row errors),
+                              DELETE technicians/:id (blocked if hours are allocated unless force is passed)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
-                              Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
+                              Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant; DELETE
+                              (admin-only, blocked outright -- no force -- if still referenced by any
+                              technician/WOM/allocation)
     audit.js                  Audit log
     files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
                                   incl. formType/expiresAt for tech_form uploads
@@ -970,7 +989,9 @@ tests/
                                  Smartsheet-reflected flag (set on close, cleared on reopen, admin-only),
                                  cancelling a WOM blocks technician allocation same as any non-open status,
                                  deleting a WOM (admin-only, 404 unknown, blocked with allocated hours
-                                 unless forced, force removes those allocations too)
+                                 unless forced, force removes those allocations too), deleting a location
+                                 (admin-only, 404 unknown, blocked outright -- naming every technician/
+                                 WOM/allocation still pointing at it -- with no force option)
   schedule.test.js               WOM-only month calendar: auth required, malformed-month rejected,
                                     tech-visible, E&F/time-off excluded, correct calendar date,
                                     inactive techs excluded, entries carry WOM detail for the
@@ -978,7 +999,10 @@ tests/
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
                                  (add/complete/edit), notification-pref, allocation history,
                                  bulk-create technicians (admin-only, generated PIN actually logs
-                                 in, bad rows skipped with their own error, 400 if all rows fail)
+                                 in, bad rows skipped with their own error, 400 if all rows fail),
+                                 deleting a technician (admin-only, 404 unknown, blocked with
+                                 allocated hours unless forced, force clears that history --
+                                 usedHours drops with it -- and never touches an admin account)
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
                                     tech_form type/expiration + admin expiring-forms list
   vendors.test.js                 Vendor CRUD + authorization + audit logging

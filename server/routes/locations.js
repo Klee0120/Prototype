@@ -46,4 +46,29 @@ router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
   res.json(presentLocation(location));
 });
 
+// A location created by mistake -- a test entry, a typo -- rather than
+// leaving it sitting around forever. Unlike a WOM, there's no "force" here:
+// reassigning every technician/WOM/allocation that points at a whole
+// location is too big a change for one confirm click, so it's blocked
+// outright until those are moved elsewhere first.
+router.delete("/:code", requireAuth, requireAdmin, (req, res) => {
+  const result = db.deleteLocation(req.params.code);
+  if (result.error === "not_found") return res.status(404).json({ error: "Location not found" });
+  if (result.error === "in_use") {
+    const parts = [];
+    if (result.technicianCount > 0) parts.push(`${result.technicianCount} technician${result.technicianCount === 1 ? "" : "s"}`);
+    if (result.womCount > 0) parts.push(`${result.womCount} WOM${result.womCount === 1 ? "" : "s"}`);
+    if (result.allocationCount > 0) parts.push(`${result.allocationCount} allocation${result.allocationCount === 1 ? "" : "s"}`);
+    return res.status(409).json({
+      technicianCount: result.technicianCount,
+      womCount: result.womCount,
+      allocationCount: result.allocationCount,
+      error: `Still in use by ${parts.join(", ")} -- reassign those first`,
+    });
+  }
+
+  db.addAudit(req.user.id, "LOCATION_DELETED", `${req.user.name} deleted location ${req.params.code}`);
+  res.json({ ok: true });
+});
+
 module.exports = router;

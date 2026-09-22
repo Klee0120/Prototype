@@ -346,4 +346,55 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     const res = await server.call("POST", "/api/admin/technicians/bulk", { userId: "ADMIN", body: { rows: [] } });
     assert.equal(res.status, 400);
   });
+
+  await t.test("a technician cannot delete a technician", async () => {
+    const res = await server.call("DELETE", "/api/admin/technicians/T-BULK-3", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("deleting an unknown technician 404s", async () => {
+    const res = await server.call("DELETE", "/api/admin/technicians/T-NOPE", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("admin can delete a technician with no allocated hours", async () => {
+    const del = await server.call("DELETE", "/api/admin/technicians/T-BULK-3", { userId: "ADMIN" });
+    assert.equal(del.status, 200);
+
+    const list = await server.call("GET", "/api/admin/technicians", { userId: "ADMIN" });
+    assert.ok(!list.body.some((t) => t.id === "T-BULK-3"));
+  });
+
+  await t.test("deleting a technician with allocated hours is blocked unless forced", async () => {
+    const before = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const usedBefore = before.body.find((w) => w.code === "WOM-4471").usedHours || 0;
+
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const alloc = await server.call("PUT", `/api/technicians/T-BULK-2/weeks/${week}/allocations`, {
+      userId: "ADMIN",
+      body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "WOM-4471", hours: 4 }] },
+    });
+    assert.equal(alloc.status, 200);
+
+    const blocked = await server.call("DELETE", "/api/admin/technicians/T-BULK-2", { userId: "ADMIN" });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.allocatedHours, 4);
+
+    const forced = await server.call("DELETE", "/api/admin/technicians/T-BULK-2", { userId: "ADMIN", body: { force: true } });
+    assert.equal(forced.status, 200);
+
+    const list = await server.call("GET", "/api/admin/technicians", { userId: "ADMIN" });
+    assert.ok(!list.body.some((t) => t.id === "T-BULK-2"));
+
+    // Their allocated hours went with them -- WOM-4471's usedHours is back
+    // to what it was before, not left dangling on a deleted technician.
+    const after = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    assert.equal(after.body.find((w) => w.code === "WOM-4471").usedHours, usedBefore);
+  });
+
+  await t.test("deleting a technician never touches an admin account", async () => {
+    const res = await server.call("DELETE", "/api/admin/technicians/ADMIN", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
 });

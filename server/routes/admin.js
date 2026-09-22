@@ -112,6 +112,26 @@ router.post("/technicians/bulk", (req, res) => {
   res.status(created.length > 0 ? 201 : 400).json({ created, errors });
 });
 
+// For a technician created by mistake -- a test entry, real data typed into
+// the wrong row -- rather than leaving it under some employment status
+// forever. Blocked with a 409 if they have allocated hours on record unless
+// force is passed (see db.deleteTechnician for exactly what that removes).
+router.delete("/technicians/:id", (req, res) => {
+  const force = Boolean((req.body || {}).force);
+  const result = db.deleteTechnician(req.params.id, { force });
+  if (result.error === "not_found") return res.status(404).json({ error: "Technician not found" });
+  if (result.error === "has_allocations") {
+    return res.status(409).json({
+      error: `${result.allocatedHours}h already allocated to ${req.params.id} -- deleting will remove that history too`,
+      allocatedHours: result.allocatedHours,
+    });
+  }
+
+  const note = result.allocatedHoursRemoved > 0 ? ` (removed ${result.allocatedHoursRemoved}h of allocated history along with it)` : "";
+  db.addAudit(req.user.id, "TECHNICIAN_DELETED", `${req.user.name} deleted technician ${req.params.id}${note}`);
+  res.json({ ok: true });
+});
+
 router.get("/technicians/:id", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });

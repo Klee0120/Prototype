@@ -527,6 +527,40 @@ function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId
   return findTechnician(id);
 }
 
+function countTechnicianAllocatedHours(id) {
+  const { total } = db.prepare("SELECT COALESCE(SUM(hours), 0) AS total FROM allocations WHERE tech_id = ?").get(id);
+  return total;
+}
+
+// A technician created by mistake -- a test entry, a typo'd ID, real data
+// typed into the wrong row -- should just go away rather than sit around
+// under some employment status forever. Blocked by default if they have any
+// allocated hours on record (force removes the whole history along with
+// them: allocations, UKG hours, weeks, onboarding progress, devices/device
+// requests, and any active session -- but never their uploaded
+// files/forms, same as a WOM's own documents surviving a WOM delete,
+// since those aren't this technician's identity, just attachments that
+// can be re-linked or cleaned up separately). Never touches an admin
+// account -- this only ever looks at role = 'tech' rows, same as every
+// other /technicians/:id route.
+function deleteTechnician(id, { force = false } = {}) {
+  const tech = findTechnician(id);
+  if (!tech || tech.role !== "tech") return { error: "not_found" };
+  const allocatedHours = countTechnicianAllocatedHours(id);
+  if (allocatedHours > 0 && !force) {
+    return { error: "has_allocations", allocatedHours };
+  }
+  db.prepare("DELETE FROM device_requests WHERE device_id IN (SELECT id FROM tech_devices WHERE tech_id = ?)").run(id);
+  db.prepare("DELETE FROM tech_devices WHERE tech_id = ?").run(id);
+  db.prepare("DELETE FROM onboarding_progress WHERE tech_id = ?").run(id);
+  db.prepare("DELETE FROM allocations WHERE tech_id = ?").run(id);
+  db.prepare("DELETE FROM ukg_hours WHERE tech_id = ?").run(id);
+  db.prepare("DELETE FROM weeks WHERE tech_id = ?").run(id);
+  db.prepare("DELETE FROM sessions WHERE tech_id = ?").run(id);
+  db.prepare("DELETE FROM technicians WHERE id = ?").run(id);
+  return { ok: true, allocatedHoursRemoved: allocatedHours };
+}
+
 // ---- Admin accounts ----
 // Admins live in the same technicians table (role = 'admin') so login,
 // sessions, and the active/employment_status gate are all the exact same
@@ -974,6 +1008,24 @@ function setLocationDetails(code, { name, efJobNumber, region, womJobNumber } = 
     code
   );
   return findLocation(code);
+}
+
+// A location referenced anywhere -- a technician's home location, a WOM's
+// own location, or a raw E&F allocation -- can't just be deleted out from
+// under those records the way a never-used one can. Unlike WOM delete,
+// there's no "force" option here: reassigning a whole location's worth of
+// technicians/WOMs/history is too large a blast radius for a single
+// confirm click, so the caller has to actually reassign those first.
+function deleteLocation(code) {
+  if (!findLocation(code)) return { error: "not_found" };
+  const technicianCount = db.prepare("SELECT COUNT(*) AS n FROM technicians WHERE home_location_code = ?").get(code).n;
+  const womCount = db.prepare("SELECT COUNT(*) AS n FROM woms WHERE location_code = ?").get(code).n;
+  const allocationCount = db.prepare("SELECT COUNT(*) AS n FROM allocations WHERE location_code = ?").get(code).n;
+  if (technicianCount > 0 || womCount > 0 || allocationCount > 0) {
+    return { error: "in_use", technicianCount, womCount, allocationCount };
+  }
+  db.prepare("DELETE FROM locations WHERE code = ?").run(code);
+  return { ok: true };
 }
 
 // ---- WOMs ----
@@ -1727,6 +1779,8 @@ module.exports = {
   listLocations,
   findLocation,
   createLocation,
+  deleteLocation,
+  deleteTechnician,
   setLocationDetails,
   listWoms,
   findWom,

@@ -2090,11 +2090,25 @@ export async function renderAdminReview(container) {
       <div class="review-row-summary">
         <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${regionLabel}</span></div>
         <button class="btn btn-link edit-location-btn" type="button">Edit</button>
+        <button class="btn btn-link delete-location-btn" type="button">Delete</button>
       </div>
     `;
     el.querySelector(".edit-location-btn").addEventListener("click", async () => {
       locationEditing.add(l.code);
       await drawWoms(content);
+    });
+    // Unlike a WOM, there's no "force" option here -- a location in use by a
+    // whole set of technicians/WOMs/allocations is too big a thing to bulldoze
+    // through with one more click, so the error just says what to reassign
+    // first rather than offering to do it anyway.
+    el.querySelector(".delete-location-btn").addEventListener("click", async () => {
+      if (!window.confirm(`Delete location "${l.name}" (${l.code})? This can't be undone.`)) return;
+      try {
+        await api.delete(`/api/locations/${encodeURIComponent(l.code)}`);
+        await drawWoms(content);
+      } catch (err) {
+        window.alert(`Could not delete ${l.name}: ${err.message}`);
+      }
     });
     return el;
   }

@@ -399,6 +399,7 @@ export function renderTechniciansTab(content, openTo) {
         <div class="profile-name">${escapeHtml(tech.name)}</div>
         <span class="badge badge-draft">${escapeHtml(tech.id)}</span>
         ${statusBadge(tech.employmentStatus)}
+        <button class="btn btn-link danger-link delete-technician-btn" type="button">Delete</button>
       </div>
       <div class="profile-tabs">
         ${PROFILE_TABS.map((t) => `<button class="profile-tab ${profileSubTab === t.key ? "active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
@@ -409,6 +410,33 @@ export function renderTechniciansTab(content, openTo) {
     content.querySelector(".back-to-roster").addEventListener("click", () => {
       profileTechId = null;
       draw();
+    });
+    // A technician created by mistake (a test entry, a typo) should just go
+    // away. Blocked with a 409 if they have allocated hours on record --
+    // ask again, naming that specific consequence, before forcing it.
+    content.querySelector(".delete-technician-btn").addEventListener("click", async () => {
+      if (!window.confirm(`Delete "${tech.name}" (${tech.id})? This can't be undone.`)) return;
+      try {
+        await api.delete(`/api/admin/technicians/${encodeURIComponent(tech.id)}`);
+        profileTechId = null;
+        await draw();
+      } catch (err) {
+        if (err.status === 409 && err.payload && err.payload.allocatedHours != null) {
+          const forceConfirmed = window.confirm(
+            `${err.payload.allocatedHours}h already allocated to ${tech.name} across their timesheets. Deleting them removes that history too -- delete anyway?`
+          );
+          if (!forceConfirmed) return;
+          try {
+            await api.delete(`/api/admin/technicians/${encodeURIComponent(tech.id)}`, { force: true });
+            profileTechId = null;
+            await draw();
+          } catch (err2) {
+            window.alert(`Could not delete ${tech.name}: ${err2.message}`);
+          }
+        } else {
+          window.alert(`Could not delete ${tech.name}: ${err.message}`);
+        }
+      }
     });
     content.querySelectorAll(".profile-tab").forEach((btn) => {
       btn.addEventListener("click", () => {
