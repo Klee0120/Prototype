@@ -1007,12 +1007,16 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode)
 // -- only a real WOM # (status "open") means the job exists and can
 // actually be billed; until then the request just sits (see
 // syncWomsFromSheetRows below, which sets these two apart automatically
-// from the sheet's own columns, no manual step needed). "invoiced" sits
-// between open and closed -- work is done and billed, but not yet formally
-// closed out. Any status is settable by an admin at any time (see
-// routes/woms.js), independent of a technician's own "mark complete"
-// action, which only ever sets "closed" directly.
-const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "closed"];
+// from the sheet's own columns, no manual step needed). "invoiced" and
+// "closed" are both "done and billed" -- "closed" is just the later, fully
+// closed-out point of the same billed job, so the two are grouped together
+// everywhere they're displayed (see the WOM Projects tab). "cancelled" is
+// the other way a job ends -- never billed, the work was declined or
+// dropped -- and is tracked separately from both so a cancelled job never
+// gets counted as billed revenue. Any status is settable by an admin at any
+// time (see routes/woms.js), independent of a technician's own "mark
+// complete" action, which only ever sets "closed" directly.
+const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "cancelled", "closed"];
 
 function setWomStatus(code, status) {
   const existing = findWom(code);

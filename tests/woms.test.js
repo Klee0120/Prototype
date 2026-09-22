@@ -172,6 +172,22 @@ test("woms: open/closed status management", async (t) => {
     });
     assert.equal(res.status, 404);
   });
+
+  await t.test("admin can cancel a WOM -- a dropped job that was never billed, distinct from closed/invoiced", async () => {
+    const cancel = await server.call("PATCH", "/api/woms/WOM-4502", { userId: "ADMIN", body: { status: "cancelled" } });
+    assert.equal(cancel.status, 200);
+    assert.equal(cancel.body.status, "cancelled");
+
+    // A technician can't allocate against a cancelled WOM either -- same
+    // "must be open" rule as any other non-open status.
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const alloc = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "WOM-4502", hours: 8 }] },
+    });
+    assert.equal(alloc.status, 400);
+  });
 });
 
 test("locations: E&F job number and region tracking", async (t) => {

@@ -24,18 +24,23 @@ function formatMoney(n) {
 const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
 const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
 const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
-const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "closed"];
+const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "cancelled", "closed"];
 // "pending" = logged on Smartsheet, RFM hasn't asked Toyota for a PO yet.
 // "requested" = RFM has asked Toyota (the tracker's own "Date Requested"
 // column is filled in), but there's still no real WOM #, so nothing can be
 // billed to Toyota yet -- a technician can't charge time to either one, only
 // to a real, "open" WOM. Both are set automatically by a Smartsheet sync,
-// not by hand.
+// not by hand. "invoiced" and "closed" are both billed/done -- grouped
+// together as one "Invoiced" section below, off the main active list.
+// "cancelled" is the other way a job ends, never billed -- its own section,
+// also off the main active list. Which of invoiced/cancelled/closed applies
+// is always a manual call an admin makes.
 const WOM_STATUS_LABELS = {
   pending: "Awaiting RFM request to Toyota",
   requested: "Requested from Toyota (no WOM # yet)",
   open: "Open",
   invoiced: "Invoiced",
+  cancelled: "Cancelled",
   closed: "Closed",
 };
 
@@ -1946,7 +1951,12 @@ export async function renderAdminReview(container) {
       </form>
 
       <h3>WOM Projects</h3>
-      <div class="review-list" id="wom-list"></div>
+      <div class="review-section-title">Active</div>
+      <div class="review-list" id="wom-list-active"></div>
+      <div class="review-section-title">Invoiced</div>
+      <div class="review-list" id="wom-list-invoiced"></div>
+      <div class="review-section-title">Cancelled</div>
+      <div class="review-list" id="wom-list-cancelled"></div>
       <form id="add-wom-form" class="add-wom-form">
         <input name="code" placeholder="WOM code" required />
         <input name="description" placeholder="Description" required />
@@ -1965,10 +1975,30 @@ export async function renderAdminReview(container) {
       locationList.appendChild(renderLocationRow(l, content));
     }
 
-    const list = content.querySelector("#wom-list");
-    for (const w of woms) {
-      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
+    // Active is everything still in play (or not yet real); Invoiced groups
+    // "invoiced" and "closed" together since both mean the job was billed,
+    // just at different closeout points; Cancelled is its own section so a
+    // dropped job never reads as billed revenue. Keeps the day-to-day list
+    // from being cluttered with jobs that are already done one way or
+    // another.
+    const activeList = content.querySelector("#wom-list-active");
+    const invoicedList = content.querySelector("#wom-list-invoiced");
+    const cancelledList = content.querySelector("#wom-list-cancelled");
+    const activeWoms = woms.filter((w) => !["invoiced", "closed", "cancelled"].includes(w.status));
+    const invoicedWoms = woms.filter((w) => w.status === "invoiced" || w.status === "closed");
+    const cancelledWoms = woms.filter((w) => w.status === "cancelled");
+    for (const w of activeWoms) {
+      activeList.appendChild(await renderWomRow(w, content, locationByCode, locations));
     }
+    if (activeWoms.length === 0) activeList.innerHTML = `<p class="empty-note">No active WOM projects right now.</p>`;
+    for (const w of invoicedWoms) {
+      invoicedList.appendChild(await renderWomRow(w, content, locationByCode, locations));
+    }
+    if (invoicedWoms.length === 0) invoicedList.innerHTML = `<p class="empty-note">Nothing invoiced or closed yet.</p>`;
+    for (const w of cancelledWoms) {
+      cancelledList.appendChild(await renderWomRow(w, content, locationByCode, locations));
+    }
+    if (cancelledWoms.length === 0) cancelledList.innerHTML = `<p class="empty-note">No cancelled WOM projects.</p>`;
 
     content.querySelector("#add-location-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -2067,14 +2097,15 @@ export async function renderAdminReview(container) {
     const el = document.createElement("div");
     el.className = "review-row";
     const loc = locationByCode[w.locationCode];
-    const budgetLabel = w.budgetHours == null ? "" : ` &middot; ${w.remainingHours}h left of ${w.budgetHours}h`;
-    const subsidiaryLabel = w.subsidiaryCode ? ` &middot; Subsidiary ${escapeHtml(w.subsidiaryCode)}` : " &middot; No subsidiary code on file";
-    const priceLabel =
-      w.estimatedPrice == null && w.appliedPrice == null
-        ? ""
-        : ` &middot; Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}${
-            w.smartsheetSyncedAt ? " (Smartsheet)" : ""
-          }`;
+    const metaParts = [];
+    if (w.budgetHours != null) metaParts.push(`${w.remainingHours}h left of ${w.budgetHours}h`);
+    metaParts.push(w.subsidiaryCode ? `Subsidiary ${escapeHtml(w.subsidiaryCode)}` : "No subsidiary code on file");
+    if (w.estimatedPrice != null || w.appliedPrice != null) {
+      metaParts.push(
+        `Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}${w.smartsheetSyncedAt ? " (Smartsheet)" : ""}`
+      );
+    }
+    const metaLine = metaParts.join(" &middot; ");
 
     if (womEditing.has(w.code)) {
       const locationOptions = locations
@@ -2082,7 +2113,7 @@ export async function renderAdminReview(container) {
         .join("");
       el.innerHTML = `
         <form class="edit-wom-form review-row-summary">
-          <span class="review-row-name">${escapeHtml(w.code)}</span>
+          <span class="review-row-name">${escapeHtml(w.description)} <span class="wom-code">${escapeHtml(w.code)}</span></span>
           <input name="description" value="${escapeHtml(w.description)}" required />
           <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
           <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
@@ -2116,19 +2147,31 @@ export async function renderAdminReview(container) {
       return el;
     }
 
-    const statusBadgeClass = { open: "approved", requested: "submitted", invoiced: "submitted", closed: "rejected" }[w.status] || "draft";
+    const statusBadgeClass = { open: "approved", requested: "submitted", invoiced: "submitted", cancelled: "rejected", closed: "rejected" }[
+      w.status
+    ] || "draft";
     const statusOptions = WOM_STATUSES.map(
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
     ).join("");
+    // The project name is the thing people actually recognize; the WOM code
+    // is only there for whoever needs to key it into JDE/UKG, so it's a
+    // small, secondary tag next to the location rather than the headline.
+    const locationTag = loc
+      ? `<span class="wom-location">${escapeHtml(loc.name)}</span>`
+      : `<span class="wom-location wom-location-missing">No location on file</span>`;
 
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}${subsidiaryLabel}${priceLabel}</span></div>
+        <div class="review-row-name">
+          ${escapeHtml(w.description)}${locationTag}
+          <span class="wom-code">${escapeHtml(w.code)}</span>
+        </div>
         <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
         <select class="wom-status-select">${statusOptions}</select>
         <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
         <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
       </div>
+      <div class="wom-desc">${metaLine}</div>
       <div class="review-row-detail"></div>
     `;
 

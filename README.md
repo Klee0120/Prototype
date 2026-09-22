@@ -110,14 +110,22 @@ Demo logins:
 - A technician can mark a WOM project complete from their own allocation
   screen — it closes the WOM (for everyone) only once they successfully
   submit that week, not the moment they click it, so it can't lock them
-  out of submitting their own in-progress draft. **WOM status is a
-  three-state lifecycle — Open → Invoiced → Closed** — and an admin can set
-  a WOM directly to any of those three at any time from the E&F Locations
-  & WOM tab's status dropdown, completely independent of whether (or when)
-  a technician ever marked it complete. "Invoiced" is there specifically
-  for the moment the invoice actually goes out, distinct from fully
-  closing the job out — a technician can't allocate new hours to a WOM
-  once it's Invoiced or Closed, same as before
+  out of submitting their own in-progress draft. **WOM status lifecycle:
+  Pending → Requested → Open → Invoiced → Closed, with Cancelled as the
+  other way a job can end** — an admin can set a WOM directly to any of
+  those at any time from the E&F Locations & WOM tab's status dropdown,
+  completely independent of whether (or when) a technician ever marked it
+  complete. "Invoiced" is there specifically for the moment the invoice
+  actually goes out, distinct from fully closing the job out; "Cancelled" is
+  for a job that was declined or dropped and never billed at all — a
+  technician can't allocate new hours to a WOM once it's anything other than
+  Open. The **WOM Projects** list (E&F Locations & WOM tab) groups WOMs into
+  three sections so day-to-day work isn't cluttered by old ones: **Active**
+  (Pending/Requested/Open — the ones still in play), **Invoiced** (Invoiced
+  and Closed together, since both mean the job was billed), and
+  **Cancelled**. Each row leads with the **project name** and a **location**
+  tag — the two things people actually recognize — with the WOM code shown
+  small and secondary, since it mostly matters for keying into JDE/UKG
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day, with a live
   **Total** readout in both decimal (e.g. `42.5`) and UKG's own clock format
@@ -901,7 +909,8 @@ tests/
                               submitted/approved + time-off required)
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region,
-                                 Smartsheet-reflected flag (set on close, cleared on reopen, admin-only)
+                                 Smartsheet-reflected flag (set on close, cleared on reopen, admin-only),
+                                 cancelling a WOM blocks technician allocation same as any non-open status
   schedule.test.js               WOM-only month calendar: auth required, malformed-month rejected,
                                     tech-visible, E&F/time-off excluded, correct calendar date,
                                     inactive techs excluded
