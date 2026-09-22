@@ -24,8 +24,20 @@ function formatMoney(n) {
 const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
 const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
 const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
-const WOM_STATUSES = ["pending", "open", "invoiced", "closed"];
-const WOM_STATUS_LABELS = { pending: "Pending Toyota approval", open: "Open", invoiced: "Invoiced", closed: "Closed" };
+const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "closed"];
+// "pending" = logged on Smartsheet, RFM hasn't asked Toyota for a PO yet.
+// "requested" = RFM has asked Toyota (the tracker's own "Date Requested"
+// column is filled in), but there's still no real WOM #, so nothing can be
+// billed to Toyota yet -- a technician can't charge time to either one, only
+// to a real, "open" WOM. Both are set automatically by a Smartsheet sync,
+// not by hand.
+const WOM_STATUS_LABELS = {
+  pending: "Awaiting RFM request to Toyota",
+  requested: "Requested from Toyota (no WOM # yet)",
+  open: "Open",
+  invoiced: "Invoiced",
+  closed: "Closed",
+};
 
 const VENDOR_STATUS_BADGE_CLASS = {
   active: "approved",
@@ -853,14 +865,14 @@ export async function renderAdminReview(container) {
     sections.appendChild(renderWomSmartsheetSection(content, womsNeedingSmartsheetUpdate));
     sections.appendChild(
       renderPrioritySection(
-        "WOM requests pending Toyota approval",
+        "WOM requests not yet sent to Toyota",
         pendingWoms.map((w) => ({
           label: w.description,
           detail: w.estimatedPrice != null ? `Est. $${formatMoney(w.estimatedPrice)}` : "No estimate yet",
           kind: "wom-pending",
           womCode: w.code,
         })),
-        "Nothing waiting on Toyota approval right now."
+        "Nothing waiting on an RFM request to Toyota right now."
       )
     );
     sections.appendChild(
@@ -1854,7 +1866,8 @@ export async function renderAdminReview(container) {
             <strong>${result.promoted}</strong> pending WOM${result.promoted === 1 ? "" : "s"} promoted now that a real WOM # showed up,
             <strong>${result.updated}</strong> existing WOM${result.updated === 1 ? "" : "s"} refreshed — out of ${result.total} sheet rows.
             Matched by "${escapeHtml(result.womColumn)}", pricing from ${escapeHtml(result.estimateColumn || "no estimate column found")} /
-            ${escapeHtml(result.appliedColumn || "no applied column found")}.
+            ${escapeHtml(result.appliedColumn || "no applied column found")}, "requested" status from
+            ${escapeHtml(result.dateRequestedColumn || "no Date Requested column found")}.
           </p>
         `;
         // The WOM Projects list below needs to show the freshly-synced
@@ -2103,7 +2116,7 @@ export async function renderAdminReview(container) {
       return el;
     }
 
-    const statusBadgeClass = { open: "approved", invoiced: "submitted", closed: "rejected" }[w.status] || "draft";
+    const statusBadgeClass = { open: "approved", requested: "submitted", invoiced: "submitted", closed: "rejected" }[w.status] || "draft";
     const statusOptions = WOM_STATUSES.map(
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
     ).join("");

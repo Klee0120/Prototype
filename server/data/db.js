@@ -998,18 +998,21 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode)
   return findWom(code);
 }
 
-// "pending" is a WOM request that's been added to the Smartsheet tracker
-// but hasn't reached the point in the real PSE process where admin creates
-// the actual WOM and issues the PO with a real WOM # (steps 1-8 of the
-// process; the WOM # only exists from step 9 onward) -- technicians can't
-// allocate hours against one (same "must be open" check as any other
-// non-open WOM), it exists here purely so admin/RFM can track and act on
-// it before it's a real job. "invoiced" sits between open and closed --
-// work is done and billed, but not yet formally closed out. Any status is
-// settable by an admin at any time (see routes/woms.js), independent of a
-// technician's own "mark complete" action, which only ever sets "closed"
-// directly.
-const WOM_STATUSES = ["pending", "open", "invoiced", "closed"];
+// "pending" is a WOM request that's been added to the Smartsheet tracker but
+// that RFM hasn't yet requested a Toyota PO for. "requested" is the next
+// step -- RFM has asked Toyota to generate the WOM/PO (the tracker's own
+// "Date Requested" column gets filled in when that happens), but there's
+// still no real WOM # yet, so nothing can be billed to Toyota for it. A
+// technician can't allocate hours against either "pending" or "requested"
+// -- only a real WOM # (status "open") means the job exists and can
+// actually be billed; until then the request just sits (see
+// syncWomsFromSheetRows below, which sets these two apart automatically
+// from the sheet's own columns, no manual step needed). "invoiced" sits
+// between open and closed -- work is done and billed, but not yet formally
+// closed out. Any status is settable by an admin at any time (see
+// routes/woms.js), independent of a technician's own "mark complete"
+// action, which only ever sets "closed" directly.
+const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "closed"];
 
 function setWomStatus(code, status) {
   const existing = findWom(code);
@@ -1078,20 +1081,28 @@ function findWomBySmartsheetRowId(rowId) {
 // value, __smartsheetRowId} by server/utils/smartsheet.js. Every row
 // becomes (or updates) a WOM record here, tracked by its underlying
 // Smartsheet row so the same row is recognized on every later sync even
-// after its code changes:
+// after its code or status changes:
 //   - A row with a real WOM # assigned syncs as a normal 'open' WOM, coded
-//     with that real number.
-//   - A row with no WOM # yet (still just a request -- per the real PSE
-//     process, that only exists from the point admin creates the WOM and
-//     issues the PO onward) syncs as a 'pending' WOM instead, coded
-//     "PENDING-<row id>" since there's no real number yet. Technicians
-//     can't allocate hours against a non-open WOM, so this is purely
-//     visible/trackable for admin/RFM until it's a real job.
-//   - The first time a later sync finds a real WOM # for a row that's
-//     still 'pending' here, that record is "promoted": renamed to the real
-//     code and moved to 'open'. After that, this never touches status
-//     again -- an admin's later invoiced/closed doesn't get overwritten.
-function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, descriptionColumn) {
+//     with that real number -- the job exists and can be billed.
+//   - A row with no WOM # yet but with its "Date Requested" column filled
+//     in (RFM has asked Toyota to generate the WOM/PO) syncs as 'requested'
+//     instead, coded "PENDING-<row id>" since there's still no real number.
+//   - A row with neither a WOM # nor a Date Requested yet syncs as
+//     'pending' -- RFM hasn't asked Toyota for anything yet. Same
+//     "PENDING-<row id>" code.
+//   Technicians can't allocate hours against a 'pending' or 'requested'
+//   WOM (only 'open' means the job actually exists and can be billed), so
+//   both are purely visible/trackable for admin/RFM until a real WOM # shows
+//   up.
+//   - The first time a later sync finds a real WOM # for a row that's still
+//     'pending' or 'requested' here, that record is "promoted": renamed to
+//     the real code and moved to 'open'.
+//   - A 'pending' row whose Date Requested column gets filled in on a later
+//     sync (still no WOM # yet) is bumped to 'requested' in place -- same
+//     code, just a status update.
+//   Once a WOM reaches 'open', this never touches its status again -- an
+//   admin's later invoiced/closed doesn't get overwritten by a sync.
+function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, descriptionColumn, dateRequestedColumn) {
   let created = 0;
   let promoted = 0;
   let updated = 0;
@@ -1104,6 +1115,7 @@ function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, d
     const rawCode = womColumn ? row[womColumn] : null;
     const trimmedCode = rawCode != null ? String(rawCode).trim() : "";
     const realCode = trimmedCode && trimmedCode !== "0" ? trimmedCode : null;
+    const requested = Boolean(dateRequestedColumn && String(row[dateRequestedColumn] ?? "").trim());
     const description = (descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim()) || `Smartsheet request (row ${rowId})`;
     const estimatedPrice = estimateColumn ? parseDollarAmount(row[estimateColumn]) : null;
     const appliedPrice = appliedColumn ? parseDollarAmount(row[appliedColumn]) : null;
@@ -1123,18 +1135,27 @@ function syncWomsFromSheetRows(rows, womColumn, estimateColumn, appliedColumn, d
         updated++;
         continue;
       }
+      const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         "INSERT INTO woms (code, description, status, estimated_price, applied_price, smartsheet_row_id, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-      ).run(code, description, realCode ? "open" : "pending", estimatedPrice, appliedPrice, String(rowId), stamp);
+      ).run(code, description, status, estimatedPrice, appliedPrice, String(rowId), stamp);
       created++;
       continue;
     }
 
-    if (existing.status === "pending" && realCode) {
+    if ((existing.status === "pending" || existing.status === "requested") && realCode) {
       db.prepare(
         "UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?"
       ).run(realCode, estimatedPrice, appliedPrice, stamp, existing.code);
       promoted++;
+      continue;
+    }
+
+    if (existing.status === "pending" && requested) {
+      db.prepare(
+        "UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, smartsheet_synced_at = ? WHERE code = ?"
+      ).run(estimatedPrice, appliedPrice, stamp, existing.code);
+      updated++;
       continue;
     }
 

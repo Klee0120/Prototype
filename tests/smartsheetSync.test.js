@@ -29,6 +29,7 @@ const COLUMNS = [
   { id: 2, title: "Estimate WOM $ - Project Total" },
   { id: 3, title: "Applied WOM $ - Project Summary" },
   { id: 4, title: "Project Name" },
+  { id: 5, title: "Date Requested" },
 ];
 
 function sheetWith(rows) {
@@ -128,6 +129,107 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.equal(alloc.status, 400);
     } finally {
       restore();
+    }
+  });
+
+  await t.test("a row's own 'Date Requested' column drives pending -> requested -> open automatically", async () => {
+    // First sync: no WOM #, no Date Requested yet -- just a bare request.
+    const restore1 = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 502,
+            cells: [
+              { columnId: 2, value: 900, displayValue: "$900.00" },
+              { columnId: 4, value: "Gutter replacement", displayValue: "Gutter replacement" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res1 = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res1.status, 200);
+      let list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.equal(list.body.find((w) => w.code === "PENDING-502").status, "pending");
+    } finally {
+      restore1();
+    }
+
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+
+    // Second sync: RFM has now asked Toyota for the PO -- the sheet's own
+    // "Date Requested" column is filled in, still no WOM #. This app picks
+    // that up on its own; nobody flips anything by hand.
+    const restore2 = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 502,
+            cells: [
+              { columnId: 2, value: 900, displayValue: "$900.00" },
+              { columnId: 4, value: "Gutter replacement", displayValue: "Gutter replacement" },
+              { columnId: 5, value: "2026-09-20", displayValue: "09/20/2026" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res2 = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res2.status, 200);
+      assert.equal(res2.body.updated, 1);
+      let list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.equal(list.body.find((w) => w.code === "PENDING-502").status, "requested");
+
+      // Still no real WOM # -- nothing can be billed to Toyota for it yet,
+      // so a technician still can't charge time to it.
+      const blocked = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+        userId: "T1001",
+        body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "PENDING-502", hours: 8 }] },
+      });
+      assert.equal(blocked.status, 400);
+    } finally {
+      restore2();
+    }
+
+    // Third sync: Toyota has now issued the WOM/PO -- a real WOM # shows up.
+    // A "requested" row promotes to "open" exactly like a "pending" one does.
+    const restore3 = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 502,
+            cells: [
+              { columnId: 1, value: "20555555", displayValue: "20555555" },
+              { columnId: 2, value: 900, displayValue: "$900.00" },
+              { columnId: 4, value: "Gutter replacement", displayValue: "Gutter replacement" },
+              { columnId: 5, value: "2026-09-20", displayValue: "09/20/2026" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res3 = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res3.status, 200);
+      assert.equal(res3.body.promoted, 1);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.ok(!list.body.some((w) => w.code === "PENDING-502"));
+      const promoted = list.body.find((w) => w.code === "20555555");
+      assert.ok(promoted);
+      assert.equal(promoted.status, "open");
+
+      // Now open, a technician CAN charge time to it.
+      const allowed = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+        userId: "T1001",
+        body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "20555555", hours: 8 }] },
+      });
+      assert.equal(allowed.status, 400); // WOM has no locationCode set, so location mismatch still applies
+    } finally {
+      restore3();
     }
   });
 

@@ -459,13 +459,14 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
     const estimateColumn = smartsheet.findColumn(sheet.columns, ["estimate", "wom", "$"]);
     const appliedColumn = smartsheet.findColumn(sheet.columns, ["applied", "wom", "$"]);
     const descriptionColumn = smartsheet.findColumn(sheet.columns, ["project", "name"]);
-    const result = db.syncWomsFromSheetRows(sheet.rows, womColumn, estimateColumn, appliedColumn, descriptionColumn);
+    const dateRequestedColumn = smartsheet.findColumn(sheet.columns, ["date", "requested"]);
+    const result = db.syncWomsFromSheetRows(sheet.rows, womColumn, estimateColumn, appliedColumn, descriptionColumn, dateRequestedColumn);
     db.addAudit(
       req.user.id,
       "SMARTSHEET_WOMS_SYNCED",
       `${req.user.name} synced WOMs from Smartsheet (${result.created} created, ${result.promoted} promoted from pending, ${result.updated} updated)`
     );
-    res.json({ ...result, womColumn, estimateColumn, appliedColumn, descriptionColumn });
+    res.json({ ...result, womColumn, estimateColumn, appliedColumn, descriptionColumn, dateRequestedColumn });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }
