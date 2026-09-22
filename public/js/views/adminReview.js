@@ -1345,10 +1345,12 @@ export async function renderAdminReview(container) {
   function renderUkgForm(detail, justSaved) {
     const inputs = DAY_NAMES.map((day) => {
       const pending = Boolean(detail.pendingPunchByDay && detail.pendingPunchByDay[day]);
+      const dayHours = Number(detail.ukgHoursByDay[day] || 0);
       return `
         <label class="ukg-day-field ${pending ? "ukg-day-field-pending" : ""}">
           <span>${day}</span>
           <input type="text" inputmode="decimal" data-day="${day}" value="${detail.ukgHoursByDay[day] || 0}" />
+          <span class="ukg-day-clock" data-day-clock="${day}">${hoursToClock(dayHours)}</span>
           <button type="button" class="btn btn-link ukg-pending-punch-btn" data-day="${day}" data-flagged="${pending}" title="Flag or clear a pending punch correction for this day">${pending ? "⚠ Pending" : "Flag punch"}</button>
         </label>`;
     }).join("");
@@ -1388,9 +1390,16 @@ export async function renderAdminReview(container) {
       form.querySelector(".ukg-total-clock").textContent = hoursToClock(total);
     }
 
+    function updateDayClock(input) {
+      const day = input.dataset.day;
+      const clockEl = form.querySelector(`[data-day-clock="${day}"]`);
+      if (clockEl) clockEl.textContent = hoursToClock(Number(input.value) || 0);
+    }
+
     form.querySelectorAll("input[data-day]").forEach((input) => {
       input.addEventListener("input", () => {
         justSavedUkg.delete(row.technician.id);
+        updateDayClock(input);
         updateTotal();
       });
     });
@@ -1420,6 +1429,7 @@ export async function renderAdminReview(container) {
       const inputs = form.querySelectorAll("input[data-day]");
       inputs.forEach((input, i) => {
         input.value = values[i];
+        updateDayClock(input);
       });
       justSavedUkg.delete(row.technician.id);
       msg.textContent = "";

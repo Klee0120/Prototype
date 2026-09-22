@@ -990,6 +990,11 @@ button, input, select {
   border-radius: 6px;
 }
 
+.ukg-day-clock {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .ukg-total-field {
   padding-left: 12px;
   margin-left: 4px;
