@@ -154,12 +154,25 @@ Demo logins:
   point. Email delivery is opt-in infrastructure: it's a no-op (logs what it
   would have sent, doesn't error) until real SMTP credentials are set via
   environment variables — see "Where this stands" for exactly which ones.
-- **Pending punch correction flag**: admin can flag a specific day (right
-  next to that day's UKG hours field) as waiting on a real UKG punch fix
-  (a missed clock-out, etc.). The technician sees a clear note on that
-  day's card explaining the hours aren't final yet, instead of it looking
-  like their time was forgotten or entered wrong. Toggle it off once the
-  real punch is fixed and the correct hours are in.
+- **Pending punch correction flag**: either side can flag a specific day as
+  waiting on a real UKG punch fix (a missed clock-out, etc.) -- admin from
+  the "Flag punch" link next to that day's UKG hours field, or the
+  **technician themselves** from a "⚠ Flag a punch issue" link on their own
+  day card, with an optional note (e.g. "forgot to clock out"), instead of
+  their only option being a phone call or text. Either way the technician
+  sees a clear note on that day's card ("waiting on admin" if they reported
+  it themselves, a generic one if admin flagged it) explaining the hours
+  aren't final yet, instead of it looking like their time was forgotten or
+  entered wrong. A tech-reported issue also shows up in the admin's
+  **Priorities** tab ("Punch issues reported by techs") with their note, so
+  a new report never just sits unnoticed on a week admin isn't currently
+  looking at. **Resolving one is a single step on Weekly Review**, same
+  pattern as the weekend-hours addendum: the flagged day's existing
+  allocation shows inline (with accounting codes) alongside a corrected-
+  UKG-hours field, and clicking "Resolve" fixes both together and clears the
+  flag -- without unlocking the rest of an already-submitted/approved week,
+  which would otherwise reset the *whole* week to draft and force the
+  technician to redo Mon-Fri even though only one day's number changed.
 - **WOM photo prompt**: when a technician has WOM hours entered for the week,
   a dismissible prompt (shown *before* Submit, right alongside the day cards,
   not as an after-the-fact step with nothing left to do) offers to attach a
@@ -252,8 +265,9 @@ Demo logins:
   that needs a look -- outdated vendor forms, vendors with incomplete
   document checks, expiring/missing employee forms, technicians with zero
   UKG hours entered for the current week, pending weekend-hours addenda,
-  WOM closures not yet reflected in Smartsheet, unverified PurelyHR time
-  off, and trailing months with no report saved at all. Deliberately not
+  punch issues reported by techs, WOM closures not yet reflected in
+  Smartsheet, unverified PurelyHR time off, and trailing months with no
+  report saved at all. Deliberately not
   more banners scattered across other tabs -- the only "in your face"
   surface is a small red count badge on the tab itself. That badge
   deliberately **excludes** the vendor document-checks-incomplete section:
@@ -642,13 +656,6 @@ a missing code is obvious rather than silently blank.
   in the database), the same way a paper checklist trusts whoever checks
   the box. If that ever needs to be tied to something verifiable (e.g. a
   UKG export file), that's a bigger integration, not a UI change.
-- **The pending-punch flag is boolean, not a note.** It says "this day
-  isn't final" but doesn't capture why (which punch, what the tech says
-  happened) or log a resolution distinct from just re-entering the hours
-  later — it's flagged, then someone edits the hours and clears it. If a
-  documented "technician reported X, admin resolved with Y" trail turns
-  out to matter (not just a visual flag), that's a distinct small feature,
-  not an extension of this one — worth a separate design pass.
 - **The WOM photo prompt is a one-time nudge, not enforcement.** It's
   dismissible for the current visit (dismiss it and it won't reappear until
   the page is reloaded) and fully skippable — nothing blocks Submit if no
@@ -747,7 +754,10 @@ server/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation),
                               PUT weekend-allocations (Sat/Sun addendum on a locked week),
-                              POST accept-weekend-hours (admin-only: correct + accept in one step)
+                              POST accept-weekend-hours (admin-only: correct + accept in one step),
+                              POST report-punch-issue (tech or admin flags a day, optional note),
+                              POST resolve-punch-issue (admin-only: correct one day's hours +
+                              allocation and clear the flag, without unlocking the rest of the week)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
                               POST :code/complete (tech-facing)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
@@ -755,7 +765,7 @@ server/
                               roster, profile (basic info, onboarding, devices + IT requests,
                               allocation history, expiring-forms list), approve/reject/unlock
                               (works on submitted OR approved), weekend-addenda list +
-                              acknowledge-weekend
+                              acknowledge-weekend, punch-issues list (tech-reported only)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -786,7 +796,11 @@ tests/
                               unlocking, no UKG-match required, admin adjust + acknowledge),
                               accept-weekend-hours (admin-only correct + accept in one step,
                               rejects with no pending addendum, rejects a weekday payload),
-                              short-hours flag (symmetric with OT, excluded from OT trends),
+                              punch issues (tech reports with a note, shows up in
+                              admin's punch-issues list, admin-only resolve corrects the
+                              day's hours + allocation and clears the flag without
+                              unlocking the rest of an approved week), short-hours flag
+                              (symmetric with OT, excluded from OT trends),
                               missing-UKG list, report-gap months, admin account
                               create/deactivate/self-deactivation-blocked, PurelyHR
                               verification (hasTimeOff, set/unset, cleared on edit,

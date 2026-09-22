@@ -676,7 +676,7 @@ export async function renderAdminReview(container) {
   // calls fails.
   async function computePriorityCount() {
     try {
-      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified] = await Promise.all([
+      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues] = await Promise.all([
         api.get("/api/admin/expiring-forms"),
         api.get("/api/admin/vendors"),
         api.get("/api/admin/weekend-addenda"),
@@ -684,6 +684,7 @@ export async function renderAdminReview(container) {
         api.get("/api/admin/missing-ukg"),
         api.get("/api/woms"),
         api.get("/api/admin/purelyhr-unverified"),
+        api.get("/api/admin/punch-issues"),
       ]);
       const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
       const smartsheetGapCount = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
@@ -700,7 +701,8 @@ export async function renderAdminReview(container) {
         reportGaps.length +
         missingUkg.length +
         smartsheetGapCount +
-        purelyhrUnverified.length
+        purelyhrUnverified.length +
+        punchIssues.length
       );
     } catch {
       return 0;
@@ -712,7 +714,7 @@ export async function renderAdminReview(container) {
   // other tab. Each section below is its own quiet list; the only "in your
   // face" surface at all is the small count on the tab itself.
   async function drawPriorities(content) {
-    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified] = await Promise.all([
+    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues] = await Promise.all([
       api.get("/api/admin/expiring-forms"),
       api.get("/api/admin/vendors"),
       api.get("/api/admin/weekend-addenda"),
@@ -720,6 +722,7 @@ export async function renderAdminReview(container) {
       api.get("/api/admin/missing-ukg"),
       api.get("/api/woms"),
       api.get("/api/admin/purelyhr-unverified"),
+      api.get("/api/admin/punch-issues"),
     ]);
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
     const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale);
@@ -816,6 +819,19 @@ export async function renderAdminReview(container) {
     );
     sections.appendChild(
       renderPrioritySection(
+        "Punch issues reported by techs",
+        punchIssues.map((p) => ({
+          label: p.techName,
+          detail: `${p.day}, week of ${p.weekMonday}${p.note ? ` — "${p.note}"` : ""}`,
+          kind: "punch-issue",
+          techId: p.techId,
+          weekMonday: p.weekMonday,
+        })),
+        "No punch issues reported."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
         "Months missing a report",
         reportGaps.map((m) => ({
           label: monthLabel(m),
@@ -857,7 +873,7 @@ export async function renderAdminReview(container) {
           allocTechId = tech;
           state.weekMonday = week;
           activeTab = "techalloc";
-        } else if (kind === "weekend") {
+        } else if (kind === "weekend" || kind === "punch-issue") {
           state.weekMonday = week;
           expanded.add(tech);
           activeTab = "review";
@@ -1158,8 +1174,14 @@ export async function renderAdminReview(container) {
 
     // A week with time off isn't really "done" until PurelyHR's been
     // checked too -- PurelyHR doesn't link to UKG, so this can't be
-    // inferred from anything else already tracked here.
-    const isDone = (r) => Boolean(r.ukgConfirmedAt) && (!r.hasTimeOff || Boolean(r.purelyhrVerifiedAt));
+    // inferred from anything else already tracked here. Same for a pending
+    // weekend addendum or punch issue -- either means there's still an
+    // active correction to make, even if the rest of the week looks fine.
+    const isDone = (r) =>
+      Boolean(r.ukgConfirmedAt) &&
+      (!r.hasTimeOff || Boolean(r.purelyhrVerifiedAt)) &&
+      !r.weekendAddendumAt &&
+      (r.pendingPunchDays || []).length === 0;
     const needsAttention = rows.filter((r) => !isDone(r));
     const completed = rows.filter((r) => isDone(r));
 
@@ -1212,7 +1234,8 @@ export async function renderAdminReview(container) {
     const stage3 = Boolean(row.ukgConfirmedAt); // admin confirmed it's in the real UKG system
     const stage4 = Boolean(row.purelyhrVerifiedAt); // time off checked against PurelyHR (only applies if hasTimeOff)
     const hasWeekendAddendum = Boolean(row.weekendAddendumAt); // tech added Sat/Sun hours after this week was already locked
-    const isDone = stage3 && (!row.hasTimeOff || stage4) && !hasWeekendAddendum;
+    const pendingPunchDays = row.pendingPunchDays || [];
+    const isDone = stage3 && (!row.hasTimeOff || stage4) && !hasWeekendAddendum && pendingPunchDays.length === 0;
     el.className = `review-row ${isDone ? "review-row-ready" : "review-row-pending"}`;
 
     el.innerHTML = `
@@ -1222,6 +1245,15 @@ export async function renderAdminReview(container) {
               <strong>Weekend hours added</strong> since this week was ${row.status} -- correct the hours below if
               they don't match UKG yet, then accept. Accepting doesn't send anything back to ${escapeHtml(row.technician.name.split(" ")[0])} for re-approval.
               <div class="weekend-edit-rows" id="weekend-edit-${row.technician.id}">Loading weekend hours…</div>
+            </div>`
+          : ""
+      }
+      ${
+        pendingPunchDays.length > 0
+          ? `<div class="weekend-addendum-note" id="punch-issue-edit-${row.technician.id}">
+              <strong>Punch issue flagged</strong> (${pendingPunchDays.join(", ")}) -- correct the hours below and resolve.
+              Resolving fixes just that day, without unlocking the rest of this ${row.status} week.
+              <div class="punch-issue-rows">Loading…</div>
             </div>`
           : ""
       }
@@ -1297,6 +1329,17 @@ export async function renderAdminReview(container) {
 
     if (hasWeekendAddendum) {
       await renderWeekendEditor(el.querySelector(`#weekend-edit-${row.technician.id}`), row, content, locationByCode, womByCode);
+    }
+
+    if (pendingPunchDays.length > 0) {
+      await renderPunchIssueEditor(
+        el.querySelector(`#punch-issue-edit-${row.technician.id}`).querySelector(".punch-issue-rows"),
+        row,
+        pendingPunchDays,
+        content,
+        locationByCode,
+        womByCode
+      );
     }
 
     el.querySelector(".expand-btn").addEventListener("click", async () => {
@@ -1560,6 +1603,94 @@ export async function renderAdminReview(container) {
         msg.textContent = err.message;
       }
     });
+  }
+
+  // One or more days flagged as a pending punch correction -- possibly
+  // reported by the technician themselves, with a note. Shows the existing
+  // allocation for each flagged day plus a corrected-UKG-hours field, so
+  // admin can fix both together and clear the flag without unlocking (and
+  // thereby resetting to draft) the rest of an otherwise-fine week.
+  async function renderPunchIssueEditor(container, row, pendingPunchDays, content, locationByCode, womByCode) {
+    const techId = row.technician.id;
+    let detail;
+    try {
+      detail = await api.get(`/api/technicians/${techId}/weeks/${state.weekMonday}`);
+    } catch (err) {
+      container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    container.innerHTML = pendingPunchDays
+      .map((day) => {
+        const dayAllocs = detail.allocations.filter((a) => a.day === day);
+        const dayDetail = (detail.pendingPunchDetailByDay && detail.pendingPunchDetailByDay[day]) || null;
+        const currentUkg = (detail.ukgHoursByDay && detail.ukgHoursByDay[day]) || 0;
+        return `
+          <div class="punch-issue-day" data-day="${day}">
+            ${
+              dayDetail && dayDetail.reportedBy === "tech" && dayDetail.note
+                ? `<p class="punch-issue-tech-note">${escapeHtml(row.technician.name.split(" ")[0])} said: "${escapeHtml(dayDetail.note)}"</p>`
+                : ""
+            }
+            <label class="punch-issue-ukg-label">
+              Corrected UKG hours for ${day}:
+              <input type="text" inputmode="decimal" class="punch-issue-ukg-hours" value="${currentUkg}" />
+            </label>
+            ${
+              dayAllocs.length === 0
+                ? `<p class="empty-note">No hours allocated for ${day} yet.</p>`
+                : `<table class="detail-table punch-issue-table">
+                    <thead><tr><th>Allocation</th><th>Accounting Code</th><th>Hours</th></tr></thead>
+                    <tbody>
+                      ${dayAllocs
+                        .map(
+                          (a, i) => `
+                        <tr>
+                          <td>${escapeHtml(describeAllocation(a, locationByCode))}</td>
+                          <td>${escapeHtml(accountingCode(a, locationByCode, womByCode))}</td>
+                          <td><input type="text" inputmode="decimal" class="punch-issue-edit-hours" data-idx="${i}" value="${a.hours}" /></td>
+                        </tr>`
+                        )
+                        .join("")}
+                    </tbody>
+                  </table>`
+            }
+            <button class="btn btn-primary punch-issue-resolve-btn" type="button">Resolve ${day}</button>
+            <span class="save-message punch-issue-message"></span>
+          </div>
+        `;
+      })
+      .join("");
+
+    for (const day of pendingPunchDays) {
+      const dayEl = container.querySelector(`.punch-issue-day[data-day="${day}"]`);
+      const dayAllocs = detail.allocations.filter((a) => a.day === day);
+      dayEl.querySelector(".punch-issue-resolve-btn").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const msg = dayEl.querySelector(".punch-issue-message");
+        btn.disabled = true;
+        msg.textContent = "";
+        const hours = Number(dayEl.querySelector(".punch-issue-ukg-hours").value);
+        const allocations = dayAllocs.map((a, i) => {
+          const input = dayEl.querySelector(`.punch-issue-edit-hours[data-idx="${i}"]`);
+          return {
+            day: a.day,
+            type: a.type,
+            locationCode: a.locationCode || null,
+            womCode: a.type === "wom" ? a.womCode : null,
+            timeOffType: a.type === "timeoff" ? a.timeOffType : undefined,
+            hours: input ? Number(input.value) : a.hours,
+          };
+        });
+        try {
+          await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/resolve-punch-issue`, { day, hours, allocations });
+          await drawReview(content);
+        } catch (err) {
+          btn.disabled = false;
+          msg.textContent = err.message;
+        }
+      });
+    }
   }
 
   function renderReviewActions(row) {

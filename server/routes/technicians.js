@@ -69,6 +69,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
   const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
   const ukgHoursByDay = Object.fromEntries(DAY_NAMES.map((d) => [d, ukgByDay[d] || 0]));
   const pendingPunchByDay = db.getPendingPunchByDay(tech.id, weekMonday);
+  const pendingPunchDetailByDay = db.getPendingPunchDetailByDay(tech.id, weekMonday);
   const allocatedByDay = sumByDay(week.allocations);
 
   res.json({
@@ -84,6 +85,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
     days: DAY_NAMES,
     ukgHoursByDay,
     pendingPunchByDay,
+    pendingPunchDetailByDay,
     ukgTotal: round2(Object.values(ukgHoursByDay).reduce((s, h) => s + h, 0)),
     allocatedByDay,
     allocatedTotal: round2(Object.values(allocatedByDay).reduce((s, h) => s + h, 0)),
@@ -290,6 +292,81 @@ router.post("/:id/weeks/:weekMonday/accept-weekend-hours", requireAuth, (req, re
   );
 
   res.json({ ok: true, weekendAddendumAt: updated.weekendAddendumAt, allocations: updated.allocations.map(presentAllocation) });
+});
+
+// Lets a technician (or admin) flag a day's UKG punch as wrong/incomplete --
+// a missed clock-out, etc. -- with an optional note, instead of the only
+// path being a phone call or text to admin. Always (re-)flags with the
+// given note; clearing it back is admin-only, either directly (PATCH
+// .../pending-punch) or as part of resolving it with a correction below.
+router.post("/:id/weeks/:weekMonday/report-punch-issue", requireAuth, (req, res) => {
+  const { id, weekMonday } = req.params;
+  if (!canView(req, id)) {
+    return res.status(403).json({ error: "Only the technician or an admin can report this" });
+  }
+
+  const tech = db.findTechnician(id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const { day, note } = req.body || {};
+  if (!DAY_NAMES.includes(day)) return res.status(400).json({ error: `Invalid day: ${day}` });
+
+  const reportedBy = req.user.role === "admin" ? "admin" : "tech";
+  const trimmedNote = typeof note === "string" && note.trim() ? note.trim().slice(0, 500) : null;
+  const updated = db.setPendingPunch(id, weekMonday, day, true, trimmedNote, reportedBy);
+  db.addAudit(req.user.id, "PUNCH_ISSUE_REPORTED", `${req.user.name} reported a punch issue for ${tech.name}, ${day} of week ${weekMonday}`);
+
+  res.json({ ok: true, pendingPunchByDay: updated, pendingPunchDetailByDay: db.getPendingPunchDetailByDay(id, weekMonday) });
+});
+
+// Admin-only: fix a single flagged day's UKG hours AND its allocation
+// together, and clear the flag -- all without unlocking the rest of an
+// otherwise-fine, already-submitted/approved week (which would reset the
+// whole thing to draft and force the technician to redo everything, not
+// just the one day that actually changed). Mirrors accept-weekend-hours,
+// generalized from "Sat/Sun" to "whichever single day is currently
+// flagged pending."
+router.post("/:id/weeks/:weekMonday/resolve-punch-issue", requireAuth, (req, res) => {
+  const { id, weekMonday } = req.params;
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Admin only" });
+
+  const tech = db.findTechnician(id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+
+  const { day, hours, allocations } = req.body || {};
+  if (!DAY_NAMES.includes(day)) return res.status(400).json({ error: `Invalid day: ${day}` });
+
+  const pendingByDay = db.getPendingPunchByDay(id, weekMonday);
+  if (!pendingByDay[day]) return res.status(409).json({ error: `${day} has no pending punch issue to resolve` });
+
+  const ukgHours = Number(hours);
+  if (!Number.isFinite(ukgHours) || ukgHours < 0) return res.status(400).json({ error: "hours must be a non-negative number" });
+
+  if (!Array.isArray(allocations)) return res.status(400).json({ error: "allocations array is required" });
+  const otherDays = allocations.filter((a) => a.day !== day);
+  if (otherDays.length > 0) {
+    return res.status(400).json({ error: `This endpoint only accepts allocations for ${day}` });
+  }
+
+  const { error, normalized } = normalizeAllocations(allocations);
+  if (error) return res.status(400).json({ error });
+
+  db.saveDayAllocations(id, weekMonday, day, normalized);
+  db.setUkgHours(id, weekMonday, { [day]: ukgHours });
+  const pendingUpdated = db.setPendingPunch(id, weekMonday, day, false);
+  db.addAudit(
+    req.user.id,
+    "PUNCH_ISSUE_RESOLVED",
+    `${req.user.name} corrected ${day}'s hours and resolved the punch issue for ${tech.name}, week ${weekMonday}`
+  );
+
+  const week = db.getWeek(id, weekMonday);
+  res.json({
+    ok: true,
+    pendingPunchByDay: pendingUpdated,
+    allocations: week.allocations.map(presentAllocation),
+    ukgHoursByDay: db.getUkgHoursByDay(id, weekMonday),
+  });
 });
 
 router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {

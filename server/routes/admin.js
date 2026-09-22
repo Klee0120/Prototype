@@ -242,6 +242,7 @@ const WEEKLY_HOURS_TARGET = 40;
 function computeWeekRow(tech, weekMonday) {
   const week = db.getWeek(tech.id, weekMonday);
   const ukgByDay = db.getUkgHoursByDay(tech.id, weekMonday);
+  const pendingPunchByDay = db.getPendingPunchByDay(tech.id, weekMonday);
   const ukgHours = round2(DAY_NAMES.reduce((sum, d) => sum + (ukgByDay[d] || 0), 0));
   const allocatedHours = round2(week.allocations.reduce((sum, a) => sum + Number(a.hours || 0), 0));
   const receipt = computeReceipt(week.allocations.map(presentAllocation));
@@ -278,6 +279,7 @@ function computeWeekRow(tech, weekMonday) {
     hasTimeOff: week.allocations.some((a) => a.type === "timeoff"),
     purelyhrVerifiedAt: week.purelyhrVerifiedAt,
     weekendAddendumAt: week.weekendAddendumAt,
+    pendingPunchDays: DAY_NAMES.filter((d) => pendingPunchByDay[d]),
   };
 }
 
@@ -398,13 +400,21 @@ router.patch("/weeks/:techId/:weekMonday/pending-punch", (req, res) => {
   const { day, flagged } = req.body || {};
   if (!DAY_NAMES.includes(day)) return res.status(400).json({ error: `Invalid day: ${day}` });
 
-  const updated = db.setPendingPunch(techId, weekMonday, day, Boolean(flagged));
+  const updated = db.setPendingPunch(techId, weekMonday, day, Boolean(flagged), null, flagged ? "admin" : null);
   db.addAudit(
     req.user.id,
     flagged ? "PENDING_PUNCH_FLAGGED" : "PENDING_PUNCH_CLEARED",
     `${req.user.name} ${flagged ? "flagged" : "cleared"} a pending punch correction for ${tech.name}, ${day} of week ${weekMonday}`
   );
   res.json({ ok: true, pendingPunchByDay: updated });
+});
+
+// Every punch issue a technician reported themselves (not admin-set flags,
+// which admin already knows about since they set them) -- feeds the
+// Priorities tab so a new report never just sits unnoticed on a week admin
+// isn't currently looking at.
+router.get("/punch-issues", (req, res) => {
+  res.json(db.listPendingPunchReports());
 });
 
 router.post("/weeks/:techId/:weekMonday/approve", (req, res) => {

@@ -526,6 +526,120 @@ test("accept-weekend-hours: admin corrects and accepts in one step", async (t) =
   });
 });
 
+// A technician reporting their own punch issue (instead of only admin being
+// able to flag one), and admin resolving it -- correcting that single day's
+// hours and allocation, without unlocking (and thereby resetting to draft)
+// the rest of an already-approved week.
+test("punch issues: tech reports, admin resolves without unlocking the week", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const meta = await server.call("GET", "/api/meta/current-week");
+  const week = meta.body.weekMonday;
+
+  await t.test("setup: submit and approve T1001's week", async () => {
+    await server.call("POST", `/api/admin/weeks/T1001/${week}/unlock`, { userId: "ADMIN" });
+    const submit = await submitFullWeek(server, "T1001", week, "PRINCETON");
+    assert.equal(submit.status, 200);
+    const approve = await server.call("POST", `/api/admin/weeks/T1001/${week}/approve`, { userId: "ADMIN" });
+    assert.equal(approve.status, 200);
+  });
+
+  await t.test("another technician cannot report on someone else's week", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/report-punch-issue`, {
+      userId: "T1002",
+      body: { day: "Thu", note: "Forgot to clock out" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("technician reports a punch issue on a locked day, with a note", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/report-punch-issue`, {
+      userId: "T1001",
+      body: { day: "Thu", note: "Forgot to clock out -- UKG shows 10h, I actually left at 5" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pendingPunchByDay.Thu, true);
+    assert.ok(res.body.pendingPunchDetailByDay.Thu.note.includes("Forgot to clock out"));
+    assert.equal(res.body.pendingPunchDetailByDay.Thu.reportedBy, "tech");
+
+    // Reporting doesn't touch the allocation itself, and it doesn't require
+    // unlocking -- the week is still approved.
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const row = overview.body.find((r) => r.technician.id === "T1001");
+    assert.equal(row.status, "approved");
+    assert.deepEqual(row.pendingPunchDays, ["Thu"]);
+  });
+
+  await t.test("it shows up in the admin's punch-issues list (tech-reported only)", async () => {
+    const list = await server.call("GET", "/api/admin/punch-issues", { userId: "ADMIN" });
+    assert.equal(list.status, 200);
+    const entry = list.body.find((r) => r.techId === "T1001" && r.weekMonday === week && r.day === "Thu");
+    assert.ok(entry);
+    assert.ok(entry.note.includes("Forgot to clock out"));
+
+    const forbidden = await server.call("GET", "/api/admin/punch-issues", { userId: "T1001" });
+    assert.equal(forbidden.status, 403);
+
+    // An admin-set flag (not tech-reported) shouldn't show up here -- admin
+    // already knows about those since they set them.
+    await server.call("PATCH", `/api/admin/weeks/T1002/${week}/pending-punch`, {
+      userId: "ADMIN",
+      body: { day: "Fri", flagged: true },
+    });
+    const list2 = await server.call("GET", "/api/admin/punch-issues", { userId: "ADMIN" });
+    assert.ok(!list2.body.some((r) => r.techId === "T1002"));
+  });
+
+  await t.test("a technician cannot resolve (admin-only)", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/resolve-punch-issue`, {
+      userId: "T1001",
+      body: { day: "Thu", hours: 8, allocations: [{ day: "Thu", type: "ef", locationCode: "PRINCETON", hours: 8 }] },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects resolving a day that isn't actually flagged", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/resolve-punch-issue`, {
+      userId: "ADMIN",
+      body: { day: "Mon", hours: 8, allocations: [{ day: "Mon", type: "ef", locationCode: "PRINCETON", hours: 8 }] },
+    });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("rejects allocations for a different day than the one being resolved", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/resolve-punch-issue`, {
+      userId: "ADMIN",
+      body: { day: "Thu", hours: 8, allocations: [{ day: "Fri", type: "ef", locationCode: "PRINCETON", hours: 8 }] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("admin corrects Thursday's hours and allocation in one call -- rest of the week stays approved", async () => {
+    const res = await server.call("POST", `/api/technicians/T1001/weeks/${week}/resolve-punch-issue`, {
+      userId: "ADMIN",
+      body: { day: "Thu", hours: 8, allocations: [{ day: "Thu", type: "ef", locationCode: "PRINCETON", hours: 8 }] },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pendingPunchByDay.Thu, false);
+    assert.equal(res.body.ukgHoursByDay.Thu, 8);
+    const thu = res.body.allocations.find((a) => a.day === "Thu");
+    assert.equal(thu.hours, 8);
+
+    const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+    const row = overview.body.find((r) => r.technician.id === "T1001");
+    // Still approved -- correcting one flagged day never unlocked the week
+    // or reset it to draft, unlike a full "Unlock for correction."
+    assert.equal(row.status, "approved");
+    assert.deepEqual(row.pendingPunchDays, []);
+
+    const detail = await server.call("GET", `/api/technicians/T1001/weeks/${week}`, { userId: "T1001" });
+    // Mon-Wed, Fri are untouched -- still whatever submitFullWeek set them to.
+    const mon = detail.body.allocations.find((a) => a.day === "Mon");
+    assert.equal(mon.locationCode, "PRINCETON");
+  });
+});
+
 test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

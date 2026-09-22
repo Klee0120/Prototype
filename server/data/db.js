@@ -268,6 +268,17 @@ if (!hasColumn("ukg_hours", "pending_punch")) {
   db.exec("ALTER TABLE ukg_hours ADD COLUMN pending_punch INTEGER NOT NULL DEFAULT 0");
 }
 
+// Who flagged a pending punch and why -- lets a technician report their own
+// punch issue (with an optional note) instead of only admin being able to
+// set the flag. Only populated while pending_punch = 1; both clear back to
+// NULL once resolved.
+if (!hasColumn("ukg_hours", "pending_punch_note")) {
+  db.exec("ALTER TABLE ukg_hours ADD COLUMN pending_punch_note TEXT");
+}
+if (!hasColumn("ukg_hours", "pending_punch_reported_by")) {
+  db.exec("ALTER TABLE ukg_hours ADD COLUMN pending_punch_reported_by TEXT");
+}
+
 // A device is either a phone (device_name holds the phone number) or a
 // laptop (device_name holds an asset tag/serial) -- existing rows predate
 // this distinction, so they default to "phone" since that's what the old
@@ -1033,12 +1044,44 @@ function getPendingPunchByDay(techId, weekMonday) {
   return Object.fromEntries(rows.map((r) => [r.day, Boolean(r.pending_punch)]));
 }
 
-function setPendingPunch(techId, weekMonday, day, flagged) {
+// Only the flagged days -- note/reportedBy so the UI can tell "a technician
+// reported this" (surface it, maybe with their note) from "admin flagged it
+// themselves" (they already know).
+function getPendingPunchDetailByDay(techId, weekMonday) {
+  const rows = db
+    .prepare(
+      "SELECT day, pending_punch_note, pending_punch_reported_by FROM ukg_hours WHERE tech_id = ? AND week_monday = ? AND pending_punch = 1"
+    )
+    .all(techId, weekMonday);
+  return Object.fromEntries(rows.map((r) => [r.day, { note: r.pending_punch_note, reportedBy: r.pending_punch_reported_by }]));
+}
+
+function setPendingPunch(techId, weekMonday, day, flagged, note, reportedBy) {
   db.prepare(
-    `INSERT INTO ukg_hours (tech_id, week_monday, day, hours, pending_punch) VALUES (?, ?, ?, 0, ?)
-     ON CONFLICT (tech_id, week_monday, day) DO UPDATE SET pending_punch = excluded.pending_punch`
-  ).run(techId, weekMonday, day, flagged ? 1 : 0);
+    `INSERT INTO ukg_hours (tech_id, week_monday, day, hours, pending_punch, pending_punch_note, pending_punch_reported_by)
+     VALUES (?, ?, ?, 0, ?, ?, ?)
+     ON CONFLICT (tech_id, week_monday, day) DO UPDATE SET
+       pending_punch = excluded.pending_punch,
+       pending_punch_note = excluded.pending_punch_note,
+       pending_punch_reported_by = excluded.pending_punch_reported_by`
+  ).run(techId, weekMonday, day, flagged ? 1 : 0, flagged ? note || null : null, flagged ? reportedBy || null : null);
   return getPendingPunchByDay(techId, weekMonday);
+}
+
+// Every day, across every technician, that's flagged pending AND was
+// reported by the technician themselves (not admin, who already knows
+// since they set the flag) -- surfaced in Priorities so a new report never
+// just sits unnoticed on a week admin isn't currently looking at.
+function listPendingPunchReports() {
+  return db
+    .prepare(
+      `SELECT u.tech_id AS techId, t.name AS techName, u.week_monday AS weekMonday, u.day AS day, u.pending_punch_note AS note
+       FROM ukg_hours u
+       JOIN technicians t ON t.id = u.tech_id
+       WHERE u.pending_punch = 1 AND u.pending_punch_reported_by = 'tech'
+       ORDER BY u.week_monday ASC, u.day ASC`
+    )
+    .all();
 }
 
 // ---- Weekly allocation records ----
@@ -1086,6 +1129,26 @@ function getWeek(techId, weekMonday) {
   };
 }
 
+// Shared by saveWeekendAllocations and saveDayAllocations below -- replaces
+// just the allocation rows for the given days, regardless of the week's
+// lock status, since both callers are deliberate lock bypasses for a
+// specific, narrow correction rather than a general edit.
+function replaceAllocationsForDays(techId, weekMonday, days, allocations) {
+  ensureWeekRow(techId, weekMonday);
+  const placeholders = days.map(() => "?").join(",");
+  db.prepare(`DELETE FROM allocations WHERE tech_id = ? AND week_monday = ? AND day IN (${placeholders})`).run(
+    techId,
+    weekMonday,
+    ...days
+  );
+  const insert = db.prepare(
+    "INSERT INTO allocations (tech_id, week_monday, day, type, location_code, wom_code, hours) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const a of allocations) {
+    insert.run(techId, weekMonday, a.day, a.type, a.locationCode || null, a.womCode || null, a.hours);
+  }
+}
+
 // Replaces just a technician's Saturday/Sunday allocation rows -- used when
 // they were called in over the weekend after the rest of the week was
 // already submitted/approved, so the already-locked Mon-Fri record is never
@@ -1093,19 +1156,24 @@ function getWeek(techId, weekMonday) {
 // changed after the fact" signal to review, regardless of the week's
 // current status.
 function saveWeekendAllocations(techId, weekMonday, allocations) {
-  ensureWeekRow(techId, weekMonday);
-  db.prepare("DELETE FROM allocations WHERE tech_id = ? AND week_monday = ? AND day IN ('Sat', 'Sun')").run(techId, weekMonday);
-  const insert = db.prepare(
-    "INSERT INTO allocations (tech_id, week_monday, day, type, location_code, wom_code, hours) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  );
-  for (const a of allocations) {
-    insert.run(techId, weekMonday, a.day, a.type, a.locationCode || null, a.womCode || null, a.hours);
-  }
+  replaceAllocationsForDays(techId, weekMonday, ["Sat", "Sun"], allocations);
   db.prepare("UPDATE weeks SET weekend_addendum_at = ?, purelyhr_verified_at = NULL WHERE tech_id = ? AND week_monday = ?").run(
     new Date().toISOString(),
     techId,
     weekMonday
   );
+  return getWeek(techId, weekMonday);
+}
+
+// Replaces a single day's allocation rows -- used to fix a weekday whose
+// real UKG punch came out different after the week was already
+// submitted/approved (a missed clock-out, etc.), without unlocking (and
+// thereby resetting to draft) the rest of an otherwise-fine week. Callers
+// are expected to have already checked that day is actually flagged
+// pending -- see the resolve-punch-issue route.
+function saveDayAllocations(techId, weekMonday, day, allocations) {
+  replaceAllocationsForDays(techId, weekMonday, [day], allocations);
+  db.prepare("UPDATE weeks SET purelyhr_verified_at = NULL WHERE tech_id = ? AND week_monday = ?").run(techId, weekMonday);
   return getWeek(techId, weekMonday);
 }
 
@@ -1444,10 +1512,13 @@ module.exports = {
   getUkgHoursByDay,
   setUkgHours,
   getPendingPunchByDay,
+  getPendingPunchDetailByDay,
   setPendingPunch,
+  listPendingPunchReports,
   getWeek,
   saveAllocations,
   saveWeekendAllocations,
+  saveDayAllocations,
   acknowledgeWeekendAddendum,
   setPurelyHrVerified,
   listWeeksNeedingPurelyHrVerification,

@@ -414,6 +414,7 @@ export async function renderTechWeek(container, techIdOverride) {
     card.className = "day-card";
     const ukgActual = week.ukgHoursByDay[day] || 0;
     const pendingPunch = Boolean(week.pendingPunchByDay && week.pendingPunchByDay[day]);
+    const pendingPunchDetail = (week.pendingPunchDetailByDay && week.pendingPunchDetailByDay[day]) || null;
     const splits = allocations.filter((a) => a.day === day && a.type !== "timeoff");
     const timeOff = allocations.find((a) => a.day === day && a.type === "timeoff") || null;
     const total = dayTotal(day);
@@ -425,7 +426,19 @@ export async function renderTechWeek(container, techIdOverride) {
         <span class="day-name">${day}${dayReopened ? ` <span class="badge badge-draft">Weekend entry</span>` : ""}</span>
         <span class="day-ukg-actual">UKG ACTUAL: <strong>${ukgActual}h</strong></span>
       </div>
-      ${pendingPunch ? `<p class="pending-punch-note">⚠ Pending punch correction in UKG — this day's hours aren't final yet.</p>` : ""}
+      ${
+        pendingPunch
+          ? `<p class="pending-punch-note">⚠ ${
+              pendingPunchDetail && pendingPunchDetail.reportedBy === "tech"
+                ? `You reported a punch issue for this day${
+                    pendingPunchDetail.note ? `: "${escapeHtml(pendingPunchDetail.note)}"` : ""
+                  } — waiting on admin to fix it in UKG.`
+                : "Pending punch correction in UKG — this day's hours aren't final yet."
+            }</p>`
+          : state.user.role !== "admin"
+          ? `<div class="report-punch-host" data-day="${day}"></div>`
+          : ""
+      }
       ${timeOffOnly ? "" : `<div class="day-rows"></div>`}
       ${full ? `
         <div class="day-actions">
@@ -463,6 +476,9 @@ export async function renderTechWeek(container, techIdOverride) {
         rowsEl.appendChild(row);
       }
     }
+
+    const reportPunchHost = card.querySelector(".report-punch-host");
+    if (reportPunchHost) wireReportPunchHost(reportPunchHost, day);
 
     if (full) {
       card.querySelector(".add-split").addEventListener("click", () => {
@@ -748,6 +764,57 @@ export async function renderTechWeek(container, techIdOverride) {
       saveMessage = err.message;
     }
     draw();
+  }
+
+  // Renders "Flag a punch issue" (with an optional note) directly into a day
+  // card, instead of a technician's only option being a phone call or text
+  // to admin. Works on any day, locked or not, since the punch problem is
+  // about UKG's own record, independent of whether this app's allocation
+  // for that day is still editable.
+  function wireReportPunchHost(host, day) {
+    let expanded = false;
+
+    function drawHost() {
+      if (!expanded) {
+        host.innerHTML = `<button class="btn btn-link report-punch-btn" type="button">⚠ Flag a punch issue</button>`;
+        host.querySelector(".report-punch-btn").addEventListener("click", () => {
+          expanded = true;
+          drawHost();
+        });
+        return;
+      }
+      host.innerHTML = `
+        <div class="report-punch-form">
+          <input type="text" class="report-punch-note" placeholder="What happened? (optional)" maxlength="500" />
+          <button class="btn btn-secondary report-punch-submit" type="button">Submit</button>
+          <button class="btn btn-link report-punch-cancel" type="button">Cancel</button>
+          <span class="save-message report-punch-message"></span>
+        </div>
+      `;
+      host.querySelector(".report-punch-cancel").addEventListener("click", () => {
+        expanded = false;
+        drawHost();
+      });
+      host.querySelector(".report-punch-submit").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        const note = host.querySelector(".report-punch-note").value;
+        btn.disabled = true;
+        try {
+          const result = await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/report-punch-issue`, {
+            day,
+            note,
+          });
+          week.pendingPunchByDay = result.pendingPunchByDay;
+          week.pendingPunchDetailByDay = result.pendingPunchDetailByDay;
+          draw();
+        } catch (err) {
+          btn.disabled = false;
+          host.querySelector(".report-punch-message").textContent = err.message;
+        }
+      });
+    }
+
+    drawHost();
   }
 
   async function submit() {
