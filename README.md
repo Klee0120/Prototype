@@ -691,12 +691,12 @@ a missing code is obvious rather than silently blank.
   (a Microsoft 365/Google Workspace mailbox's SMTP settings, or a
   transactional provider like SendGrid) — this app doesn't care which, it
   just needs standard SMTP auth.
-- **Smartsheet connection: read-only pull of WOM pricing, matched by WOM #.**
-  `server/utils/smartsheet.js` is a thin, opt-in client (same
-  no-crash-until-configured pattern as the mailer above) for a one-way pull
-  from a single Smartsheet sheet — the external WOM/PSE project tracker.
-  Set two environment variables before starting the app:
-  `SMARTSHEET_API_TOKEN` (a personal access token — in Smartsheet, click
+- **Smartsheet connection: read-only pull that creates, promotes, and prices
+  WOMs from the external PSE tracker.** `server/utils/smartsheet.js` is a
+  thin, opt-in client (same no-crash-until-configured pattern as the mailer
+  above) for a one-way pull from a single Smartsheet sheet — the external
+  WOM/PSE project tracker. Set two environment variables before starting the
+  app: `SMARTSHEET_API_TOKEN` (a personal access token — in Smartsheet, click
   your account icon → **Apps & Integrations** → **API Access** → **Generate
   new access token**; it's shown once, so copy it immediately) and
   `SMARTSHEET_SHEET_ID` (the numeric ID of the specific sheet — visible via
@@ -710,28 +710,42 @@ a missing code is obvious rather than silently blank.
   The **E&F Locations & WOM tab** shows a "Smartsheet Connection" panel
   with a **Preview data** button (the sheet's real column names and first 5
   rows, useful for confirming the connection and checking column names) and
-  a **Sync WOM pricing now** button. Syncing matches every sheet row's
-  **`WOM #`** column value directly against this app's own WOM codes — for
-  this to work, a WOM's code here needs to actually be the real numeric
-  JDE/WOM # (e.g. `20313211`), not an arbitrary label, since the match is an
-  exact string comparison. It **never creates a new WOM record** and never
-  writes anything back to Smartsheet — it only updates the `estimatedPrice`
-  and `appliedPrice` fields on a WOM that already exists here, and only for
-  rows that already have a WOM # assigned (per the real PSE process, a
+  a **Sync WOMs from Smartsheet** button. Per the real PSE process (a
   Smartsheet row exists from the initial request onward but doesn't get a
-  WOM # until admin actually creates the WOM and issues the PO, so a blank
-  or `0` WOM # just means "still a request, not a job yet" -- those rows
-  are skipped, same as a WOM # that doesn't match anything on file here). The two dollar columns are located by
-  keyword (`findColumn` in `smartsheet.js` looks for a column whose title
-  contains "estimate"/"wom"/"$" or "applied"/"wom"/"$"), tolerant of the
-  sheet's exact punctuation rather than a hardcoded literal string. A WOM
-  without a Smartsheet match yet can still have pricing hand-entered
-  (`PATCH /api/woms/:code/pricing`) — a later sync overwrites both fields
-  once that WOM code is found there, since they're meant to mirror
-  Smartsheet once a match exists, not be independently maintained here.
-  **Admin-triggered for now, not on a schedule** — click "Sync WOM pricing
-  now" whenever you want the latest numbers; automatic periodic syncing is
-  a natural next step once this has been used successfully a few times.
+  real WOM # until admin actually creates the WOM and issues the PO — steps
+  1–8 vs. step 9 onward), a sync no longer just matches existing WOMs — it
+  keeps every sheet row in step with this app's own record of it:
+  - A row whose **`WOM #`** column already has a real value creates (or
+    updates) an **open** WOM using that number as the code.
+  - A row with a blank or `0` WOM # — a request that's been logged on the
+    tracker but hasn't reached Toyota approval / PO issuance yet — creates a
+    **pending** WOM instead (code `PENDING-<smartsheet row id>`, e.g.
+    `PENDING-501`). A pending WOM is invisible to technicians (it fails the
+    same "must be open" check every other non-open WOM does when a
+    technician tries to allocate against it) and doesn't count toward the
+    admin Priorities badge, but shows up in its own **"WOM requests pending
+    Toyota approval"** Priorities section so the RFM can track what's still
+    working its way through the approval steps.
+  - Sync tracks each row by Smartsheet's own row id (not the WOM # cell), so
+    when a pending row's request is later approved and gets a real WOM #
+    assigned, the *same* WOM record is renamed and promoted to `open` —
+    it's never duplicated, and the old `PENDING-...` code disappears.
+  - A row that's already synced before just gets its `estimatedPrice` /
+    `appliedPrice` refreshed. A sync **never overwrites a status an admin
+    set by hand** here (e.g. `closed`) back to `open` or `pending`.
+  A sync never writes anything back to Smartsheet — it only ever reads. The
+  two dollar columns are located by keyword (`findColumn` in `smartsheet.js`
+  looks for a column whose title contains "estimate"/"wom"/"$" or
+  "applied"/"wom"/"$"), and the description by "project"/"name", all
+  tolerant of the sheet's exact punctuation rather than a hardcoded literal
+  string. A WOM without a Smartsheet match yet can still have pricing
+  hand-entered (`PATCH /api/woms/:code/pricing`) — a later sync overwrites
+  both fields once that WOM code is found there, since they're meant to
+  mirror Smartsheet once a match exists, not be independently maintained
+  here. **Admin-triggered for now, not on a schedule** — click "Sync WOMs
+  from Smartsheet" whenever you want the latest numbers; automatic periodic
+  syncing is a natural next step once this has been used successfully a few
+  times.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have
@@ -820,8 +834,10 @@ server/
                               (works on submitted OR approved), weekend-addenda list +
                               acknowledge-weekend, punch-issues list (tech-reported only),
                               smartsheet/status + smartsheet/preview (read-only sheet preview),
-                              smartsheet/sync-wom-pricing (matches sheet rows to WOM records
-                              by WOM #, pulls in estimated/applied pricing)
+                              smartsheet/sync-woms (creates open WOMs from rows with a real
+                              WOM #, pending WOMs from rows without one yet, promotes a pending
+                              WOM once its row gets a real WOM #, and refreshes estimated/
+                              applied pricing on every synced WOM)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant
     audit.js                  Audit log
@@ -880,9 +896,11 @@ tests/
   smartsheet.test.js                 simplifySheet's column-id-to-title reshaping, findColumn's
                                         keyword tolerance, safe 409 (not a crash) when Smartsheet
                                         isn't configured, admin-only
-  smartsheetSync.test.js               WOM pricing sync: matches by WOM #, skips a blank/"0" WOM #
-                                        and an unmatched WOM #, admin-only, hand-entered pricing on
-                                        an unmatched WOM survives until a real sync overwrites it
+  smartsheetSync.test.js               WOM sync: a real-WOM# row creates an open WOM, a blank/"0"
+                                        WOM# row creates a pending WOM invisible to techs, a pending
+                                        row later getting a real WOM# promotes it without duplicating,
+                                        re-syncing never reverts an admin's own status change,
+                                        admin-only, hand-entered pricing survives until a real sync
 public/
   index.html
   css/styles.css

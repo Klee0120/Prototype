@@ -24,8 +24,8 @@ function formatMoney(n) {
 const CW_STATUS_LABELS = { active: "C&W Active", inactive: "C&W Inactive", unknown: "C&W Unknown" };
 const TOYOTA_STATUS_LABELS = { approved: "Toyota Approved", not_approved: "Toyota Not Approved", unknown: "Toyota Unknown" };
 const FORMS_STATUS_LABELS = { current: "Forms Current", outdated: "Forms Outdated", unknown: "Forms Unknown" };
-const WOM_STATUSES = ["open", "invoiced", "closed"];
-const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
+const WOM_STATUSES = ["pending", "open", "invoiced", "closed"];
+const WOM_STATUS_LABELS = { pending: "Pending Toyota approval", open: "Open", invoiced: "Invoiced", closed: "Closed" };
 
 const VENDOR_STATUS_BADGE_CLASS = {
   active: "approved",
@@ -693,12 +693,14 @@ export async function renderAdminReview(container) {
       ]);
       const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
       const smartsheetGapCount = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
-      // Vendor document-check completeness is deliberately left out of this
-      // badge: against a real, bulk-imported vendor list, "not yet checked"
-      // starts out true for nearly everyone, so counting it here would make
-      // the badge reflect the whole backlog size instead of "a few things
-      // to look at" -- it still shows up in full in the section below, to
-      // work through at whatever daily pace makes sense (see Today's focus).
+      // Vendor document-check completeness and pending WOM requests are both
+      // deliberately left out of this badge: against a real Smartsheet
+      // sync, "not yet sent to Toyota" (or "not yet checked", for vendors)
+      // starts out true for a large ongoing backlog, not a handful of new
+      // items -- counting either here would make the badge reflect backlog
+      // size instead of "a few things to look at." Both still show up in
+      // full in their own section below, to work through at whatever pace
+      // makes sense (see Today's focus).
       return (
         expiringForms.length +
         outdatedVendorCount +
@@ -732,6 +734,7 @@ export async function renderAdminReview(container) {
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
     const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale);
     const womsNeedingSmartsheetUpdate = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt);
+    const pendingWoms = woms.filter((w) => w.status === "pending");
     const todayIso = new Date().toISOString().slice(0, 10);
     const isMonday = new Date().getDay() === 1;
 
@@ -850,6 +853,18 @@ export async function renderAdminReview(container) {
     sections.appendChild(renderWomSmartsheetSection(content, womsNeedingSmartsheetUpdate));
     sections.appendChild(
       renderPrioritySection(
+        "WOM requests pending Toyota approval",
+        pendingWoms.map((w) => ({
+          label: w.description,
+          detail: w.estimatedPrice != null ? `Est. $${formatMoney(w.estimatedPrice)}` : "No estimate yet",
+          kind: "wom-pending",
+          womCode: w.code,
+        })),
+        "Nothing waiting on Toyota approval right now."
+      )
+    );
+    sections.appendChild(
+      renderPrioritySection(
         "Time off needing PurelyHR verification",
         purelyhrUnverified.map((w) => ({
           label: w.techName,
@@ -864,7 +879,7 @@ export async function renderAdminReview(container) {
 
     sections.querySelectorAll(".priority-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const { kind, tech, week, month, vendor } = btn.dataset;
+        const { kind, tech, week, month, vendor, wom } = btn.dataset;
         if (kind === "vendor") {
           vendorFilters.formsStatus = "outdated";
           activeTab = "vendors";
@@ -882,6 +897,9 @@ export async function renderAdminReview(container) {
           state.weekMonday = week;
           expanded.add(tech);
           activeTab = "review";
+        } else if (kind === "wom-pending") {
+          womEditing.add(wom);
+          activeTab = "woms";
         } else if (kind === "report-gap") {
           laborReportMonth = month;
           activeTab = "laborreports";
@@ -920,6 +938,7 @@ export async function renderAdminReview(container) {
                     ${item.weekMonday ? `data-week="${escapeHtml(item.weekMonday)}"` : ""}
                     ${item.month ? `data-month="${escapeHtml(item.month)}"` : ""}
                     ${item.vendorId ? `data-vendor="${escapeHtml(String(item.vendorId))}"` : ""}
+                    ${item.womCode ? `data-wom="${escapeHtml(item.womCode)}"` : ""}
                   >View</button>
                 </div>`
                 )
@@ -1816,7 +1835,7 @@ export async function renderAdminReview(container) {
       <div class="smartsheet-status smartsheet-status-on">
         <strong>Connected.</strong>
         <button class="btn btn-link smartsheet-preview-btn" type="button">Preview data</button>
-        <button class="btn btn-secondary smartsheet-sync-btn" type="button">Sync WOM pricing now</button>
+        <button class="btn btn-secondary smartsheet-sync-btn" type="button">Sync WOMs from Smartsheet</button>
       </div>
       <div class="smartsheet-sync-result"></div>
       <div class="smartsheet-preview"></div>
@@ -1828,13 +1847,14 @@ export async function renderAdminReview(container) {
       btn.disabled = true;
       resultEl.innerHTML = `<p class="empty-note">Syncing…</p>`;
       try {
-        const result = await api.post("/api/admin/smartsheet/sync-wom-pricing");
+        const result = await api.post("/api/admin/smartsheet/sync-woms");
         const summaryHtml = `
           <p class="smartsheet-sync-summary">
-            <strong>${result.matched}</strong> WOM${result.matched === 1 ? "" : "s"} updated from "${escapeHtml(result.womColumn)}"
-            (matching against ${escapeHtml(result.estimateColumn || "no estimate column found")} /
-            ${escapeHtml(result.appliedColumn || "no applied column found")}) — ${result.skippedNoWomNumber} row${result.skippedNoWomNumber === 1 ? "" : "s"}
-            had no WOM # yet, ${result.skippedNoMatch} row${result.skippedNoMatch === 1 ? "" : "s"} had a WOM # not on file here.
+            <strong>${result.created}</strong> new WOM${result.created === 1 ? "" : "s"} added (open or pending),
+            <strong>${result.promoted}</strong> pending WOM${result.promoted === 1 ? "" : "s"} promoted now that a real WOM # showed up,
+            <strong>${result.updated}</strong> existing WOM${result.updated === 1 ? "" : "s"} refreshed — out of ${result.total} sheet rows.
+            Matched by "${escapeHtml(result.womColumn)}", pricing from ${escapeHtml(result.estimateColumn || "no estimate column found")} /
+            ${escapeHtml(result.appliedColumn || "no applied column found")}.
           </p>
         `;
         // The WOM Projects list below needs to show the freshly-synced

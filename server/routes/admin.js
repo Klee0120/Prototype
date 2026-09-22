@@ -440,14 +440,13 @@ router.get("/smartsheet/preview", async (req, res) => {
   }
 });
 
-// Pulls WOM # + estimated/applied pricing from the connected sheet and
-// updates any WOM record here whose code matches that WOM # exactly. Never
-// creates a new WOM -- only ever updates ones that already exist -- and
-// skips rows with no WOM # assigned yet (still just a request, not a real
-// job) or whose WOM # isn't one this app has a record for. Admin-triggered
-// for now (a "Sync now" button); on a schedule is a natural next step once
-// this has been used successfully a few times.
-router.post("/smartsheet/sync-wom-pricing", async (req, res) => {
+// Pulls every row from the connected sheet and creates/updates a WOM
+// record here for each one, tracked by the underlying Smartsheet row (not
+// just its WOM # cell, which starts blank and gets filled in later -- see
+// syncWomsFromSheetRows for the full create/promote/update behavior).
+// Admin-triggered for now (a "Sync" button); on a schedule is a natural
+// next step once this has been used successfully a few times.
+router.post("/smartsheet/sync-woms", async (req, res) => {
   if (!smartsheet.isConfigured()) {
     return res.status(409).json({ error: "Smartsheet isn't connected yet -- set SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID" });
   }
@@ -459,13 +458,14 @@ router.post("/smartsheet/sync-wom-pricing", async (req, res) => {
     }
     const estimateColumn = smartsheet.findColumn(sheet.columns, ["estimate", "wom", "$"]);
     const appliedColumn = smartsheet.findColumn(sheet.columns, ["applied", "wom", "$"]);
-    const result = db.syncWomPricingFromSheetRows(sheet.rows, womColumn, estimateColumn, appliedColumn);
+    const descriptionColumn = smartsheet.findColumn(sheet.columns, ["project", "name"]);
+    const result = db.syncWomsFromSheetRows(sheet.rows, womColumn, estimateColumn, appliedColumn, descriptionColumn);
     db.addAudit(
       req.user.id,
-      "SMARTSHEET_WOM_PRICING_SYNCED",
-      `${req.user.name} synced WOM pricing from Smartsheet (${result.matched} matched, ${result.skippedNoMatch} no matching WOM, ${result.skippedNoWomNumber} no WOM # yet)`
+      "SMARTSHEET_WOMS_SYNCED",
+      `${req.user.name} synced WOMs from Smartsheet (${result.created} created, ${result.promoted} promoted from pending, ${result.updated} updated)`
     );
-    res.json({ ...result, womColumn, estimateColumn, appliedColumn });
+    res.json({ ...result, womColumn, estimateColumn, appliedColumn, descriptionColumn });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }

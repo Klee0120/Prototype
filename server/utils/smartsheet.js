@@ -27,14 +27,17 @@ async function fetchSheet() {
 }
 
 // Reshapes the raw column-id-keyed cell arrays into { sheetName, columns:
-// ["Title", ...], rows: [{Title: value, ...}] } -- both easier for a human
-// (the admin preview) and for future column-to-WOM-field mapping logic to
-// work with than Smartsheet's own shape.
+// ["Title", ...], rows: [{Title: value, ..., __smartsheetRowId}] } -- both
+// easier for a human (the admin preview) and for column-to-WOM-field
+// mapping logic to work with than Smartsheet's own shape. __smartsheetRowId
+// is Smartsheet's own row id, carried along (not a column) so a later sync
+// can recognize the same row again even after its WOM # cell changes --
+// see syncWomsFromSheetRows in server/data/db.js.
 function simplifySheet(rawSheet) {
   const titleByColumnId = Object.fromEntries((rawSheet.columns || []).map((c) => [c.id, c.title]));
   const columns = (rawSheet.columns || []).map((c) => c.title);
   const rows = (rawSheet.rows || []).map((row) => {
-    const obj = {};
+    const obj = { __smartsheetRowId: String(row.id) };
     for (const cell of row.cells || []) {
       const title = titleByColumnId[cell.columnId];
       if (title) obj[title] = cell.displayValue !== undefined ? cell.displayValue : cell.value;

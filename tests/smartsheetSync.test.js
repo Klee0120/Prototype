@@ -13,9 +13,6 @@ process.env.SMARTSHEET_SHEET_ID = "6392545882886020";
 
 const { startServer } = require("./helpers");
 
-// Only fakes calls to the Smartsheet API itself -- everything else (the
-// test harness's own HTTP calls to the local test server, e.g. logging in)
-// goes through the real fetch untouched.
 function stubFetchOnce(response) {
   const original = global.fetch;
   global.fetch = async (url, ...rest) => {
@@ -27,63 +24,30 @@ function stubFetchOnce(response) {
   };
 }
 
-// Mirrors the real "Midwest PSE Request Tracker" sheet's shape: a WOM # column
-// plus separate Estimate/Applied WOM $ columns with their own exact (and
-// not-quite-guessable) punctuation.
-const SAMPLE_SHEET = {
-  name: "Midwest PSE Request Tracker",
-  columns: [
-    { id: 1, title: "WOM #" },
-    { id: 2, title: "Estimate WOM $ - Project Total" },
-    { id: 3, title: "Applied WOM $ - Project Summary" },
-  ],
-  rows: [
-    // Matches a real seeded WOM -- should update.
-    {
-      id: 100,
-      cells: [
-        { columnId: 1, value: "WOM-4471", displayValue: "WOM-4471" },
-        { columnId: 2, value: 1710.71, displayValue: "$1,710.71" },
-        { columnId: 3, value: 1983.71, displayValue: "$1,983.71" },
-      ],
-    },
-    // No WOM # cell at all yet -- still just a request, should skip.
-    {
-      id: 101,
-      cells: [{ columnId: 2, value: 500, displayValue: "$500.00" }],
-    },
-    // WOM # of "0" -- not a real assignment, should skip.
-    {
-      id: 102,
-      cells: [
-        { columnId: 1, value: "0", displayValue: "0" },
-        { columnId: 2, value: 100, displayValue: "$100.00" },
-      ],
-    },
-    // A WOM # this app has no matching record for -- should skip.
-    {
-      id: 103,
-      cells: [
-        { columnId: 1, value: "99999999", displayValue: "99999999" },
-        { columnId: 2, value: 1, displayValue: "$1.00" },
-      ],
-    },
-  ],
-};
+const COLUMNS = [
+  { id: 1, title: "WOM #" },
+  { id: 2, title: "Estimate WOM $ - Project Total" },
+  { id: 3, title: "Applied WOM $ - Project Summary" },
+  { id: 4, title: "Project Name" },
+];
 
-test("smartsheet sync: pulls WOM pricing by exact WOM # match", async (t) => {
+function sheetWith(rows) {
+  return { name: "Midwest PSE Request Tracker", columns: COLUMNS, rows };
+}
+
+test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
   await t.test("a technician cannot trigger a sync (admin-only)", async () => {
-    const res = await server.call("POST", "/api/admin/smartsheet/sync-wom-pricing", { userId: "T1001" });
+    const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "T1001" });
     assert.equal(res.status, 403);
   });
 
   await t.test("a failed Smartsheet API call surfaces as a clear error, not a crash", async () => {
     const restore = stubFetchOnce({ ok: false, status: 401, statusText: "Unauthorized", text: async () => "Invalid token" });
     try {
-      const res = await server.call("POST", "/api/admin/smartsheet/sync-wom-pricing", { userId: "ADMIN" });
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       assert.equal(res.status, 502);
       assert.ok(res.body.error.includes("401"));
     } finally {
@@ -91,31 +55,142 @@ test("smartsheet sync: pulls WOM pricing by exact WOM # match", async (t) => {
     }
   });
 
-  await t.test("syncs the matching WOM, skips the rest, and reports why", async () => {
-    const restore = stubFetchOnce({ ok: true, json: async () => SAMPLE_SHEET });
+  await t.test("a row with a real WOM # creates a new open WOM directly", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 500,
+            cells: [
+              { columnId: 1, value: "20313211", displayValue: "20313211" },
+              { columnId: 2, value: 1710.71, displayValue: "$1,710.71" },
+              { columnId: 3, value: 1983.71, displayValue: "$1,983.71" },
+              { columnId: 4, value: "Roof leak repair", displayValue: "Roof leak repair" },
+            ],
+          },
+        ]),
+    });
     try {
-      const res = await server.call("POST", "/api/admin/smartsheet/sync-wom-pricing", { userId: "ADMIN" });
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       assert.equal(res.status, 200);
-      assert.equal(res.body.total, 4);
-      assert.equal(res.body.matched, 1);
-      // Rows 101 (no WOM # cell) and 102 (WOM # of "0") -- neither is a
-      // real assignment yet.
-      assert.equal(res.body.skippedNoWomNumber, 2);
-      // Row 103 -- a WOM # with no matching record here.
-      assert.equal(res.body.skippedNoMatch, 1);
-      assert.equal(res.body.womColumn, "WOM #");
-      assert.equal(res.body.estimateColumn, "Estimate WOM $ - Project Total");
-      assert.equal(res.body.appliedColumn, "Applied WOM $ - Project Summary");
+      assert.equal(res.body.created, 1);
+      assert.equal(res.body.promoted, 0);
+      assert.equal(res.body.total, 1);
 
-      const woms = await server.call("GET", "/api/woms", { userId: "ADMIN" });
-      const updated = woms.body.find((w) => w.code === "WOM-4471");
-      assert.equal(updated.estimatedPrice, 1710.71);
-      assert.equal(updated.appliedPrice, 1983.71);
-      assert.ok(updated.smartsheetSyncedAt);
+      const wom = await server.call("GET", "/api/woms/20313211", { userId: "ADMIN" }).catch(() => null);
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const created = list.body.find((w) => w.code === "20313211");
+      assert.ok(created);
+      assert.equal(created.status, "open");
+      assert.equal(created.description, "Roof leak repair");
+      assert.equal(created.estimatedPrice, 1710.71);
+      assert.equal(created.appliedPrice, 1983.71);
+    } finally {
+      restore();
+    }
+  });
 
-      // Untouched by this sync -- no matching row pointed at it.
-      const other = woms.body.find((w) => w.code === "WOM-4502");
-      assert.equal(other.estimatedPrice, null);
+  await t.test("a row with no WOM # yet creates a pending WOM, invisible to techs", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 501,
+            cells: [
+              { columnId: 2, value: 500, displayValue: "$500.00" },
+              { columnId: 4, value: "Parking lot striping", displayValue: "Parking lot striping" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.created, 1);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const pending = list.body.find((w) => w.code === "PENDING-501");
+      assert.ok(pending);
+      assert.equal(pending.status, "pending");
+      assert.equal(pending.description, "Parking lot striping");
+      assert.equal(pending.estimatedPrice, 500);
+
+      // A technician can't allocate against a pending WOM -- same "must be
+      // open" rule as any other non-open status.
+      const meta = await server.call("GET", "/api/meta/current-week");
+      const week = meta.body.weekMonday;
+      const alloc = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/allocations`, {
+        userId: "T1001",
+        body: { allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "PENDING-501", hours: 8 }] },
+      });
+      assert.equal(alloc.status, 400);
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("that same row later getting a real WOM # promotes it, doesn't duplicate it", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 501,
+            cells: [
+              { columnId: 1, value: "20444444", displayValue: "20444444" },
+              { columnId: 2, value: 500, displayValue: "$500.00" },
+              { columnId: 4, value: "Parking lot striping", displayValue: "Parking lot striping" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.created, 0);
+      assert.equal(res.body.promoted, 1);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.ok(!list.body.some((w) => w.code === "PENDING-501"));
+      const promoted = list.body.find((w) => w.code === "20444444");
+      assert.ok(promoted);
+      assert.equal(promoted.status, "open");
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("re-syncing the same real-WOM# row again just updates it, never touches admin's own status change", async () => {
+    // Admin closes it out by hand in between syncs.
+    await server.call("PATCH", "/api/woms/20444444", { userId: "ADMIN", body: { status: "closed" } });
+
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 501,
+            cells: [
+              { columnId: 1, value: "20444444", displayValue: "20444444" },
+              { columnId: 2, value: 750, displayValue: "$750.00" },
+              { columnId: 4, value: "Parking lot striping", displayValue: "Parking lot striping" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.updated, 1);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const wom = list.body.find((w) => w.code === "20444444");
+      // Pricing refreshed...
+      assert.equal(wom.estimatedPrice, 750);
+      // ...but a sync never reverts admin's own status change back to open.
+      assert.equal(wom.status, "closed");
     } finally {
       restore();
     }
