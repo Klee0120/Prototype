@@ -52,6 +52,57 @@ function mondayOfIso(dateIso) {
   return addDaysIso(dateIso, -mondayIndexOf(dateIso));
 }
 
+// Groups a week's day-by-day entries into contiguous "runs" -- the same
+// technician + WOM + hours appearing on consecutive days -- so the
+// calendar can draw one bar spanning those days instead of repeating an
+// identical entry on every day it covers, then greedily packs runs that
+// would otherwise overlap into separate lanes (rows), like a simple Gantt
+// chart. `keyOf(dayIndex, entryIndex)` maps back to the flat entriesByKey
+// lookup the click handler and detail panel already use.
+function buildWeekRuns(week, byDate, keyOf) {
+  const openRuns = new Map(); // groupKey -> run still extending
+  const runs = [];
+  for (let day = 0; day < week.length; day++) {
+    const entries = byDate[week[day]] || [];
+    const touchedToday = new Set();
+    entries.forEach((entry, i) => {
+      const groupKey = `${entry.techId || entry.techName}::${entry.womCode}::${entry.hours}`;
+      const key = keyOf(week[day], i);
+      const open = openRuns.get(groupKey);
+      if (open && open.endDay === day - 1 && !touchedToday.has(groupKey)) {
+        open.endDay = day;
+        open.keys.push(key);
+      } else {
+        const run = { groupKey, startDay: day, endDay: day, keys: [key], entry };
+        runs.push(run);
+        openRuns.set(groupKey, run);
+      }
+      touchedToday.add(groupKey);
+    });
+    // A run whose groupKey didn't show up today has ended -- remove it so
+    // a later occurrence of the same tech/WOM/hours (after a gap) starts a
+    // fresh run instead of wrongly bridging across the gap.
+    for (const [groupKey, run] of openRuns) {
+      if (run.endDay !== day) openRuns.delete(groupKey);
+    }
+  }
+
+  runs.sort((a, b) => a.startDay - b.startDay);
+  const laneEnds = [];
+  for (const run of runs) {
+    let lane = laneEnds.findIndex((end) => end < run.startDay);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(run.endDay);
+    } else {
+      laneEnds[lane] = run.endDay;
+    }
+    run.lane = lane;
+  }
+
+  return { runs, laneCount: laneEnds.length };
+}
+
 // A month calendar of WOM project work only (no E&F, no time off) -- shared
 // by the admin and technician shells, and open to any logged-in user, since
 // the point is letting anyone see what's already scheduled before adding
@@ -158,51 +209,52 @@ export async function renderSchedule(container) {
         entriesByKey[`${dateIso}|${i}`] = { ...e, dateIso };
       });
     }
+    const keyOf = (dateIso, i) => `${dateIso}|${i}`;
 
     host.innerHTML = `
-      <table class="detail-table schedule-calendar">
-        <thead><tr>${DAY_HEADERS.map((d) => `<th>${d}</th>`).join("")}</tr></thead>
-        <tbody>
-          ${weeks
-            .map(
-              (week) => `
-            <tr>
-              ${week
-                .map((dateIso) => {
-                  const [dy, dm, dd] = dateIso.split("-").map(Number);
-                  const inMonth = dm === m && dy === y;
-                  const entries = data.byDate[dateIso] || [];
-                  return `
-                    <td class="schedule-calendar-cell ${inMonth ? "" : "schedule-calendar-outside"}">
-                      <div class="schedule-calendar-daynum">${dd}</div>
-                      ${entries
-                        .map((e, i) => {
-                          const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
-                          return `<button type="button" class="schedule-entry" data-key="${dateIso}|${i}" title="Click for WOM details">
-                              <div class="schedule-entry-main">
-                                <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.description || e.womCode)} — ${escapeHtml(e.techName)}
-                              </div>
-                              <div class="schedule-entry-sub">
-                                ${escapeHtml(e.womCode)}${maximoLabel}
-                                ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
-                                <span class="schedule-entry-tentative">Tentative</span>
-                              </div>
-                            </button>`;
-                        })
-                        .join("")}
-                    </td>`;
-                })
-                .join("")}
-            </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
+      <div class="schedule-calendar-grid">
+        <div class="schedule-calendar-headerrow">${DAY_HEADERS.map((d) => `<div class="schedule-calendar-headercell">${d}</div>`).join("")}</div>
+        ${weeks
+          .map((week) => {
+            const { runs, laneCount } = buildWeekRuns(week, data.byDate, keyOf);
+            const daycells = week
+              .map((dateIso, i) => {
+                const [dy, dm, dd] = dateIso.split("-").map(Number);
+                const inMonth = dm === m && dy === y;
+                return `<div class="schedule-daycell ${inMonth ? "" : "schedule-calendar-outside"}" style="grid-column:${i + 1}">
+                  <div class="schedule-calendar-daynum">${dd}</div>
+                </div>`;
+              })
+              .join("");
+            const runBars = runs
+              .map((run) => {
+                const e = run.entry;
+                const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
+                const span = run.endDay - run.startDay + 1;
+                return `<button type="button" class="schedule-entry" data-keys="${run.keys.join(",")}" title="Click for WOM details" style="grid-column: ${run.startDay + 1} / span ${span}; grid-row: ${run.lane + 2};">
+                    <div class="schedule-entry-main">
+                      <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.description || e.womCode)} — ${escapeHtml(e.techName)}
+                    </div>
+                    <div class="schedule-entry-sub">
+                      ${escapeHtml(e.womCode)}${maximoLabel}
+                      ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
+                      <span class="schedule-entry-tentative">Tentative</span>
+                    </div>
+                  </button>`;
+              })
+              .join("");
+            return `<div class="schedule-week" style="grid-template-rows: repeat(${laneCount + 1}, auto)">${daycells}${runBars}</div>`;
+          })
+          .join("")}
+      </div>
     `;
 
     host.querySelectorAll(".schedule-entry").forEach((btn) => {
       btn.addEventListener("click", () => {
-        detailEntry = entriesByKey[btn.dataset.key];
+        const keys = btn.dataset.keys.split(",");
+        const first = entriesByKey[keys[0]];
+        const last = entriesByKey[keys[keys.length - 1]];
+        detailEntry = { ...first, dateIsoEnd: last.dateIso };
         showAddForm = false;
         renderDetail();
       });
@@ -220,12 +272,13 @@ export async function renderSchedule(container) {
         return;
       }
       const e = detailEntry;
-      const [dy2, dm2, dd2] = e.dateIso.split("-").map(Number);
-      const dateLabel = new Date(dy2, dm2 - 1, dd2).toLocaleDateString(undefined, {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-      });
+      const dateLabelFor = (iso) => {
+        const [dy2, dm2, dd2] = iso.split("-").map(Number);
+        return new Date(dy2, dm2 - 1, dd2).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+      };
+      const isRange = e.dateIsoEnd && e.dateIsoEnd !== e.dateIso;
+      const dateLabel = isRange ? `${dateLabelFor(e.dateIso)} – ${dateLabelFor(e.dateIsoEnd)}` : dateLabelFor(e.dateIso);
+      const hoursLabel = isRange ? `${e.hours}h/day` : `${e.hours}h`;
       const budgetLine =
         e.budgetHours == null ? "" : `<div>${e.remainingHours}h left of ${e.budgetHours}h budgeted</div>`;
       const priceLine =
@@ -236,7 +289,7 @@ export async function renderSchedule(container) {
         <div class="schedule-detail-panel">
           <button type="button" class="btn btn-link schedule-detail-close">Close</button>
           <div class="schedule-detail-title">${escapeHtml(e.description || e.womCode)} <span class="wom-code">${escapeHtml(e.womCode)}</span></div>
-          <div class="schedule-detail-tentative">Tentative -- ${escapeHtml(dateLabel)}, ${e.hours}h planned by ${escapeHtml(e.techName)}</div>
+          <div class="schedule-detail-tentative">Tentative -- ${escapeHtml(dateLabel)}, ${hoursLabel} planned by ${escapeHtml(e.techName)}</div>
           <div>${e.locationName ? escapeHtml(e.locationName) : "No location on file"}</div>
           ${e.status ? `<div>Status: ${escapeHtml(WOM_STATUS_LABELS[e.status] || e.status)}</div>` : ""}
           ${e.maximoNumber ? `<div>Maximo #${escapeHtml(e.maximoNumber)}</div>` : ""}
@@ -271,7 +324,20 @@ export async function renderSchedule(container) {
       const addLocationOptions = locationsWithOpenWoms
         .map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`)
         .join("");
-      const defaultLocationCode = (state.scheduleLocation && locationsWithOpenWoms.some((l) => l.code === state.scheduleLocation) && state.scheduleLocation) || (locationsWithOpenWoms[0] && locationsWithOpenWoms[0].code) || "";
+      // Defaults to the technician's own home location -- they can still
+      // pick anywhere else that has open work, this just saves the most
+      // common case (someone scheduling their own site) a step. Falls back
+      // to the calendar's own site filter, then just the first location
+      // with open work, if there's no home location on file or it has none.
+      function preferredLocationCode(techId) {
+        const homeLocationCode = isAdmin
+          ? techId && (activeTechnicians.find((t) => t.id === techId) || {}).homeLocationCode
+          : state.user.homeLocationCode;
+        if (homeLocationCode && locationsWithOpenWoms.some((l) => l.code === homeLocationCode)) return homeLocationCode;
+        if (state.scheduleLocation && locationsWithOpenWoms.some((l) => l.code === state.scheduleLocation)) return state.scheduleLocation;
+        return (locationsWithOpenWoms[0] && locationsWithOpenWoms[0].code) || "";
+      }
+      const defaultLocationCode = preferredLocationCode(isAdmin ? "" : state.user.id);
 
       function womOptionsFor(locationCode) {
         return openWoms
@@ -324,12 +390,21 @@ export async function renderSchedule(container) {
       wireDateMaskInput(detailHost.querySelector('input[name="endDate"]'));
       const addLocationSelect = detailHost.querySelector('select[name="locationCode"]');
       if (defaultLocationCode) addLocationSelect.value = defaultLocationCode;
-      addLocationSelect.addEventListener("change", (e) => {
+      function applyLocationCode(locationCode) {
+        addLocationSelect.value = locationCode;
         const womSelect = detailHost.querySelector('select[name="womCode"]');
-        const locationCode = e.target.value;
         womSelect.disabled = !locationCode;
         womSelect.innerHTML = `<option value="">${locationCode ? "Choose one" : "Choose a location first"}</option>${locationCode ? womOptionsFor(locationCode) : ""}`;
-      });
+      }
+      addLocationSelect.addEventListener("change", (e) => applyLocationCode(e.target.value));
+      if (isAdmin) {
+        // Re-defaults to the newly-picked technician's own home location --
+        // still just a starting point, not a restriction; the location
+        // dropdown above stays fully open to pick anywhere else.
+        detailHost.querySelector('select[name="techId"]').addEventListener("change", (e) => {
+          applyLocationCode(preferredLocationCode(e.target.value));
+        });
+      }
       detailHost.querySelector(".schedule-add-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const form = e.target;

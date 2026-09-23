@@ -48,6 +48,7 @@ router.get("/:month", requireAuth, (req, res) => {
         byDate[dateIso].push({
           womCode: a.womCode,
           description: w ? w.description : "",
+          techId: tech.id,
           techName: tech.name,
           hours: a.hours,
           locationCode: a.locationCode,

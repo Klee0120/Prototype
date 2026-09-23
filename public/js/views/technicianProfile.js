@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { state, escapeHtml } from "../app.js";
+import { state, escapeHtml, setUser } from "../app.js";
 import { renderAttachments } from "./attachments.js";
 import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
 
@@ -42,6 +42,7 @@ export function renderTechniciansTab(content, openTo) {
   let showBulkAddForm = false;
   let bulkAddResult = null;
   let showAdminAccounts = false;
+  const adminRenaming = new Set(); // admin ids currently showing their rename field
   const filters = { location: "", status: "active" };
 
   draw();
@@ -187,7 +188,18 @@ export function renderTechniciansTab(content, openTo) {
               .map(
                 (a) => `
               <tr>
-                <td>${escapeHtml(a.name)}${a.id === state.user.id ? " (you)" : ""}</td>
+                <td>
+                  ${
+                    adminRenaming.has(a.id)
+                      ? `<form class="admin-rename-form" data-id="${escapeHtml(a.id)}">
+                          <input name="name" value="${escapeHtml(a.name)}" required />
+                          <button type="submit" class="btn btn-link">Save</button>
+                          <button type="button" class="btn btn-link admin-rename-cancel" data-id="${escapeHtml(a.id)}">Cancel</button>
+                        </form>`
+                      : `${escapeHtml(a.name)}${a.id === state.user.id ? " (you)" : ""}
+                          <button class="btn btn-link admin-rename-btn" data-id="${escapeHtml(a.id)}" type="button">Rename</button>`
+                  }
+                </td>
                 <td>${escapeHtml(a.id)}</td>
                 <td>${statusBadge(a.employmentStatus)}</td>
                 <td>
@@ -224,6 +236,35 @@ export function renderTechniciansTab(content, openTo) {
           await renderAdminAccountsPanel(toggleBtn, contentEl);
         } catch (err) {
           btn.disabled = false;
+          window.alert(err.message);
+        }
+      });
+    });
+
+    host.querySelectorAll(".admin-rename-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        adminRenaming.add(btn.dataset.id);
+        renderAdminAccountsPanel(toggleBtn, contentEl);
+      });
+    });
+    host.querySelectorAll(".admin-rename-cancel").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        adminRenaming.delete(btn.dataset.id);
+        renderAdminAccountsPanel(toggleBtn, contentEl);
+      });
+    });
+    host.querySelectorAll(".admin-rename-form").forEach((form) => {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const id = form.dataset.id;
+        try {
+          const updated = await api.patch(`/api/admin/admins/${encodeURIComponent(id)}/name`, { name: form.name.value.trim() });
+          // Renaming yourself should show up in the header immediately,
+          // not just after logging back in.
+          if (id === state.user.id) setUser({ ...state.user, name: updated.name });
+          adminRenaming.delete(id);
+          await renderAdminAccountsPanel(toggleBtn, contentEl);
+        } catch (err) {
           window.alert(err.message);
         }
       });

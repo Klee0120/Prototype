@@ -74,6 +74,17 @@ Demo logins:
 
 ## Features
 
+- **Visual design pass**: an actual typeface (Inter, via Google Fonts --
+  `public/index.html`) instead of the bare system-font stack, a refined
+  color/shadow token set in `:root` (`--shadow-sm`/`--shadow-md`,
+  a slightly richer accent/ink), a small logo mark and drop-shadowed
+  header in place of a flat bottom border, elevated card surfaces (the
+  Schedule detail panel, WOM Lookup's result card), and buttons/nav pills/
+  tabs with real hover and active states and short transitions instead of
+  instant, static color swaps. All in `public/css/styles.css`'s shared
+  tokens and a handful of high-traffic components -- not a rewrite of
+  every view's markup, but enough that the app doesn't read as an
+  unstyled skeleton anymore.
 - Technician login (mock ID + PIN)
 - **Technician's own tabs**: "My Week" (the allocation screen below),
   **"Locations & WOM"** (view-only — every location and every WOM project,
@@ -261,21 +272,34 @@ Demo logins:
   its site regardless of the filter, for when "All sites" is selected.
   Every date shown is explicitly labeled **"Tentative"**: a technician's own
   planned allocation for that day, not a locked commitment, so the calendar
-  reads as a working plan rather than a confirmed schedule. **Clicking an
-  entry** opens that WOM's own detail inline (status, location, budget/
-  remaining hours, estimated/applied pricing) without leaving the calendar —
-  the schedule API embeds this straight from the underlying WOM record on
-  each entry, so no second request is needed. A single **"+ Schedule a
-  WOM"** button in the calendar's own nav bar (not a `+` scattered on every
-  day) opens a form to put a WOM on the calendar — a technician for
-  themselves, admin/RFM for anyone — without leaving the calendar for Tech
-  Allocation/My Week: pick a technician (admin only; a technician can only
-  schedule their own time), then a **location, then that location's project
-  name** (the same two-step location-first cascade Tech Allocation's own
-  add-technician flow uses), hours per day, and a **first/last day date
-  range** (one day is just a range of one), and it's added as a normal
-  allocation alongside whatever else each technician already has on those
-  days (never replacing it). A range spanning more than one calendar week is
+  reads as a working plan rather than a confirmed schedule. **A WOM
+  scheduled across several consecutive days draws as a single bar spanning
+  those days' columns** (`buildWeekRuns` in `schedule.js`), not a repeated,
+  identical entry on every day it covers -- grouped by matching
+  technician + WOM + hours, with overlapping bars in the same week packed
+  into their own rows (a simple Gantt-style lane-packing algorithm) rather
+  than piling on top of each other. **Clicking a bar** opens that WOM's own
+  detail inline (status, location, budget/remaining hours, estimated/
+  applied pricing, and the date range plus which technician it's assigned
+  to) without leaving the calendar — the schedule API embeds this straight
+  from the underlying WOM record on each entry, so no second request is
+  needed. A single **"+ Schedule a WOM"** button in the calendar's own nav
+  bar (not a `+` scattered on every day) opens a form to put a WOM on the
+  calendar — a technician for themselves, admin/RFM for anyone — without
+  leaving the calendar for Tech Allocation/My Week: pick a technician
+  (admin only; a technician can only schedule their own time), then a
+  **location, then that location's project name** (the same two-step
+  location-first cascade Tech Allocation's own add-technician flow uses).
+  The location defaults to **whichever technician is selected/logged in's
+  own home location** (if it has open work) rather than the calendar's own
+  site filter or just the first location alphabetically -- still fully
+  open to pick anywhere else that has open WOMs, this just saves the most
+  common case (someone scheduling their own site) a step; picking a
+  different technician (admin only) re-defaults it to that technician's
+  home location. Then hours per day, and a **first/last day date range**
+  (one day is just a range of one), and it's added as a normal allocation
+  alongside whatever else each technician already has on those days (never
+  replacing it). A range spanning more than one calendar week is
   split by the client into per-day batches (capped at 62 days/~2 months per
   request) and saved via a **dedicated endpoint that ignores the week's own
   edit lock/window entirely** —
@@ -331,16 +355,18 @@ Demo logins:
   flat, horizontally-scrolling row (Priorities, Tech Allocation, Schedule,
   Overview, Weekly Review, E&F Locations & WOM, Technicians, Vendors,
   Reports, Audit Trail) -- wide enough on most screens to need scrolling
-  just to see the last few. They're now grouped under six top-level
-  sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`): **Priorities**,
-  **Timekeeping** (Tech Allocation, Schedule, Overview, Weekly Review,
-  Reports), **Roster** (Technicians), **Vendors**, **WOM** (Locations &
-  WOM, plus the new WOM Lookup below), and **Audit Trail**. A section with
-  only one tab behaves exactly as before (clicking it goes straight there);
-  a section with more shows a second row of its own sub-tabs underneath,
-  and remembers which sub-tab you were last on when you click back into it.
-  No tab, route, or view was removed or renamed in the process -- purely a
-  navigation-chrome change.
+  just to see the last few. They're now grouped under seven top-level
+  sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`):
+  **Priorities**, **Timekeeping** (Tech Allocation, Schedule, Overview,
+  Weekly Review), **Roster** (Technicians), **Vendors**, **WOM** (Locations
+  & WOM, plus the new WOM Lookup below), **Financials** (Reports -- kept
+  separate from Timekeeping since filing WOM/Labor/Financial/GL reports is
+  a financial task, not a timekeeping one), and **Audit Trail**. A section
+  with only one tab behaves exactly as before (clicking it goes straight
+  there); a section with more shows a second row of its own sub-tabs
+  underneath, and remembers which sub-tab you were last on when you click
+  back into it. No tab, route, or view was removed or renamed in the
+  process -- purely a navigation-chrome change.
 - **WOM Lookup**: a searchable "everything about one WOM" tool under the
   WOM section, open to technicians too (as an expandable "Details" row on
   their own read-only Locations & WOM list, `techHome.js`) since it's a
@@ -402,7 +428,14 @@ Demo logins:
   lookup. An admin can't deactivate their own account (the one guard that
   matters -- since only an active admin can reach this endpoint at all,
   and they can't touch their own account, there's always at least one
-  active admin left after any call).
+  active admin left after any call). An admin account's **name can be
+  renamed** from that same panel (`PATCH /api/admin/admins/:id/name`,
+  audit-logged as `ADMIN_RENAMED`) -- a legal name change, a typo at
+  creation, or a seeded demo name that never got updated to whoever's
+  actually using the account. Renaming yourself updates the stored session
+  (`setUser` in `app.js`) so it's correct on the next reload/login; the
+  header text on screen at the moment of the rename itself doesn't
+  live-refresh (it's only drawn once per page load).
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
@@ -1095,9 +1128,10 @@ tests/
                               unlocking the rest of an approved week), short-hours flag
                               (symmetric with OT, excluded from OT trends),
                               missing-UKG list, report-gap months, admin account
-                              create/deactivate/self-deactivation-blocked, PurelyHR
-                              verification (hasTimeOff, set/unset, cleared on edit,
-                              submitted/approved + time-off required)
+                              create/deactivate/self-deactivation-blocked/rename (logged to
+                              the audit trail, rejects an empty name, 404 unknown, 403 for a
+                              technician), PurelyHR verification (hasTimeOff, set/unset,
+                              cleared on edit, submitted/approved + time-off required)
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
   woms.test.js               WOM CRUD + authorization, WOM Lookup (all-time hours by
                                  technician, 404 for an unknown WOM), subsidiary code,

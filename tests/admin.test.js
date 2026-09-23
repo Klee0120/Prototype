@@ -737,6 +737,34 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(res.status, 409);
   });
 
+  await t.test("admin can rename an admin account, logged to the audit trail", async () => {
+    const rename = await server.call("PATCH", "/api/admin/admins/ADMIN2/name", {
+      userId: "ADMIN",
+      body: { name: "Jordan Smith-Rivera" },
+    });
+    assert.equal(rename.status, 200);
+    assert.equal(rename.body.name, "Jordan Smith-Rivera");
+
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = audit.body.find((a) => a.action === "ADMIN_RENAMED" && a.details.includes("ADMIN2"));
+    assert.ok(entry, "expected an ADMIN_RENAMED audit entry");
+  });
+
+  await t.test("rejects an empty name", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/name", { userId: "ADMIN", body: { name: "  " } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("renaming an unknown admin account 404s", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/NOPE/name", { userId: "ADMIN", body: { name: "Someone" } });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("a technician cannot rename an admin account", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/name", { userId: "T1001", body: { name: "Someone" } });
+    assert.equal(res.status, 403);
+  });
+
   await t.test("an admin cannot deactivate their own account", async () => {
     const res = await server.call("PATCH", "/api/admin/admins/ADMIN/employment-status", {
       userId: "ADMIN",

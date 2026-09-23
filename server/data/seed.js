@@ -48,7 +48,7 @@ function seed() {
         ukgId: "6134285",
         position: "Maintenance Technician",
       },
-      { id: "ADMIN", name: "Morgan Diaz", pin: "9999", role: "admin", active: 1, homeLocationCode: null },
+      { id: "ADMIN", name: "Krista Lee", pin: "9999", role: "admin", active: 1, homeLocationCode: null },
     ],
 
     // Job WOMs are tied to a location and (optionally) a total budget the

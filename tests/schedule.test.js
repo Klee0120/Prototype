@@ -47,7 +47,7 @@ test("schedule: WOM-only calendar by date", async (t) => {
 
     const allEntries = Object.values(res.body.byDate).flat();
     assert.ok(allEntries.every((e) => typeof e.womCode === "string"));
-    assert.ok(allEntries.some((e) => e.womCode === "WOM-4471" && e.techName === "Alex Rivera" && e.hours === 8));
+    assert.ok(allEntries.some((e) => e.womCode === "WOM-4471" && e.techName === "Alex Rivera" && e.techId === "T1001" && e.hours === 8));
 
     // The Mon (E&F) and Wed (time off) allocations for T1001, specifically,
     // shouldn't show up as calendar entries on their own dates -- checked by

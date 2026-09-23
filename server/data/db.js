@@ -626,6 +626,15 @@ function createAdmin({ id, name, pin }) {
   return findTechnician(id);
 }
 
+// Legal name changes, a typo at creation, or just a seeded demo name
+// (the account someone's actually using day to day) needing to read right.
+// Scoped to role = 'admin' -- there's no equivalent rename for a
+// technician yet, since nothing's asked for one.
+function renameAdmin(id, name) {
+  db.prepare("UPDATE technicians SET name = ? WHERE id = ? AND role = 'admin'").run(name, id);
+  return findTechnician(id);
+}
+
 function setTechnicianBasicInfo(techId, { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours }) {
   db.prepare(
     `UPDATE technicians
@@ -1813,6 +1822,7 @@ module.exports = {
   setTechnicianPin,
   listAdmins,
   createAdmin,
+  renameAdmin,
   setTechnicianBasicInfo,
   NOTIFICATION_PREFS,
   setNotificationPref,

@@ -755,4 +755,19 @@ router.patch("/admins/:id/employment-status", (req, res) => {
   res.json(presentAdmin(db.findTechnician(admin.id)));
 });
 
+// A legal name change, a typo at creation, or a seeded demo name that
+// never got updated to whoever's actually using the account day to day.
+router.patch("/admins/:id/name", (req, res) => {
+  const admin = db.findTechnician(req.params.id);
+  if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
+
+  const name = (req.body || {}).name;
+  if (!name || !String(name).trim()) return res.status(400).json({ error: "name is required" });
+
+  const oldName = admin.name;
+  const updated = db.renameAdmin(admin.id, String(name).trim());
+  db.addAudit(req.user.id, "ADMIN_RENAMED", `${req.user.name} renamed admin account ${admin.id} from ${oldName} to ${updated.name}`);
+  res.json(presentAdmin(updated));
+});
+
 module.exports = router;

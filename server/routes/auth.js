@@ -54,6 +54,7 @@ router.post("/login", (req, res) => {
     id: user.id,
     name: user.name,
     role: user.role,
+    homeLocationCode: user.home_location_code,
   });
 });
 

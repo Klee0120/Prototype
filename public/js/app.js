@@ -89,8 +89,11 @@ function renderHeader() {
   header.className = "app-header";
   header.innerHTML = `
     <div class="app-header-title">
-      <span class="app-name">Labor Allocation</span>
-      <span class="app-user">${escapeHtml(state.user.name)} &middot; ${state.user.role === "admin" ? "Admin" : "Technician"}</span>
+      <div class="app-logo-mark">LA</div>
+      <div class="app-header-text">
+        <span class="app-name">Labor Allocation</span>
+        <span class="app-user">${escapeHtml(state.user.name)} &middot; ${state.user.role === "admin" ? "Admin" : "Technician"}</span>
+      </div>
     </div>
     <button class="btn btn-ghost" id="logout-btn">Log out</button>
   `;
