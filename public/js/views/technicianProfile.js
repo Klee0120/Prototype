@@ -302,7 +302,7 @@ export function renderTechniciansTab(content, openTo) {
           One technician per line: <strong>ID, Name, Position, Email, Location code</strong> (tab or comma
           separated -- pasting straight from a spreadsheet works). Location code is optional. A PIN is
           generated for each row automatically -- you'll get the full ID/PIN list to copy once these are
-          created, since a PIN can't be looked back up afterward.
+          created (a PIN can also be looked up again any time from that technician's own profile).
         </p>
         <textarea class="bulk-add-textarea" rows="8" placeholder="6114371, James Balli, HVAC - Maintenance Tech, James.Balli@cwservices.com&#10;6134285, Phillip Bush, Maintenance Technician, Phillip.Bush@cwservices.com" required></textarea>
         <button type="submit" class="btn btn-primary">Create these technicians</button>
@@ -347,8 +347,8 @@ export function renderTechniciansTab(content, openTo) {
           ${errors.length > 0 ? ` -- ${errors.length} row${errors.length === 1 ? "" : "s"} skipped` : ""}
         </div>
         <p class="review-checklist-hint">
-          <strong>Copy this list now</strong> -- these PINs won't be shown again anywhere in the app. Give
-          each technician their own ID and PIN to log in with.
+          <strong>Copy this list now</strong> so each technician gets their own ID and PIN to log in with --
+          or look a PIN up again later from that technician's own profile.
         </p>
         ${
           created.length > 0
@@ -399,6 +399,8 @@ export function renderTechniciansTab(content, openTo) {
         <div class="profile-name">${escapeHtml(tech.name)}</div>
         <span class="badge badge-draft">${escapeHtml(tech.id)}</span>
         ${statusBadge(tech.employmentStatus)}
+        <button class="btn btn-link view-pin-btn" type="button">View PIN</button>
+        <span class="profile-pin-reveal" hidden></span>
         <button class="btn btn-link danger-link delete-technician-btn" type="button">Delete</button>
       </div>
       <div class="profile-tabs">
@@ -410,6 +412,28 @@ export function renderTechniciansTab(content, openTo) {
     content.querySelector(".back-to-roster").addEventListener("click", () => {
       profileTechId = null;
       draw();
+    });
+    // Fetched only on click, not baked into the profile payload above, so a
+    // PIN is decrypted (and logged to the audit trail) only when someone
+    // actually asks to see it -- and hidden again on a second click rather
+    // than left sitting on screen after admin's moved on to something else.
+    const pinBtn = content.querySelector(".view-pin-btn");
+    const pinReveal = content.querySelector(".profile-pin-reveal");
+    pinBtn.addEventListener("click", async () => {
+      if (!pinReveal.hidden) {
+        pinReveal.hidden = true;
+        pinReveal.textContent = "";
+        pinBtn.textContent = "View PIN";
+        return;
+      }
+      try {
+        const { pin } = await api.get(`/api/admin/technicians/${encodeURIComponent(tech.id)}/pin`);
+        pinReveal.textContent = `PIN: ${pin}`;
+        pinReveal.hidden = false;
+        pinBtn.textContent = "Hide PIN";
+      } catch (err) {
+        window.alert(err.message);
+      }
     });
     // A technician created by mistake (a test entry, a typo) should just go
     // away. Blocked with a 409 if they have allocated hours on record --

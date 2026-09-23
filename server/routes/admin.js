@@ -57,12 +57,11 @@ function randomPin() {
 
 // For onboarding a whole real roster at once instead of one form per
 // person. Each row gets its own randomly-generated PIN (nobody types one
-// in), which only ever appears in this response -- like the row's own
-// one-time password -- since a technician logs in with it and it isn't
-// otherwise retrievable afterward (same reason PATCH /technicians/:id
-// never echoes a pin back). A bad row (missing id/name, duplicate id,
-// unknown location) is skipped with its own error rather than failing the
-// whole batch, so one typo doesn't block everyone else in the paste.
+// in), which this response hands back for the admin to copy and give out
+// (also retrievable later, one at a time, via GET /technicians/:id/pin).
+// A bad row (missing id/name, duplicate id, unknown location) is skipped
+// with its own error rather than failing the whole batch, so one typo
+// doesn't block everyone else in the paste.
 router.post("/technicians/bulk", (req, res) => {
   const { rows } = req.body || {};
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -136,6 +135,19 @@ router.get("/technicians/:id", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
   res.json(presentTechnician(tech));
+});
+
+// Admin-only, on-demand PIN lookup for a technician who's called in having
+// forgotten it -- deliberately its own endpoint rather than a field on the
+// technician payload above, so a PIN is only ever decrypted (and logged)
+// when someone actually asks for it, not on every roster/profile load.
+router.get("/technicians/:id/pin", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  const pin = db.getTechnicianPin(tech.id);
+  if (pin == null) return res.status(404).json({ error: "No PIN on file for this technician -- set a new one" });
+  db.addAudit(req.user.id, "PIN_VIEWED", `${req.user.name} viewed the PIN for ${tech.name} (${tech.id})`);
+  res.json({ pin });
 });
 
 router.patch("/technicians/:id/home-location", (req, res) => {

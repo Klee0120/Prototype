@@ -134,6 +134,26 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(login.status, 200);
   });
 
+  await t.test("admin can view a technician's PIN, and it's logged to the audit trail", async () => {
+    const res = await server.call("GET", "/api/admin/technicians/T1001/pin", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pin, "1234");
+
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = audit.body.find((a) => a.action === "PIN_VIEWED" && a.details.includes("T1001"));
+    assert.ok(entry, "expected a PIN_VIEWED audit entry for T1001");
+  });
+
+  await t.test("a technician cannot view another technician's PIN", async () => {
+    const res = await server.call("GET", "/api/admin/technicians/T1001/pin", { userId: "T1002" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("viewing an unknown technician's PIN 404s", async () => {
+    const res = await server.call("GET", "/api/admin/technicians/NOPE/pin", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
   await t.test("cannot create a technician with a duplicate ID", async () => {
     const res = await server.call("POST", "/api/admin/technicians", {
       userId: "ADMIN",

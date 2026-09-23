@@ -3,7 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { seed } = require("./seed");
-const { hashPin, verifyPin } = require("../utils/password");
+const { hashPin, verifyPin, encryptPin, decryptPin } = require("../utils/password");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -235,6 +235,15 @@ if (!hasColumn("technicians", "employment_status")) {
   db.exec("UPDATE technicians SET employment_status = CASE WHEN active = 1 THEN 'active' ELSE 'inactive' END");
 }
 
+// A separately-encrypted (reversible) copy of the PIN, alongside the
+// one-way `pin` hash used for login -- lets admin look a PIN back up for a
+// technician who calls in having forgotten it. NULL for any row created
+// before this column existed; those technicians just need a fresh PIN set
+// the next time admin touches their record, same as any other backfill gap.
+if (!hasColumn("technicians", "pin_encrypted")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN pin_encrypted TEXT");
+}
+
 // Admin's own "I've entered this into the real UKG system" checklist step --
 // deliberately separate from status (draft/submitted/approved/rejected),
 // since in practice the admin often drives the whole allocation on a
@@ -446,8 +455,8 @@ function seedIfEmpty() {
   for (const l of data.locations) insertLocation.run(l.code, l.name);
 
   const insertTech = db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position, pin_encrypted)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const t of data.technicians) {
     insertTech.run(
@@ -461,7 +470,8 @@ function seedIfEmpty() {
       t.email || null,
       t.phone || null,
       t.ukgId || null,
-      t.position || null
+      t.position || null,
+      encryptPin(t.pin)
     );
   }
 
@@ -537,10 +547,29 @@ function setEmploymentStatus(techId, status) {
 
 function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position }) {
   db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
-     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?)`
-  ).run(id, name, hashPin(pin), homeLocationCode || null, email || null, phone || null, ukgId || null, position || null);
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position, pin_encrypted)
+     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    name,
+    hashPin(pin),
+    homeLocationCode || null,
+    email || null,
+    phone || null,
+    ukgId || null,
+    position || null,
+    encryptPin(pin)
+  );
   return findTechnician(id);
+}
+
+// Admin-only lookup for "what's this technician's PIN again" -- decrypts
+// the reversible copy kept alongside the login hash. Returns null if the
+// row predates the pin_encrypted column or decryption otherwise fails.
+function getTechnicianPin(techId) {
+  const tech = findTechnician(techId);
+  if (!tech) return null;
+  return decryptPin(tech.pin_encrypted);
 }
 
 function countTechnicianAllocatedHours(id) {
@@ -591,9 +620,9 @@ function listAdmins() {
 
 function createAdmin({ id, name, pin }) {
   db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status)
-     VALUES (?, ?, ?, 'admin', 1, 'active')`
-  ).run(id, name, hashPin(pin));
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, pin_encrypted)
+     VALUES (?, ?, ?, 'admin', 1, 'active', ?)`
+  ).run(id, name, hashPin(pin), encryptPin(pin));
   return findTechnician(id);
 }
 
@@ -1764,6 +1793,7 @@ module.exports = {
   EMPLOYMENT_STATUSES,
   setEmploymentStatus,
   createTechnician,
+  getTechnicianPin,
   listAdmins,
   createAdmin,
   setTechnicianBasicInfo,

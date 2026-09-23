@@ -88,13 +88,6 @@ button, input, select {
   margin: 10px 0 0;
 }
 
-.login-hint {
-  color: var(--muted);
-  font-size: 12px;
-  margin: 16px 0 0;
-  text-align: center;
-}
-
 /* ---- Shell / header ---- */
 
 .shell {
@@ -1710,6 +1703,14 @@ button, input, select {
 .profile-name {
   font-weight: 700;
   font-size: 18px;
+}
+
+.profile-pin-reveal {
+  font-family: monospace;
+  font-weight: 600;
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 2px 8px;
 }
 
 .profile-tabs {

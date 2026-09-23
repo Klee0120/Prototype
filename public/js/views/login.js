@@ -14,7 +14,6 @@ export function renderLogin() {
       <input id="login-pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="****" required />
       <button type="submit" class="btn btn-primary">Log in</button>
       <p class="login-error" id="login-error" hidden></p>
-      <p class="login-hint">Demo logins: T1001 / 1234, T1002 / 1234, T1003 / 2345, ADMIN / 9999</p>
     </form>
   `;
 
