@@ -134,23 +134,28 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(login.status, 200);
   });
 
-  await t.test("admin can view a technician's PIN, and it's logged to the audit trail", async () => {
-    const res = await server.call("GET", "/api/admin/technicians/T1001/pin", { userId: "ADMIN" });
+  await t.test("admin can reset a technician's PIN, and it's logged to the audit trail", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/T1001/reset-pin", { userId: "ADMIN", body: {} });
     assert.equal(res.status, 200);
-    assert.equal(res.body.pin, "1234");
+    assert.match(res.body.pin, /^\d{4}$/);
+
+    const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1001", pin: "1234" } });
+    assert.equal(oldLogin.status, 401);
+    const newLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1001", pin: res.body.pin } });
+    assert.equal(newLogin.status, 200);
 
     const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
-    const entry = audit.body.find((a) => a.action === "PIN_VIEWED" && a.details.includes("T1001"));
-    assert.ok(entry, "expected a PIN_VIEWED audit entry for T1001");
+    const entry = audit.body.find((a) => a.action === "PIN_RESET" && a.details.includes("T1001"));
+    assert.ok(entry, "expected a PIN_RESET audit entry for T1001");
   });
 
-  await t.test("a technician cannot view another technician's PIN", async () => {
-    const res = await server.call("GET", "/api/admin/technicians/T1001/pin", { userId: "T1002" });
+  await t.test("a technician cannot reset another technician's PIN", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/T1002/reset-pin", { userId: "T1003", body: {} });
     assert.equal(res.status, 403);
   });
 
-  await t.test("viewing an unknown technician's PIN 404s", async () => {
-    const res = await server.call("GET", "/api/admin/technicians/NOPE/pin", { userId: "ADMIN" });
+  await t.test("resetting an unknown technician's PIN 404s", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/NOPE/reset-pin", { userId: "ADMIN", body: {} });
     assert.equal(res.status, 404);
   });
 

@@ -3,7 +3,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { seed } = require("./seed");
-const { hashPin, verifyPin, encryptPin, decryptPin } = require("../utils/password");
+const { hashPin, verifyPin } = require("../utils/password");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -235,13 +235,14 @@ if (!hasColumn("technicians", "employment_status")) {
   db.exec("UPDATE technicians SET employment_status = CASE WHEN active = 1 THEN 'active' ELSE 'inactive' END");
 }
 
-// A separately-encrypted (reversible) copy of the PIN, alongside the
-// one-way `pin` hash used for login -- lets admin look a PIN back up for a
-// technician who calls in having forgotten it. NULL for any row created
-// before this column existed; those technicians just need a fresh PIN set
-// the next time admin touches their record, same as any other backfill gap.
-if (!hasColumn("technicians", "pin_encrypted")) {
-  db.exec("ALTER TABLE technicians ADD COLUMN pin_encrypted TEXT");
+// A short-lived attempt at a reversible (admin-decryptable) PIN copy was
+// added and then reverted -- storing anything that lets a PIN be read back
+// after creation weakens the one-way hash below for no real gain, given
+// there's compliance-sensitive vendor documents (COI/W-9/ACH) gated behind
+// this same login. If this database ever ran that migration, clear any
+// leftover encrypted values rather than leaving them sitting around.
+if (hasColumn("technicians", "pin_encrypted")) {
+  db.exec("UPDATE technicians SET pin_encrypted = NULL WHERE pin_encrypted IS NOT NULL");
 }
 
 // Admin's own "I've entered this into the real UKG system" checklist step --
@@ -455,8 +456,8 @@ function seedIfEmpty() {
   for (const l of data.locations) insertLocation.run(l.code, l.name);
 
   const insertTech = db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position, pin_encrypted)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   for (const t of data.technicians) {
     insertTech.run(
@@ -470,8 +471,7 @@ function seedIfEmpty() {
       t.email || null,
       t.phone || null,
       t.ukgId || null,
-      t.position || null,
-      encryptPin(t.pin)
+      t.position || null
     );
   }
 
@@ -547,29 +547,19 @@ function setEmploymentStatus(techId, status) {
 
 function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position }) {
   db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position, pin_encrypted)
-     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    name,
-    hashPin(pin),
-    homeLocationCode || null,
-    email || null,
-    phone || null,
-    ukgId || null,
-    position || null,
-    encryptPin(pin)
-  );
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
+     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?)`
+  ).run(id, name, hashPin(pin), homeLocationCode || null, email || null, phone || null, ukgId || null, position || null);
   return findTechnician(id);
 }
 
-// Admin-only lookup for "what's this technician's PIN again" -- decrypts
-// the reversible copy kept alongside the login hash. Returns null if the
-// row predates the pin_encrypted column or decryption otherwise fails.
-function getTechnicianPin(techId) {
-  const tech = findTechnician(techId);
-  if (!tech) return null;
-  return decryptPin(tech.pin_encrypted);
+// Admin can't look a PIN back up once it's hashed -- by design, same as any
+// real password -- so the fix for "this technician forgot their PIN" is
+// issuing them a new one, not reading back the old one. Overwrites the
+// login hash only; nothing about the technician's own record changes.
+function setTechnicianPin(techId, pin) {
+  db.prepare("UPDATE technicians SET pin = ? WHERE id = ?").run(hashPin(pin), techId);
+  return findTechnician(techId);
 }
 
 function countTechnicianAllocatedHours(id) {
@@ -620,9 +610,9 @@ function listAdmins() {
 
 function createAdmin({ id, name, pin }) {
   db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status, pin_encrypted)
-     VALUES (?, ?, ?, 'admin', 1, 'active', ?)`
-  ).run(id, name, hashPin(pin), encryptPin(pin));
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status)
+     VALUES (?, ?, ?, 'admin', 1, 'active')`
+  ).run(id, name, hashPin(pin));
   return findTechnician(id);
 }
 
@@ -1793,7 +1783,7 @@ module.exports = {
   EMPLOYMENT_STATUSES,
   setEmploymentStatus,
   createTechnician,
-  getTechnicianPin,
+  setTechnicianPin,
   listAdmins,
   createAdmin,
   setTechnicianBasicInfo,

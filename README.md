@@ -411,23 +411,28 @@ Demo logins:
   straight paste from a spreadsheet column selection works), location
   code optional — and `POST /api/admin/technicians/bulk` creates all of
   them, generating a random 4-digit PIN for each row rather than making
-  anyone type one in. The response hands back the full list to copy right
-  away (the UI's result table has a **Copy list** button), and any of those
-  PINs can also be looked up again later — see **Admin PIN lookup** below.
-  A bad row (missing id/name, a duplicate ID, an unknown location code) is
-  skipped with its own per-row error rather than failing the whole batch,
-  so one typo doesn't block everyone else in the paste.
-- **Admin PIN lookup**: a **View PIN** button on a technician's own profile
-  (next to Delete) decrypts and shows their current PIN on demand —
-  `GET /api/admin/technicians/:id/pin`, admin-only, logged to the audit
-  trail as `PIN_VIEWED` every time it's used — for when a technician calls
-  in having forgotten theirs. It's fetched only on click (never baked into
-  the roster or profile payload) and hidden again on a second click, so it
-  isn't left sitting on screen. PINs are never shown anywhere on the public
-  login page itself — that used to carry a "Demo logins" hint with real
-  technician IDs and PINs in plain sight of anyone who visited the site
-  unauthenticated; it's been removed now that this is in real use, not just
-  a demo.
+  anyone type one in. The response is the *only* place those PINs are ever
+  shown — same as any password, there's no way to look one back up
+  afterward — so the UI's result table has a **Copy list** button and a
+  reminder to save it immediately. A bad row (missing id/name, a duplicate
+  ID, an unknown location code) is skipped with its own per-row error
+  rather than failing the whole batch, so one typo doesn't block everyone
+  else in the paste.
+- **Admin PIN reset**: a **Reset PIN** button on a technician's own profile
+  (next to Delete) issues them a brand-new random PIN on demand —
+  `POST /api/admin/technicians/:id/reset-pin`, admin-only, logged to the
+  audit trail as `PIN_RESET` every time it's used — for when a technician
+  calls in having forgotten theirs. There's deliberately no way to read
+  back their *current* PIN (it's hashed one-way, same as any real password,
+  and stays that way — see "Where this stands" for why that matters given
+  the compliance-sensitive vendor documents gated behind this same login):
+  resetting invalidates the old PIN and shows the new one once, right there
+  on screen, for admin to relay — never baked into the roster or profile
+  payload, and dismissed again on a second click so it isn't left sitting
+  on screen. PINs are also never shown anywhere on the public login page
+  itself — that used to carry a "Demo logins" hint with real technician IDs
+  and PINs in plain sight of anyone who visited the site unauthenticated;
+  it's been removed now that this is in real use, not just a demo.
 - **Delete technician**: for one created by mistake — a test entry, real
   data typed into the wrong row — rather than leaving it under some
   employment status forever (own **Delete** button on the technician's
@@ -632,18 +637,16 @@ a missing code is obvious rather than silently blank.
   ```
 - **Auth is real but the transport isn't encrypted yet.** Login issues a
   genuine random session token (`server/data/db.js`'s `sessions` table); PINs
-  are hashed with scrypt for login and never compared in plain text
-  (`server/utils/password.js`); repeated wrong-PIN attempts lock out for 15
-  minutes (`server/routes/auth.js`). A technician's PIN is a 4-digit code
-  they need read back to them over the phone when they forget it, not a real
-  password, so alongside that one-way hash the same file also keeps a
-  separately AES-256-GCM–encrypted (reversible) copy that only decrypts via
-  `GET /api/admin/technicians/:id/pin` (admin-only, and every view is logged
-  to the audit trail) — see "Admin PIN lookup" below. **Set
-  `LABOR_PIN_ENCRYPTION_KEY` in production**; the code falls back to a fixed
-  default key so the app still runs out of the box in dev/test, but that
-  default is public (it's in this repo) and must not be relied on anywhere
-  real PINs are stored. What's still missing: the site is served
+  are hashed with scrypt, never stored or compared in plain text
+  (`server/utils/password.js`) -- there is deliberately no reversible copy
+  anywhere, so a stolen database yields only unusable hashes, never a real
+  PIN. (An earlier draft of this feature added a decryptable copy so admin
+  could look a PIN back up; that was reverted before it shipped, in favor of
+  a PIN *reset* instead -- see **Admin PIN reset** above -- since this login
+  also gates the compliance-sensitive vendor documents in "Vendor documents"
+  below, and a recoverable PIN would have weakened that.) Repeated wrong-PIN
+  attempts lock out for 15 minutes (`server/routes/auth.js`). What's still
+  missing: the site is served
   over plain HTTP, so credentials and data travel unencrypted over the
   network. Real HTTPS needs a domain name pointed at the droplet's IP (a
   bare IP can't get a trusted certificate) — a separate decision still ahead.
@@ -992,9 +995,9 @@ server/
                               pricing/Maximo #/subsidiary code on every synced WOM, and matches +
                               fills in location by name, once, on any WOM missing one), technicians/bulk
                               (paste-many technician creation, one generated PIN per row, per-row errors),
-                              GET technicians/:id/pin (decrypts + returns that technician's PIN,
-                              audit-logged as PIN_VIEWED), DELETE technicians/:id (blocked if hours are
-                              allocated unless force is passed)
+                              POST technicians/:id/reset-pin (issues + returns a brand-new random PIN,
+                              audit-logged as PIN_RESET -- no way to read back the current one),
+                              DELETE technicians/:id (blocked if hours are allocated unless force is passed)
     locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
                               Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant; DELETE
                               (admin-only, blocked outright -- no force -- if still referenced by any
@@ -1009,8 +1012,7 @@ server/
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
-    password.js             scrypt PIN hashing for login (hashPin/verifyPin), plus a separate
-                               reversible AES-256-GCM copy for admin PIN lookup (encryptPin/decryptPin)
+    password.js             scrypt PIN hashing (hashPin/verifyPin) -- one-way only, no reversible copy
     allocation.js            presentAllocation: translates a stored timeoff row's shape for API responses
     receipt.js               Server-side copy of the Reg/OT computeReceipt calculation (admin Overview)
     mailer.js                 Opt-in SMTP email (no-op until SMTP_* env vars are set) for the
@@ -1058,9 +1060,9 @@ tests/
                                  (add/complete/edit), notification-pref, allocation history,
                                  bulk-create technicians (admin-only, generated PIN actually logs
                                  in, bad rows skipped with their own error, 400 if all rows fail),
-                                 admin PIN lookup (correct PIN returned, logged to the audit
-                                 trail, 403 for a technician, 404 for an unknown id), deleting a
-                                 technician (admin-only, 404 unknown, blocked with
+                                 admin PIN reset (new PIN logs in, old one no longer does, logged
+                                 to the audit trail, 403 for a technician, 404 for an unknown id),
+                                 deleting a technician (admin-only, 404 unknown, blocked with
                                  allocated hours unless forced, force clears that history --
                                  usedHours drops with it -- and never touches an admin account)
   files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,

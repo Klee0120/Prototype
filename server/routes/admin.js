@@ -57,11 +57,13 @@ function randomPin() {
 
 // For onboarding a whole real roster at once instead of one form per
 // person. Each row gets its own randomly-generated PIN (nobody types one
-// in), which this response hands back for the admin to copy and give out
-// (also retrievable later, one at a time, via GET /technicians/:id/pin).
-// A bad row (missing id/name, duplicate id, unknown location) is skipped
-// with its own error rather than failing the whole batch, so one typo
-// doesn't block everyone else in the paste.
+// in), which only ever appears in this response -- like the row's own
+// one-time password -- since a technician logs in with it and it isn't
+// otherwise retrievable afterward (see POST /technicians/:id/reset-pin for
+// "this technician forgot theirs" -- issues a new one rather than reading
+// back the old one). A bad row (missing id/name, duplicate id, unknown
+// location) is skipped with its own error rather than failing the whole
+// batch, so one typo doesn't block everyone else in the paste.
 router.post("/technicians/bulk", (req, res) => {
   const { rows } = req.body || {};
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -137,16 +139,16 @@ router.get("/technicians/:id", (req, res) => {
   res.json(presentTechnician(tech));
 });
 
-// Admin-only, on-demand PIN lookup for a technician who's called in having
-// forgotten it -- deliberately its own endpoint rather than a field on the
-// technician payload above, so a PIN is only ever decrypted (and logged)
-// when someone actually asks for it, not on every roster/profile load.
-router.get("/technicians/:id/pin", (req, res) => {
+// For a technician who's called in having forgotten their PIN. There's no
+// "look the old one back up" -- it's hashed one-way on purpose, same as any
+// real password -- so this issues a fresh random PIN instead and returns it
+// once for admin to relay, exactly like technician creation does.
+router.post("/technicians/:id/reset-pin", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
-  const pin = db.getTechnicianPin(tech.id);
-  if (pin == null) return res.status(404).json({ error: "No PIN on file for this technician -- set a new one" });
-  db.addAudit(req.user.id, "PIN_VIEWED", `${req.user.name} viewed the PIN for ${tech.name} (${tech.id})`);
+  const pin = randomPin();
+  db.setTechnicianPin(tech.id, pin);
+  db.addAudit(req.user.id, "PIN_RESET", `${req.user.name} reset the PIN for ${tech.name} (${tech.id})`);
   res.json({ pin });
 });
 
