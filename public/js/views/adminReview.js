@@ -54,6 +54,43 @@ const VENDOR_STATUS_BADGE_CLASS = {
   unknown: "draft",
 };
 
+// Grouping the flat list of tabs under a handful of top-level sections --
+// most with just one tab, so nothing about them visibly changes -- so the
+// whole nav fits without the horizontal scrollbar a single 10-wide row
+// needed. A section with more than one tab gets its own second row of
+// sub-tabs underneath once it's the active section.
+const NAV_SECTIONS = [
+  { key: "priorities", label: "Priorities", tabs: ["priorities"] },
+  { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "schedule", "overview", "review", "laborreports"] },
+  { key: "roster", label: "Roster", tabs: ["technicians"] },
+  { key: "vendors", label: "Vendors", tabs: ["vendors"] },
+  { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
+  { key: "audit", label: "Audit Trail", tabs: ["audit"] },
+];
+
+const TAB_LABELS = {
+  priorities: "Priorities",
+  techalloc: "Tech Allocation",
+  schedule: "Schedule",
+  overview: "Overview",
+  review: "Weekly Review",
+  laborreports: "Reports",
+  technicians: "Technicians",
+  vendors: "Vendors",
+  woms: "Locations & WOM",
+  womlookup: "WOM Lookup",
+  audit: "Audit Trail",
+};
+
+function sectionForTab(tab) {
+  return NAV_SECTIONS.find((s) => s.tabs.includes(tab)) || NAV_SECTIONS[0];
+}
+
+const WOM_STATUS_BADGE_CLASS = { open: "approved", requested: "submitted", invoiced: "submitted", cancelled: "rejected", closed: "rejected" };
+function womStatusBadgeClass(status) {
+  return WOM_STATUS_BADGE_CLASS[status] || "draft";
+}
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -115,36 +152,55 @@ export async function renderAdminReview(container) {
   let showAddVendorForm = false;
   const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
 
+  // Remembers which sub-tab was last open within each multi-tab section, so
+  // clicking back into e.g. Timekeeping returns to where you left off
+  // instead of always resetting to its first sub-tab.
+  const sectionLastTab = {};
+
+  function goTo(tab) {
+    // Coming back to Vendors from somewhere else should start collapsed
+    // again -- an "Open" row is a within-visit convenience, not state that
+    // should survive switching away and back.
+    if (activeTab === "vendors" && tab !== "vendors") vendorExpanded.clear();
+    activeTab = tab;
+    sectionLastTab[sectionForTab(tab).key] = tab;
+    draw();
+  }
+
   draw();
 
   async function draw() {
     const priorityCount = await computePriorityCount();
+    const currentSection = sectionForTab(activeTab);
 
     container.innerHTML = `
-      <div class="tabs">
-        <button class="tab ${activeTab === "priorities" ? "active" : ""}" data-tab="priorities">Priorities${priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}</button>
-        <button class="tab ${activeTab === "techalloc" ? "active" : ""}" data-tab="techalloc">Tech Allocation</button>
-        <button class="tab ${activeTab === "schedule" ? "active" : ""}" data-tab="schedule">Schedule</button>
-        <button class="tab ${activeTab === "overview" ? "active" : ""}" data-tab="overview">Overview</button>
-        <button class="tab ${activeTab === "review" ? "active" : ""}" data-tab="review">Weekly Review</button>
-        <button class="tab ${activeTab === "woms" ? "active" : ""}" data-tab="woms">E&amp;F Locations &amp; WOM</button>
-        <button class="tab ${activeTab === "technicians" ? "active" : ""}" data-tab="technicians">Technicians</button>
-        <button class="tab ${activeTab === "vendors" ? "active" : ""}" data-tab="vendors">Vendors</button>
-        <button class="tab ${activeTab === "laborreports" ? "active" : ""}" data-tab="laborreports">Reports</button>
-        <button class="tab ${activeTab === "audit" ? "active" : ""}" data-tab="audit">Audit Trail</button>
+      <div class="nav-sections">
+        ${NAV_SECTIONS.map(
+          (s) => `
+          <button class="nav-section ${currentSection.key === s.key ? "active" : ""}" data-section="${s.key}">
+            ${s.label}${s.key === "priorities" && priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}
+          </button>
+        `
+        ).join("")}
       </div>
+      ${
+        currentSection.tabs.length > 1
+          ? `<div class="tabs">${currentSection.tabs
+              .map((t) => `<button class="tab ${activeTab === t ? "active" : ""}" data-tab="${t}">${TAB_LABELS[t]}</button>`)
+              .join("")}</div>`
+          : ""
+      }
       <div id="tab-content" class="tab-content"></div>
     `;
 
-    container.querySelectorAll(".tab").forEach((btn) => {
+    container.querySelectorAll(".nav-section").forEach((btn) => {
       btn.addEventListener("click", () => {
-        // Coming back to Vendors from somewhere else should start collapsed
-        // again -- an "Open" row is a within-visit convenience, not state
-        // that should survive switching away and back.
-        if (btn.dataset.tab === "vendors" && activeTab !== "vendors") vendorExpanded.clear();
-        activeTab = btn.dataset.tab;
-        draw();
+        const section = NAV_SECTIONS.find((s) => s.key === btn.dataset.section);
+        goTo(sectionLastTab[section.key] || section.tabs[0]);
       });
+    });
+    container.querySelectorAll(".tab").forEach((btn) => {
+      btn.addEventListener("click", () => goTo(btn.dataset.tab));
     });
 
     const content = container.querySelector("#tab-content");
@@ -154,6 +210,7 @@ export async function renderAdminReview(container) {
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "woms") await drawWoms(content);
+    else if (activeTab === "womlookup") await drawWomLookup(content);
     else if (activeTab === "technicians") {
       renderTechniciansTab(content, jumpToTech);
       jumpToTech = null;
@@ -2171,9 +2228,7 @@ export async function renderAdminReview(container) {
       return el;
     }
 
-    const statusBadgeClass = { open: "approved", requested: "submitted", invoiced: "submitted", cancelled: "rejected", closed: "rejected" }[
-      w.status
-    ] || "draft";
+    const statusBadgeClass = womStatusBadgeClass(w.status);
     const statusOptions = WOM_STATUSES.map(
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
     ).join("");
@@ -2303,6 +2358,71 @@ export async function renderAdminReview(container) {
     }
 
     return el;
+  }
+
+  // "WOM Lookup": pick any WOM and see everything about it in one place --
+  // status/budget/pricing (same data drawWoms already manages), plus who's
+  // logged time against it and how much, all-time across every week it's
+  // ever appeared on, not scoped to the current month the way most other
+  // tabs here are. Read-only, and open to techs too (see techHome.js) since
+  // it's a lookup tool, not a management screen.
+  async function drawWomLookup(content) {
+    const woms = await api.get("/api/woms");
+    const sorted = [...woms].sort((a, b) => a.code.localeCompare(b.code));
+
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Look up any WOM to see its status, budget, and pricing, plus every technician who's logged
+        time against it and how much -- all-time, not just this month.
+      </p>
+      <select class="wom-lookup-select">
+        <option value="">Choose a WOM…</option>
+        ${sorted.map((w) => `<option value="${escapeHtml(w.code)}">${escapeHtml(w.code)} -- ${escapeHtml(w.description)}</option>`).join("")}
+      </select>
+      <div class="wom-lookup-detail"></div>
+    `;
+
+    content.querySelector(".wom-lookup-select").addEventListener("change", async (e) => {
+      const detail = content.querySelector(".wom-lookup-detail");
+      if (!e.target.value) {
+        detail.innerHTML = "";
+        return;
+      }
+      const wom = await api.get(`/api/woms/${encodeURIComponent(e.target.value)}/lookup`);
+      detail.innerHTML = renderWomLookupDetail(wom);
+    });
+  }
+
+  function renderWomLookupDetail(wom) {
+    const hoursLine =
+      wom.budgetHours == null
+        ? `${wom.totalHours}h logged (no budget set)`
+        : `${wom.totalHours}h of ${wom.budgetHours}h budgeted (${wom.remainingHours}h left)`;
+    const byTech =
+      wom.hoursByTechnician.length === 0
+        ? `<p class="review-checklist-hint">No hours logged against this WOM yet.</p>`
+        : `<table class="detail-table">
+            <thead><tr><th>Technician</th><th>Hours</th></tr></thead>
+            <tbody>${wom.hoursByTechnician.map((h) => `<tr><td>${escapeHtml(h.techName)}</td><td>${h.hours}</td></tr>`).join("")}</tbody>
+          </table>`;
+
+    return `
+      <div class="wom-lookup-card">
+        <div class="wom-lookup-header">
+          <span class="wom-code">${escapeHtml(wom.code)}</span>
+          <strong>${escapeHtml(wom.description)}</strong>
+          <span class="badge badge-${womStatusBadgeClass(wom.status)}">${escapeHtml(WOM_STATUS_LABELS[wom.status] || wom.status)}</span>
+        </div>
+        <div class="wom-lookup-stats">
+          <div><span class="wom-lookup-stat-label">Location</span>${escapeHtml(wom.locationCode || "—")}</div>
+          <div><span class="wom-lookup-stat-label">Hours</span>${hoursLine}</div>
+          <div><span class="wom-lookup-stat-label">Estimated</span>$${formatMoney(wom.estimatedPrice)}</div>
+          <div><span class="wom-lookup-stat-label">Applied (posted)</span>$${formatMoney(wom.appliedPrice)}</div>
+        </div>
+        <h4>Hours by technician</h4>
+        ${byTech}
+      </div>
+    `;
   }
 
   async function drawAudit(content) {

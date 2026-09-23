@@ -40,6 +40,21 @@ router.get("/", requireAuth, (req, res) => {
   res.json(db.listWoms().map(presentWom));
 });
 
+// "WOM Lookup" -- everything about one WOM in one place for a technician
+// or RFM/admin to check: its own status/budget/pricing (already in
+// presentWom), plus who's logged time against it and how much, all-time
+// across every week it's ever appeared on, not just the current month.
+router.get("/:code/lookup", requireAuth, (req, res) => {
+  const wom = db.findWom(req.params.code);
+  if (!wom) return res.status(404).json({ error: "WOM not found" });
+
+  res.json({
+    ...presentWom(wom),
+    totalHours: db.countWomAllocatedHours(wom.code),
+    hoursByTechnician: db.womHoursByTechnician(wom.code),
+  });
+});
+
 router.post("/", requireAuth, requireAdmin, (req, res) => {
   const { code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber } = req.body || {};
   if (!code || !description) return res.status(400).json({ error: "code and description are required" });

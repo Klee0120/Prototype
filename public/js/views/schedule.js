@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { wireDateMaskInput, isoFromUs } from "../dateMask.js";
 import { state, escapeHtml } from "../app.js";
 
 const DAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -303,8 +304,8 @@ export async function renderSchedule(container) {
               </select>
             </label>
             <div class="schedule-add-daterange">
-              <label class="schedule-add-field"><span>First day</span><input name="startDate" type="date" required /></label>
-              <label class="schedule-add-field"><span>Last day</span><input name="endDate" type="date" required /></label>
+              <label class="schedule-add-field"><span>First day</span><input name="startDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
+              <label class="schedule-add-field"><span>Last day</span><input name="endDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
             </div>
             <label class="schedule-add-field"><span>Hours per day</span><input name="hours" type="number" min="0.5" step="0.5" required /></label>
             <button type="submit" class="btn btn-primary">Add to schedule</button>
@@ -319,6 +320,8 @@ export async function renderSchedule(container) {
       if (openWoms.length === 0) {
         detailHost.querySelector(".schedule-add-message").textContent = "No open WOMs to schedule -- a WOM needs a real WOM # before hours can be charged to it.";
       }
+      wireDateMaskInput(detailHost.querySelector('input[name="startDate"]'));
+      wireDateMaskInput(detailHost.querySelector('input[name="endDate"]'));
       const addLocationSelect = detailHost.querySelector('select[name="locationCode"]');
       if (defaultLocationCode) addLocationSelect.value = defaultLocationCode;
       addLocationSelect.addEventListener("change", (e) => {
@@ -334,10 +337,14 @@ export async function renderSchedule(container) {
         const techId = isAdmin ? form.techId.value : state.user.id;
         const womCode = form.womCode.value;
         const hours = Number(form.hours.value);
-        const startDate = form.startDate.value;
-        const endDate = form.endDate.value;
-        if (!techId || !form.locationCode.value || !womCode || !hours || !startDate || !endDate) {
+        if (!techId || !form.locationCode.value || !womCode || !hours || !form.startDate.value.trim() || !form.endDate.value.trim()) {
           msg.textContent = "Choose a technician, location, project, date range, and hours.";
+          return;
+        }
+        const startDate = isoFromUs(form.startDate.value);
+        const endDate = isoFromUs(form.endDate.value);
+        if (!startDate || !endDate) {
+          msg.textContent = "Dates must be a full MM/DD/YYYY.";
           return;
         }
         if (endDate < startDate) {
@@ -363,32 +370,39 @@ export async function renderSchedule(container) {
 
         msg.textContent = "Scheduling…";
         let scheduledDays = 0;
-        const weekErrors = [];
+        const dayErrors = [];
+        // Each day is saved on its own via schedule-wom (day-scoped, ignores
+        // the week's own edit lock/window -- scheduling is a planning action,
+        // not a timesheet edit), fetching that day's existing entries first
+        // so a WOM already on that day isn't clobbered, just added alongside.
         for (const [weekMonday, weekDates] of Object.entries(datesByWeek)) {
+          let week;
           try {
-            const week = await api.get(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}`);
-            const newEntries = weekDates.map((d) => ({
-              day: DAY_HEADERS[mondayIndexOf(d)],
-              type: "wom",
-              locationCode: wom.locationCode,
-              womCode,
-              hours,
-            }));
-            const allocations = [...week.allocations, ...newEntries];
-            await api.put(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}/allocations`, { allocations });
-            scheduledDays += weekDates.length;
+            week = await api.get(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}`);
           } catch (err) {
-            weekErrors.push(`week of ${weekMonday}: ${err.message}`);
+            for (const d of weekDates) dayErrors.push(`${d}: ${err.message}`);
+            continue;
+          }
+          for (const d of weekDates) {
+            const day = DAY_HEADERS[mondayIndexOf(d)];
+            const existingForDay = week.allocations.filter((a) => a.day === day);
+            const allocations = [...existingForDay, { day, type: "wom", locationCode: wom.locationCode, womCode, hours }];
+            try {
+              await api.put(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}/schedule-wom`, { day, allocations });
+              scheduledDays += 1;
+            } catch (err) {
+              dayErrors.push(`${d}: ${err.message}`);
+            }
           }
         }
 
-        if (weekErrors.length === 0) {
+        if (dayErrors.length === 0) {
           showAddForm = false;
           addMessage = "";
           await draw();
         } else {
           const dayWord = scheduledDays === 1 ? "day" : "days";
-          msg.textContent = `${scheduledDays} ${dayWord} scheduled. Some weeks failed: ${weekErrors.join("; ")}`;
+          msg.textContent = `${scheduledDays} ${dayWord} scheduled. Some days failed: ${dayErrors.join("; ")}`;
         }
       });
     }

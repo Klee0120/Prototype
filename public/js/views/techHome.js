@@ -7,6 +7,11 @@ import { renderSchedule } from "./schedule.js";
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
 
+function formatMoney(n) {
+  if (n == null) return "—";
+  return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /**
  * Technician's own view: their weekly allocation, plus read-only tabs for
  * Locations & WOM (so they can see what's out there and what they've worked
@@ -86,11 +91,55 @@ export async function renderTechHome(container) {
           <div class="review-row-summary">
             <span class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}</span></span>
             <span class="badge badge-${WOM_STATUS_BADGE_CLASS[w.status] || "draft"}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
+            <button class="btn btn-link wom-lookup-toggle" type="button">Details</button>
           </div>
+          <div class="review-row-detail tech-wom-detail" hidden></div>
         `;
+        // Lazy-loaded (and cached per row) rather than fetched for every WOM
+        // up front -- who's logged hours against a project and its pricing
+        // is only worth a round trip once someone actually wants to see it.
+        const toggleBtn = row.querySelector(".wom-lookup-toggle");
+        const detail = row.querySelector(".tech-wom-detail");
+        let loaded = false;
+        toggleBtn.addEventListener("click", async () => {
+          detail.hidden = !detail.hidden;
+          toggleBtn.textContent = detail.hidden ? "Details" : "Hide";
+          if (!detail.hidden && !loaded) {
+            loaded = true;
+            detail.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
+            const lookup = await api.get(`/api/woms/${encodeURIComponent(w.code)}/lookup`);
+            detail.innerHTML = renderWomLookupDetail(lookup);
+          }
+        });
         womList.appendChild(row);
       });
     }
+  }
+
+  // Total hours worked and posted pricing for a WOM, all-time -- same data
+  // and endpoint the admin's own WOM Lookup sub-tab uses, just presented
+  // inline here since a technician's Locations & WOM list already has each
+  // WOM's row to expand rather than a separate lookup screen of its own.
+  function renderWomLookupDetail(wom) {
+    const hoursLine =
+      wom.budgetHours == null
+        ? `${wom.totalHours}h logged (no budget set)`
+        : `${wom.totalHours}h of ${wom.budgetHours}h budgeted (${wom.remainingHours}h left)`;
+    const byTech =
+      wom.hoursByTechnician.length === 0
+        ? `<p class="review-checklist-hint">No hours logged against this WOM yet.</p>`
+        : `<table class="detail-table">
+            <thead><tr><th>Technician</th><th>Hours</th></tr></thead>
+            <tbody>${wom.hoursByTechnician.map((h) => `<tr><td>${escapeHtml(h.techName)}</td><td>${h.hours}</td></tr>`).join("")}</tbody>
+          </table>`;
+    return `
+      <div class="wom-lookup-stats">
+        <div><span class="wom-lookup-stat-label">Hours</span>${hoursLine}</div>
+        <div><span class="wom-lookup-stat-label">Estimated</span>$${formatMoney(wom.estimatedPrice)}</div>
+        <div><span class="wom-lookup-stat-label">Applied (posted)</span>$${formatMoney(wom.appliedPrice)}</div>
+      </div>
+      ${byTech}
+    `;
   }
 
   async function drawMyDocuments(content) {

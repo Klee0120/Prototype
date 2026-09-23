@@ -197,6 +197,40 @@ router.put("/:id/weeks/:weekMonday/allocations", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Puts a WOM on the calendar from the Schedule tab, regardless of the
+// week's own edit lock/window -- a locked/submitted/approved week, a past
+// week, or a week whose window hasn't opened yet all still accept a
+// schedule entry here, since "scheduling" is a planning action, not a
+// timesheet edit. The one thing that still blocks it is the WOM itself
+// (still has to be open, per normalizeAllocations below) -- a closed or
+// invoiced WOM can't be scheduled onto any day regardless. Scoped to a
+// single day, same safety property as weekend-allocations/resolve-punch-
+// issue below: only that one day's rows are touched, so this can never be
+// used to quietly change the rest of an already-locked week.
+router.put("/:id/weeks/:weekMonday/schedule-wom", requireAuth, (req, res) => {
+  const { id, weekMonday } = req.params;
+  if (!canView(req, id)) {
+    return res.status(403).json({ error: "Only the technician or an admin can schedule this" });
+  }
+
+  const { day, allocations } = req.body || {};
+  if (!DAY_NAMES.includes(day)) return res.status(400).json({ error: `Invalid day: ${day}` });
+  if (!Array.isArray(allocations)) return res.status(400).json({ error: "allocations array is required" });
+  const otherDays = allocations.filter((a) => a.day !== day);
+  if (otherDays.length > 0) {
+    return res.status(400).json({ error: `This endpoint only accepts allocations for ${day}` });
+  }
+
+  const { error, normalized } = normalizeAllocations(allocations);
+  if (error) return res.status(400).json({ error });
+
+  db.saveDayAllocations(id, weekMonday, day, normalized);
+  const onBehalf = req.user.role === "admin" && req.user.id !== id ? ` for ${id}` : "";
+  db.addAudit(req.user.id, "WOM_SCHEDULED", `${req.user.name} scheduled a WOM${onBehalf} on ${day}, week ${weekMonday}`);
+
+  res.json({ ok: true });
+});
+
 // Lets a technician (or admin) log Saturday/Sunday hours for a week that's
 // already submitted or approved -- e.g. a weekend callout that happened
 // after the rest of the week was already locked in. Only Sat/Sun are

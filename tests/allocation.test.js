@@ -112,6 +112,57 @@ test("allocation: per-day hour validation, splits, and locking", async (t) => {
     assert.equal(get.body.status, "submitted");
   });
 
+  await t.test("schedule-wom ignores the week lock -- scheduling isn't a timesheet edit", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: {
+        day: "Sat",
+        allocations: [{ day: "Sat", type: "wom", locationCode: "PRINCETON", womCode: "WOM-4502", hours: 3 }],
+      },
+    });
+    assert.equal(put.status, 200);
+
+    const get = await server.call("GET", `/api/technicians/T1001/weeks/${week}`, { userId: "T1001" });
+    assert.equal(get.body.status, "submitted");
+    const sat = get.body.allocations.find((a) => a.day === "Sat");
+    assert.equal(sat.womCode, "WOM-4502");
+    assert.equal(sat.hours, 3);
+  });
+
+  await t.test("schedule-wom still rejects a closed WOM", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: {
+        day: "Sun",
+        allocations: [{ day: "Sun", type: "wom", locationCode: "CINCINNATI", womCode: "WOM-4390", hours: 4 }],
+      },
+    });
+    assert.equal(put.status, 400);
+    assert.match(put.body.error, /not open/);
+  });
+
+  await t.test("schedule-wom only accepts allocations for the named day", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: {
+        day: "Sun",
+        allocations: [{ day: "Sat", type: "wom", locationCode: "PRINCETON", womCode: "WOM-4502", hours: 2 }],
+      },
+    });
+    assert.equal(put.status, 400);
+  });
+
+  await t.test("a technician cannot schedule a WOM for another technician", async () => {
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1002",
+      body: {
+        day: "Sun",
+        allocations: [{ day: "Sun", type: "wom", locationCode: "PRINCETON", womCode: "WOM-4502", hours: 2 }],
+      },
+    });
+    assert.equal(put.status, 403);
+  });
+
   await t.test("rejects an invalid time off type", async () => {
     const put = await server.call("PUT", `/api/technicians/T1002/weeks/${week}/allocations`, {
       userId: "T1002",

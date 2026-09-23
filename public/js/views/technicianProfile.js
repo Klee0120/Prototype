@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { renderAttachments } from "./attachments.js";
+import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
 
 const PROFILE_TABS = [
   { key: "basic", label: "Basic Info" },
@@ -258,7 +259,7 @@ export function renderTechniciansTab(content, openTo) {
           <input name="email" placeholder="Email" type="email" />
           <input name="phone" placeholder="Phone" />
           <input name="ukgId" placeholder="UKG ID" />
-          <label class="add-tech-date-field">Start date<input name="hireDate" type="date" /></label>
+          <label class="add-tech-date-field">Start date<input name="hireDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" /></label>
         </div>
         <button type="submit" class="btn btn-primary">Create technician</button>
         <span class="save-message add-tech-message"></span>
@@ -267,9 +268,14 @@ export function renderTechniciansTab(content, openTo) {
   }
 
   function wireAddForm(form) {
+    wireDateMaskInput(form.hireDate);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = form.querySelector(".add-tech-message");
+      if (form.hireDate.value.trim() && isoFromUs(form.hireDate.value) == null) {
+        msg.textContent = "Start date must be a full MM/DD/YYYY date.";
+        return;
+      }
       try {
         await api.post("/api/admin/technicians", {
           id: form.id.value.trim(),
@@ -280,7 +286,7 @@ export function renderTechniciansTab(content, openTo) {
           phone: form.phone.value.trim(),
           ukgId: form.ukgId.value.trim(),
           position: form.position.value.trim(),
-          hireDate: form.hireDate.value || null,
+          hireDate: isoFromUs(form.hireDate.value),
         });
         showAddForm = false;
         await draw();
@@ -507,8 +513,8 @@ export function renderTechniciansTab(content, openTo) {
           <span>Status</span>
           <select name="employmentStatus">${statusOptions}</select>
         </label>
-        <label class="profile-field"><span>Hire date</span><input type="date" name="hireDate" value="${escapeHtml(tech.hireDate || "")}" /></label>
-        <label class="profile-field"><span>Termination date</span><input type="date" name="terminationDate" value="${escapeHtml(tech.terminationDate || "")}" /></label>
+        <label class="profile-field"><span>Hire date</span><input type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" name="hireDate" value="${escapeHtml(usFromIso(tech.hireDate))}" /></label>
+        <label class="profile-field"><span>Termination date</span><input type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" name="terminationDate" value="${escapeHtml(usFromIso(tech.terminationDate))}" /></label>
         <label class="profile-field"><span>Standard daily hours (net of break)</span><input type="number" min="0" step="0.25" name="standardDailyHours" value="${tech.standardDailyHours ?? ""}" /></label>
         <p class="profile-field-note">
           Notify-me-by-email is the technician's own setting, not editable here:
@@ -521,11 +527,13 @@ export function renderTechniciansTab(content, openTo) {
     `;
 
     const form = tabContent.querySelector(".basic-info-form");
+    wireDateMaskInput(form.hireDate);
+    wireDateMaskInput(form.terminationDate);
     const original = {
       homeLocationCode: tech.homeLocationCode || "",
       employmentStatus: tech.employmentStatus,
-      hireDate: tech.hireDate || "",
-      terminationDate: tech.terminationDate || "",
+      hireDate: usFromIso(tech.hireDate),
+      terminationDate: usFromIso(tech.terminationDate),
       standardDailyHours: tech.standardDailyHours ?? "",
     };
 
@@ -533,14 +541,22 @@ export function renderTechniciansTab(content, openTo) {
       e.preventDefault();
       const msg = form.querySelector(".basic-info-message");
       msg.textContent = "";
+      if (form.hireDate.value.trim() && isoFromUs(form.hireDate.value) == null) {
+        msg.textContent = "Hire date must be a full MM/DD/YYYY date.";
+        return;
+      }
+      if (form.terminationDate.value.trim() && isoFromUs(form.terminationDate.value) == null) {
+        msg.textContent = "Termination date must be a full MM/DD/YYYY date.";
+        return;
+      }
       try {
         await api.patch(`/api/admin/technicians/${tech.id}/basic-info`, {
           email: form.email.value.trim(),
           phone: form.phone.value.trim(),
           ukgId: form.ukgId.value.trim(),
           position: form.position.value.trim(),
-          hireDate: form.hireDate.value,
-          terminationDate: form.terminationDate.value,
+          hireDate: isoFromUs(form.hireDate.value),
+          terminationDate: isoFromUs(form.terminationDate.value),
           standardDailyHours: form.standardDailyHours.value,
         });
         original.hireDate = form.hireDate.value;

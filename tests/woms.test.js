@@ -12,6 +12,19 @@ test("woms: open/closed status management", async (t) => {
     assert.ok(res.body.some((w) => w.code === "WOM-4390" && w.status === "closed"));
   });
 
+  await t.test("WOM Lookup: any logged-in user can see all-time hours by technician", async () => {
+    const res = await server.call("GET", "/api/woms/WOM-4471/lookup", { userId: "T1001" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.code, "WOM-4471");
+    assert.equal(res.body.totalHours, 16);
+    assert.deepEqual(res.body.hoursByTechnician, [{ techId: "T1001", techName: "Alex Rivera", hours: 16 }]);
+  });
+
+  await t.test("WOM Lookup 404s for an unknown WOM", async () => {
+    const res = await server.call("GET", "/api/woms/NOPE/lookup", { userId: "T1001" });
+    assert.equal(res.status, 404);
+  });
+
   await t.test("a technician cannot change WOM status", async () => {
     const res = await server.call("PATCH", "/api/woms/WOM-4471", { userId: "T1001", body: { status: "closed" } });
     assert.equal(res.status, 403);

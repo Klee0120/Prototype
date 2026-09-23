@@ -1112,6 +1112,23 @@ function countWomAllocatedHours(code) {
   return total;
 }
 
+// The per-technician breakdown behind "WOM Lookup" -- every technician who's
+// ever logged time against this WOM, all-time (not scoped to a month), and
+// how much. `type = 'wom'` matters here since wom_code doubles as the
+// time-off type on timeoff rows -- excludes those even though no real WOM
+// code should ever collide with one.
+function womHoursByTechnician(code) {
+  return db
+    .prepare(
+      `SELECT a.tech_id AS techId, t.name AS techName, SUM(a.hours) AS hours
+       FROM allocations a JOIN technicians t ON t.id = a.tech_id
+       WHERE a.wom_code = ? AND a.type = 'wom'
+       GROUP BY a.tech_id
+       ORDER BY hours DESC`
+    )
+    .all(code);
+}
+
 // A WOM created by mistake (a test entry, a typo) should just go away
 // rather than sit around forever with a status. Deleting one that already
 // has hours allocated against it would silently pull those hours out from
@@ -1833,6 +1850,8 @@ module.exports = {
   listWoms,
   findWom,
   createWom,
+  countWomAllocatedHours,
+  womHoursByTechnician,
   deleteWom,
   WOM_STATUSES,
   setWomStatus,

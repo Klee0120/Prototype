@@ -275,20 +275,21 @@ Demo logins:
   add-technician flow uses), hours per day, and a **first/last day date
   range** (one day is just a range of one), and it's added as a normal
   allocation alongside whatever else each technician already has on those
-  days (never replacing it), the same days/weeks reused by every other
-  allocation-editing screen. A range spanning more than one calendar week is
-  split by the client into one batch per week (Monday-Sunday) since
-  allocations are stored and saved a week at a time; each week is fetched,
-  merged, and saved independently (capped at 62 days/~2 months per request),
-  so if one week in the range is locked or not yet open the rest of the
-  range still goes through, with the response naming exactly which week(s)
-  failed and why. Saving is exactly repeated calls to
-  `PUT /api/technicians/:id/weeks/:weekMonday/allocations` — the same
-  endpoint and the same rules Tech Allocation/My Week already enforce (an
-  open WOM, a matching location, the week's own edit lock/window) — so a
-  locked or not-yet-open week surfaces the same clear error here as it
-  would there, rather than the calendar quietly allowing something the rest
-  of the app wouldn't. **Not a Microsoft Teams/Outlook
+  days (never replacing it). A range spanning more than one calendar week is
+  split by the client into per-day batches (capped at 62 days/~2 months per
+  request) and saved via a **dedicated endpoint that ignores the week's own
+  edit lock/window entirely** —
+  `PUT /api/technicians/:id/weeks/:weekMonday/schedule-wom`
+  (`server/routes/technicians.js`) — since scheduling is a planning action,
+  not a timesheet edit: a locked/submitted/approved week, a past week, or a
+  week whose window hasn't even opened yet all still accept a schedule
+  entry. The one thing that still blocks a day is the WOM itself (still has
+  to be open — closed/invoiced/pending/requested all still get rejected,
+  same validation Tech Allocation/My Week use). Scoped to exactly one day
+  per call (mirrors the existing weekend-allocations/resolve-punch-issue
+  endpoints' own safety property) so this can never be used to quietly
+  change the rest of an already-locked week — only the specific day(s)
+  actually being scheduled are ever touched. **Not a Microsoft Teams/Outlook
   integration** — that would need Azure AD app registration and IT approval
   before any of it could be built; for now it only reflects what's been
   allocated here, not a technician's other real-world commitments. See
@@ -326,6 +327,33 @@ Demo logins:
   bottom without hunting through the others. File storage only for now; see
   "Where this stands" for the bigger reconciliation idea this could grow
   into.
+- **Admin nav grouped into sections**: the 10 admin tabs used to sit in one
+  flat, horizontally-scrolling row (Priorities, Tech Allocation, Schedule,
+  Overview, Weekly Review, E&F Locations & WOM, Technicians, Vendors,
+  Reports, Audit Trail) -- wide enough on most screens to need scrolling
+  just to see the last few. They're now grouped under six top-level
+  sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`): **Priorities**,
+  **Timekeeping** (Tech Allocation, Schedule, Overview, Weekly Review,
+  Reports), **Roster** (Technicians), **Vendors**, **WOM** (Locations &
+  WOM, plus the new WOM Lookup below), and **Audit Trail**. A section with
+  only one tab behaves exactly as before (clicking it goes straight there);
+  a section with more shows a second row of its own sub-tabs underneath,
+  and remembers which sub-tab you were last on when you click back into it.
+  No tab, route, or view was removed or renamed in the process -- purely a
+  navigation-chrome change.
+- **WOM Lookup**: a searchable "everything about one WOM" tool under the
+  WOM section, open to technicians too (as an expandable "Details" row on
+  their own read-only Locations & WOM list, `techHome.js`) since it's a
+  lookup, not a management screen. Pick a WOM and see its status, budget,
+  and pricing (same data the admin's own WOM management screen already
+  tracks) plus **every technician who's ever logged time against it and
+  how much** -- `GET /api/woms/:code/lookup`, all-time across every week
+  it's ever appeared on, not scoped to the current month the way most other
+  views here are. This is the same all-time total the WOM's own budget
+  math already used internally (`countWomAllocatedHours` in
+  `server/data/db.js`) plus a new per-technician breakdown
+  (`womHoursByTechnician`), just surfaced as its own lookup rather than
+  buried in a budget-remaining calculation.
 - **Priorities tab (admin)**: one calm, dedicated place gathering everything
   that needs a look -- outdated vendor forms, vendors with incomplete
   document checks, expiring/missing employee forms, technicians with zero
@@ -408,6 +436,18 @@ Demo logins:
   see **Bulk add technicians** right below for onboarding several at once
   (a shorter, paste-based set of fields -- no PIN or start date entry, since
   those aren't practical to type per row for a whole roster).
+- **Typeable MM/DD/YYYY date fields, not native date pickers**: every date
+  field a person actually fills in by hand (a new technician's start date,
+  Basic Info's hire/termination dates, the Schedule tab's date range) is a
+  plain text input with a slash-auto-inserting mask instead of a native
+  `<input type="date">`, which forces month/day/year to be clicked and set
+  as three separate segments and can't take a pasted or fully-typed date in
+  one go. Typing all 8 digits in one go (`09252026`) or pasting an already-
+  slashed date works the same way; the small shared helper
+  (`public/js/dateMask.js` -- `wireDateMaskInput`/`isoFromUs`/`usFromIso`)
+  converts to/from the app's own `YYYY-MM-DD` at the API boundary, so
+  nothing server-side changed. An incomplete or malformed date shows a
+  plain validation message rather than silently being sent as garbage.
 - **Bulk add technicians**: for onboarding a whole real roster at once
   instead of one form per person. Paste one technician per line — `ID,
   Name, Position, Email, Location code` (tab or comma separated; a
@@ -974,6 +1014,9 @@ server/
   routes/
     auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
     technicians.js        GET/PUT/POST week + allocations + submit (per-day validation),
+                              PUT schedule-wom (Schedule tab: one day's WOM entry, ignores the
+                              week's own edit lock/window entirely -- only the WOM's own open
+                              status still blocks it, and only that one day is ever touched),
                               PUT weekend-allocations (Sat/Sun addendum on a locked week),
                               POST accept-weekend-hours (admin-only: correct + accept in one step),
                               POST report-punch-issue (tech or admin flags a day, optional note),
@@ -981,7 +1024,9 @@ server/
                               allocation and clear the flag, without unlocking the rest of the week)
     woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
                               :code/pricing (hand-entered estimated/applied $, overwritten by a
-                              later Smartsheet sync), POST :code/complete (tech-facing),
+                              later Smartsheet sync), GET :code/lookup (WOM Lookup: all-time total
+                              hours + a per-technician breakdown, open to any logged-in user),
+                              POST :code/complete (tech-facing),
                               DELETE :code (admin-only, blocked if hours are already allocated
                               against it unless force is passed)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
@@ -1031,7 +1076,9 @@ tests/
   helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
   auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
   allocation.test.js       Hour validation, WOM gating, locking, Sat/Sun exempt from the
-                              UKG-match check at submit time
+                              UKG-match check at submit time, schedule-wom ignores the week
+                              lock (still rejects a closed WOM, day-scoped only, 403 for
+                              another technician)
   admin.test.js             Approve / reject / unlock (incl. on a merely-submitted week),
                               Overview report OT-flagging, ot-trends, UKG-confirmed checklist,
                               pending-punch flag, weekend hours addendum (log without
@@ -1048,7 +1095,9 @@ tests/
                               verification (hasTimeOff, set/unset, cleared on edit,
                               submitted/approved + time-off required)
   weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
-  woms.test.js               WOM CRUD + authorization, subsidiary code, location E&F/WOM Job Number/Region,
+  woms.test.js               WOM CRUD + authorization, WOM Lookup (all-time hours by
+                                 technician, 404 for an unknown WOM), subsidiary code,
+                                 location E&F/WOM Job Number/Region,
                                  Smartsheet-reflected flag (set on close, cleared on reopen, admin-only),
                                  cancelling a WOM blocks technician allocation same as any non-open status,
                                  deleting a WOM (admin-only, 404 unknown, blocked with allocated hours
@@ -1097,6 +1146,8 @@ public/
     app.js                Shell, routing, shared state
     api.js                Fetch wrapper (+ multipart upload, blob download)
     weekUtil.js            Client-side week date helpers
+    dateMask.js            Typeable MM/DD/YYYY date inputs (wireDateMaskInput,
+                              isoFromUs/usFromIso) used in place of native date pickers
     views/
       login.js
       techHome.js            Technician's own tab shell: My Week (techWeek.js) / Locations & WOM
