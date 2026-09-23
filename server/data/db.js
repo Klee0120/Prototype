@@ -545,11 +545,21 @@ function setEmploymentStatus(techId, status) {
   return findTechnician(techId);
 }
 
-function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position }) {
+function createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position, hireDate }) {
   db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position)
-     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?)`
-  ).run(id, name, hashPin(pin), homeLocationCode || null, email || null, phone || null, ukgId || null, position || null);
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email, phone, ukg_id, position, hire_date)
+     VALUES (?, ?, ?, 'tech', 1, 'active', ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    name,
+    hashPin(pin),
+    homeLocationCode || null,
+    email || null,
+    phone || null,
+    ukgId || null,
+    position || null,
+    hireDate || null
+  );
   return findTechnician(id);
 }
 

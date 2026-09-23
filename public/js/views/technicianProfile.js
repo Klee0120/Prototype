@@ -258,6 +258,7 @@ export function renderTechniciansTab(content, openTo) {
           <input name="email" placeholder="Email" type="email" />
           <input name="phone" placeholder="Phone" />
           <input name="ukgId" placeholder="UKG ID" />
+          <label class="add-tech-date-field">Start date<input name="hireDate" type="date" /></label>
         </div>
         <button type="submit" class="btn btn-primary">Create technician</button>
         <span class="save-message add-tech-message"></span>
@@ -279,6 +280,7 @@ export function renderTechniciansTab(content, openTo) {
           phone: form.phone.value.trim(),
           ukgId: form.ukgId.value.trim(),
           position: form.position.value.trim(),
+          hireDate: form.hireDate.value || null,
         });
         showAddForm = false;
         await draw();

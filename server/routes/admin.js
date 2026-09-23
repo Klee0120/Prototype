@@ -9,6 +9,7 @@ const smartsheet = require("../utils/smartsheet");
 
 const OT_NOT_ON_WOM_FLAG_THRESHOLD = 3;
 const OT_TREND_WEEKS = 8;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -39,14 +40,15 @@ router.get("/technicians", (req, res) => {
 });
 
 router.post("/technicians", (req, res) => {
-  const { id, name, pin, homeLocationCode, email, phone, ukgId, position } = req.body || {};
+  const { id, name, pin, homeLocationCode, email, phone, ukgId, position, hireDate } = req.body || {};
   if (!id || !name || !pin) return res.status(400).json({ error: "id, name, and pin are required" });
   if (db.findTechnician(id)) return res.status(409).json({ error: "That ID is already in use" });
   if (homeLocationCode && !db.findLocation(homeLocationCode)) {
     return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });
   }
+  if (hireDate && !DATE_RE.test(hireDate)) return res.status(400).json({ error: "hireDate must be YYYY-MM-DD" });
 
-  const tech = db.createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position });
+  const tech = db.createTechnician({ id, name, pin, homeLocationCode, email, phone, ukgId, position, hireDate });
   db.addAudit(req.user.id, "TECHNICIAN_CREATED", `${req.user.name} added technician ${tech.name} (${tech.id})`);
   res.status(201).json(presentTechnician(tech));
 });
@@ -179,8 +181,6 @@ router.patch("/technicians/:id/employment-status", (req, res) => {
   db.addAudit(req.user.id, "TECH_STATUS_CHANGED", `${req.user.name} set ${tech.name}'s status to ${status}`);
   res.json(presentTechnician(db.findTechnician(tech.id)));
 });
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 router.patch("/technicians/:id/basic-info", (req, res) => {
   const tech = db.findTechnician(req.params.id);

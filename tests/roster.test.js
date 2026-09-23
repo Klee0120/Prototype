@@ -122,16 +122,32 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.status, 400);
   });
 
-  await t.test("admin can create a new technician", async () => {
+  await t.test("admin can create a new technician, including a start date", async () => {
     const res = await server.call("POST", "/api/admin/technicians", {
       userId: "ADMIN",
-      body: { id: "T1099", name: "Casey New", pin: "4321", position: "Technician", homeLocationCode: "PRINCETON" },
+      body: {
+        id: "T1099",
+        name: "Casey New",
+        pin: "4321",
+        position: "Technician",
+        homeLocationCode: "PRINCETON",
+        hireDate: "2026-03-02",
+      },
     });
     assert.equal(res.status, 201);
     assert.equal(res.body.employmentStatus, "active");
+    assert.equal(res.body.hireDate, "2026-03-02");
 
     const login = await server.call("POST", "/api/auth/login", { body: { id: "T1099", pin: "4321" } });
     assert.equal(login.status, 200);
+  });
+
+  await t.test("rejects a malformed start date when creating a technician", async () => {
+    const res = await server.call("POST", "/api/admin/technicians", {
+      userId: "ADMIN",
+      body: { id: "T1098", name: "Bad Date", pin: "4321", hireDate: "03/02/2026" },
+    });
+    assert.equal(res.status, 400);
   });
 
   await t.test("admin can reset a technician's PIN, and it's logged to the audit trail", async () => {

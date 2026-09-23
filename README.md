@@ -403,8 +403,11 @@ Demo logins:
   - Documents — general file attachments, same mechanism as WOM docs but
     with no type/expiration tracking
 - **Add technician**: a form on the roster (ID, name, PIN, position,
-  home location, contact info) creates a new technician who can log in
-  immediately
+  home location, contact info, and an optional start date) creates a new
+  technician who can log in immediately. This is the one-at-a-time form;
+  see **Bulk add technicians** right below for onboarding several at once
+  (a shorter, paste-based set of fields -- no PIN or start date entry, since
+  those aren't practical to type per row for a whole roster).
 - **Bulk add technicians**: for onboarding a whole real roster at once
   instead of one form per person. Paste one technician per line — `ID,
   Name, Position, Email, Location code` (tab or comma separated; a
@@ -1058,8 +1061,10 @@ tests/
                                     click-to-view panel, ?location= filter narrows to one site
   roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
                                  (add/complete/edit), notification-pref, allocation history,
-                                 bulk-create technicians (admin-only, generated PIN actually logs
-                                 in, bad rows skipped with their own error, 400 if all rows fail),
+                                 creating a technician (with an optional start date; malformed
+                                 date rejected), bulk-create technicians (admin-only, generated
+                                 PIN actually logs in, bad rows skipped with their own error, 400
+                                 if all rows fail),
                                  admin PIN reset (new PIN logs in, old one no longer does, logged
                                  to the audit trail, 403 for a technician, 404 for an unknown id),
                                  deleting a technician (admin-only, 404 unknown, blocked with
