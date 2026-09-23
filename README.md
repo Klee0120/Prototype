@@ -344,16 +344,20 @@ Demo logins:
 - **WOM Lookup**: a searchable "everything about one WOM" tool under the
   WOM section, open to technicians too (as an expandable "Details" row on
   their own read-only Locations & WOM list, `techHome.js`) since it's a
-  lookup, not a management screen. Pick a WOM and see its status, budget,
-  and pricing (same data the admin's own WOM management screen already
-  tracks) plus **every technician who's ever logged time against it and
-  how much** -- `GET /api/woms/:code/lookup`, all-time across every week
-  it's ever appeared on, not scoped to the current month the way most other
-  views here are. This is the same all-time total the WOM's own budget
-  math already used internally (`countWomAllocatedHours` in
-  `server/data/db.js`) plus a new per-technician breakdown
-  (`womHoursByTechnician`), just surfaced as its own lookup rather than
-  buried in a budget-remaining calculation.
+  lookup, not a management screen. A **location dropdown and a live text
+  search** (by WOM # or project name) narrow the list down first -- a
+  plain `<select>` can't be typed into to filter its own options, so the
+  search box rebuilds the list as you type instead, same idea as the
+  roster's own filters -- then picking a WOM shows its status, budget, and
+  pricing (same data the admin's own WOM management screen already tracks)
+  plus **every technician who's ever logged time against it and how much**
+  -- `GET /api/woms/:code/lookup`, all-time across every week it's ever
+  appeared on, not scoped to the current month the way most other views
+  here are. This is the same all-time total the WOM's own budget math
+  already used internally (`countWomAllocatedHours` in `server/data/db.js`)
+  plus a new per-technician breakdown (`womHoursByTechnician`), just
+  surfaced as its own lookup rather than buried in a budget-remaining
+  calculation.
 - **Priorities tab (admin)**: one calm, dedicated place gathering everything
   that needs a look -- outdated vendor forms, vendors with incomplete
   document checks, expiring/missing employee forms, technicians with zero

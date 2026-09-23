@@ -2367,28 +2367,72 @@ export async function renderAdminReview(container) {
   // tabs here are. Read-only, and open to techs too (see techHome.js) since
   // it's a lookup tool, not a management screen.
   async function drawWomLookup(content) {
-    const woms = await api.get("/api/woms");
+    const [woms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
     const sorted = [...woms].sort((a, b) => a.code.localeCompare(b.code));
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
 
     content.innerHTML = `
       <p class="review-checklist-hint">
         Look up any WOM to see its status, budget, and pricing, plus every technician who's logged
         time against it and how much -- all-time, not just this month.
       </p>
-      <select class="wom-lookup-select">
-        <option value="">Choose a WOM…</option>
-        ${sorted.map((w) => `<option value="${escapeHtml(w.code)}">${escapeHtml(w.code)} -- ${escapeHtml(w.description)}</option>`).join("")}
-      </select>
+      <div class="roster-filters">
+        <label class="roster-filter-field">
+          <span>Location</span>
+          <select class="wom-lookup-location-filter"><option value="">All locations</option>${locationOptions}</select>
+        </label>
+        <label class="roster-filter-field">
+          <span>Search</span>
+          <input type="text" class="wom-lookup-search" placeholder="Type a WOM # or project name…" />
+        </label>
+      </div>
+      <select class="wom-lookup-select" size="8"></select>
       <div class="wom-lookup-detail"></div>
     `;
 
-    content.querySelector(".wom-lookup-select").addEventListener("change", async (e) => {
-      const detail = content.querySelector(".wom-lookup-detail");
-      if (!e.target.value) {
+    const locationFilter = content.querySelector(".wom-lookup-location-filter");
+    const searchInput = content.querySelector(".wom-lookup-search");
+    const select = content.querySelector(".wom-lookup-select");
+    const detail = content.querySelector(".wom-lookup-detail");
+
+    // Narrows the visible options as either filter changes -- a plain
+    // <select> can't be typed into to filter its own options, so the text
+    // box rebuilds the list instead, same idea as the roster's own search.
+    function renderOptions() {
+      const loc = locationFilter.value;
+      const q = searchInput.value.trim().toLowerCase();
+      const filtered = sorted.filter((w) => {
+        if (loc && w.locationCode !== loc) return false;
+        if (q && !`${w.code} ${w.description}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      const previousValue = select.value;
+      const optionsHtml = filtered
+        .map((w) => {
+          const loc = locationByCode[w.locationCode];
+          return `<option value="${escapeHtml(w.code)}">${escapeHtml(w.code)} -- ${escapeHtml(w.description)}${loc ? ` (${escapeHtml(loc.name)})` : ""}</option>`;
+        })
+        .join("");
+      select.innerHTML = `<option value="">${filtered.length === 0 ? "No matching WOMs" : "Choose a WOM…"}</option>${optionsHtml}`;
+      if (filtered.some((w) => w.code === previousValue)) {
+        select.value = previousValue;
+      } else {
+        detail.innerHTML = "";
+      }
+    }
+
+    renderOptions();
+    locationFilter.addEventListener("change", renderOptions);
+    searchInput.addEventListener("input", renderOptions);
+
+    select.addEventListener("change", async () => {
+      if (!select.value) {
         detail.innerHTML = "";
         return;
       }
-      const wom = await api.get(`/api/woms/${encodeURIComponent(e.target.value)}/lookup`);
+      detail.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
+      const wom = await api.get(`/api/woms/${encodeURIComponent(select.value)}/lookup`);
       detail.innerHTML = renderWomLookupDetail(wom);
     });
   }
