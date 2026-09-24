@@ -181,8 +181,14 @@ export function renderTechniciansTab(content, openTo) {
           only blocks that login; it never touches past audit history, which already records that
           person's name on everything they did.
         </p>
+        <p class="review-checklist-hint">
+          <strong>PSE reviewer</strong> is whichever admin produces PSEs, liaises with Toyota, and
+          approves Status 95 in the PSE Tasks pipeline (Financials tab) -- every other active admin
+          handles the financial side (issuing the WOM/PO, monitoring charges, invoicing). Only one
+          admin can hold it at a time.
+        </p>
         <table class="detail-table admin-accounts-table">
-          <thead><tr><th>Name</th><th>ID</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>PSE reviewer</th><th></th></tr></thead>
           <tbody>
             ${admins
               .map(
@@ -202,6 +208,13 @@ export function renderTechniciansTab(content, openTo) {
                 </td>
                 <td>${escapeHtml(a.id)}</td>
                 <td>${statusBadge(a.employmentStatus)}</td>
+                <td>
+                  ${
+                    a.isPseReviewer
+                      ? `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="false" type="button">Reviewer -- remove</button>`
+                      : `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="true" type="button">Set as reviewer</button>`
+                  }
+                </td>
                 <td>
                   ${
                     a.employmentStatus === "active"
@@ -233,6 +246,19 @@ export function renderTechniciansTab(content, openTo) {
         btn.disabled = true;
         try {
           await api.patch(`/api/admin/admins/${encodeURIComponent(btn.dataset.id)}/employment-status`, { status });
+          await renderAdminAccountsPanel(toggleBtn, contentEl);
+        } catch (err) {
+          btn.disabled = false;
+          window.alert(err.message);
+        }
+      });
+    });
+
+    host.querySelectorAll(".admin-pse-reviewer-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api.patch(`/api/admin/admins/${encodeURIComponent(btn.dataset.id)}/pse-reviewer`, { isPseReviewer: btn.dataset.make === "true" });
           await renderAdminAccountsPanel(toggleBtn, contentEl);
         } catch (err) {
           btn.disabled = false;

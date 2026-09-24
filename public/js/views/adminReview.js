@@ -65,7 +65,7 @@ const NAV_SECTIONS = [
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
-  { key: "financials", label: "Financials", tabs: ["laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["psetasks", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
 
@@ -75,6 +75,7 @@ const TAB_LABELS = {
   schedule: "Schedule",
   overview: "Overview",
   review: "Weekly Review",
+  psetasks: "PSE Tasks",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendors",
@@ -88,6 +89,39 @@ function sectionForTab(tab) {
 }
 
 const WOM_STATUS_BADGE_CLASS = { open: "approved", requested: "submitted", invoiced: "submitted", cancelled: "rejected", closed: "rejected" };
+
+// Which action buttons a task card shows at each PSE stage -- mirrors
+// PSE_ACTIONS/PSE_STAGES in server/data/db.js, which is what actually
+// enforces legality; this only decides what to show, filtered further by
+// whether the viewer holds the "reviewer" or "financial" role for the
+// button in question.
+const PSE_STAGE_ACTIONS = {
+  pse_review: [{ action: "mark_pse_produced", label: "PSE produced -- send to Toyota", role: "reviewer" }],
+  awaiting_toyota_approval: [
+    { action: "toyota_approved", label: "Toyota approved", role: "reviewer" },
+    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
+  ],
+  generate_wom_po: [
+    { action: "generated_with_po", label: "Generated -- PO in hand", role: "financial" },
+    { action: "generated_missing_po", label: "Generated -- still missing Toyota PO", role: "financial" },
+  ],
+  awaiting_toyota_po: [
+    { action: "po_received", label: "PO received", role: "reviewer" },
+    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
+  ],
+  schedule_blocked: [{ action: "clear_schedule_block", label: "Clear block -- ready to schedule", role: "reviewer" }],
+  check_expenses: [{ action: "send_status95", label: "Send for Status 95 approval", role: "financial" }],
+  pending_status95_approval: [
+    { action: "approve_status95", label: "Approve", role: "reviewer" },
+    { action: "reject_status95", label: "Not sufficient -- back to Admin", role: "reviewer" },
+  ],
+  ready_to_invoice: [{ action: "mark_invoiced", label: "Mark invoiced", role: "financial" }],
+};
+
+const PSE_HOLD_LABELS = { vendor_invoice: "vendor invoice", labor_allocations: "labor allocations to post", other: "other" };
+// The schedule-block flag only means anything before a WOM's actually
+// scheduled -- offered at whichever stages still precede that decision.
+const PSE_SCHEDULE_BLOCK_STAGES = ["generate_wom_po", "awaiting_toyota_po", "schedule_blocked"];
 function womStatusBadgeClass(status) {
   return WOM_STATUS_BADGE_CLASS[status] || "draft";
 }
@@ -217,6 +251,7 @@ export async function renderAdminReview(container) {
       jumpToTech = null;
     }
     else if (activeTab === "vendors") await drawVendors(content);
+    else if (activeTab === "psetasks") await drawPseTasks(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
   }
@@ -2245,11 +2280,16 @@ export async function renderAdminReview(container) {
     // imported this one" at a glance, since those are exactly the ones
     // worth reviewing for deletion.
     const sourceTag = w.smartsheetSyncedAt == null ? `<span class="wom-source-tag">Not imported from Smartsheet</span>` : "";
+    // The Smartsheet grid's own row number -- much easier to actually find
+    // and identify a request by (especially one still missing a real WOM #
+    // and description) than the WOM code alone, which for those is just a
+    // generated PENDING-<opaque id> placeholder.
+    const lineTag = w.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(w.smartsheetLineNumber))}</span>` : "";
 
     el.innerHTML = `
       <div class="review-row-summary">
         <div class="review-row-name">
-          ${escapeHtml(w.description)}${locationTag}${sourceTag}
+          ${escapeHtml(w.description)}${locationTag}${lineTag}${sourceTag}
           <span class="wom-code">${escapeHtml(w.code)}</span>
         </div>
         <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
@@ -2261,6 +2301,7 @@ export async function renderAdminReview(container) {
             ? `<button class="btn btn-link smartsheet-detail-btn" type="button">${womsSmartsheetExpanded.has(w.code) ? "Hide Smartsheet detail" : "Smartsheet detail"}</button>`
             : ""
         }
+        ${w.smartsheetLink ? `<a class="btn btn-link" href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""}
         <button class="btn btn-link delete-wom-btn" type="button">Delete</button>
       </div>
       <div class="wom-desc">${metaLine}</div>
@@ -2361,6 +2402,143 @@ export async function renderAdminReview(container) {
     return el;
   }
 
+  // "PSE Tasks": every WOM currently waiting on an admin action somewhere
+  // in the PSE-to-invoice pipeline (see PSE_STAGES/PSE_ACTIONS in
+  // server/data/db.js), split by role -- the designated reviewer (produces
+  // the PSE, liaises with Toyota, approves Status 95) sees their own
+  // stages; every other admin sees the "financial" ones (issue the WOM/PO,
+  // monitor charges, invoice). If nobody's been designated as reviewer
+  // yet, everyone sees everything, so the feature isn't unusable before
+  // that one-time setup step (Manage admin accounts, on the Roster tab).
+  async function drawPseTasks(content) {
+    const data = await api.get("/api/woms/pse/tasks");
+    const isReviewer = !data.reviewerAdminId || data.reviewerAdminId === state.user.id;
+    const isFinancial = !data.reviewerAdminId || data.reviewerAdminId !== state.user.id;
+
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Every WOM currently waiting on an admin somewhere between PSE creation and invoicing.
+        ${
+          data.reviewerAdminId
+            ? ""
+            : "No PSE/Toyota reviewer is designated yet (Roster tab &rarr; Manage admin accounts), so everyone can act on every step for now."
+        }
+      </p>
+      <div class="pse-task-list">
+        ${
+          data.tasks.length === 0
+            ? `<p class="empty-note">No open PSE tasks right now.</p>`
+            : data.tasks.map((w) => renderPseTaskCard(w, isReviewer, isFinancial)).join("")
+        }
+      </div>
+    `;
+
+    content.querySelectorAll(".pse-task-action").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/actions/${btn.dataset.action}`, {});
+          await drawPseTasks(content);
+        } catch (err) {
+          window.alert(err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+
+    content.querySelectorAll(".pse-hold-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const reason = btn.dataset.reason;
+        let note;
+        if (reason === "other") {
+          note = window.prompt("What's this WOM waiting on?");
+          if (note == null) return;
+        }
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/hold`, { holdReason: reason, holdNote: note });
+          await drawPseTasks(content);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    });
+    content.querySelectorAll(".pse-hold-clear-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/hold`, {});
+          await drawPseTasks(content);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    });
+    content.querySelectorAll(".pse-schedule-block-toggle").forEach((cb) => {
+      cb.addEventListener("change", async (e) => {
+        const checked = e.target.checked;
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(cb.dataset.code)}/pse/schedule-block`, { blocked: checked });
+          await drawPseTasks(content);
+        } catch (err) {
+          window.alert(err.message);
+          e.target.checked = !checked;
+        }
+      });
+    });
+  }
+
+  function renderPseTaskCard(w, isReviewer, isFinancial) {
+    const buttons = (PSE_STAGE_ACTIONS[w.pseStage] || [])
+      .filter((a) => (a.role === "reviewer" ? isReviewer : isFinancial))
+      .map(
+        (a) =>
+          `<button type="button" class="btn btn-secondary pse-task-action" data-code="${escapeHtml(w.code)}" data-action="${a.action}">${escapeHtml(a.label)}</button>`
+      )
+      .join("");
+
+    const overdue = w.pseFollowupAt && new Date(w.pseFollowupAt) <= new Date();
+    const followupBadge = w.pseFollowupAt
+      ? `<span class="badge badge-${overdue ? "rejected" : "draft"}">Follow up ${new Date(w.pseFollowupAt).toLocaleDateString()}</span>`
+      : "";
+    const holdBadge = w.pseHoldReason
+      ? `<span class="badge badge-rejected">On hold: ${escapeHtml(w.pseHoldReason === "other" ? w.pseHoldNote || "other" : PSE_HOLD_LABELS[w.pseHoldReason])}</span>`
+      : "";
+
+    const holdControls =
+      w.pseStage === "check_expenses"
+        ? w.pseHoldReason
+          ? `<button type="button" class="btn btn-link pse-hold-clear-btn" data-code="${escapeHtml(w.code)}">Clear hold</button>`
+          : `<button type="button" class="btn btn-link pse-hold-btn" data-code="${escapeHtml(w.code)}" data-reason="vendor_invoice">Hold: vendor invoice</button>
+             <button type="button" class="btn btn-link pse-hold-btn" data-code="${escapeHtml(w.code)}" data-reason="labor_allocations">Hold: labor allocations</button>
+             <button type="button" class="btn btn-link pse-hold-btn" data-code="${escapeHtml(w.code)}" data-reason="other">Hold: other…</button>`
+        : "";
+
+    const scheduleBlockToggle = PSE_SCHEDULE_BLOCK_STAGES.includes(w.pseStage)
+      ? `<label class="pse-schedule-block-label">
+          <input type="checkbox" class="pse-schedule-block-toggle" data-code="${escapeHtml(w.code)}" ${w.pseScheduleBlock ? "checked" : ""} />
+          Don't schedule until Toyota PO
+        </label>`
+      : "";
+
+    return `
+      <div class="pse-task-card">
+        <div class="pse-task-header">
+          <strong>${escapeHtml(w.description || w.code)}</strong>
+          <span class="wom-code">${escapeHtml(w.code)}</span>
+          ${w.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(w.smartsheetLineNumber))}</span>` : ""}
+          <span class="badge badge-submitted">${escapeHtml(w.pseStageLabel || w.pseStage)}</span>
+          ${followupBadge}
+          ${holdBadge}
+        </div>
+        <div class="wom-desc">
+          ${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}${
+      w.smartsheetLink ? ` &middot; <a href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""
+    }
+        </div>
+        <div class="pse-task-actions">${buttons}${holdControls}${scheduleBlockToggle}</div>
+      </div>
+    `;
+  }
+
   // "WOM Lookup": pick any WOM and see everything about it in one place --
   // status/budget/pricing (same data drawWoms already manages), plus who's
   // logged time against it and how much, all-time across every week it's
@@ -2457,6 +2635,8 @@ export async function renderAdminReview(container) {
           <span class="wom-code">${escapeHtml(wom.code)}</span>
           <strong>${escapeHtml(wom.description)}</strong>
           <span class="badge badge-${womStatusBadgeClass(wom.status)}">${escapeHtml(WOM_STATUS_LABELS[wom.status] || wom.status)}</span>
+          ${wom.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(wom.smartsheetLineNumber))}</span>` : ""}
+          ${wom.smartsheetLink ? `<a class="btn btn-link" href="${escapeHtml(wom.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""}
         </div>
         <div class="wom-lookup-stats">
           <div><span class="wom-lookup-stat-label">Location</span>${escapeHtml(wom.locationCode || "—")}</div>

@@ -359,9 +359,10 @@ Demo logins:
   sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`):
   **Priorities**, **Timekeeping** (Tech Allocation, Schedule, Overview,
   Weekly Review), **Roster** (Technicians), **Vendors**, **WOM** (Locations
-  & WOM, plus the new WOM Lookup below), **Financials** (Reports -- kept
-  separate from Timekeeping since filing WOM/Labor/Financial/GL reports is
-  a financial task, not a timekeeping one), and **Audit Trail**. A section
+  & WOM, plus the new WOM Lookup below), **Financials** (PSE Tasks, then
+  Reports -- kept separate from Timekeeping since PO/PSE pipeline tracking
+  and filing WOM/Labor/Financial/GL reports are financial tasks, not
+  timekeeping ones), and **Audit Trail**. A section
   with only one tab behaves exactly as before (clicking it goes straight
   there); a section with more shows a second row of its own sub-tabs
   underneath, and remembers which sub-tab you were last on when you click
@@ -384,6 +385,67 @@ Demo logins:
   plus a new per-technician breakdown (`womHoursByTechnician`), just
   surfaced as its own lookup rather than buried in a budget-remaining
   calculation.
+- **Smartsheet Line # and direct link on every synced WOM**: a WOM that
+  syncs in without a real WOM # or description yet (a bare request row) used
+  to be nearly impossible to trace back to the actual Smartsheet request --
+  its only identifier was `smartsheet_row_id`, Smartsheet's own long opaque
+  internal id with no relation to anything visible in the sheet itself.
+  Every synced WOM now also carries `smartsheetLineNumber` (the small row
+  number shown in the Smartsheet grid's own left-hand column -- "Line 42")
+  and `smartsheetLink`, a direct **"Open in Smartsheet ↗"** link straight to
+  that row in the Smartsheet web app (Smartsheet's own standard row-deep-
+  link URL shape, built server-side from the sheet id this app is already
+  configured with plus the row's internal id -- no extra API call needed).
+  Both show up on the WOM Projects list, WOM Lookup, and PSE Tasks (below).
+  Refreshed on every sync, so existing already-synced rows pick up their
+  line number/link automatically the next time a sync touches them, not
+  just newly-created ones.
+- **PSE / PO pipeline ("PSE Tasks", under the Financials section)**: tracks
+  a WOM through the real-world PSE-to-invoice workflow -- create WOM
+  request (Smartsheet) &rarr; produce PSE &rarr; Toyota approval &rarr;
+  issue WOM/PO &rarr; schedule work &rarr; check expenses &rarr; Status 95
+  approval &rarr; invoice -- as a `pse_stage` field on the WOM, kept
+  entirely separate from the existing `status` column (which still only
+  ever gates whether a WOM can be allocated to; a WOM stays "open" for its
+  entire time in this pipeline). A WOM auto-enters the pipeline at
+  **Review & produce PSE** the moment it first syncs in from Smartsheet
+  (never re-entered on a later sync, so progress already made is never
+  reset). Two roles split the work, matching how this is actually done:
+  - **Reviewer** (exactly one admin at a time, designated via a **"Set as
+    reviewer"** toggle in Manage admin accounts on the Roster tab) --
+    produces the PSE, liaises with Toyota, and approves Status 95.
+  - **Financial** (any other active admin) -- generates the WOM/PO,
+    monitors charges, and invoices.
+
+  If nobody's been designated reviewer yet, every admin can act on every
+  step, so the feature isn't locked up before that one-time setup. The full
+  stage/action state machine (`PSE_STAGES`/`PSE_ACTIONS` in
+  `server/data/db.js`, `PUT /api/woms/:code/pse/actions/:action`):
+
+  | Stage | Owner | Action(s) that leave it |
+  |---|---|---|
+  | Review & produce PSE | Reviewer | PSE produced &rarr; sent to Toyota |
+  | Awaiting Toyota approval | Reviewer | Approved &rarr; Generate WOM/PO; or snooze the follow-up |
+  | Generate WOM / PO | Financial | Generated with PO in hand &rarr; Ready to schedule (or Blocked, see below); or generated but still missing the PO &rarr; back to Reviewer |
+  | Awaiting Toyota PO # | Reviewer | PO received &rarr; Ready to schedule (or Blocked); or snooze the follow-up |
+  | Blocked from scheduling (PO pending) | Reviewer | Clear the block &rarr; Ready to schedule |
+  | Ready to schedule | *(technician, via Schedule/Tech Allocation)* | Marking the WOM complete auto-advances it |
+  | Check expenses & invoicing | Financial | Sent for Status 95 approval (can be put **on hold** meanwhile -- see below) |
+  | Sent for Status 95 approval | Reviewer | Approved &rarr; ready to invoice; or rejected ("not sufficient") &rarr; back to Check expenses |
+  | Approved -- ready to invoice | Financial | Marked invoiced &rarr; **closed**, and the underlying WOM's own `status` flips to `invoiced` |
+
+  A **"don't schedule until Toyota PO"** flag (settable at any stage before
+  scheduling) routes a WOM to the reviewer's "Blocked" list instead of
+  "Ready to schedule" once the WOM/PO is generated, for a job that
+  shouldn't start until the real PO is confirmed. **Follow-up reminders**:
+  entering "Awaiting Toyota approval" or "Awaiting Toyota PO #" sets a
+  follow-up date 14 days out; a **"Still waiting"** button snoozes it
+  another 30 days each time, so an approval that drags on keeps resurfacing
+  rather than silently sitting untouched. **Hold reasons** (only while
+  "Check expenses & invoicing"): vendor invoice pending, labor allocations
+  pending, or a free-text "other" -- purely an annotation, doesn't change
+  the stage, just flags the task as blocked rather than actionable right
+  now. Every transition is audit-logged (`PSE_STAGE_ADVANCED`).
 - **Priorities tab (admin)**: one calm, dedicated place gathering everything
   that needs a look -- outdated vendor forms, vendors with incomplete
   document checks, expiring/missing employee forms, technicians with zero
@@ -435,7 +497,11 @@ Demo logins:
   actually using the account. Renaming yourself updates the stored session
   (`setUser` in `app.js`) so it's correct on the next reload/login; the
   header text on screen at the moment of the rename itself doesn't
-  live-refresh (it's only drawn once per page load).
+  live-refresh (it's only drawn once per page load). The same panel also
+  has a **"Set as reviewer" / "Reviewer -- remove"** toggle per admin,
+  designating who plays the "reviewer" role in the PSE pipeline (see PSE
+  Tasks below) -- only one at a time, enforced server-side
+  (`PATCH /api/admin/admins/:id/pse-reviewer`).
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:
@@ -1063,7 +1129,13 @@ server/
                               :code/pricing (hand-entered estimated/applied $, overwritten by a
                               later Smartsheet sync), GET :code/lookup (WOM Lookup: all-time total
                               hours + a per-technician breakdown, open to any logged-in user),
-                              POST :code/complete (tech-facing),
+                              POST :code/complete (tech-facing, also advances the PSE pipeline if
+                              the WOM was ready_to_schedule -- see advancePseOnComplete),
+                              GET pse/tasks (admin-only, role-filtered PSE pipeline task list),
+                              POST :code/pse/actions/:action (admin-only, the state machine's own
+                              stage transitions), POST :code/pse/hold (vendor_invoice/
+                              labor_allocations/other, admin-only), POST :code/pse/schedule-block
+                              ("don't schedule until Toyota PO" flag, admin-only),
                               DELETE :code (admin-only, blocked if hours are already allocated
                               against it unless force is passed)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
@@ -1176,7 +1248,21 @@ tests/
                                         null rather than guessed at if nothing matches), every column
                                         from the row kept verbatim as smartsheetData, admin-only,
                                         hand-entered pricing survives until a
-                                        real sync
+                                        real sync, a synced row's line number/Smartsheet link come
+                                        through and it auto-enters the PSE pipeline at pse_review
+  pse.test.js                Full PSE pipeline state machine: a synced WOM enters at pse_review;
+                                 before a reviewer is designated any admin can act, once one is set a
+                                 non-reviewer is blocked from reviewer-only actions (and vice versa); a
+                                 technician can't call any PSE endpoint; wrong-stage and unknown-action
+                                 requests are rejected; snoozing a follow-up changes the date without
+                                 changing stage; the full happy path from PSE production through Toyota
+                                 approval, WOM/PO generation (including the "still missing the PO" branch
+                                 back to the reviewer), marking a WOM complete auto-advancing it to
+                                 check_expenses, hold reasons (fixed + free-text "other", and clearing
+                                 one), a Status 95 rejection looping back before approval, invoicing
+                                 closing the pipeline and flipping the WOM's own status, a closed WOM
+                                 never appearing on anyone's task list, and the schedule-block flag
+                                 routing a generated WOM/PO to "blocked" instead of "ready to schedule"
 public/
   index.html
   css/styles.css

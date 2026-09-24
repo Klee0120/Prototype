@@ -716,7 +716,7 @@ router.get("/missing-ukg", (req, res) => {
 // has the acting admin's name baked into its details text at write time.
 
 function presentAdmin(a) {
-  return { id: a.id, name: a.name, employmentStatus: a.employment_status };
+  return { id: a.id, name: a.name, employmentStatus: a.employment_status, isPseReviewer: Boolean(a.is_pse_reviewer) };
 }
 
 router.get("/admins", (req, res) => {
@@ -768,6 +768,27 @@ router.patch("/admins/:id/name", (req, res) => {
   const updated = db.renameAdmin(admin.id, String(name).trim());
   db.addAudit(req.user.id, "ADMIN_RENAMED", `${req.user.name} renamed admin account ${admin.id} from ${oldName} to ${updated.name}`);
   res.json(presentAdmin(updated));
+});
+
+// Which admin plays the "reviewer" role in the PSE pipeline (produces the
+// PSE, liaises with Toyota, approves Status 95) -- only one at a time,
+// see db.setPseReviewer. Passing null/no id clears it (nobody designated),
+// which the pipeline treats as "any admin can take either role" rather
+// than locking up.
+router.patch("/admins/:id/pse-reviewer", (req, res) => {
+  const admin = db.findTechnician(req.params.id);
+  if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
+
+  const makeReviewer = Boolean((req.body || {}).isPseReviewer);
+  db.setPseReviewer(makeReviewer ? admin.id : null);
+  db.addAudit(
+    req.user.id,
+    "PSE_REVIEWER_SET",
+    makeReviewer
+      ? `${req.user.name} set ${admin.name} as the PSE/Toyota reviewer`
+      : `${req.user.name} removed ${admin.name} as the PSE/Toyota reviewer`
+  );
+  res.json(presentAdmin(db.findTechnician(admin.id)));
 });
 
 module.exports = router;

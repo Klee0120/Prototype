@@ -30,14 +30,19 @@ async function fetchSheet() {
 // ["Title", ...], rows: [{Title: value, ..., __smartsheetRowId}] } -- both
 // easier for a human (the admin preview) and for column-to-WOM-field
 // mapping logic to work with than Smartsheet's own shape. __smartsheetRowId
-// is Smartsheet's own row id, carried along (not a column) so a later sync
-// can recognize the same row again even after its WOM # cell changes --
-// see syncWomsFromSheetRows in server/data/db.js.
+// is Smartsheet's own internal row id, carried along (not a column) so a
+// later sync can recognize the same row again even after its WOM # cell
+// changes -- see syncWomsFromSheetRows in server/data/db.js.
+// __smartsheetRowNumber is the small, human-facing row number shown in the
+// Smartsheet grid's own left-hand column (e.g. "Line 42") -- much more
+// useful for a person trying to find/identify a request than the internal
+// id, which is a long opaque number with no relation to what's on screen
+// in Smartsheet itself.
 function simplifySheet(rawSheet) {
   const titleByColumnId = Object.fromEntries((rawSheet.columns || []).map((c) => [c.id, c.title]));
   const columns = (rawSheet.columns || []).map((c) => c.title);
   const rows = (rawSheet.rows || []).map((row) => {
-    const obj = { __smartsheetRowId: String(row.id) };
+    const obj = { __smartsheetRowId: String(row.id), __smartsheetRowNumber: row.rowNumber || null };
     for (const cell of row.cells || []) {
       const title = titleByColumnId[cell.columnId];
       if (title) obj[title] = cell.displayValue !== undefined ? cell.displayValue : cell.value;
@@ -45,6 +50,16 @@ function simplifySheet(rawSheet) {
     return obj;
   });
   return { sheetName: rawSheet.name, columns, rows };
+}
+
+// A direct link to a specific row in the Smartsheet web app -- Smartsheet's
+// own standard row-deep-link URL shape (the same link "Row Link" on a
+// row's context menu in Smartsheet copies), built from the sheet id this
+// app is already configured with plus that row's internal id. null if
+// Smartsheet isn't configured or there's no row id to link to.
+function rowLink(rowId) {
+  if (!SMARTSHEET_SHEET_ID || !rowId) return null;
+  return `https://app.smartsheet.com/sheets/${SMARTSHEET_SHEET_ID}?rowId=${rowId}`;
 }
 
 async function fetchSimplifiedSheet() {
@@ -61,4 +76,4 @@ function findColumn(columns, keywords) {
   return columns.find((c) => lower.every((k) => c.toLowerCase().includes(k))) || null;
 }
 
-module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet, findColumn };
+module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet, findColumn, rowLink };

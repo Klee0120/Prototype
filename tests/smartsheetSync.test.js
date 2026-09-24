@@ -97,6 +97,37 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
     }
   });
 
+  await t.test("a synced row carries its Smartsheet line number/link, and enters the PSE pipeline", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 510,
+            rowNumber: 17,
+            cells: [
+              { columnId: 1, value: "20313212", displayValue: "20313212" },
+              { columnId: 4, value: "Parking lot striping", displayValue: "Parking lot striping" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const created = list.body.find((w) => w.code === "20313212");
+      assert.ok(created);
+      assert.equal(created.smartsheetLineNumber, 17);
+      assert.equal(created.smartsheetLink, "https://app.smartsheet.com/sheets/6392545882886020?rowId=510");
+      assert.equal(created.pseStage, "pse_review");
+      assert.equal(created.pseStageLabel, "Review & produce PSE");
+    } finally {
+      restore();
+    }
+  });
+
   await t.test("a row's Site Location, Subsidiary Code, and Maximo # all sync in too", async () => {
     const restore = stubFetchOnce({
       ok: true,

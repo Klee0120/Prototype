@@ -356,6 +356,14 @@ if (!hasColumn("woms", "smartsheet_synced_at")) {
 if (!hasColumn("woms", "smartsheet_row_id")) {
   db.exec("ALTER TABLE woms ADD COLUMN smartsheet_row_id TEXT");
 }
+// The small, human-facing row number shown in the Smartsheet grid itself
+// (e.g. "Line 42") -- refreshed on every sync same as pricing, since a
+// row's position in the sheet can shift. Much easier to actually find and
+// identify a request by than smartsheet_row_id, which is a long opaque
+// internal id with no relation to what's visible in Smartsheet.
+if (!hasColumn("woms", "smartsheet_row_number")) {
+  db.exec("ALTER TABLE woms ADD COLUMN smartsheet_row_number INTEGER");
+}
 // The Maximo work order # a WOM traces back to -- a separate identifier
 // from the WOM # itself, the C&W PO #, and the Toyota PO # on the real PSE
 // tracker (see syncWomsFromSheetRows). Hand-editable here same as
@@ -379,6 +387,31 @@ if (!hasColumn("woms", "maximo_number")) {
 // allocatability, Priorities) reads them directly.
 if (!hasColumn("woms", "smartsheet_raw_data")) {
   db.exec("ALTER TABLE woms ADD COLUMN smartsheet_raw_data TEXT");
+}
+// The PSE/PO pipeline (see PSE_STAGES below) tracked separately from the
+// existing `status` column -- status still gates whether a WOM can be
+// allocated to (open/closed/etc.), while pse_stage tracks where it sits in
+// the real-world PSE-to-invoice workflow (a WOM can be "open" for weeks
+// while its pse_stage moves through several steps). NULL means this WOM
+// isn't in the pipeline at all (created by hand rather than synced from
+// Smartsheet, or from before this feature existed) -- it just won't show
+// up on anyone's PSE task list.
+if (!hasColumn("woms", "pse_stage")) {
+  db.exec("ALTER TABLE woms ADD COLUMN pse_stage TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN pse_hold_reason TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN pse_hold_note TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN pse_schedule_block INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE woms ADD COLUMN pse_followup_at TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN pse_stage_updated_at TEXT");
+}
+// Which admin plays the "reviewer" role in the PSE pipeline (produces the
+// PSE, liaises with Toyota, approves Status 95) -- distinct from the
+// "financial" role (generates the WOM/PO, monitors charges, invoices),
+// which any other active admin can act on. Exactly one admin should hold
+// this at a time; setPseReviewer below enforces that by clearing it from
+// everyone else whenever it's set.
+if (!hasColumn("technicians", "is_pse_reviewer")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN is_pse_reviewer INTEGER NOT NULL DEFAULT 0");
 }
 // Forms on File (tech_form uploads) can carry a type (e.g. "Certification",
 // "License") and an expiration date, so expired ones can be flagged for
@@ -1194,6 +1227,150 @@ function setWomStatus(code, status) {
   return findWom(code);
 }
 
+// ---- PSE / PO pipeline ----
+//
+// Tracks a WOM through the real-world PSE-to-invoice workflow (create WOM
+// request -> produce PSE -> Toyota approval -> issue PO -> schedule work ->
+// check expenses -> Status 95 approval -> invoice), separately from the
+// `status` column above, which only ever gates whether a WOM can be
+// allocated to. A WOM can be "open" (allocatable) for its entire time in
+// this pipeline; pse_stage tracks where it sits within that.
+//
+// Two roles split the work: "reviewer" (produces the PSE, liaises with
+// Toyota, approves Status 95 -- one specific admin) and "financial" (issues
+// the WOM/PO, monitors charges, invoices -- any other active admin). NULL
+// pse_stage means a WOM isn't in this pipeline at all (created by hand
+// rather than synced from Smartsheet) and never shows up on anyone's list.
+const PSE_STAGES = {
+  pse_review: { label: "Review & produce PSE", role: "reviewer" },
+  awaiting_toyota_approval: { label: "Awaiting Toyota approval", role: "reviewer" },
+  generate_wom_po: { label: "Generate WOM / PO", role: "financial" },
+  awaiting_toyota_po: { label: "Awaiting Toyota PO #", role: "reviewer" },
+  schedule_blocked: { label: "Blocked from scheduling (PO pending)", role: "reviewer" },
+  ready_to_schedule: { label: "Ready to schedule", role: null },
+  check_expenses: { label: "Check expenses & invoicing", role: "financial" },
+  pending_status95_approval: { label: "Sent for Status 95 approval", role: "reviewer" },
+  ready_to_invoice: { label: "Approved -- ready to invoice", role: "financial" },
+  closed: { label: "Invoiced / closed", role: null },
+};
+
+const PSE_HOLD_REASONS = ["vendor_invoice", "labor_allocations", "other"];
+
+// One entry per action a task list button can fire. `next: "same"` re-sets
+// the follow-up date without changing stage (a snooze); `"scheduleAware"`
+// resolves to schedule_blocked or ready_to_schedule depending on
+// pse_schedule_block at the moment the action runs. followupDays sets
+// pse_followup_at that many days out (null clears it).
+const PSE_ACTIONS = {
+  mark_pse_produced: { from: ["pse_review"], role: "reviewer", next: "awaiting_toyota_approval", followupDays: 14 },
+  snooze_followup: { from: ["awaiting_toyota_approval", "awaiting_toyota_po"], role: "reviewer", next: "same", followupDays: 30 },
+  toyota_approved: { from: ["awaiting_toyota_approval"], role: "reviewer", next: "generate_wom_po", followupDays: null },
+  generated_missing_po: { from: ["generate_wom_po"], role: "financial", next: "awaiting_toyota_po", followupDays: 14 },
+  generated_with_po: { from: ["generate_wom_po"], role: "financial", next: "scheduleAware", followupDays: null },
+  po_received: { from: ["awaiting_toyota_po"], role: "reviewer", next: "scheduleAware", followupDays: null },
+  clear_schedule_block: { from: ["schedule_blocked"], role: "reviewer", next: "ready_to_schedule", followupDays: null },
+  send_status95: { from: ["check_expenses"], role: "financial", next: "pending_status95_approval", followupDays: null },
+  approve_status95: { from: ["pending_status95_approval"], role: "reviewer", next: "ready_to_invoice", followupDays: null },
+  reject_status95: { from: ["pending_status95_approval"], role: "reviewer", next: "check_expenses", followupDays: null },
+  mark_invoiced: { from: ["ready_to_invoice"], role: "financial", next: "closed", followupDays: null, closesWom: true },
+};
+
+function getPseReviewerId() {
+  const row = db.prepare("SELECT id FROM technicians WHERE role = 'admin' AND is_pse_reviewer = 1").get();
+  return row ? row.id : null;
+}
+
+// Exactly one admin at a time -- setting a new reviewer always clears
+// whoever held it before, rather than requiring a separate "remove" step.
+function setPseReviewer(adminId) {
+  db.prepare("UPDATE technicians SET is_pse_reviewer = 0 WHERE role = 'admin'").run();
+  if (adminId) db.prepare("UPDATE technicians SET is_pse_reviewer = 1 WHERE id = ? AND role = 'admin'").run(adminId);
+}
+
+// Nobody designated yet shouldn't lock reviewer-only actions out entirely
+// -- until that one-time setup happens, any admin can take either role.
+function pseRoleFor(adminId) {
+  const reviewer = getPseReviewerId();
+  if (!reviewer) return null; // null = "any role allowed", checked below
+  return adminId === reviewer ? "reviewer" : "financial";
+}
+
+// Auto-enters a WOM into the pipeline the first time it syncs in from
+// Smartsheet -- never re-enters one already past this point, so a later
+// sync touching the same row doesn't reset progress someone's already
+// made on it.
+function ensurePseStage(code) {
+  const wom = db.prepare("SELECT pse_stage FROM woms WHERE code = ?").get(code);
+  if (!wom || wom.pse_stage) return;
+  db.prepare("UPDATE woms SET pse_stage = 'pse_review', pse_stage_updated_at = ? WHERE code = ?").run(new Date().toISOString(), code);
+}
+
+function listPseTasks(admin) {
+  const role = pseRoleFor(admin.id);
+  return db
+    .prepare("SELECT * FROM woms WHERE pse_stage IS NOT NULL AND pse_stage != 'closed'")
+    .all()
+    .map(womWithRemaining)
+    .filter((w) => {
+      const stage = PSE_STAGES[w.pse_stage];
+      if (!stage || !stage.role) return false;
+      return role === null || stage.role === role;
+    })
+    .sort((a, b) => (a.pse_followup_at || "").localeCompare(b.pse_followup_at || ""));
+}
+
+function applyPseAction(code, actionKey, admin) {
+  const wom = findWom(code);
+  if (!wom) return { error: "not_found" };
+  const action = PSE_ACTIONS[actionKey];
+  if (!action) return { error: "unknown_action" };
+  if (!action.from.includes(wom.pse_stage)) return { error: "wrong_stage", currentStage: wom.pse_stage };
+  const role = pseRoleFor(admin.id);
+  if (role !== null && role !== action.role) return { error: "wrong_role" };
+
+  let nextStage = action.next;
+  if (nextStage === "same") nextStage = wom.pse_stage;
+  else if (nextStage === "scheduleAware") nextStage = wom.pse_schedule_block ? "schedule_blocked" : "ready_to_schedule";
+
+  const followupAt = action.followupDays == null ? null : new Date(Date.now() + action.followupDays * 86400000).toISOString();
+  db.prepare("UPDATE woms SET pse_stage = ?, pse_followup_at = ?, pse_stage_updated_at = ? WHERE code = ?").run(
+    nextStage,
+    followupAt,
+    new Date().toISOString(),
+    code
+  );
+  if (action.closesWom) setWomStatus(code, "invoiced");
+
+  return { wom: findWom(code) };
+}
+
+function setPseHold(code, { holdReason, holdNote }) {
+  if (!findWom(code)) return null;
+  if (holdReason && !PSE_HOLD_REASONS.includes(holdReason)) return { error: "invalid_reason" };
+  db.prepare("UPDATE woms SET pse_hold_reason = ?, pse_hold_note = ? WHERE code = ?").run(
+    holdReason || null,
+    holdReason === "other" ? holdNote || null : null,
+    code
+  );
+  return { wom: findWom(code) };
+}
+
+function setPseScheduleBlock(code, blocked) {
+  if (!findWom(code)) return null;
+  db.prepare("UPDATE woms SET pse_schedule_block = ? WHERE code = ?").run(blocked ? 1 : 0, code);
+  return findWom(code);
+}
+
+// Hooked into a technician's own "mark complete" action -- only advances a
+// WOM that was actually waiting to be worked (ready_to_schedule), so
+// marking complete on a WOM outside this pipeline (or already past this
+// point) never creates a phantom task.
+function advancePseOnComplete(code) {
+  const wom = db.prepare("SELECT pse_stage FROM woms WHERE code = ?").get(code);
+  if (!wom || wom.pse_stage !== "ready_to_schedule") return;
+  db.prepare("UPDATE woms SET pse_stage = 'check_expenses', pse_stage_updated_at = ? WHERE code = ?").run(new Date().toISOString(), code);
+}
+
 function markWomSmartsheetReflected(code) {
   const wom = findWom(code);
   if (!wom || wom.status !== "closed") return null;
@@ -1307,7 +1484,10 @@ function syncWomsFromSheetRows(rows, columns) {
     const trimmedCode = rawCode != null ? String(rawCode).trim() : "";
     const realCode = trimmedCode && trimmedCode !== "0" ? trimmedCode : null;
     const requested = Boolean(dateRequestedColumn && String(row[dateRequestedColumn] ?? "").trim());
-    const description = (descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim()) || `Smartsheet request (row ${rowId})`;
+    const rowNumber = row.__smartsheetRowNumber || null;
+    const description =
+      (descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim()) ||
+      (rowNumber ? `Smartsheet request (Line ${rowNumber})` : `Smartsheet request (row ${rowId})`);
     const estimatedPrice = estimateColumn ? parseDollarAmount(row[estimateColumn]) : null;
     const appliedPrice = appliedColumn ? parseDollarAmount(row[appliedColumn]) : null;
     const maximoNumber = (maximoColumn && row[maximoColumn] && String(row[maximoColumn]).trim()) || null;
@@ -1327,43 +1507,51 @@ function syncWomsFromSheetRows(rows, columns) {
         db.prepare(
           `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
            location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
-           smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
-        ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowId, code);
+           smartsheet_row_number = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
+        ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, rowId, code);
         updated++;
+        ensurePseStage(code);
         continue;
       }
       const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
-         location_code, smartsheet_raw_data, smartsheet_row_id, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(code, description, status, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, String(rowId), stamp);
+         location_code, smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(code, description, status, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, String(rowId), rowNumber, stamp);
       created++;
+      ensurePseStage(code);
       continue;
     }
 
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
       db.prepare(
         `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ? WHERE code = ?`
-      ).run(realCode, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, existing.code);
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+         smartsheet_row_number = ? WHERE code = ?`
+      ).run(realCode, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
       promoted++;
+      ensurePseStage(realCode);
       continue;
     }
 
     if (existing.status === "pending" && requested) {
       db.prepare(
         `UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ? WHERE code = ?`
-      ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, existing.code);
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+         smartsheet_row_number = ? WHERE code = ?`
+      ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
       updated++;
+      ensurePseStage(existing.code);
       continue;
     }
 
     db.prepare(
       `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-       location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ? WHERE code = ?`
-    ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, existing.code);
+       location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+       smartsheet_row_number = ? WHERE code = ?`
+    ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
     updated++;
+    ensurePseStage(existing.code);
   }
 
   return { created, promoted, updated, total: rows.length };
@@ -1865,6 +2053,16 @@ module.exports = {
   deleteWom,
   WOM_STATUSES,
   setWomStatus,
+  PSE_STAGES,
+  PSE_HOLD_REASONS,
+  getPseReviewerId,
+  setPseReviewer,
+  ensurePseStage,
+  listPseTasks,
+  applyPseAction,
+  setPseHold,
+  setPseScheduleBlock,
+  advancePseOnComplete,
   markWomSmartsheetReflected,
   setWomDetails,
   setWomPricing,
