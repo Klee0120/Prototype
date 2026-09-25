@@ -65,14 +65,14 @@ async function uploadFile(relatedType, relatedId, category, file, extra) {
   return data;
 }
 
-async function downloadFile(id, filename) {
+async function fetchFileBlob(id) {
   const headers = {};
   const token = currentSessionToken();
   if (token) headers["x-session-token"] = token;
 
   const res = await fetch(`/api/files/${encodeURIComponent(id)}/download`, { headers });
   if (!res.ok) {
-    let message = `Download failed (${res.status})`;
+    let message = `Could not load file (${res.status})`;
     try {
       message = (await res.json()).error || message;
     } catch {
@@ -80,7 +80,11 @@ async function downloadFile(id, filename) {
     }
     throw new Error(message);
   }
-  const blob = await res.blob();
+  return res.blob();
+}
+
+async function downloadFile(id, filename) {
+  const blob = await fetchFileBlob(id);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -99,4 +103,5 @@ export const api = {
   delete: (path, body) => request("DELETE", path, body),
   uploadFile,
   downloadFile,
+  fetchFileBlob,
 };

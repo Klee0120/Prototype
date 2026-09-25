@@ -94,6 +94,25 @@ Demo logins:
   (Vendors), + Add technician (Roster). A read-only detail panel (clicking
   a Schedule entry, a task card's "Details") stays inline, on purpose --
   this is specifically for *creating a new record*, not for viewing one.
+- **Document viewer**: every attachment list (`public/js/views/attachments.js`,
+  shared by employee Forms on File/Documents, vendor documents, WOM docs,
+  UKG screenshots/receipts, and Labor Reports) got a **View** action next
+  to Download -- opens a large pop-up (`openModal({ size: "large" })` in
+  `public/js/modal.js`) with the file's metadata and Download/Delete on
+  one side and a large inline preview on the other: a PDF renders in an
+  `<iframe>` (the browser's own built-in PDF viewer, so zoom/print/rotate
+  come for free, no PDF-rendering library needed), an image renders
+  directly, anything else falls back to "no inline preview -- use
+  Download." **Previous/Next** moves through the same list the viewer was
+  opened from without closing it, and the preview is fetched as a blob
+  (`api.fetchFileBlob`) and shown via an object URL that's revoked when
+  the viewer closes or moves on, rather than ever navigating away from the
+  app to view a file. Fixed a real bug found while building this: a
+  technician's Forms on File and Documents tabs share one `relatedType`
+  ("technician") with two different file categories, but the attachments
+  list was never actually filtering by its own declared categories --
+  each tab was silently also showing the other's files. Now filtered
+  client-side to exactly the categories a given panel declares.
 - Technician login (mock ID + PIN)
 - **Technician's own tabs**: "My Week" (the allocation screen below),
   **"Locations & WOM"** (view-only — every location and every WOM project,
@@ -1439,7 +1458,9 @@ public/
   css/styles.css
   js/
     app.js                Shell, routing, shared state
-    api.js                Fetch wrapper (+ multipart upload, blob download)
+    api.js                Fetch wrapper (+ multipart upload, blob download/fetchFileBlob)
+    modal.js               Shared pop-up dialog (openModal/closeModal) -- "add a new X" forms
+                              and the document viewer's large two-pane layout both use this
     weekUtil.js            Client-side week date helpers
     dateMask.js            Typeable MM/DD/YYYY date inputs (wireDateMaskInput,
                               isoFromUs/usFromIso) used in place of native date pickers
@@ -1456,7 +1477,9 @@ public/
                                 (admin only), manual task creation, and the task detail/comments panel
                                 all live here, not duplicated per role
       technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
-      attachments.js          Shared attachments list + upload component
+      attachments.js          Shared attachments list + upload component + the document viewer
+                                  (View action -> openModal size:"large" -- inline PDF/image
+                                  preview, Previous/Next, Download/Delete)
       womPhotoPrompt.js        Dismissible "add a photo?" nudge after submit / UKG-confirmed, reused
                                   by both techWeek.js and adminReview.js
 ```
