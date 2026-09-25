@@ -84,6 +84,7 @@ export function renderTechniciansTab(content, openTo) {
           </select>
         </label>
         <button class="btn btn-secondary add-technician-toggle" type="button">+ Add technician</button>
+        <button class="btn btn-secondary terminate-technician-toggle" type="button">Terminate employee</button>
         <button class="btn btn-link bulk-add-toggle" type="button">${showBulkAddForm ? "Cancel bulk add" : "Bulk add technicians"}</button>
         <button class="btn btn-link admin-accounts-toggle" type="button">${showAdminAccounts ? "Hide admin accounts" : "Manage admin accounts"}</button>
       </div>
@@ -122,6 +123,9 @@ export function renderTechniciansTab(content, openTo) {
     });
     content.querySelector(".add-technician-toggle").addEventListener("click", () => {
       openAddModal(locations);
+    });
+    content.querySelector(".terminate-technician-toggle").addEventListener("click", () => {
+      openTerminateModal(techs);
     });
     content.querySelector(".bulk-add-toggle").addEventListener("click", () => {
       showBulkAddForm = !showBulkAddForm;
@@ -354,6 +358,70 @@ export function renderTechniciansTab(content, openTo) {
           position: form.position.value.trim(),
           hireDate: isoFromUs(form.hireDate.value),
         });
+        close();
+        await draw();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // A quick top-level action for the one-off "this person is leaving" case,
+  // same pop-up pattern as + Add technician -- rather than requiring admin
+  // to open that person's own profile, find Basic Info, and change the
+  // status dropdown there (still there too, for changing it back or editing
+  // alongside other fields). Sets both the termination date and the
+  // employment status together, since terminated without a date on file
+  // isn't useful later.
+  function openTerminateModal(techs) {
+    const eligible = techs.filter((t) => t.employmentStatus !== "terminated").sort((a, b) => a.name.localeCompare(b.name));
+    const options = eligible.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("");
+    const { body, close } = openModal({
+      title: "Terminate Employee",
+      bodyHtml: `
+        <form class="terminate-technician-form modal-form">
+          <label class="profile-field"><span>Employee</span><select name="techId" required><option value="">Choose one</option>${options}</select></label>
+          <label class="profile-field">
+            <span>Termination date</span>
+            <input type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" name="terminationDate" required />
+          </label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Terminate employee</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".terminate-technician-form");
+    wireDateMaskInput(form.terminationDate);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      const tech = eligible.find((t) => t.id === form.techId.value);
+      if (!tech) {
+        msg.textContent = "Choose an employee.";
+        return;
+      }
+      const terminationDate = isoFromUs(form.terminationDate.value);
+      if (!terminationDate) {
+        msg.textContent = "Termination date must be a full MM/DD/YYYY date.";
+        return;
+      }
+      try {
+        // basic-info replaces the whole set of fields it covers, not just
+        // the ones sent -- carry the technician's existing values through
+        // unchanged so this doesn't blank out their email/phone/position/
+        // hire date/standard hours along with setting the termination date.
+        await api.patch(`/api/admin/technicians/${tech.id}/basic-info`, {
+          email: tech.email || "",
+          phone: tech.phone || "",
+          ukgId: tech.ukgId || "",
+          position: tech.position || "",
+          hireDate: tech.hireDate || "",
+          terminationDate,
+          standardDailyHours: tech.standardDailyHours ?? "",
+        });
+        await api.patch(`/api/admin/technicians/${tech.id}/employment-status`, { status: "terminated" });
         close();
         await draw();
       } catch (err) {

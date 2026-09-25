@@ -652,6 +652,16 @@ Demo logins:
   see **Bulk add technicians** right below for onboarding several at once
   (a shorter, paste-based set of fields -- no PIN or start date entry, since
   those aren't practical to type per row for a whole roster).
+- **Terminate employee**: a one-click quick action right on the roster
+  toolbar next to + Add technician (same pop-up pattern), for the common
+  "this person is leaving" case without having to open their full profile,
+  find Basic Info, and change the status dropdown there (that path still
+  works too, e.g. to un-terminate someone or edit other fields at the same
+  time). Picks an employee (anyone not already terminated) and a
+  termination date, then sets both the date and employment status in one
+  step -- carries the technician's other Basic Info fields (email, phone,
+  position, etc.) through unchanged rather than blanking them, since the
+  underlying `basic-info` endpoint replaces that whole field set at once.
 - **Typeable MM/DD/YYYY date fields, not native date pickers**: every date
   field a person actually fills in by hand (a new technician's start date,
   Basic Info's hire/termination dates, the Schedule tab's date range) is a
