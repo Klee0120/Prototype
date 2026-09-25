@@ -29,9 +29,24 @@ function shiftMonth(monthIso, delta) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function monthLabel(monthIso) {
-  const [y, m] = monthIso.split("-").map(Number);
-  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+// A jump-to-any-month picker beats paging Prev/Next one month at a time --
+// same pattern as the Labor Reports tab's own month/year selects, just a
+// forward-leaning range since scheduling is about what's coming up, not
+// filed history (a couple years back still covers looking up old plans).
+function scheduleYearOptions(selectedYear) {
+  const current = new Date().getFullYear();
+  const years = new Set();
+  for (let y = current - 2; y <= current + 2; y++) years.add(y);
+  years.add(selectedYear);
+  return [...years]
+    .sort((a, b) => a - b)
+    .map((y) => `<option value="${y}" ${y === selectedYear ? "selected" : ""}>${y}</option>`)
+    .join("");
 }
 
 function addDaysIso(iso, n) {
@@ -142,10 +157,19 @@ export async function renderSchedule(container) {
       .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === state.scheduleLocation ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
       .join("");
 
+    const [scheduleYear, scheduleMonthNum] = state.scheduleMonth.split("-").map(Number);
+
     container.innerHTML = `
       <div class="week-nav">
         <button class="btn btn-ghost" id="schedule-prev-month">&larr; Prev</button>
-        <div class="week-range">${monthLabel(state.scheduleMonth)}</div>
+        <div class="report-month-year-nav">
+          <label class="report-month-picker">
+            <select id="schedule-month-select">${MONTH_NAMES.map((name, i) => `<option value="${i + 1}" ${i + 1 === scheduleMonthNum ? "selected" : ""}>${name}</option>`).join("")}</select>
+          </label>
+          <label class="report-year-picker">
+            <select id="schedule-year-select">${scheduleYearOptions(scheduleYear)}</select>
+          </label>
+        </div>
         <button class="btn btn-ghost" id="schedule-next-month">Next &rarr;</button>
         <select id="schedule-location-filter"><option value="">All sites</option>${locationOptions}</select>
         <button class="btn btn-secondary" id="schedule-add-toggle">${showAddForm ? "Cancel" : "+ Schedule a WOM"}</button>
@@ -169,6 +193,16 @@ export async function renderSchedule(container) {
     });
     container.querySelector("#schedule-next-month").addEventListener("click", () => {
       state.scheduleMonth = shiftMonth(state.scheduleMonth, 1);
+      detailEntry = null;
+      draw();
+    });
+    container.querySelector("#schedule-month-select").addEventListener("change", (e) => {
+      state.scheduleMonth = `${scheduleYear}-${String(Number(e.target.value)).padStart(2, "0")}`;
+      detailEntry = null;
+      draw();
+    });
+    container.querySelector("#schedule-year-select").addEventListener("change", (e) => {
+      state.scheduleMonth = `${e.target.value}-${String(scheduleMonthNum).padStart(2, "0")}`;
       detailEntry = null;
       draw();
     });
