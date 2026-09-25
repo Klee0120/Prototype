@@ -22,9 +22,41 @@ const TECH_VIEWS = ["my", "team", "waiting", "overdue", "completed"];
 const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent" };
 const STATUS_LABELS = { open: "Open", in_progress: "In Progress", waiting: "Waiting", completed: "Completed", cancelled: "Cancelled" };
 const CATEGORY_LABELS = { manual: "Manual", wom_workflow: "WOM Workflow", financial: "Financial", recurring: "Recurring" };
+const ROLE_LABELS = { admin: "Admin", reviewer: "Reviewer", financial: "Financial", tech: "Technician" };
 // Reuses the same badge color classes the rest of the app already uses for
 // status pills, rather than inventing a second palette just for urgency.
 const URGENCY_BADGE_CLASS = { urgent: "rejected", high: "submitted", normal: "draft", low: "draft", done: "approved" };
+
+// Which real PSE actions apply at each pse_stage -- mirrors PSE_STAGE_ACTIONS
+// in adminReview.js's own PSE Tasks tab. Duplicated rather than shared
+// (same pattern as this app's other per-view lookup tables) so a WOM-
+// workflow task's detail panel can actually take the real action, instead
+// of a generic "mark complete" that would just close the task card without
+// touching the WOM's real pse_stage at all.
+const PSE_STAGE_ACTIONS = {
+  pse_review: [{ action: "mark_pse_produced", label: "PSE produced -- send to Toyota", role: "reviewer" }],
+  awaiting_toyota_approval: [
+    { action: "toyota_approved", label: "Toyota approved", role: "reviewer" },
+    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
+  ],
+  generate_wom_po: [
+    { action: "generated_with_po", label: "Generated -- PO in hand", role: "financial" },
+    { action: "generated_missing_po", label: "Generated -- still missing Toyota PO", role: "financial" },
+  ],
+  awaiting_toyota_po: [
+    { action: "po_received", label: "PO received", role: "reviewer" },
+    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
+  ],
+  schedule_blocked: [{ action: "clear_schedule_block", label: "Clear block -- ready to schedule", role: "reviewer" }],
+  check_expenses: [{ action: "send_status95", label: "Send for Status 95 approval", role: "financial" }],
+  pending_status95_approval: [
+    { action: "approve_status95", label: "Approve", role: "reviewer" },
+    { action: "reject_status95", label: "Not sufficient -- back to Admin", role: "reviewer" },
+  ],
+  ready_to_invoice: [{ action: "mark_invoiced", label: "Mark invoiced", role: "financial" }],
+};
+const PSE_SCHEDULE_BLOCK_STAGES = ["generate_wom_po", "awaiting_toyota_po", "schedule_blocked"];
+const PSE_HOLD_LABELS = { vendor_invoice: "vendor invoice", labor_allocations: "labor allocations", other: "other" };
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -47,13 +79,20 @@ export async function renderTaskBoard(container) {
 
   async function loadStaff() {
     if (staffCache || !isAdmin) return staffCache;
-    const [technicians, admins, locations, vendors] = await Promise.all([
+    const [technicians, admins, locations, vendors, pseTasks] = await Promise.all([
       api.get("/api/admin/technicians"),
       api.get("/api/admin/admins"),
       api.get("/api/locations"),
       api.get("/api/admin/vendors"),
+      api.get("/api/woms/pse/tasks"),
     ]);
-    staffCache = { technicians: technicians.filter((t) => t.employmentStatus === "active"), admins, locations, vendors };
+    staffCache = {
+      technicians: technicians.filter((t) => t.employmentStatus === "active"),
+      admins,
+      locations,
+      vendors,
+      reviewerAdminId: pseTasks.reviewerAdminId,
+    };
     return staffCache;
   }
 
@@ -263,8 +302,10 @@ export async function renderTaskBoard(container) {
     if (t.relatedWomCode) contextBits.push(`WOM ${escapeHtml(t.relatedWomCode)}${t.relatedWomDescription ? ` — ${escapeHtml(t.relatedWomDescription)}` : ""}`);
     if (t.relatedVendorName) contextBits.push(escapeHtml(t.relatedVendorName));
     if (t.relatedLocationName) contextBits.push(escapeHtml(t.relatedLocationName));
-    const assignee = t.assignedToName || (t.assignedRole ? `${t.assignedRole} queue` : "Unassigned");
+    const assignee = t.assignedToName || (t.assignedRole ? `Unclaimed — ${ROLE_LABELS[t.assignedRole] || t.assignedRole}` : "Unassigned");
     const badgeLabel = t.urgency === "done" ? STATUS_LABELS[t.status] : PRIORITY_LABELS[t.priority];
+    const dueLabel = t.dueAt ? `due ${formatDate(t.dueAt)}` : "no due date";
+    const ageLabel = t.ageDays <= 0 ? "opened today" : `opened ${t.ageDays}d ago`;
 
     row.innerHTML = `
       <div class="review-row-summary">
@@ -272,7 +313,7 @@ export async function renderTaskBoard(container) {
           ${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
-        <span class="task-card-meta">${escapeHtml(assignee)} &middot; due ${formatDate(t.dueAt)} &middot; ${t.ageDays}d old</span>
+        <span class="task-card-meta">${escapeHtml(assignee)} &middot; ${dueLabel} &middot; ${ageLabel}</span>
         <button class="btn btn-link task-detail-toggle" type="button">Details</button>
       </div>
       <div class="review-row-detail task-card-detail" hidden></div>
@@ -290,11 +331,28 @@ export async function renderTaskBoard(container) {
   async function renderDetail(host, taskId) {
     host.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
     const t = await api.get(`/api/tasks/${taskId}`);
-    const why = t.workflowRule
-      ? `Generated by workflow rule "${escapeHtml(t.workflowRule)}" (${escapeHtml(t.source)}).`
-      : `Source: ${escapeHtml(t.source)}.`;
+
+    // A WOM-workflow task tracks a real step in the PSE pipeline -- if that
+    // stage still exists and has real actions, fetch it so the panel can
+    // both explain the task in plain terms and offer the actual action
+    // (see renderPseActions), instead of a generic "mark complete" that
+    // would close the task card without touching the WOM's real pse_stage.
+    let wom = null;
+    if (t.category === "wom_workflow" && t.relatedWomCode) {
+      try {
+        wom = await api.get(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/lookup`);
+      } catch {
+        wom = null;
+      }
+    }
+
+    const why = wom
+      ? `Part of the WOM workflow -- ${escapeHtml(t.relatedWomCode)} is currently at "${escapeHtml(wom.pseStageLabel || wom.pseStage)}."`
+      : t.workflowRule
+        ? `Generated automatically (${escapeHtml(t.source.replace(/_/g, " "))}).`
+        : `Added by hand.`;
     const timeline = [
-      `Created ${formatDateTime(t.createdAt)}`,
+      `opened ${formatDateTime(t.createdAt)}`,
       t.startedAt ? `started ${formatDateTime(t.startedAt)}` : null,
       t.completedAt ? `completed ${formatDateTime(t.completedAt)}` : null,
     ]
@@ -303,14 +361,137 @@ export async function renderTaskBoard(container) {
 
     host.innerHTML = `
       ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
-      <p class="review-checklist-hint">${why} ${escapeHtml(timeline)}.</p>
+      <p class="review-checklist-hint">${why} (${escapeHtml(timeline)}.)</p>
+      <div class="task-pse-actions"></div>
       <div class="review-actions task-status-actions"></div>
       <div class="task-comments"></div>
       <div class="task-comment-form"></div>
     `;
-    renderStatusActions(host.querySelector(".task-status-actions"), t);
+
+    const tookOverStatus = wom && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
+    if (!tookOverStatus) renderStatusActions(host.querySelector(".task-status-actions"), t);
     renderComments(host.querySelector(".task-comments"), t.comments);
     renderCommentForm(host.querySelector(".task-comment-form"), t.id, host);
+  }
+
+  // The real, domain-specific action for whatever PSE step this task
+  // represents (e.g. "PSE produced -- send to Toyota"), not a generic
+  // status change -- taking it calls the same endpoint the dedicated
+  // Financials -> PSE Tasks page uses, so it actually advances the WOM.
+  // Returns true when it rendered real controls (the caller then skips the
+  // generic Start/Waiting/Complete/Cancel buttons); false to fall back to
+  // those, for a stage (like "ready to schedule") with no PSE action of
+  // its own.
+  async function renderPseActions(host, t, wom) {
+    const stage = wom.pseStage;
+    const stageActions = PSE_STAGE_ACTIONS[stage] || [];
+    const canHold = stage === "check_expenses";
+    const canScheduleBlock = PSE_SCHEDULE_BLOCK_STAGES.includes(stage);
+    if (stageActions.length === 0 && !canHold && !canScheduleBlock) return false;
+
+    let reviewerAdminId = null;
+    if (isAdmin) {
+      const staff = await loadStaff();
+      reviewerAdminId = staff.reviewerAdminId;
+    }
+    // No reviewer designated yet -- see Roster -> Manage admin accounts --
+    // means any admin can take either role for now, same rule the PSE
+    // Tasks page itself uses.
+    const isReviewer = !reviewerAdminId || reviewerAdminId === state.user.id;
+    const isFinancial = !reviewerAdminId || reviewerAdminId !== state.user.id;
+
+    const buttons = stageActions
+      .filter((a) => (a.role === "reviewer" ? isReviewer : isFinancial))
+      .map((a) => `<button type="button" class="btn btn-secondary task-pse-action-btn" data-action="${a.action}">${escapeHtml(a.label)}</button>`)
+      .join("");
+
+    const holdControls = canHold
+      ? wom.pseHoldReason
+        ? `<button type="button" class="btn btn-link task-pse-hold-clear-btn">Clear hold</button>`
+        : `
+          <button type="button" class="btn btn-link task-pse-hold-btn" data-reason="vendor_invoice">Hold: vendor invoice</button>
+          <button type="button" class="btn btn-link task-pse-hold-btn" data-reason="labor_allocations">Hold: labor allocations</button>
+          <button type="button" class="btn btn-link task-pse-hold-btn" data-reason="other">Hold: other…</button>
+        `
+      : "";
+
+    const scheduleBlockToggle = canScheduleBlock
+      ? `<label class="pse-schedule-block-label">
+          <input type="checkbox" class="task-pse-schedule-block-toggle" ${wom.pseScheduleBlock ? "checked" : ""} />
+          Don't schedule until Toyota PO
+        </label>`
+      : "";
+
+    if (!buttons && !holdControls && !scheduleBlockToggle) return false;
+
+    const holdNote = wom.pseHoldReason
+      ? `<p class="review-checklist-hint">On hold: ${escapeHtml(wom.pseHoldReason === "other" ? wom.pseHoldNote || "other" : PSE_HOLD_LABELS[wom.pseHoldReason])}.</p>`
+      : "";
+    const reviewerNote =
+      isAdmin && !reviewerAdminId
+        ? `<p class="review-checklist-hint">No PSE reviewer is designated yet (Roster &rarr; Manage admin accounts), so any admin can take this step.</p>`
+        : "";
+
+    host.innerHTML = `
+      ${reviewerNote}
+      ${holdNote}
+      <div class="review-actions">${buttons}${holdControls}${scheduleBlockToggle}</div>
+    `;
+
+    host.querySelectorAll(".task-pse-action-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/actions/${btn.dataset.action}`, {});
+          await draw();
+        } catch (err) {
+          window.alert(err.message);
+          btn.disabled = false;
+        }
+      });
+    });
+    host.querySelectorAll(".task-pse-hold-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const reason = btn.dataset.reason;
+        let note;
+        if (reason === "other") {
+          note = window.prompt("What's this WOM waiting on?");
+          if (note == null) return;
+        }
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/hold`, { holdReason: reason, holdNote: note });
+          await draw();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    });
+    const clearBtn = host.querySelector(".task-pse-hold-clear-btn");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", async () => {
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/hold`, {});
+          await draw();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+    const scheduleToggle = host.querySelector(".task-pse-schedule-block-toggle");
+    if (scheduleToggle) {
+      scheduleToggle.addEventListener("change", async (e) => {
+        const checked = e.target.checked;
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/schedule-block`, { blocked: checked });
+          await draw();
+        } catch (err) {
+          window.alert(err.message);
+          e.target.checked = !checked;
+        }
+      });
+    }
+
+    return true;
   }
 
   function renderStatusActions(host, t) {

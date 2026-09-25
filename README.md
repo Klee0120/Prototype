@@ -475,6 +475,19 @@ Demo logins:
     (`computeTaskUrgency` in `server/routes/tasks.js`) bumps a task up for
     being overdue, flagged as a workflow exception, aging past 14 days, or
     due within 24 hours, regardless of its stored priority.
+  - **A WOM-workflow task's detail panel takes the real action, not a
+    generic "mark complete."** Opening a task like "Produce PSE for X"
+    fetches that WOM's live `pse_stage` and, if it has one, renders the
+    actual PSE action buttons (mirroring `PSE_STAGE_ACTIONS` in
+    `adminReview.js`'s own PSE Tasks tab, including hold reasons at
+    Check expenses and the schedule-block toggle) -- clicking one calls
+    the same `POST /api/woms/:code/pse/actions/:action` the dedicated
+    Financials &rarr; PSE Tasks page uses, so it genuinely advances the
+    WOM (which in turn completes the old task and creates the next one,
+    per `syncPseStageTask`) instead of just closing the task card with
+    nothing behind it. Falls back to the generic Start/Waiting/Complete/
+    Cancel buttons for a stage with no PSE action of its own (e.g. a
+    technician's "Schedule work" task at `ready_to_schedule`).
   - **No duplicate tasks, ever, no matter how many times a sync or action
     re-fires**: every automated task gets a deterministic `source_key`
     (e.g. `WOM-20528831-REVIEW-EXPENSES`) and is written through
