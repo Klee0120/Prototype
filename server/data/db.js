@@ -207,6 +207,87 @@ db.exec(`
     status TEXT DEFAULT '',
     requested_at TEXT NOT NULL
   );
+
+  -- The generic task/workflow engine: "states create tasks, tasks create
+  -- timestamps, timestamps create analytics." A task is always the record
+  -- of something a person needs to do -- generated automatically off a WOM
+  -- state change or a recurring schedule, or entered by hand. source_key is
+  -- the dedup handle for anything auto-generated (e.g.
+  -- "WOM-20528831-REVIEW-EXPENSES") -- re-running the same generation logic
+  -- upserts the existing row instead of creating a duplicate. Manual tasks
+  -- have no source_key. Never deleted once created (see setTaskStatus) --
+  -- a completed/cancelled task stays as history.
+  CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_key TEXT UNIQUE,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    assigned_to TEXT,
+    assigned_role TEXT,
+    category TEXT NOT NULL DEFAULT 'manual',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    due_at TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    related_wom_code TEXT,
+    related_vendor_id INTEGER,
+    related_location_code TEXT,
+    related_tech_id TEXT,
+    related_po TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_record_id TEXT,
+    workflow_rule TEXT,
+    is_exception INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    assigned_at TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    last_status_change_at TEXT NOT NULL
+  );
+
+  -- Comments/notes on a task, kept as their own timestamped log rather than
+  -- one overwritable text field, since "let me open the task for
+  -- details/history/comments" implies more than one note over its life.
+  CREATE TABLE IF NOT EXISTS task_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    author_id TEXT NOT NULL,
+    author_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  -- A WOM's own status/stage changes, kept separately from the woms table
+  -- itself (which only ever holds the CURRENT value) so how long a project
+  -- spent in each step can be calculated later. changed_at is the real
+  -- event time when the source can tell us one (an admin/reviewer's own
+  -- action, timestamped the moment they click it); Smartsheet sync can only
+  -- tell us detected_at (when this app noticed), since sync is manual and
+  -- Smartsheet doesn't hand back a per-field last-changed timestamp.
+  CREATE TABLE IF NOT EXISTS wom_status_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wom_code TEXT NOT NULL,
+    field TEXT NOT NULL,
+    previous_value TEXT,
+    new_value TEXT,
+    changed_at TEXT,
+    detected_at TEXT NOT NULL,
+    changed_by TEXT,
+    source TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS wom_sync_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    synced_at TEXT NOT NULL,
+    synced_by TEXT,
+    woms_created INTEGER NOT NULL DEFAULT 0,
+    woms_promoted INTEGER NOT NULL DEFAULT 0,
+    woms_updated INTEGER NOT NULL DEFAULT 0,
+    tasks_created INTEGER NOT NULL DEFAULT 0,
+    tasks_completed INTEGER NOT NULL DEFAULT 0,
+    exceptions_flagged INTEGER NOT NULL DEFAULT 0,
+    total_rows INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 // Additive columns for existing databases created before the roster
@@ -1210,7 +1291,7 @@ function deleteWom(code, { force = false } = {}) {
 // complete" action, which only ever sets "closed" directly.
 const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "cancelled", "closed"];
 
-function setWomStatus(code, status) {
+function setWomStatus(code, status, { changedBy, source } = {}) {
   const existing = findWom(code);
   if (!existing) return null;
   db.prepare("UPDATE woms SET status = ? WHERE code = ?").run(status, code);
@@ -1223,6 +1304,11 @@ function setWomStatus(code, status) {
   // already cleared.
   if (existing.status !== status) {
     db.prepare("UPDATE woms SET smartsheet_reflected_at = NULL WHERE code = ?").run(code);
+    recordWomStatusChange(code, "status", existing.status, status, {
+      changedAt: new Date().toISOString(),
+      changedBy: changedBy || null,
+      source: source || "status_change",
+    });
   }
   return findWom(code);
 }
@@ -1303,6 +1389,8 @@ function ensurePseStage(code) {
   const wom = db.prepare("SELECT pse_stage FROM woms WHERE code = ?").get(code);
   if (!wom || wom.pse_stage) return;
   db.prepare("UPDATE woms SET pse_stage = 'pse_review', pse_stage_updated_at = ? WHERE code = ?").run(new Date().toISOString(), code);
+  recordWomStatusChange(code, "pse_stage", null, "pse_review", { source: "smartsheet_sync" });
+  syncPseStageTask(code, null, "pse_review");
 }
 
 function listPseTasks(admin) {
@@ -1333,13 +1421,16 @@ function applyPseAction(code, actionKey, admin) {
   else if (nextStage === "scheduleAware") nextStage = wom.pse_schedule_block ? "schedule_blocked" : "ready_to_schedule";
 
   const followupAt = action.followupDays == null ? null : new Date(Date.now() + action.followupDays * 86400000).toISOString();
+  const previousStage = wom.pse_stage;
   db.prepare("UPDATE woms SET pse_stage = ?, pse_followup_at = ?, pse_stage_updated_at = ? WHERE code = ?").run(
     nextStage,
     followupAt,
     new Date().toISOString(),
     code
   );
-  if (action.closesWom) setWomStatus(code, "invoiced");
+  recordWomStatusChange(code, "pse_stage", previousStage, nextStage, { changedAt: new Date().toISOString(), changedBy: admin.id, source: "pse_action" });
+  syncPseStageTask(code, previousStage, nextStage);
+  if (action.closesWom) setWomStatus(code, "invoiced", { changedBy: admin.id, source: "pse_action" });
 
   return { wom: findWom(code) };
 }
@@ -1352,6 +1443,7 @@ function setPseHold(code, { holdReason, holdNote }) {
     holdReason === "other" ? holdNote || null : null,
     code
   );
+  refreshStageTask(code);
   return { wom: findWom(code) };
 }
 
@@ -1369,6 +1461,455 @@ function advancePseOnComplete(code) {
   const wom = db.prepare("SELECT pse_stage FROM woms WHERE code = ?").get(code);
   if (!wom || wom.pse_stage !== "ready_to_schedule") return;
   db.prepare("UPDATE woms SET pse_stage = 'check_expenses', pse_stage_updated_at = ? WHERE code = ?").run(new Date().toISOString(), code);
+  recordWomStatusChange(code, "pse_stage", "ready_to_schedule", "check_expenses", { source: "tech_complete" });
+  syncPseStageTask(code, "ready_to_schedule", "check_expenses");
+}
+
+// ---- Task / workflow engine ----
+//
+// "States create tasks, tasks create timestamps, timestamps create
+// analytics." A task is always generated off a WOM stage change or a
+// recurring schedule, or entered by hand -- this is the operational engine
+// behind Priorities/My Work, not a bare to-do list bolted on the side.
+
+const TASK_STATUSES = ["open", "in_progress", "waiting", "completed", "cancelled"];
+const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
+const OPEN_TASK_STATUSES = ["open", "in_progress", "waiting"];
+
+function findTask(id) {
+  return db.prepare("SELECT * FROM tasks WHERE id = ?").get(id);
+}
+
+function findTaskBySourceKey(sourceKey) {
+  return db.prepare("SELECT * FROM tasks WHERE source_key = ?").get(sourceKey);
+}
+
+function createTask(fields) {
+  const now = new Date().toISOString();
+  const assignedTo = fields.assignedTo || null;
+  const result = db
+    .prepare(
+      `INSERT INTO tasks (source_key, title, description, assigned_to, assigned_role, category, priority, due_at,
+       status, related_wom_code, related_vendor_id, related_location_code, related_tech_id, related_po,
+       source, source_record_id, workflow_rule, is_exception, created_by, created_at, assigned_at, last_status_change_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      fields.sourceKey || null,
+      fields.title,
+      fields.description || "",
+      assignedTo,
+      fields.assignedRole || null,
+      fields.category || "manual",
+      fields.priority || "normal",
+      fields.dueAt || null,
+      fields.relatedWomCode || null,
+      fields.relatedVendorId || null,
+      fields.relatedLocationCode || null,
+      fields.relatedTechId || null,
+      fields.relatedPo || null,
+      fields.source || "manual",
+      fields.sourceRecordId || null,
+      fields.workflowRule || null,
+      fields.isException ? 1 : 0,
+      fields.createdBy || null,
+      now,
+      assignedTo ? now : null,
+      now
+    );
+  return findTask(Number(result.lastInsertRowid));
+}
+
+// The core "don't blindly recreate" mechanic behind every automated task --
+// if one with this source key already exists, update it in place (and
+// reopen it if it had been completed/cancelled, since the workflow rule
+// firing again means the work is back) rather than inserting a duplicate.
+// `reopenIfClosed` defaults to true (a workflow rule firing again on a
+// completed/cancelled task means the work is genuinely back, e.g. a
+// Status 95 rejection). Recurring tasks pass false instead -- the same
+// source key gets re-upserted every time the page loads for the rest of
+// that task's period, and completing it for the week/month shouldn't
+// un-complete itself on the next page view; it should just stay done
+// until the period rolls over to a new source key.
+function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true } = {}) {
+  const existing = findTaskBySourceKey(sourceKey);
+  if (!existing) return createTask({ ...fields, sourceKey });
+  if (!reopenIfClosed && (existing.status === "completed" || existing.status === "cancelled")) return existing;
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE tasks SET title = ?, description = ?, assigned_to = ?, assigned_role = ?, category = ?,
+     priority = ?, due_at = ?, related_wom_code = ?, related_vendor_id = ?, related_location_code = ?,
+     related_tech_id = ?, related_po = ?, workflow_rule = ?, is_exception = ?,
+     status = CASE WHEN status IN ('completed','cancelled') THEN 'open' ELSE status END,
+     completed_at = CASE WHEN status IN ('completed','cancelled') THEN NULL ELSE completed_at END,
+     last_status_change_at = ?
+     WHERE id = ?`
+  ).run(
+    fields.title ?? existing.title,
+    fields.description ?? existing.description,
+    fields.assignedTo !== undefined ? fields.assignedTo || null : existing.assigned_to,
+    fields.assignedRole !== undefined ? fields.assignedRole || null : existing.assigned_role,
+    fields.category ?? existing.category,
+    fields.priority ?? existing.priority,
+    fields.dueAt !== undefined ? fields.dueAt || null : existing.due_at,
+    fields.relatedWomCode !== undefined ? fields.relatedWomCode || null : existing.related_wom_code,
+    fields.relatedVendorId !== undefined ? fields.relatedVendorId || null : existing.related_vendor_id,
+    fields.relatedLocationCode !== undefined ? fields.relatedLocationCode || null : existing.related_location_code,
+    fields.relatedTechId !== undefined ? fields.relatedTechId || null : existing.related_tech_id,
+    fields.relatedPo !== undefined ? fields.relatedPo || null : existing.related_po,
+    fields.workflowRule ?? existing.workflow_rule,
+    fields.isException ? 1 : existing.is_exception,
+    now,
+    existing.id
+  );
+  return findTask(existing.id);
+}
+
+function completeTaskBySourceKey(sourceKey) {
+  const existing = findTaskBySourceKey(sourceKey);
+  if (!existing || existing.status === "completed") return existing || null;
+  const now = new Date().toISOString();
+  db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, last_status_change_at = ? WHERE id = ?").run(now, now, existing.id);
+  return findTask(existing.id);
+}
+
+// A human acting on a task directly from the UI (not a workflow rule) --
+// start/complete/cancel/put-on-waiting.
+function setTaskStatus(id, status) {
+  const existing = findTask(id);
+  if (!existing || !TASK_STATUSES.includes(status)) return null;
+  const now = new Date().toISOString();
+  const startedAt = status === "in_progress" && !existing.started_at ? now : existing.started_at;
+  const completedAt = status === "completed" ? now : OPEN_TASK_STATUSES.includes(status) ? null : existing.completed_at;
+  db.prepare("UPDATE tasks SET status = ?, started_at = ?, completed_at = ?, last_status_change_at = ? WHERE id = ?").run(
+    status,
+    startedAt,
+    completedAt,
+    now,
+    id
+  );
+  return findTask(id);
+}
+
+function assignTask(id, { assignedTo, assignedRole }) {
+  if (!findTask(id)) return null;
+  db.prepare("UPDATE tasks SET assigned_to = ?, assigned_role = ?, assigned_at = ? WHERE id = ?").run(
+    assignedTo || null,
+    assignedRole || null,
+    new Date().toISOString(),
+    id
+  );
+  return findTask(id);
+}
+
+function addTaskComment(taskId, authorId, authorName, body) {
+  db.prepare("INSERT INTO task_comments (task_id, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)").run(
+    taskId,
+    authorId,
+    authorName,
+    body,
+    new Date().toISOString()
+  );
+  return listTaskComments(taskId);
+}
+
+function listTaskComments(taskId) {
+  return db.prepare("SELECT * FROM task_comments WHERE task_id = ? ORDER BY id").all(taskId);
+}
+
+// The query engine behind every Priorities/My Work view -- a plain
+// WHERE-clause builder, since the views are really just different
+// combinations of the same handful of filters rather than needing one
+// query each.
+function listTasks(filters = {}) {
+  const clauses = [];
+  const params = [];
+
+  if (filters.status) {
+    clauses.push(`status IN (${filters.status.map(() => "?").join(",")})`);
+    params.push(...filters.status);
+  }
+  if (filters.assignedTo) {
+    clauses.push("assigned_to = ?");
+    params.push(filters.assignedTo);
+  }
+  if (filters.assignedRole) {
+    clauses.push("assigned_role = ?");
+    params.push(filters.assignedRole);
+  }
+  if (filters.category) {
+    clauses.push("category = ?");
+    params.push(filters.category);
+  }
+  if (filters.source) {
+    clauses.push("source = ?");
+    params.push(filters.source);
+  }
+  if (filters.relatedLocationCode) {
+    clauses.push("related_location_code = ?");
+    params.push(filters.relatedLocationCode);
+  }
+  if (filters.relatedWomCode) {
+    clauses.push("related_wom_code = ?");
+    params.push(filters.relatedWomCode);
+  }
+  if (filters.relatedVendorId) {
+    clauses.push("related_vendor_id = ?");
+    params.push(filters.relatedVendorId);
+  }
+  if (filters.relatedTechId) {
+    clauses.push("related_tech_id = ?");
+    params.push(filters.relatedTechId);
+  }
+  if (filters.isException) {
+    clauses.push("is_exception = 1");
+  }
+  if (filters.dueBefore) {
+    clauses.push("due_at IS NOT NULL AND due_at <= ?");
+    params.push(filters.dueBefore);
+  }
+  if (filters.unassignedOnly) {
+    clauses.push("assigned_to IS NULL");
+  }
+  if (filters.dueOn) {
+    clauses.push("due_at LIKE ?");
+    params.push(`${filters.dueOn}%`);
+  }
+  // "Assigned to me, or an unclaimed task matching one of my roles" -- the
+  // shared shape behind both My Work (tech and admin) and the role-scoped
+  // slice of Team Work.
+  if (filters.forViewer) {
+    const { id, roles } = filters.forViewer;
+    const roleParts = (roles || []).map(() => "(assigned_to IS NULL AND assigned_role = ?)");
+    clauses.push(`(assigned_to = ?${roleParts.length ? " OR " + roleParts.join(" OR ") : ""})`);
+    params.push(id, ...(roles || []));
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return db.prepare(`SELECT * FROM tasks ${where} ORDER BY due_at IS NULL, due_at, id DESC`).all(...params);
+}
+
+function recordWomStatusChange(womCode, field, previousValue, newValue, { changedAt, changedBy, source } = {}) {
+  if (previousValue === newValue) return;
+  db.prepare(
+    "INSERT INTO wom_status_history (wom_code, field, previous_value, new_value, changed_at, detected_at, changed_by, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    womCode,
+    field,
+    previousValue == null ? null : String(previousValue),
+    newValue == null ? null : String(newValue),
+    changedAt || null,
+    new Date().toISOString(),
+    changedBy || null,
+    source || "unknown"
+  );
+}
+
+function listWomStatusHistory(womCode) {
+  return db.prepare("SELECT * FROM wom_status_history WHERE wom_code = ? ORDER BY id").all(womCode);
+}
+
+// What task (if any) should be open while a WOM sits at each pse_stage --
+// upserted on entry, completed on exit, via a deterministic per-WOM source
+// key (e.g. "WOM-20528831-REVIEW-EXPENSES") so re-syncing or re-clicking
+// through the pipeline never creates a duplicate.
+const PSE_STAGE_TASKS = {
+  pse_review: (wom) => ({ suffix: "PRODUCE-PSE", title: `Produce PSE for ${wom.code}`, assignedRole: "reviewer", priority: "normal" }),
+  awaiting_toyota_approval: (wom) => ({
+    suffix: "TOYOTA-APPROVAL",
+    title: `Follow up: Toyota approval for ${wom.code}`,
+    assignedRole: "reviewer",
+    priority: "normal",
+    dueAt: wom.pse_followup_at,
+  }),
+  generate_wom_po: (wom) => ({ suffix: "CREATE-WOM-PO", title: `Create WOM / issue PO for ${wom.code}`, assignedRole: "financial", priority: "high" }),
+  awaiting_toyota_po: (wom) => ({
+    suffix: "TOYOTA-PO",
+    title: `Follow up: Toyota PO # for ${wom.code}`,
+    assignedRole: "reviewer",
+    priority: "normal",
+    dueAt: wom.pse_followup_at,
+  }),
+  schedule_blocked: (wom) => ({ suffix: "CLEAR-PO-BLOCK", title: `Clear PO block for ${wom.code}`, assignedRole: "reviewer", priority: "normal" }),
+  ready_to_schedule: (wom) => ({ suffix: "SCHEDULE-WORK", title: `Schedule work for ${wom.code}`, assignedRole: "tech", priority: "high" }),
+  check_expenses: (wom) => ({
+    suffix: "REVIEW-EXPENSES",
+    title: `Review expenses for ${wom.code}`,
+    category: "financial",
+    assignedRole: "financial",
+    priority: "normal",
+    isException: Boolean(wom.pse_hold_reason),
+  }),
+  pending_status95_approval: (wom) => ({
+    suffix: "APPROVE-STATUS95",
+    title: `Approve ${wom.code} for billing (Status 95)`,
+    assignedRole: "reviewer",
+    priority: "high",
+  }),
+  ready_to_invoice: (wom) => ({
+    suffix: "GENERATE-BILL",
+    title: `Generate batch and bill Toyota for ${wom.code}`,
+    category: "financial",
+    assignedRole: "financial",
+    priority: "high",
+  }),
+};
+
+function pseTaskSourceKey(womCode, suffix) {
+  return `WOM-${womCode}-${suffix}`;
+}
+
+// Shared by syncPseStageTask (a real stage transition) and refreshStageTask
+// (something about the *current* stage changed, like a hold being set --
+// same task, same stage, just re-evaluating its fields such as isException).
+function upsertCurrentStageTask(wom, stage) {
+  const spec = stage && PSE_STAGE_TASKS[stage] ? PSE_STAGE_TASKS[stage](wom) : null;
+  if (!spec) return;
+  upsertTaskBySourceKey(pseTaskSourceKey(wom.code, spec.suffix), {
+    title: spec.title,
+    category: spec.category || "wom_workflow",
+    assignedRole: spec.assignedRole,
+    priority: spec.priority,
+    dueAt: spec.dueAt || null,
+    relatedWomCode: wom.code,
+    relatedLocationCode: wom.location_code,
+    isException: spec.isException,
+    source: "wom_workflow",
+    sourceRecordId: wom.code,
+    workflowRule: stage,
+  });
+}
+
+// A hold doesn't move pse_stage, but it changes whether the *current*
+// stage's task should read as a workflow exception (see check_expenses in
+// PSE_STAGE_TASKS) -- re-evaluate that task's fields against the fresh
+// hold state rather than waiting for the next real stage transition.
+function refreshStageTask(code) {
+  const wom = findWom(code);
+  if (wom && wom.pse_stage) upsertCurrentStageTask(wom, wom.pse_stage);
+}
+
+// Completes whichever task belongs to a WOM's OLD stage (if that stage has
+// one) and upserts the one for its NEW stage (if that one does) -- the
+// literal "states create tasks" rule, called every time pse_stage changes
+// regardless of what triggered it (a button click or a sync).
+function syncPseStageTask(womCode, previousStage, newStage) {
+  const wom = findWom(womCode);
+  if (!wom) return;
+
+  // A snooze re-fires the same stage it's already on (just pushing the
+  // follow-up date out) -- complete-then-reopen would be a pointless
+  // round trip through "completed", so only the upsert below runs, which
+  // already refreshes due_at on its own.
+  if (previousStage && previousStage !== newStage && PSE_STAGE_TASKS[previousStage]) {
+    completeTaskBySourceKey(pseTaskSourceKey(womCode, PSE_STAGE_TASKS[previousStage](wom).suffix));
+  }
+  upsertCurrentStageTask(wom, newStage);
+  // Closing the pipeline should never leave a stray open task behind, even
+  // if some earlier stage's task didn't get cleanly completed along the way
+  // (e.g. it was reopened by a Status 95 rejection loop after this WOM had
+  // already moved past it once).
+  if (newStage === "closed") {
+    for (const stageKey of Object.keys(PSE_STAGE_TASKS)) {
+      completeTaskBySourceKey(pseTaskSourceKey(womCode, PSE_STAGE_TASKS[stageKey](wom).suffix));
+    }
+  }
+}
+
+// Recurring admin work that isn't tied to any one WOM. Not backed by a
+// cron job (nothing in this app runs on a schedule) -- instead this is
+// called lazily whenever the task list is loaded, and just upserts
+// whichever period's task should currently exist by a source key derived
+// from that period (e.g. the Monday of the current week), so it's a no-op
+// once that period's task already exists and isn't recreated after being
+// completed until the period itself rolls over.
+function ensureRecurringTasks() {
+  const now = new Date();
+  const day = (now.getDay() + 6) % 7; // 0 = Monday
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - day);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const mondayIso = iso(monday);
+  const friday = new Date(monday);
+  friday.setDate(monday.getDate() + 4);
+  const fridayIso = iso(friday);
+  const monthKey = now.toISOString().slice(0, 7);
+
+  // A stable, ever-increasing 2-week bucket so "biweekly" doesn't need to
+  // track which specific weeks pair together across year boundaries.
+  const EPOCH_MONDAY = Date.UTC(2024, 0, 1);
+  const weeksSinceEpoch = Math.floor((Date.UTC(monday.getFullYear(), monday.getMonth(), monday.getDate()) - EPOCH_MONDAY) / (7 * 86400000));
+  const biweekIndex = Math.floor(weeksSinceEpoch / 2);
+
+  const specs = [
+    {
+      key: `RECURRING-WEEKLY-TIME-ALLOCATION-${mondayIso}`,
+      title: "Technician time allocation (Thu/Fri)",
+      description: "Make sure technicians have their hours allocated for the week.",
+      dueAt: fridayIso,
+      assignedRole: "admin",
+    },
+    {
+      key: `RECURRING-WEEKLY-TIMECARD-REVIEW-${mondayIso}`,
+      title: "Final timecard review",
+      description: "Review last week's submitted timecards before payroll cutoff.",
+      dueAt: mondayIso,
+      assignedRole: "admin",
+    },
+    { key: `RECURRING-WEEKLY-AP-REVIEW-${mondayIso}`, title: "Review AP open items", dueAt: fridayIso, assignedRole: "financial" },
+    {
+      key: `RECURRING-BIWEEKLY-WOM-CHARGES-${biweekIndex}`,
+      title: "Review completed WOMs and confirm charges are posted",
+      dueAt: fridayIso,
+      assignedRole: "financial",
+    },
+    { key: `RECURRING-MONTHLY-OPEN-POS-${monthKey}`, title: "Review open POs", dueAt: `${monthKey}-28`, assignedRole: "financial" },
+    { key: `RECURRING-MONTHLY-VENDOR-COMPLIANCE-${monthKey}`, title: "Vendor compliance cleanup", dueAt: `${monthKey}-28`, assignedRole: "admin" },
+  ];
+
+  for (const spec of specs) {
+    upsertTaskBySourceKey(
+      spec.key,
+      {
+        title: spec.title,
+        description: spec.description || "",
+        assignedRole: spec.assignedRole,
+        category: "recurring",
+        priority: "normal",
+        dueAt: spec.dueAt,
+        source: "recurring",
+        workflowRule: spec.key.replace(/[\d-]+$/, "").replace(/-$/, ""),
+      },
+      { reopenIfClosed: false }
+    );
+  }
+}
+
+// The "Last sync: ... / N tasks created / View Sync Details" panel needs
+// this to survive a page reload, not just live in the response of the
+// click that triggered it -- one row per sync, so it also doubles as a
+// history of every sync ever run if that's ever useful later.
+function recordSyncLog(fields) {
+  db.prepare(
+    `INSERT INTO wom_sync_log (synced_at, synced_by, woms_created, woms_promoted, woms_updated,
+     tasks_created, tasks_completed, exceptions_flagged, total_rows) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    new Date().toISOString(),
+    fields.syncedBy || null,
+    fields.womsCreated || 0,
+    fields.womsPromoted || 0,
+    fields.womsUpdated || 0,
+    fields.tasksCreated || 0,
+    fields.tasksCompleted || 0,
+    fields.exceptionsFlagged || 0,
+    fields.totalRows || 0
+  );
+  return getLastSyncLog();
+}
+
+function getLastSyncLog() {
+  return db.prepare("SELECT * FROM wom_sync_log ORDER BY id DESC LIMIT 1").get() || null;
 }
 
 function markWomSmartsheetReflected(code) {
@@ -1530,6 +2071,7 @@ function syncWomsFromSheetRows(rows, columns) {
          smartsheet_row_number = ? WHERE code = ?`
       ).run(realCode, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
       promoted++;
+      recordWomStatusChange(realCode, "status", existing.status, "open", { source: "smartsheet_sync" });
       ensurePseStage(realCode);
       continue;
     }
@@ -1541,6 +2083,7 @@ function syncWomsFromSheetRows(rows, columns) {
          smartsheet_row_number = ? WHERE code = ?`
       ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
       updated++;
+      recordWomStatusChange(existing.code, "status", "pending", "requested", { source: "smartsheet_sync" });
       ensurePseStage(existing.code);
       continue;
     }
@@ -2063,6 +2606,24 @@ module.exports = {
   setPseHold,
   setPseScheduleBlock,
   advancePseOnComplete,
+  TASK_STATUSES,
+  TASK_PRIORITIES,
+  OPEN_TASK_STATUSES,
+  createTask,
+  findTask,
+  findTaskBySourceKey,
+  upsertTaskBySourceKey,
+  completeTaskBySourceKey,
+  setTaskStatus,
+  assignTask,
+  addTaskComment,
+  listTaskComments,
+  listTasks,
+  recordWomStatusChange,
+  listWomStatusHistory,
+  ensureRecurringTasks,
+  recordSyncLog,
+  getLastSyncLog,
   markWomSmartsheetReflected,
   setWomDetails,
   setWomPricing,

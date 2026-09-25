@@ -74,6 +74,14 @@ router.get("/:code/lookup", requireAuth, (req, res) => {
   });
 });
 
+// Every recorded field change for a WOM (status, pse_stage), oldest first --
+// the raw material for later lifecycle/bottleneck analytics, and useful on
+// its own right now for seeing how a WOM actually got where it is.
+router.get("/:code/history", requireAuth, requireAdmin, (req, res) => {
+  if (!db.findWom(req.params.code)) return res.status(404).json({ error: "WOM not found" });
+  res.json(db.listWomStatusHistory(req.params.code));
+});
+
 router.post("/", requireAuth, requireAdmin, (req, res) => {
   const { code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber } = req.body || {};
   if (!code || !description) return res.status(400).json({ error: "code and description are required" });
@@ -113,7 +121,7 @@ router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
     return res.status(400).json({ error: `status must be one of: ${db.WOM_STATUSES.join(", ")}` });
   }
 
-  const wom = db.setWomStatus(req.params.code, status);
+  const wom = db.setWomStatus(req.params.code, status, { changedBy: req.user.id, source: "manual" });
   if (!wom) return res.status(404).json({ error: "WOM not found" });
 
   db.addAudit(req.user.id, "WOM_STATUS_CHANGED", `${req.user.name} set ${wom.code} to ${status}`);
@@ -155,7 +163,7 @@ router.patch("/:code/pricing", requireAuth, requireAdmin, (req, res) => {
 // without giving them the ability to reopen/close WOMs at will the way
 // the admin-only PATCH above does.
 router.post("/:code/complete", requireAuth, (req, res) => {
-  const wom = db.setWomStatus(req.params.code, "closed");
+  const wom = db.setWomStatus(req.params.code, "closed", { changedBy: req.user.id, source: "tech_complete" });
   if (!wom) return res.status(404).json({ error: "WOM not found" });
   // Only actually moves anything if this WOM was in the PSE pipeline and
   // waiting to be worked -- a no-op otherwise (see advancePseOnComplete).

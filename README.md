@@ -446,7 +446,98 @@ Demo logins:
   pending, or a free-text "other" -- purely an annotation, doesn't change
   the stage, just flags the task as blocked rather than actionable right
   now. Every transition is audit-logged (`PSE_STAGE_ADVANCED`).
-- **Priorities tab (admin)**: one calm, dedicated place gathering everything
+- **Task / workflow engine (Phase 1) -- "Priorities &rarr; My Work"**: a
+  general-purpose task system built around one rule: **states create
+  tasks, tasks create timestamps, timestamps create analytics.** Not a
+  bolted-on to-do list -- WOM lifecycle changes, recurring admin
+  responsibilities, and (later phases) vendor/financial exceptions all
+  drive the same `tasks` table through one write path, so nothing has to
+  be manually re-created every time something changes.
+  - **One reusable board, not a page per employee** (`public/js/views/tasks.js`,
+    mounted from both Priorities &rarr; My Work and the technician's own
+    My Work tab): views are resolved server-side from who's asking
+    (`GET /api/tasks?view=...`) --  a technician only ever sees their own
+    assigned tasks plus their role's unclaimed queue (e.g. any open
+    `tech`-role task); an admin sees everyone's by default and can filter
+    by employee, role, location, WOM, vendor, category, due date, and
+    status. Views: **My Work, Team Work, Overdue, Waiting, Workflow
+    Exceptions, Recurring Tasks, Completed** (plus an admin-only
+    **Unassigned**). A dashboard strip of tiles up top (Due Today,
+    Overdue, High Priority, Waiting, Recurring, Workflow Exceptions) --
+    click one to jump straight to that view.
+  - **Every task carries**: title/description, assigned employee and/or
+    role, category, priority, due date, status (`open` / `in_progress` /
+    `waiting` / `completed` / `cancelled`), related WOM/vendor/location/
+    technician/PO, source + source record id, the workflow rule that
+    generated it (if any), and a full set of timestamps (created,
+    assigned, started, completed, last status change) -- plus threaded
+    comments. **Priority isn't purely manual**: a computed `urgency`
+    (`computeTaskUrgency` in `server/routes/tasks.js`) bumps a task up for
+    being overdue, flagged as a workflow exception, aging past 14 days, or
+    due within 24 hours, regardless of its stored priority.
+  - **No duplicate tasks, ever, no matter how many times a sync or action
+    re-fires**: every automated task gets a deterministic `source_key`
+    (e.g. `WOM-20528831-REVIEW-EXPENSES`) and is written through
+    `upsertTaskBySourceKey` -- if that key already exists, its fields are
+    refreshed in place (and it's reopened if it had been completed/
+    cancelled, since the rule firing again means the work is genuinely
+    back) rather than a second row ever being inserted. Recurring tasks
+    pass `reopenIfClosed: false` instead, since re-upserting this week's
+    already-completed task on the next page load must not silently
+    un-complete it.
+  - **WOM workflow rules, tied to the PSE pipeline's own stage changes**
+    (`PSE_STAGE_TASKS`/`syncPseStageTask` in `server/data/db.js`, reusing
+    the exact same `pse_stage` machine described above -- no separate
+    "WOM missing a task" logic to keep in sync): entering **Review &
+    produce PSE** creates the reviewer's produce-PSE task; **Generate WOM /
+    PO** creates financial's create-WOM/PO task; **Ready to schedule**
+    creates an unassigned `tech`-role "Schedule work" task any technician
+    can pick up; marking work complete auto-completes that scheduling task
+    and creates "Review expenses" (flagged as a **workflow exception**
+    automatically while the WOM has an active hold reason -- re-evaluated
+    live if a hold is set/cleared afterward, not just at task creation);
+    **Approve for billing (Status 95)** and **Generate batch and bill
+    Toyota** follow the same pattern through to invoicing, at which point
+    every remaining task for that WOM is swept closed as a safety net.
+  - **WOM status history** (`wom_status_history` table,
+    `GET /api/woms/:code/history`, admin-only): every meaningful
+    status/`pse_stage` change, recorded separately from the tasks
+    themselves -- keeps both the real event time (`changed_at`, known for
+    in-app actions) and when this app actually noticed it
+    (`detected_at`, always known, since a Smartsheet sync is a manual,
+    point-in-time pull) -- the raw material for later "how long does a
+    project spend in each step" analytics without needing to reconstruct
+    it from the tasks table.
+  - **Recurring admin tasks**, not tied to any WOM (`ensureRecurringTasks`
+    in `server/data/db.js`, called lazily whenever the task list loads --
+    there's no cron/scheduler anywhere in this app): technician time
+    allocation and final timecard review (weekly), AP open items
+    (weekly), completed-WOM charge confirmation (biweekly), and open-PO/
+    vendor-compliance cleanup (monthly) -- each keyed to its own period
+    (e.g. the Monday of the current week) so it's a no-op once that
+    period's task already exists.
+  - **Smartsheet sync now reports what it actually changed downstream**:
+    the sync panel persists a **"Last sync: &lt;when&gt; -- N WOMs
+    updated, N tasks created, N tasks completed, N workflow exceptions"**
+    line (`wom_sync_log` table, survives a page reload) with a **View Sync
+    Details** toggle for the full breakdown -- diffed directly against the
+    tasks table before/after that specific sync call, not inferred from
+    WOM row counts.
+  - **Manual tasks**: anyone can add one (a technician's own follow-up is
+    force-assigned to themselves; only an admin can hand a task to someone
+    else or drop it into a role queue with no owner yet), and everyone can
+    comment on a task they can see. Every automated action is logged to
+    the Audit Trail (`TASK_CREATED`, `TASK_COMPLETED`, `TASK_STATUS_CHANGED`,
+    `TASK_REASSIGNED`, on top of the existing `WOM_STATUS_CHANGED`/
+    `PSE_STAGE_ADVANCED`).
+  - Deliberately **not yet built** (Phase 1 stops here by design, before
+    the larger financial/vendor analytics pieces): vendor-triggered tasks,
+    financial-module tasks/alerts, vendor profile analytics, the
+    financial control-center fields, and bottleneck/lifecycle-duration
+    analytics.
+- **Priorities tab (admin)**: split into two sub-tabs -- **My Work** (the
+  task engine above, now the default) and **Checklist** (everything below,
+  unchanged). One calm, dedicated place gathering everything
   that needs a look -- outdated vendor forms, vendors with incomplete
   document checks, expiring/missing employee forms, technicians with zero
   UKG hours entered for the current week, pending weekend-hours addenda,
@@ -764,6 +855,17 @@ so you can see exactly what a submitted day will post to without needing to
 cross-reference the WOM Status list separately. It shows `?` in place of
 whichever number (job number or subsidiary code) hasn't been entered yet, so
 a missing code is obvious rather than silently blank.
+
+**Task engine tables.** `tasks` (one row per task, every field the Priorities
+board reads/filters on -- see the task-engine feature bullet above for the
+full field list), `task_comments` (threaded notes on a task), `wom_status_history`
+(every meaningful WOM `status`/`pse_stage` change, kept separately from the
+tasks it drives so it survives independently of whatever task currently
+exists for that state), and `wom_sync_log` (one row per Smartsheet sync,
+backing the sync panel's persisted "Last sync" summary). None of this
+replaces or restructures any existing table -- `tasks.related_wom_code` etc.
+just reference the existing `woms`/`vendors`/`locations`/`technicians` rows
+by their existing keys.
 
 ## Where this stands
 
@@ -1136,6 +1238,9 @@ server/
                               stage transitions), POST :code/pse/hold (vendor_invoice/
                               labor_allocations/other, admin-only), POST :code/pse/schedule-block
                               ("don't schedule until Toyota PO" flag, admin-only),
+                              GET :code/history (admin-only, the wom_status_history rows behind
+                              the task engine's WOM-triggered tasks -- every status/pse_stage
+                              change with both real event time and detected-by-this-app time),
                               DELETE :code (admin-only, blocked if hours are already allocated
                               against it unless force is passed)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
@@ -1144,13 +1249,18 @@ server/
                               allocation history, expiring-forms list), approve/reject/unlock
                               (works on submitted OR approved), weekend-addenda list +
                               acknowledge-weekend, punch-issues list (tech-reported only),
-                              smartsheet/status + smartsheet/preview (read-only sheet preview),
+                              smartsheet/status (now includes lastSync, the persisted
+                              wom_sync_log row behind the sync panel's "Last sync: ..." line) +
+                              smartsheet/preview (read-only sheet preview),
                               smartsheet/sync-woms (creates open WOMs from rows with a real
                               WOM #, pending/requested WOMs from rows without one yet based on
                               whether Date Requested is filled in, promotes a pending or requested
                               WOM once its row gets a real WOM #, refreshes estimated/applied
-                              pricing/Maximo #/subsidiary code on every synced WOM, and matches +
-                              fills in location by name, once, on any WOM missing one), technicians/bulk
+                              pricing/Maximo #/subsidiary code on every synced WOM, matches +
+                              fills in location by name, once, on any WOM missing one, and now
+                              also diffs the tasks table before/after to report + persist how
+                              many tasks that sync created/completed and how many workflow
+                              exceptions it flagged), technicians/bulk
                               (paste-many technician creation, one generated PIN per row, per-row errors),
                               POST technicians/:id/reset-pin (issues + returns a brand-new random PIN,
                               audit-logged as PIN_RESET -- no way to read back the current one),
@@ -1166,6 +1276,14 @@ server/
     schedule.js                  GET /:month -- read-only WOM-only month calendar, by actual date (any logged-in
                                      user), optional ?location=CODE filter, each entry carries its WOM's own
                                      status/budget/pricing detail for click-to-view on the client
+    tasks.js                       GET / (?view=my|team|unassigned|overdue|waiting|exceptions|recurring|completed,
+                                       plus admin-only ?assignedTo/role/location/wom/vendor/category/dueDate/status
+                                       filters -- server resolves the viewer's own role/identity scope, see
+                                       rolesForViewer), GET /summary (dashboard tile counts), GET /:id (with
+                                       comments), POST / (manual creation -- a technician is force-assigned to
+                                       themselves), PATCH /:id/status, PATCH /:id/assign (admin-only),
+                                       POST /:id/comments -- see server/data/db.js's task-engine section
+                                       (createTask/upsertTaskBySourceKey/listTasks/etc.) for the actual writes
   utils/
     week.js                Mon–Sun week date helpers, business-timezone edit window
                               (classifyWeekForTech / getOpenWeekMonday)
@@ -1263,6 +1381,19 @@ tests/
                                  closing the pipeline and flipping the WOM's own status, a closed WOM
                                  never appearing on anyone's task list, and the schedule-block flag
                                  routing a generated WOM/PO to "blocked" instead of "ready to schedule"
+  tasks.test.js               Task engine: manual creation (technician force-assigned to self,
+                                 only an admin can assign to someone else), status transitions
+                                 (start/complete timestamps), comments (own task only, empty
+                                 rejected), overdue/waiting/exceptions view filtering + computed
+                                 urgency, recurring tasks staying idempotent across repeated loads
+                                 within the same period (and not un-completing themselves), WOM-sync-
+                                 triggered workflow tasks getting a stable source key (re-syncing
+                                 never duplicates), a PSE stage advance completing the old stage's
+                                 task and creating the new one, a hold flagging check_expenses as a
+                                 workflow exception live (not just at task creation), wom_status_history
+                                 recording both status and pse_stage transitions (admin-only to read),
+                                 and the Smartsheet sync route's task/exception counters + persisted
+                                 wom_sync_log last-sync summary
 public/
   index.html
   css/styles.css
@@ -1274,11 +1405,16 @@ public/
                               isoFromUs/usFromIso) used in place of native date pickers
     views/
       login.js
-      techHome.js            Technician's own tab shell: My Week (techWeek.js) / Locations & WOM
-                                (view-only) / My Documents (view-only Forms & Documents)
+      techHome.js            Technician's own tab shell: My Work (tasks.js) / My Week (techWeek.js) /
+                                Schedule / Locations & WOM (view-only) / My Documents (view-only)
       techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
       adminReview.js         Admin review / Overview report / WOM docs / Vendors tracker / Labor
-                              Reports archive / audit / Tech Allocation switcher / Technicians tab entry
+                              Reports archive / audit / Tech Allocation switcher / Technicians tab entry /
+                              Priorities section (My Work via tasks.js, plus the existing Checklist)
+      tasks.js                The one reusable Priorities/My Work task board -- mounted from both
+                                adminReview.js and techHome.js; views, dashboard tiles, filters
+                                (admin only), manual task creation, and the task detail/comments panel
+                                all live here, not duplicated per role
       technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
       attachments.js          Shared attachments list + upload component
       womPhotoPrompt.js        Dismissible "add a photo?" nudge after submit / UKG-confirmed, reused

@@ -12,6 +12,7 @@ const locationRoutes = require("./routes/locations");
 const vendorRoutes = require("./routes/vendors");
 const vendorLookupRoutes = require("./routes/vendorLookup");
 const scheduleRoutes = require("./routes/schedule");
+const taskRoutes = require("./routes/tasks");
 
 function createApp() {
   const app = express();
@@ -32,6 +33,7 @@ function createApp() {
   app.use("/api/admin/vendors", vendorRoutes);
   app.use("/api/vendors", vendorLookupRoutes);
   app.use("/api/schedule", scheduleRoutes);
+  app.use("/api/tasks", taskRoutes);
 
   app.use(express.static(path.join(__dirname, "..", "public")));
 

@@ -6,6 +6,7 @@ import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
+import { renderTaskBoard } from "./tasks.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -60,7 +61,7 @@ const VENDOR_STATUS_BADGE_CLASS = {
 // needed. A section with more than one tab gets its own second row of
 // sub-tabs underneath once it's the active section.
 const NAV_SECTIONS = [
-  { key: "priorities", label: "Priorities", tabs: ["priorities"] },
+  { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
   { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "schedule", "overview", "review"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors"] },
@@ -70,7 +71,8 @@ const NAV_SECTIONS = [
 ];
 
 const TAB_LABELS = {
-  priorities: "Priorities",
+  mywork: "My Work",
+  checklist: "Checklist",
   techalloc: "Tech Allocation",
   schedule: "Schedule",
   overview: "Overview",
@@ -239,7 +241,8 @@ export async function renderAdminReview(container) {
     });
 
     const content = container.querySelector("#tab-content");
-    if (activeTab === "priorities") await drawPriorities(content);
+    if (activeTab === "mywork") await renderTaskBoard(content);
+    else if (activeTab === "checklist") await drawPriorities(content);
     else if (activeTab === "techalloc") await drawTechAllocation(content);
     else if (activeTab === "schedule") await renderSchedule(content);
     else if (activeTab === "overview") await drawOverview(content);
@@ -792,7 +795,7 @@ export async function renderAdminReview(container) {
   // calls fails.
   async function computePriorityCount() {
     try {
-      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues] = await Promise.all([
+      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues, taskSummary] = await Promise.all([
         api.get("/api/admin/expiring-forms"),
         api.get("/api/admin/vendors"),
         api.get("/api/admin/weekend-addenda"),
@@ -801,6 +804,7 @@ export async function renderAdminReview(container) {
         api.get("/api/woms"),
         api.get("/api/admin/purelyhr-unverified"),
         api.get("/api/admin/punch-issues"),
+        api.get("/api/tasks/summary"),
       ]);
       const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
       const smartsheetGapCount = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
@@ -820,7 +824,9 @@ export async function renderAdminReview(container) {
         missingUkg.length +
         smartsheetGapCount +
         purelyhrUnverified.length +
-        punchIssues.length
+        punchIssues.length +
+        taskSummary.overdue +
+        taskSummary.exceptions
       );
     } catch {
       return 0;
@@ -1919,6 +1925,50 @@ export async function renderAdminReview(container) {
     }
   }
 
+  // Persists across reloads (backed by wom_sync_log) so "when did this last
+  // run and what did it do" doesn't disappear the moment someone navigates
+  // away -- collapsed to one line by default, "View Sync Details" expands
+  // it back into the same breakdown shown right after a sync.
+  function renderLastSyncLine(lastSync) {
+    if (!lastSync) return `<p class="empty-note">No sync has been run yet.</p>`;
+    const when = new Date(lastSync.synced_at).toLocaleString();
+    return `
+      <p class="smartsheet-last-sync">
+        Last sync: <strong>${escapeHtml(when)}</strong> —
+        ${lastSync.woms_created + lastSync.woms_promoted + lastSync.woms_updated} WOM${
+      lastSync.woms_created + lastSync.woms_promoted + lastSync.woms_updated === 1 ? "" : "s"
+    } updated,
+        ${lastSync.tasks_created} task${lastSync.tasks_created === 1 ? "" : "s"} created,
+        ${lastSync.tasks_completed} task${lastSync.tasks_completed === 1 ? "" : "s"} completed,
+        ${lastSync.exceptions_flagged} workflow exception${lastSync.exceptions_flagged === 1 ? "" : "s"}
+        <button class="btn btn-link smartsheet-sync-details-btn" type="button">View Sync Details</button>
+      </p>
+      <div class="smartsheet-sync-details" hidden>
+        <ul>
+          <li>${lastSync.woms_created} new WOM(s) added (open or pending)</li>
+          <li>${lastSync.woms_promoted} pending WOM(s) promoted now that a real WOM # showed up</li>
+          <li>${lastSync.woms_updated} existing WOM(s) refreshed</li>
+          <li>${lastSync.tasks_created} workflow task(s) created</li>
+          <li>${lastSync.tasks_completed} workflow task(s) completed</li>
+          <li>${lastSync.exceptions_flagged} workflow exception(s) flagged</li>
+          <li>${lastSync.total_rows} sheet row(s) processed</li>
+        </ul>
+      </div>
+    `;
+  }
+
+  function wireLastSyncToggle(scope) {
+    const btn = scope.querySelector(".smartsheet-sync-details-btn");
+    const details = scope.querySelector(".smartsheet-sync-details");
+    if (!btn || !details) return;
+    btn.addEventListener("click", () => {
+      const hidden = details.hasAttribute("hidden");
+      if (hidden) details.removeAttribute("hidden");
+      else details.setAttribute("hidden", "");
+      btn.textContent = hidden ? "Hide Sync Details" : "View Sync Details";
+    });
+  }
+
   // Connection status + a read-only preview of the actual Smartsheet data
   // (column names and a few sample rows) -- lets admin confirm the link
   // works before any column ever gets mapped to a WOM field. This app
@@ -1948,9 +1998,10 @@ export async function renderAdminReview(container) {
         <button class="btn btn-link smartsheet-preview-btn" type="button">Preview data</button>
         <button class="btn btn-secondary smartsheet-sync-btn" type="button">Sync WOMs from Smartsheet</button>
       </div>
-      <div class="smartsheet-sync-result"></div>
+      <div class="smartsheet-sync-result">${renderLastSyncLine(status.lastSync)}</div>
       <div class="smartsheet-preview"></div>
     `;
+    wireLastSyncToggle(container);
 
     container.querySelector(".smartsheet-sync-btn").addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -1960,6 +2011,7 @@ export async function renderAdminReview(container) {
       try {
         const result = await api.post("/api/admin/smartsheet/sync-woms");
         const summaryHtml = `
+          ${renderLastSyncLine(result.lastSync)}
           <p class="smartsheet-sync-summary">
             <strong>${result.created}</strong> new WOM${result.created === 1 ? "" : "s"} added (open or pending),
             <strong>${result.promoted}</strong> pending WOM${result.promoted === 1 ? "" : "s"} promoted now that a real WOM # showed up,
@@ -1979,7 +2031,10 @@ export async function renderAdminReview(container) {
         // keep the summary message visible.
         await drawWoms(content);
         const freshResultEl = content.querySelector(".smartsheet-sync-result");
-        if (freshResultEl) freshResultEl.innerHTML = summaryHtml;
+        if (freshResultEl) {
+          freshResultEl.innerHTML = summaryHtml;
+          wireLastSyncToggle(content);
+        }
       } catch (err) {
         resultEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
         btn.disabled = false;

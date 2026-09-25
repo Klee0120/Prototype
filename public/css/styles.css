@@ -940,6 +940,82 @@ h1, h2, h3, h4 {
   flex-wrap: wrap;
 }
 
+/* ---- Task board (Priorities / My Work) ---- */
+
+.task-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.task-tile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  text-align: center;
+}
+
+.task-tile-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.task-tile-clickable:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.task-tile-count {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.task-tile-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.task-view-tabs {
+  margin-bottom: 14px;
+}
+
+.task-filters-form,
+.task-new-form {
+  margin-bottom: 14px;
+}
+
+.task-card-meta {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.task-comment {
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+.task-comment-time {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+.task-comment-input-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.task-comment-input-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 /* ---- Tables ---- */
 
 .detail-table {

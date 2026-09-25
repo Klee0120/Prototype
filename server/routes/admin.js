@@ -516,7 +516,7 @@ router.get("/punch-issues", (req, res) => {
 // Whether Smartsheet is connected (env vars set) -- lets the UI show a
 // simple status without exposing the token or sheet ID themselves.
 router.get("/smartsheet/status", (req, res) => {
-  res.json({ connected: smartsheet.isConfigured() });
+  res.json({ connected: smartsheet.isConfigured(), lastSync: db.getLastSyncLog() });
 });
 
 // Read-only preview of the connected sheet: its actual column names and a
@@ -564,14 +564,43 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       // shorter root matches both the correct and the misspelled version.
       subsidiary: smartsheet.findColumn(sheet.columns, ["subsid", "code"]),
     };
+    // Snapshot every task's status before the sync so the diff afterward
+    // can say how many of the resulting task-engine writes were this sync's
+    // doing -- syncWomsFromSheetRows itself only reports WOM row outcomes.
+    const beforeTasks = new Map(db.listTasks({}).map((t) => [t.id, { status: t.status, isException: Boolean(t.is_exception) }]));
     const result = db.syncWomsFromSheetRows(sheet.rows, columns);
+    let tasksCreated = 0;
+    let tasksCompleted = 0;
+    let exceptionsFlagged = 0;
+    for (const t of db.listTasks({})) {
+      const before = beforeTasks.get(t.id);
+      if (!before) tasksCreated++;
+      else if (before.status !== "completed" && t.status === "completed") tasksCompleted++;
+      if (t.is_exception && (!before || !before.isException)) exceptionsFlagged++;
+    }
+
+    const lastSync = db.recordSyncLog({
+      syncedBy: req.user.id,
+      womsCreated: result.created,
+      womsPromoted: result.promoted,
+      womsUpdated: result.updated,
+      tasksCreated,
+      tasksCompleted,
+      exceptionsFlagged,
+      totalRows: result.total,
+    });
+
     db.addAudit(
       req.user.id,
       "SMARTSHEET_WOMS_SYNCED",
-      `${req.user.name} synced WOMs from Smartsheet (${result.created} created, ${result.promoted} promoted from pending, ${result.updated} updated)`
+      `${req.user.name} synced WOMs from Smartsheet (${result.created} created, ${result.promoted} promoted from pending, ${result.updated} updated, ${tasksCreated} tasks created, ${tasksCompleted} tasks completed, ${exceptionsFlagged} workflow exceptions)`
     );
     res.json({
       ...result,
+      tasksCreated,
+      tasksCompleted,
+      exceptionsFlagged,
+      lastSync,
       womColumn: columns.wom,
       estimateColumn: columns.estimate,
       appliedColumn: columns.applied,
