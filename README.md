@@ -483,7 +483,15 @@ Demo logins:
     comments. **Priority isn't purely manual**: a computed `urgency`
     (`computeTaskUrgency` in `server/routes/tasks.js`) bumps a task up for
     being overdue, flagged as a workflow exception, aging past 14 days, or
-    due within 24 hours, regardless of its stored priority.
+    due within 24 hours, regardless of its stored priority. **Emergency**
+    is a fifth priority tier above Urgent (`low` / `normal` / `high` /
+    `urgent` / `emergency`) for a hard-stop, drop-everything item (an urgent
+    PO that just came in, etc.) -- it always reads as the top urgency
+    tier no matter its due date, renders the *entire* task card as a solid
+    red box (`.task-card-emergency` in `public/css/styles.css`, the same
+    red-border-plus-tint treatment `.review-row-pending` already uses
+    elsewhere) rather than just a colored badge, and always sorts to the
+    top of every list regardless of due date.
   - **A WOM-workflow task's detail panel takes the real action, not a
     generic "mark complete."** Opening a task like "Produce PSE for X"
     fetches that WOM's live `pse_stage` and, if it has one, renders the

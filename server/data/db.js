@@ -1473,7 +1473,7 @@ function advancePseOnComplete(code) {
 // behind Priorities/My Work, not a bare to-do list bolted on the side.
 
 const TASK_STATUSES = ["open", "in_progress", "waiting", "completed", "cancelled"];
-const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
+const TASK_PRIORITIES = ["low", "normal", "high", "urgent", "emergency"];
 const OPEN_TASK_STATUSES = ["open", "in_progress", "waiting"];
 
 function findTask(id) {
@@ -1687,7 +1687,12 @@ function listTasks(filters = {}) {
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  return db.prepare(`SELECT * FROM tasks ${where} ORDER BY due_at IS NULL, due_at, id DESC`).all(...params);
+  // Emergency floats to the very top regardless of due date -- otherwise
+  // one with no due date yet would sink to the bottom of the list, which
+  // defeats the point of flagging it as the strongest tier.
+  return db
+    .prepare(`SELECT * FROM tasks ${where} ORDER BY priority = 'emergency' DESC, due_at IS NULL, due_at, id DESC`)
+    .all(...params);
 }
 
 function recordWomStatusChange(womCode, field, previousValue, newValue, { changedAt, changedBy, source } = {}) {

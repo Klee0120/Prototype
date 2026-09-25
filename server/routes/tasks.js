@@ -20,6 +20,10 @@ function rolesForViewer(user) {
 // urgent than its stored priority alone would suggest.
 function computeTaskUrgency(t) {
   if (t.status === "completed" || t.status === "cancelled") return "done";
+  // Emergency is a manual, top-of-everything call (an urgent PO, a hard
+  // stop) -- it always reads as the strongest tier, never downgraded by
+  // due date or age the way a merely-overdue task can still just be "urgent".
+  if (t.priority === "emergency") return "emergency";
   const now = Date.now();
   const dueAt = t.due_at ? new Date(t.due_at).getTime() : null;
   const overdue = dueAt !== null && !Number.isNaN(dueAt) && dueAt < now;
@@ -161,7 +165,7 @@ router.get("/summary", requireAuth, (req, res) => {
   res.json({
     dueToday: openTasks.filter((t) => t.due_at && t.due_at.slice(0, 10) === today).length,
     overdue: openTasks.filter((t) => t.due_at && new Date(t.due_at).getTime() < now).length,
-    highPriority: openTasks.filter((t) => t.priority === "high" || t.priority === "urgent").length,
+    highPriority: openTasks.filter((t) => ["high", "urgent", "emergency"].includes(t.priority)).length,
     waiting: openTasks.filter((t) => t.status === "waiting").length,
     recurring: openTasks.filter((t) => t.category === "recurring").length,
     exceptions: openTasks.filter((t) => t.is_exception).length,

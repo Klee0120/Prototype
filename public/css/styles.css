@@ -1063,6 +1063,14 @@ h1, h2, h3, h4 {
   white-space: nowrap;
 }
 
+/* Emergency priority reads as the whole card, not just its badge -- same
+   red-border-plus-tint treatment .review-row-pending already uses elsewhere
+   for "needs eyes right now," so it's a familiar signal, not a new one. */
+.task-card-emergency {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
+
 .task-comment {
   font-size: 13px;
   margin: 6px 0;

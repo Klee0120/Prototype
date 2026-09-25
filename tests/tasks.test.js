@@ -169,6 +169,22 @@ test("task engine: manual tasks, statuses, comments, and role scoping", async (t
     assert.ok(typeof res.body.recurring === "number");
     assert.ok(typeof res.body.exceptions === "number");
   });
+
+  await t.test("an emergency-priority task always reads as the top urgency tier and counts as high priority", async () => {
+    const before = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    const res = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Urgent PO entered", priority: "emergency" } });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.priority, "emergency");
+    assert.equal(res.body.urgency, "emergency");
+
+    const after = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    assert.equal(after.body.highPriority, before.body.highPriority + 1);
+  });
+
+  await t.test("an invalid priority is rejected", async () => {
+    const res = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "x", priority: "bogus" } });
+    assert.equal(res.status, 400);
+  });
 });
 
 test("task engine: overdue, waiting, and exception views", async (t) => {

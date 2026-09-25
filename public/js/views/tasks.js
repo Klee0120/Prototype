@@ -20,13 +20,13 @@ const VIEW_LABELS = {
 const ADMIN_VIEWS = ["my", "team", "unassigned", "overdue", "waiting", "exceptions", "recurring", "completed"];
 const TECH_VIEWS = ["my", "team", "waiting", "overdue", "completed"];
 
-const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent" };
+const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent", emergency: "Emergency" };
 const STATUS_LABELS = { open: "Open", in_progress: "In Progress", waiting: "Waiting", completed: "Completed", cancelled: "Cancelled" };
 const CATEGORY_LABELS = { manual: "Manual", wom_workflow: "WOM Workflow", financial: "Financial", recurring: "Recurring" };
 const ROLE_LABELS = { admin: "Admin", reviewer: "Reviewer", financial: "Financial", tech: "Technician" };
 // Reuses the same badge color classes the rest of the app already uses for
 // status pills, rather than inventing a second palette just for urgency.
-const URGENCY_BADGE_CLASS = { urgent: "rejected", high: "submitted", normal: "draft", low: "draft", done: "approved" };
+const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", high: "submitted", normal: "draft", low: "draft", done: "approved" };
 
 // Which real PSE actions apply at each pse_stage -- mirrors PSE_STAGE_ACTIONS
 // in adminReview.js's own PSE Tasks tab. Duplicated rather than shared
@@ -293,7 +293,7 @@ export async function renderTaskBoard(container) {
 
   function renderTaskCard(t) {
     const row = document.createElement("div");
-    row.className = "review-row task-card";
+    row.className = `review-row task-card${t.urgency === "emergency" ? " task-card-emergency" : ""}`;
     const contextBits = [];
     if (t.relatedWomCode) contextBits.push(`WOM ${escapeHtml(t.relatedWomCode)}${t.relatedWomDescription ? ` — ${escapeHtml(t.relatedWomDescription)}` : ""}`);
     if (t.relatedVendorName) contextBits.push(escapeHtml(t.relatedVendorName));
