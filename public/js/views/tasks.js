@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
+import { openModal } from "../modal.js";
 
 // The one reusable task board both the admin Priorities section and the
 // technician My Work tab mount -- role-based and employee-based views come
@@ -72,7 +73,6 @@ export async function renderTaskBoard(container) {
   const isAdmin = state.user.role === "admin";
   let view = "my";
   let filters = { assignedTo: "", role: "", location: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
-  let showNewForm = false;
   let staffCache = null;
 
   await draw();
@@ -135,9 +135,8 @@ export async function renderTaskBoard(container) {
       </div>
       ${isAdmin ? `<div id="task-filters"></div>` : ""}
       <div class="review-actions">
-        <button class="btn btn-secondary task-new-btn" type="button">${showNewForm ? "Cancel" : "+ New Task"}</button>
+        <button class="btn btn-secondary task-new-btn" type="button">+ New Task</button>
       </div>
-      <div id="task-new-form"></div>
       <div class="review-list" id="task-list"></div>
     `;
 
@@ -153,13 +152,9 @@ export async function renderTaskBoard(container) {
         draw();
       });
     });
-    container.querySelector(".task-new-btn").addEventListener("click", async () => {
-      showNewForm = !showNewForm;
-      await renderNewForm(container.querySelector("#task-new-form"));
-    });
+    container.querySelector(".task-new-btn").addEventListener("click", openNewTaskModal);
 
     if (isAdmin) await renderFilters(container.querySelector("#task-filters"));
-    if (showNewForm) await renderNewForm(container.querySelector("#task-new-form"));
     renderTaskList(container.querySelector("#task-list"), tasks);
   }
 
@@ -225,63 +220,64 @@ export async function renderTaskBoard(container) {
     });
   }
 
-  async function renderNewForm(host) {
-    if (!showNewForm) {
-      host.innerHTML = "";
-      return;
-    }
+  async function openNewTaskModal() {
     const staff = isAdmin ? await loadStaff() : null;
     const people = staff ? [...staff.technicians, ...staff.admins] : [];
-    host.innerHTML = `
-      <div class="add-wom-form task-new-form">
-        <input class="task-new-title" type="text" placeholder="Title" />
-        <input class="task-new-desc" type="text" placeholder="Description (optional)" />
-        <select class="task-new-priority">
-          ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}" ${k === "normal" ? "selected" : ""}>${l}</option>`).join("")}
-        </select>
-        <input class="task-new-due" type="date" />
-        <input class="task-new-wom" type="text" placeholder="Related WOM # (optional)" />
-        ${
-          isAdmin
-            ? `
-          <select class="task-new-assignee">
-            <option value="">Unassigned</option>
-            ${people.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+    const { body, close } = openModal({
+      title: "New Task",
+      bodyHtml: `
+        <div class="modal-form task-new-form">
+          <input class="task-new-title" type="text" placeholder="Title" />
+          <input class="task-new-desc" type="text" placeholder="Description (optional)" />
+          <select class="task-new-priority">
+            ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}" ${k === "normal" ? "selected" : ""}>${l}</option>`).join("")}
           </select>
-          <select class="task-new-role">
-            <option value="">No role queue</option>
-            ${["admin", "reviewer", "financial", "tech"].map((r) => `<option value="${r}">${r}</option>`).join("")}
-          </select>
-        `
-            : ""
-        }
-        <button class="btn btn-primary task-new-save" type="button">Create task</button>
-      </div>
-      <div class="task-new-error"></div>
-    `;
-    host.querySelector(".task-new-save").addEventListener("click", async () => {
-      const title = host.querySelector(".task-new-title").value.trim();
+          <input class="task-new-due" type="date" />
+          <input class="task-new-wom" type="text" placeholder="Related WOM # (optional)" />
+          ${
+            isAdmin
+              ? `
+            <select class="task-new-assignee">
+              <option value="">Unassigned</option>
+              ${people.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+            </select>
+            <select class="task-new-role">
+              <option value="">No role queue</option>
+              ${["admin", "reviewer", "financial", "tech"].map((r) => `<option value="${r}">${ROLE_LABELS[r]}</option>`).join("")}
+            </select>
+          `
+              : ""
+          }
+          <div class="modal-form-actions">
+            <button class="btn btn-primary task-new-save" type="button">Create task</button>
+          </div>
+          <div class="task-new-error"></div>
+        </div>
+      `,
+    });
+    body.querySelector(".task-new-save").addEventListener("click", async () => {
+      const title = body.querySelector(".task-new-title").value.trim();
       if (!title) {
-        host.querySelector(".task-new-error").innerHTML = `<p class="attachments-error">Title is required.</p>`;
+        body.querySelector(".task-new-error").innerHTML = `<p class="attachments-error">Title is required.</p>`;
         return;
       }
-      const body = {
+      const newTaskBody = {
         title,
-        description: host.querySelector(".task-new-desc").value.trim(),
-        priority: host.querySelector(".task-new-priority").value,
-        dueAt: host.querySelector(".task-new-due").value || null,
-        relatedWomCode: host.querySelector(".task-new-wom").value.trim() || null,
+        description: body.querySelector(".task-new-desc").value.trim(),
+        priority: body.querySelector(".task-new-priority").value,
+        dueAt: body.querySelector(".task-new-due").value || null,
+        relatedWomCode: body.querySelector(".task-new-wom").value.trim() || null,
       };
       if (isAdmin) {
-        body.assignedTo = host.querySelector(".task-new-assignee").value || null;
-        body.assignedRole = host.querySelector(".task-new-role").value || null;
+        newTaskBody.assignedTo = body.querySelector(".task-new-assignee").value || null;
+        newTaskBody.assignedRole = body.querySelector(".task-new-role").value || null;
       }
       try {
-        await api.post("/api/tasks", body);
-        showNewForm = false;
+        await api.post("/api/tasks", newTaskBody);
+        close();
         await draw();
       } catch (err) {
-        host.querySelector(".task-new-error").innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        body.querySelector(".task-new-error").innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       }
     });
   }

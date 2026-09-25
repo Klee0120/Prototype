@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { wireDateMaskInput, isoFromUs } from "../dateMask.js";
 import { state, escapeHtml } from "../app.js";
+import { openModal } from "../modal.js";
 
 const DAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -134,8 +135,6 @@ export async function renderSchedule(container) {
 
   const isAdmin = state.user && state.user.role === "admin";
   let detailEntry = null;
-  let showAddForm = false;
-  let addMessage = "";
   let entriesByKey = {};
 
   draw();
@@ -172,7 +171,7 @@ export async function renderSchedule(container) {
         </div>
         <button class="btn btn-ghost" id="schedule-next-month">Next &rarr;</button>
         <select id="schedule-location-filter"><option value="">All sites</option>${locationOptions}</select>
-        <button class="btn btn-secondary" id="schedule-add-toggle">${showAddForm ? "Cancel" : "+ Schedule a WOM"}</button>
+        <button class="btn btn-secondary" id="schedule-add-toggle">+ Schedule a WOM</button>
       </div>
       <p class="review-checklist-hint">
         WOM projects scheduled out by date, across all technicians -- E&amp;F time and time off
@@ -212,10 +211,7 @@ export async function renderSchedule(container) {
       draw();
     });
     container.querySelector("#schedule-add-toggle").addEventListener("click", () => {
-      showAddForm = !showAddForm;
-      detailEntry = null;
-      addMessage = "";
-      draw();
+      openAddModal();
     });
 
     const host = container.querySelector("#schedule-calendar-host");
@@ -289,7 +285,6 @@ export async function renderSchedule(container) {
         const first = entriesByKey[keys[0]];
         const last = entriesByKey[keys[keys.length - 1]];
         detailEntry = { ...first, dateIsoEnd: last.dateIso };
-        showAddForm = false;
         renderDetail();
       });
     });
@@ -297,10 +292,6 @@ export async function renderSchedule(container) {
     renderDetail();
 
     function renderDetail() {
-      if (showAddForm) {
-        renderAddForm();
-        return;
-      }
       if (!detailEntry) {
         detailHost.innerHTML = "";
         return;
@@ -346,7 +337,7 @@ export async function renderSchedule(container) {
     // edit a given week's allocations server-side. A range can span more
     // than one week, so this batches one GET+PUT per affected week rather
     // than one per day.
-    function renderAddForm() {
+    function openAddModal() {
       const techOptions = isAdmin
         ? activeTechnicians.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("")
         : "";
@@ -382,11 +373,10 @@ export async function renderSchedule(container) {
           .join("");
       }
 
-      detailHost.innerHTML = `
-        <div class="schedule-detail-panel">
-          <button type="button" class="btn btn-link schedule-detail-close">Close</button>
-          <div class="schedule-detail-title">Schedule a WOM</div>
-          <form class="schedule-add-form">
+      const { body, close } = openModal({
+        title: "Schedule a WOM",
+        bodyHtml: `
+          <form class="schedule-add-form modal-form">
             ${
               isAdmin
                 ? `<label class="schedule-add-field"><span>Technician</span><select name="techId" required><option value="">Choose one</option>${techOptions}</select></label>`
@@ -408,25 +398,23 @@ export async function renderSchedule(container) {
               <label class="schedule-add-field"><span>Last day</span><input name="endDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
             </div>
             <label class="schedule-add-field"><span>Hours per day</span><input name="hours" type="number" min="0.5" step="0.5" required /></label>
-            <button type="submit" class="btn btn-primary">Add to schedule</button>
-            <span class="save-message schedule-add-message">${escapeHtml(addMessage)}</span>
+            <div class="modal-form-actions">
+              <button type="submit" class="btn btn-primary">Add to schedule</button>
+            </div>
+            <span class="save-message schedule-add-message"></span>
           </form>
-        </div>
-      `;
-      detailHost.querySelector(".schedule-detail-close").addEventListener("click", () => {
-        showAddForm = false;
-        renderDetail();
+        `,
       });
       if (openWoms.length === 0) {
-        detailHost.querySelector(".schedule-add-message").textContent = "No open WOMs to schedule -- a WOM needs a real WOM # before hours can be charged to it.";
+        body.querySelector(".schedule-add-message").textContent = "No open WOMs to schedule -- a WOM needs a real WOM # before hours can be charged to it.";
       }
-      wireDateMaskInput(detailHost.querySelector('input[name="startDate"]'));
-      wireDateMaskInput(detailHost.querySelector('input[name="endDate"]'));
-      const addLocationSelect = detailHost.querySelector('select[name="locationCode"]');
+      wireDateMaskInput(body.querySelector('input[name="startDate"]'));
+      wireDateMaskInput(body.querySelector('input[name="endDate"]'));
+      const addLocationSelect = body.querySelector('select[name="locationCode"]');
       if (defaultLocationCode) addLocationSelect.value = defaultLocationCode;
       function applyLocationCode(locationCode) {
         addLocationSelect.value = locationCode;
-        const womSelect = detailHost.querySelector('select[name="womCode"]');
+        const womSelect = body.querySelector('select[name="womCode"]');
         womSelect.disabled = !locationCode;
         womSelect.innerHTML = `<option value="">${locationCode ? "Choose one" : "Choose a location first"}</option>${locationCode ? womOptionsFor(locationCode) : ""}`;
       }
@@ -435,11 +423,11 @@ export async function renderSchedule(container) {
         // Re-defaults to the newly-picked technician's own home location --
         // still just a starting point, not a restriction; the location
         // dropdown above stays fully open to pick anywhere else.
-        detailHost.querySelector('select[name="techId"]').addEventListener("change", (e) => {
+        body.querySelector('select[name="techId"]').addEventListener("change", (e) => {
           applyLocationCode(preferredLocationCode(e.target.value));
         });
       }
-      detailHost.querySelector(".schedule-add-form").addEventListener("submit", async (e) => {
+      body.querySelector(".schedule-add-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const form = e.target;
         const msg = form.querySelector(".schedule-add-message");
@@ -506,8 +494,7 @@ export async function renderSchedule(container) {
         }
 
         if (dayErrors.length === 0) {
-          showAddForm = false;
-          addMessage = "";
+          close();
           await draw();
         } else {
           const dayWord = scheduledDays === 1 ? "day" : "days";

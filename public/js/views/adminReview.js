@@ -7,6 +7,7 @@ import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard } from "./tasks.js";
+import { openModal } from "../modal.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -186,7 +187,6 @@ export async function renderAdminReview(container) {
   let vendorsCache = null;
   const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "" };
   const vendorExpanded = new Set();
-  let showAddVendorForm = false;
   const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
 
   // Remembers which sub-tab was last open within each multi-tab section, so
@@ -380,14 +380,11 @@ export async function renderAdminReview(container) {
           <option value="">All forms statuses</option>
           ${formsFilterOptions()}
         </select>
-        <button class="btn btn-secondary vendor-add-toggle" type="button">${showAddVendorForm ? "Cancel" : "+ Add vendor"}</button>
+        <button class="btn btn-secondary vendor-add-toggle" type="button">+ Add vendor</button>
       </div>
       <p class="vendor-count"></p>
-      <div id="vendor-add-host"></div>
       <div class="review-list" id="vendor-list"></div>
     `;
-
-    renderVendorAddHost(content);
 
     content.querySelector(".vendor-search").addEventListener("input", (e) => {
       vendorFilters.search = e.target.value;
@@ -406,9 +403,7 @@ export async function renderAdminReview(container) {
       refreshVendorList(content);
     });
     content.querySelector(".vendor-add-toggle").addEventListener("click", () => {
-      showAddVendorForm = !showAddVendorForm;
-      content.querySelector(".vendor-add-toggle").textContent = showAddVendorForm ? "Cancel" : "+ Add vendor";
-      renderVendorAddHost(content);
+      openAddVendorModal(content);
     });
     const viewOutdatedBtn = content.querySelector(".vendor-view-outdated-btn");
     if (viewOutdatedBtn) {
@@ -419,19 +414,6 @@ export async function renderAdminReview(container) {
     }
 
     refreshVendorList(content);
-  }
-
-  // Toggling the add-vendor form only touches its own host element, not the
-  // whole toolbar, so the search input (and whatever the admin was typing
-  // into it) is never torn down along the way.
-  function renderVendorAddHost(content) {
-    const host = content.querySelector("#vendor-add-host");
-    if (!showAddVendorForm) {
-      host.innerHTML = "";
-      return;
-    }
-    host.innerHTML = renderAddVendorForm();
-    wireAddVendorForm(content);
   }
 
   function refreshVendorList(content) {
@@ -446,9 +428,34 @@ export async function renderAdminReview(container) {
     }
   }
 
-  function wireAddVendorForm(content) {
-    const addForm = content.querySelector(".add-vendor-form");
-    if (!addForm) return;
+  function openAddVendorModal(content) {
+    const { body, close } = openModal({
+      title: "Add Vendor",
+      bodyHtml: `
+        <form class="add-vendor-form modal-form">
+          <div class="add-tech-grid">
+            <input name="name" placeholder="Vendor name" required />
+            <input name="jdeVendorNumber" placeholder="JDE Vendor #" />
+            <select name="cwStatus">
+              <option value="unknown">C&amp;W Unknown</option>
+              <option value="active">C&amp;W Active</option>
+              <option value="inactive">C&amp;W Inactive</option>
+            </select>
+            <select name="toyotaStatus">
+              <option value="unknown">Toyota Unknown</option>
+              <option value="approved">Toyota Approved</option>
+              <option value="not_approved">Toyota Not Approved</option>
+            </select>
+            ${renderServicesSelect("")}
+          </div>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Add vendor</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const addForm = body.querySelector(".add-vendor-form");
     addForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = addForm.querySelector(".save-message");
@@ -461,36 +468,12 @@ export async function renderAdminReview(container) {
           services: addForm.services.value.trim(),
         });
         vendorsCache = null;
-        showAddVendorForm = false;
+        close();
         await drawVendors(content);
       } catch (err) {
         msg.textContent = err.message;
       }
     });
-  }
-
-  function renderAddVendorForm() {
-    return `
-      <form class="add-vendor-form review-row">
-        <div class="add-tech-grid">
-          <input name="name" placeholder="Vendor name" required />
-          <input name="jdeVendorNumber" placeholder="JDE Vendor #" />
-          <select name="cwStatus">
-            <option value="unknown">C&amp;W Unknown</option>
-            <option value="active">C&amp;W Active</option>
-            <option value="inactive">C&amp;W Inactive</option>
-          </select>
-          <select name="toyotaStatus">
-            <option value="unknown">Toyota Unknown</option>
-            <option value="approved">Toyota Approved</option>
-            <option value="not_approved">Toyota Not Approved</option>
-          </select>
-          ${renderServicesSelect("")}
-        </div>
-        <button type="submit" class="btn btn-primary">Add vendor</button>
-        <span class="save-message"></span>
-      </form>
-    `;
   }
 
   function renderVendorRow(v, content) {

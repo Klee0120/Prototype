@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { state, escapeHtml, setUser } from "../app.js";
 import { renderAttachments } from "./attachments.js";
 import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
+import { openModal } from "../modal.js";
 
 const PROFILE_TABS = [
   { key: "basic", label: "Basic Info" },
@@ -38,7 +39,6 @@ function statusBadge(status) {
 export function renderTechniciansTab(content, openTo) {
   let profileTechId = openTo ? openTo.techId : null;
   let profileSubTab = openTo && openTo.subTab ? openTo.subTab : "basic";
-  let showAddForm = false;
   let showBulkAddForm = false;
   let bulkAddResult = null;
   let showAdminAccounts = false;
@@ -83,11 +83,10 @@ export function renderTechniciansTab(content, openTo) {
             <option value="all" ${filters.status === "all" ? "selected" : ""}>All</option>
           </select>
         </label>
-        <button class="btn btn-secondary add-technician-toggle" type="button">${showAddForm ? "Cancel" : "+ Add technician"}</button>
+        <button class="btn btn-secondary add-technician-toggle" type="button">+ Add technician</button>
         <button class="btn btn-link bulk-add-toggle" type="button">${showBulkAddForm ? "Cancel bulk add" : "Bulk add technicians"}</button>
         <button class="btn btn-link admin-accounts-toggle" type="button">${showAdminAccounts ? "Hide admin accounts" : "Manage admin accounts"}</button>
       </div>
-      ${showAddForm ? renderAddForm(locations) : ""}
       ${showBulkAddForm ? renderBulkAddForm() : ""}
       ${bulkAddResult ? renderBulkAddResult() : ""}
       <div id="admin-accounts-host"></div>
@@ -122,11 +121,8 @@ export function renderTechniciansTab(content, openTo) {
       draw();
     });
     content.querySelector(".add-technician-toggle").addEventListener("click", () => {
-      showAddForm = !showAddForm;
-      draw();
+      openAddModal(locations);
     });
-    const addForm = content.querySelector(".add-technician-form");
-    if (addForm) wireAddForm(addForm);
     content.querySelector(".bulk-add-toggle").addEventListener("click", () => {
       showBulkAddForm = !showBulkAddForm;
       bulkAddResult = null;
@@ -313,28 +309,31 @@ export function renderTechniciansTab(content, openTo) {
     });
   }
 
-  function renderAddForm(locations) {
+  function openAddModal(locations) {
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
-    return `
-      <form class="add-technician-form">
-        <div class="add-tech-grid">
-          <input name="id" placeholder="ID (e.g. T1004)" required />
-          <input name="name" placeholder="Full name" required />
-          <input name="pin" placeholder="PIN" required inputmode="numeric" />
-          <input name="position" placeholder="Position" />
-          <select name="homeLocationCode"><option value="">No home location</option>${locationOptions}</select>
-          <input name="email" placeholder="Email" type="email" />
-          <input name="phone" placeholder="Phone" />
-          <input name="ukgId" placeholder="UKG ID" />
-          <label class="add-tech-date-field">Start date<input name="hireDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" /></label>
-        </div>
-        <button type="submit" class="btn btn-primary">Create technician</button>
-        <span class="save-message add-tech-message"></span>
-      </form>
-    `;
-  }
-
-  function wireAddForm(form) {
+    const { body, close } = openModal({
+      title: "Add Technician",
+      bodyHtml: `
+        <form class="add-technician-form modal-form">
+          <div class="add-tech-grid">
+            <input name="id" placeholder="ID (e.g. T1004)" required />
+            <input name="name" placeholder="Full name" required />
+            <input name="pin" placeholder="PIN" required inputmode="numeric" />
+            <input name="position" placeholder="Position" />
+            <select name="homeLocationCode"><option value="">No home location</option>${locationOptions}</select>
+            <input name="email" placeholder="Email" type="email" />
+            <input name="phone" placeholder="Phone" />
+            <input name="ukgId" placeholder="UKG ID" />
+            <label class="add-tech-date-field">Start date<input name="hireDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" /></label>
+          </div>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Create technician</button>
+          </div>
+          <span class="save-message add-tech-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".add-technician-form");
     wireDateMaskInput(form.hireDate);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -355,7 +354,7 @@ export function renderTechniciansTab(content, openTo) {
           position: form.position.value.trim(),
           hireDate: isoFromUs(form.hireDate.value),
         });
-        showAddForm = false;
+        close();
         await draw();
       } catch (err) {
         msg.textContent = err.message;

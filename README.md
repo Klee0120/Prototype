@@ -85,6 +85,15 @@ Demo logins:
   tokens and a handful of high-traffic components -- not a rewrite of
   every view's markup, but enough that the app doesn't read as an
   unstyled skeleton anymore.
+- **"Add a new X" forms open as an actual pop-up dialog** (`public/js/modal.js`
+  -- a small shared `openModal({ title, bodyHtml })` helper: centered card,
+  dimmed backdrop, closes on its own &times;, Escape, or a backdrop click),
+  not an inline form expanding into the page -- feedback from real use was
+  that the inline pattern didn't feel like a real application. Converted:
+  + New Task (Priorities), + Schedule a WOM (Schedule), + Add vendor
+  (Vendors), + Add technician (Roster). A read-only detail panel (clicking
+  a Schedule entry, a task card's "Details") stays inline, on purpose --
+  this is specifically for *creating a new record*, not for viewing one.
 - Technician login (mock ID + PIN)
 - **Technician's own tabs**: "My Week" (the allocation screen below),
   **"Locations & WOM"** (view-only — every location and every WOM project,
