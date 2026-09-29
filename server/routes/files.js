@@ -132,6 +132,45 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
   res.status(201).json(record);
 });
 
+// Every document currently parked on a task (across every task, not just
+// one) -- the admin-wide "what's still sitting there waiting to be filed
+// to a vendor" list, since GET / only ever answers "what's on this one
+// record" and there's no single task to ask that of otherwise.
+router.get("/task-documents", requireAuth, (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Not authorized" });
+  res.json(db.listTaskDocuments());
+});
+
+// Re-files an existing upload onto a different record without re-uploading
+// it -- e.g. assigning a COI parked on a task onto the vendor it turned
+// out to belong to. Admin-only, same as every other compliance-document
+// write in this file.
+router.patch("/:id/relocate", requireAuth, (req, res) => {
+  const file = db.getFile(req.params.id);
+  if (!file) return res.status(404).json({ error: "File not found" });
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Not authorized" });
+
+  const { relatedType, relatedId, category } = req.body || {};
+  if (!relatedType || !relatedId || !category) {
+    return res.status(400).json({ error: "relatedType, relatedId, and category are required" });
+  }
+  const allowedCategories = CATEGORY_BY_RELATED[relatedType];
+  if (!allowedCategories || !allowedCategories.has(category)) {
+    return res.status(400).json({ error: `category "${category}" is not valid for relatedType "${relatedType}"` });
+  }
+  if (!relatedRecordExists(relatedType, relatedId)) {
+    return res.status(404).json({ error: "Related record not found" });
+  }
+
+  const updated = db.relocateFile(file.id, { relatedType, relatedId, category });
+  db.addAudit(
+    req.user.id,
+    "FILE_RELOCATED",
+    `${req.user.name} moved "${file.originalName}" from ${file.relatedType} ${file.relatedId} to ${relatedType} ${relatedId}`
+  );
+  res.json(updated);
+});
+
 router.get("/:id/download", requireAuth, (req, res) => {
   const file = db.getFile(req.params.id);
   if (!file) return res.status(404).json({ error: "File not found" });

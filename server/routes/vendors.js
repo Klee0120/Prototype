@@ -104,10 +104,10 @@ router.post("/:id/requests", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
-  const { requestType, referenceNumber, status } = req.body || {};
+  const { requestType, referenceNumber, status, note } = req.body || {};
   if (!requestType || !String(requestType).trim()) return res.status(400).json({ error: "requestType is required" });
 
-  const requests = db.addVendorRequest(vendor.id, requestType.trim(), referenceNumber, status);
+  const requests = db.addVendorRequest(vendor.id, requestType.trim(), referenceNumber, status, note);
   db.addAudit(
     req.user.id,
     "VENDOR_REQUEST_ADDED",
@@ -121,13 +121,14 @@ router.patch("/:id/requests/:requestId", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
-  const { requestType, referenceNumber, status } = req.body || {};
+  const { requestType, referenceNumber, status, note } = req.body || {};
   if (!requestType || !String(requestType).trim()) return res.status(400).json({ error: "requestType is required" });
 
   const requests = db.updateVendorRequest(vendor.id, Number(req.params.requestId), {
     requestType: requestType.trim(),
     referenceNumber,
     status,
+    note,
   });
   db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated a case for ${vendor.name}`);
   auditStageChangeIfAny(req, vendor);

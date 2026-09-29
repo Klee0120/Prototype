@@ -584,6 +584,15 @@ if (!hasColumn("vendor_requests", "updated_at")) {
   db.exec("UPDATE vendor_requests SET updated_at = requested_at WHERE updated_at IS NULL");
 }
 
+// A case marked "Needs Adjustment" or "Denied" is much more useful with a
+// reason ("missing Auto Liability language") than the bare status alone --
+// but that text can't just be appended onto `status` itself, since
+// deriveOnboardingStage matches `status` against "approved"/"denied"
+// exactly; a separate free-text column keeps that comparison intact.
+if (!hasColumn("vendor_requests", "note")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN note TEXT DEFAULT ''");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -1158,7 +1167,7 @@ const ONBOARDING_CASE_TYPE_BY_KEY = Object.fromEntries(ONBOARDING_CASE_TYPES.map
 function listVendorRequests(vendorId) {
   return db
     .prepare(
-      `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status,
+      `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status, note,
               requested_at AS requestedAt, updated_at AS updatedAt
        FROM vendor_requests WHERE vendor_id = ? ORDER BY id DESC`
     )
@@ -1208,7 +1217,7 @@ function listOnboardingCaseSummaries() {
   const rows = db
     .prepare(
       `SELECT vendor_id AS vendorId, request_type AS requestType, reference_number AS referenceNumber,
-              status, updated_at AS updatedAt
+              status, note, updated_at AS updatedAt
        FROM vendor_requests ORDER BY updated_at ASC, id ASC`
     )
     .all();
@@ -1218,25 +1227,25 @@ function listOnboardingCaseSummaries() {
     const key = typeToKey[r.requestType];
     if (!key) continue;
     if (!summaries[r.vendorId]) summaries[r.vendorId] = {};
-    summaries[r.vendorId][key] = { referenceNumber: r.referenceNumber, status: r.status, updatedAt: r.updatedAt };
+    summaries[r.vendorId][key] = { referenceNumber: r.referenceNumber, status: r.status, note: r.note, updatedAt: r.updatedAt };
   }
   return summaries;
 }
 
-function addVendorRequest(vendorId, requestType, referenceNumber, status) {
+function addVendorRequest(vendorId, requestType, referenceNumber, status, note) {
   const now = new Date().toISOString();
   db.prepare(
-    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(vendorId, requestType, referenceNumber || "", status || "", now, now);
+    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, note, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(vendorId, requestType, referenceNumber || "", status || "", note || "", now, now);
   touchVendorActivity(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
 
-function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status }) {
+function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status, note }) {
   db.prepare(
-    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
-  ).run(requestType, referenceNumber || "", status || "", new Date().toISOString(), requestId, vendorId);
+    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, note = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
+  ).run(requestType, referenceNumber || "", status || "", note || "", new Date().toISOString(), requestId, vendorId);
   touchVendorActivity(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
@@ -2682,6 +2691,34 @@ function deleteFile(id) {
   return file;
 }
 
+// A document parked on a task (e.g. a COI that arrived before it was clear
+// which vendor it belongs to -- see server/routes/files.js's "task"
+// relatedType) never becomes filed to a vendor by itself; someone has to
+// look at it and assign it once the vendor is known. This is the admin-
+// wide "everything still sitting on a task" list that makes that possible
+// without already knowing which task to look at.
+function listTaskDocuments() {
+  return db
+    .prepare(
+      `SELECT f.id, f.related_type AS relatedType, f.related_id AS relatedId, f.category, f.original_name AS originalName,
+              f.stored_name AS storedName, f.mime_type AS mimeType, f.size, f.uploaded_by AS uploadedBy, f.uploaded_at AS uploadedAt,
+              f.form_type AS formType, f.expires_at AS expiresAt, t.title AS taskTitle
+       FROM files f LEFT JOIN tasks t ON t.id = CAST(f.related_id AS INTEGER)
+       WHERE f.related_type = 'task'
+       ORDER BY f.uploaded_at DESC`
+    )
+    .all();
+}
+
+// Re-files an existing upload onto a different record -- the bytes on disk
+// never move, only which record they're attached to -- e.g. assigning a
+// COI parked on a task (relatedType "task") onto the vendor it turned out
+// to belong to (relatedType "vendor").
+function relocateFile(id, { relatedType, relatedId, category }) {
+  db.prepare("UPDATE files SET related_type = ?, related_id = ?, category = ? WHERE id = ?").run(relatedType, String(relatedId), category, id);
+  return getFile(id);
+}
+
 // Forms (tech_form uploads) with an expiration date that's already passed or
 // is coming up within `daysAhead` -- surfaced to admin/RFM on the Overview
 // tab so an expired certification/license doesn't just sit unnoticed.
@@ -2855,6 +2892,8 @@ module.exports = {
   listFiles,
   getFile,
   deleteFile,
+  listTaskDocuments,
+  relocateFile,
   listExpiringForms,
   listWeekendAddenda,
   listReportGapMonths,

@@ -1239,6 +1239,25 @@ h1, h2, h3, h4 {
   margin: 6px 0;
 }
 
+.vendor-assign-task-doc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.vendor-assign-task-doc select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.vendor-assign-task-doc-select {
+  flex: 1;
+  min-width: 200px;
+}
+
 .onboarding-start-search {
   margin-bottom: 10px;
 }
@@ -1287,8 +1306,25 @@ h1, h2, h3, h4 {
   margin-top: 4px;
 }
 
+.onboarding-case-note {
+  font-size: 12px;
+  color: var(--text-muted, #666);
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.onboarding-welcome-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted, #666);
+  margin-top: 10px;
+}
+
 .onboarding-case-form {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }

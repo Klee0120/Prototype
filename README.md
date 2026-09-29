@@ -323,19 +323,28 @@ Demo logins:
   "Doc checks incomplete" on the Vendors list and rolls up into the
   Priorities tab, same flagging idea as an outdated form.
 - **Vendors -> Onboarding tab**: mirrors ServiceEdge's own onboarding model
-  rather than a single hand-set status -- a vendor being onboarded has up
-  to four independent **cases** (`vendor_requests` rows with one of four
-  canonical `request_type` values: `Onboarding - Request`,
-  `Onboarding - COI`, `Onboarding - W8/W9`, `Onboarding - Payment
-  Details`), each carrying its own free-text status (real ServiceEdge
-  statuses -- "Approved", "Denied", "Denied - No Response - Start over
-  Case" -- don't reduce to a boolean, so status stays free text). A
-  vendor's `onboardingStage` is **derived**, never set by hand:
-  `deriveOnboardingStage()` (`db.js`) looks at the *latest* case of each of
-  the three required types (COI/W-9/Payment) -- all three approved moves
-  the vendor to `onboarded`, any one denied (as its latest case) moves it
-  to `denied`, any case activity at all short of that is `in_progress`,
-  none yet is `not_started`. This matches how ServiceEdge itself works:
+  rather than a single hand-set status -- a vendor being onboarded has
+  three independent **cases** (`vendor_requests` rows with one of three
+  canonical `request_type` values: `Onboarding - COI`,
+  `Onboarding - W8/W9`, `Onboarding - Payment Details`), each carrying its
+  own free-text status (real ServiceEdge statuses -- "Approved", "Denied",
+  "Denied - No Response - Start over Case" -- don't reduce to a boolean,
+  so status stays free text) plus an optional free-text **note** (its own
+  `vendor_requests.note` column, e.g. "missing Auto Liability language" on
+  a case marked Needs Adjustment) -- kept separate from `status` itself
+  since `deriveOnboardingStage()` matches `status` against
+  "approved"/"denied" exactly, and appending a reason onto it would break
+  that match. The **welcome email is deliberately not a case** -- there's
+  no New/Approved/Denied to assign to "did I send an email," so it's
+  logged as a fourth `Onboarding - Request` request-type row for history's
+  sake but rendered as a plain "Welcome email sent <date>" line with a
+  one-click "Mark sent," never as a status pill. A vendor's `onboardingStage`
+  is **derived**, never set by hand: `deriveOnboardingStage()` (`db.js`)
+  looks at the *latest* case of each of the three required types
+  (COI/W-9/Payment) -- all three approved moves the vendor to `onboarded`,
+  any one denied (as its latest case) moves it to `denied`, any case (or
+  welcome-email) activity at all short of that is `in_progress`, none yet
+  is `not_started`. This matches how ServiceEdge itself works:
   re-submitting after a denial opens a **brand new case** of the same
   type rather than editing the old one, so "current status" always means
   the most recently touched case -- `syncOnboardingStage()` re-derives and
@@ -345,23 +354,24 @@ Demo logins:
   Vendors tab still defaults it straight to `in_progress` (no cases
   needed to show up here at all). The board has three sections: **In
   Progress** (sorted most-stale-first) and **Denied**, each vendor row
-  showing all four cases as status pills with an inline "Log update" mini
-  form (status + optional case #) right there -- no need to open the
-  vendor's own record to log a case -- plus **Compliance Needed**, already
-  `onboarded` vendors whose forms have since gone `outdated` or failed a
-  doc check, each linking straight to that vendor's edit form on the main
-  Vendors tab. A COI case shows the vendor's required coverage limits
-  (GL/Auto/WC/Umbrella, from the same Toyota COI matrix that drives the
-  Vendors tab's Services dropdown) right next to it as a reference while
-  reviewing a submitted certificate. Staleness (`ONBOARDING_STALE_DAYS =
-  7`) still reads the vendor's own `updated_at`, bumped by any case
-  add/update the same way it always was. A bulk
-  `GET /api/admin/vendors/onboarding/case-summary` endpoint returns the
-  latest case of each type for every vendor with any case activity in one
-  round trip, so the board doesn't need a request per vendor shown. This
-  board deliberately shows case **status only** -- never a vendor's actual
-  uploaded documents (those stay on that vendor's own record) -- so any
-  admin can see exactly where a vendor stands without touching anything
+  showing the welcome-email line plus the three cases as status pills with
+  an inline "Log update" mini form (status + optional case # + optional
+  note) right there -- no need to open the vendor's own record to log a
+  case -- plus **Compliance Needed**, already `onboarded` vendors whose
+  forms have since gone `outdated` or failed a doc check, each linking
+  straight to that vendor's edit form on the main Vendors tab. A COI case
+  shows the vendor's required coverage limits (GL/Auto/WC/Umbrella, from
+  the same Toyota COI matrix that drives the Vendors tab's Services
+  dropdown) right next to it as a reference while reviewing a submitted
+  certificate. Staleness (`ONBOARDING_STALE_DAYS = 7`) still reads the
+  vendor's own `updated_at`, bumped by any case add/update the same way it
+  always was. A bulk `GET /api/admin/vendors/onboarding/case-summary`
+  endpoint returns the latest case of each type for every vendor with any
+  case activity in one round trip, so the board doesn't need a request per
+  vendor shown. This board deliberately shows case **status only** -- never
+  a vendor's actual uploaded documents (those stay on that vendor's own
+  record, see the vendor edit modal below) -- so any admin can see exactly
+  where a vendor stands without touching anything
   private. Distinct from the document-compliance checklist above -- that's
   "does the attached COI/W-9/ACH document itself meet requirements,"
   this is "has ServiceEdge approved the case" -- the vendor edit modal
@@ -373,11 +383,44 @@ Demo logins:
   Progress/Denied/Compliance Needed -- there was otherwise no way to
   actually begin onboarding one of them. Typing a name filters
   `not_started` vendors client-side (already-loaded `vendorsCache`, no
-  extra request); **Start Onboarding** logs an `Onboarding - Request` case
-  with status "New", which is enough case activity on its own to move the
-  vendor to `in_progress` and onto the board below. A vendor added fresh
-  through **+ Add vendor** still skips this step entirely and starts
-  `in_progress` immediately, same as before.
+  extra request); **Start Onboarding** records the welcome email as sent
+  (an `Onboarding - Request` row, status "Sent"), which is enough activity
+  on its own to move the vendor to `in_progress` and onto the board below.
+  A vendor added fresh through **+ Add vendor** still skips this step
+  entirely and starts `in_progress` immediately, same as before.
+- **Vendor edit modal is a profile, not just a form** -- mirroring how
+  ServiceEdge itself organizes a vendor (its own screenshot: Cases,
+  Payment Details, and Files each their own related list off one company
+  record). Opening a vendor now shows, above the editable fields:
+  - **Onboarding cases** -- the same welcome-email line + 3 case pills the
+    Onboarding board shows (shared rendering, `renderCasePillHtml`/
+    `wireCasePill`), so logging or reviewing this vendor's case status
+    never requires leaving the vendor's own record to go find it on a
+    separate tab. A **Full case history** toggle underneath shows every
+    entry ever logged, including its note if any.
+  - **Documents** -- an upload/view/delete panel (`relatedType: "vendor"`,
+    reusing the same generic `renderAttachments` component as every other
+    file panel in the app) grouped into COI / W-9 / ACH / VPO Waiver /
+    Other Vendor Document sections, so the actual PDFs a vendor's COI/W-9/
+    ACH document checks (below) are verified against now have somewhere to
+    actually live -- this panel existed as a supported `relatedType` in
+    `server/routes/files.js` for a while with no screen ever calling it.
+    **Assign a pending task document** sits right below it: a COI (or
+    other document) that arrived before it was clear which vendor it
+    belonged to gets attached to a task instead (see the task engine's own
+    Documents panel below) rather than blocked on knowing the vendor first
+    -- once it's known, this control (populated from a new admin-only
+    `GET /api/files/task-documents`, every document still parked on any
+    task) lets it be assigned straight onto this vendor's record via
+    `PATCH /api/files/:id/relocate`, which re-files the existing upload (no
+    re-uploading, no copy -- same bytes on disk, just a different
+    `relatedType`/`relatedId`/`category`) and removes it from the task.
+  Both sections load into their own placeholder `<div>`s *outside* the
+  `<form class="vendor-edit-form">` that carries the actual save/submit,
+  specifically because nesting the Documents panel's own `<form>` inside
+  it silently breaks: an HTML parser drops a `<form>` nested inside
+  another `<form>` when set via `innerHTML`, which strips the upload
+  button's submit handler along with it.
 - **Schedule tab**: a month calendar of **WOM project work only** — no E&F
   time and no time off, since the point is seeing what's already scheduled
   project-wise, not a general timesheet view (Tech Allocation and Weekly

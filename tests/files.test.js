@@ -277,3 +277,77 @@ test("files: task attachments (documents not yet filed to a vendor)", async (t) 
     assert.equal(res.status, 404);
   });
 });
+
+// Once it's clear which vendor a task-parked document belongs to, it gets
+// assigned there instead of re-uploaded -- the file's bytes never move,
+// only which record it's attached to.
+test("files: assigning a task-parked document onto a vendor", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const task = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "File COI once vendor confirmed" } });
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "task", relatedId: String(task.body.id), category: "coi" },
+    fileName: "renewal.pdf",
+    mimeType: "application/pdf",
+  });
+  const fileId = upload.body.id;
+
+  const vendor = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Morley and Associates" } });
+  const vendorId = vendor.body.id;
+
+  await t.test("the pending document shows up in the admin-wide task-documents list, with its task's title", async () => {
+    const res = await server.call("GET", "/api/files/task-documents", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const entry = res.body.find((f) => f.id === fileId);
+    assert.ok(entry, "expected the uploaded file in the task-documents list");
+    assert.equal(entry.taskTitle, "File COI once vendor confirmed");
+  });
+
+  await t.test("a technician cannot see the task-documents list", async () => {
+    const res = await server.call("GET", "/api/files/task-documents", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("assigning it onto the vendor moves it there, off the task", async () => {
+    const res = await server.call("PATCH", `/api/files/${fileId}/relocate`, {
+      userId: "ADMIN",
+      body: { relatedType: "vendor", relatedId: String(vendorId), category: "coi" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedType, "vendor");
+    assert.equal(res.body.relatedId, String(vendorId));
+
+    const onVendor = await server.call("GET", `/api/files?relatedType=vendor&relatedId=${vendorId}`, { userId: "ADMIN" });
+    assert.equal(onVendor.body.length, 1);
+    assert.equal(onVendor.body[0].originalName, "renewal.pdf");
+
+    const onTask = await server.call("GET", `/api/files?relatedType=task&relatedId=${task.body.id}`, { userId: "ADMIN" });
+    assert.equal(onTask.body.length, 0);
+  });
+
+  await t.test("a technician cannot relocate a file", async () => {
+    const res = await server.call("PATCH", `/api/files/${fileId}/relocate`, {
+      userId: "T1001",
+      body: { relatedType: "vendor", relatedId: String(vendorId), category: "coi" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects relocating onto a category that doesn't belong to the target relatedType", async () => {
+    const res = await server.call("PATCH", `/api/files/${fileId}/relocate`, {
+      userId: "ADMIN",
+      body: { relatedType: "vendor", relatedId: String(vendorId), category: "receipt" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rejects relocating onto a vendor that doesn't exist", async () => {
+    const res = await server.call("PATCH", `/api/files/${fileId}/relocate`, {
+      userId: "ADMIN",
+      body: { relatedType: "vendor", relatedId: "999999", category: "coi" },
+    });
+    assert.equal(res.status, 404);
+  });
+});

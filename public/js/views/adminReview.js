@@ -343,6 +343,54 @@ export async function renderAdminReview(container) {
   }
 
   const ONBOARDING_STALE_DAYS = 7;
+  // Mirrors db.js's 3 *real* case types -- the welcome email isn't a case
+  // (no New/In Review/Approved/Denied vocabulary makes sense for "did I
+  // send an email"), so it's deliberately left out of this list and shown
+  // as its own plain line instead (see renderWelcomeEmailLine below). Kept
+  // as a small client-side constant rather than fetched from the bulk
+  // case-summary endpoint so the vendor edit modal's Cases section can
+  // render immediately from a single per-vendor `/requests` call instead
+  // of pulling every vendor's case summary just to get this static list.
+  const ONBOARDING_CASE_TYPES = [
+    { type: "Onboarding - COI", key: "coi", label: "COI" },
+    { type: "Onboarding - W8/W9", key: "w9", label: "W-9" },
+    { type: "Onboarding - Payment Details", key: "payment", label: "Payment / ACH" },
+  ];
+  const WELCOME_EMAIL_REQUEST_TYPE = "Onboarding - Request";
+  function latestCaseOfType(entries, type) {
+    const matches = entries.filter((e) => e.requestType === type);
+    if (matches.length === 0) return null;
+    return matches.reduce((latest, e) =>
+      new Date(e.updatedAt || e.requestedAt) >= new Date(latest.updatedAt || latest.requestedAt) ? e : latest
+    );
+  }
+  // Not a case -- just "has the welcome email gone out, and when." A
+  // plain line with a one-click "Mark sent" rather than a status pill,
+  // since there's nothing to approve or deny here.
+  function renderWelcomeEmailLine(latest) {
+    if (latest) {
+      return `<div class="onboarding-welcome-line">Welcome email sent ${new Date(latest.updatedAt || latest.requestedAt).toLocaleDateString()}</div>`;
+    }
+    return `
+      <div class="onboarding-welcome-line">
+        <span>Welcome email not yet sent</span>
+        <button type="button" class="btn btn-link onboarding-welcome-send-btn">Mark sent</button>
+      </div>
+    `;
+  }
+  function wireWelcomeEmailLine(host, v, onLogged) {
+    const btn = host.querySelector(".onboarding-welcome-send-btn");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      try {
+        await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: WELCOME_EMAIL_REQUEST_TYPE, status: "Sent" });
+        vendorsCache = null;
+        await onLogged();
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
+  }
   const CASE_STATUS_OPTIONS = ["New", "In Review", "Needs Adjustment", "Approved", "Denied"];
   function caseStatusBadgeClass(status) {
     const s = String(status || "").trim().toLowerCase();
@@ -424,9 +472,8 @@ export async function renderAdminReview(container) {
   async function drawVendorOnboarding(content) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
     const vendors = vendorsCache;
-    const caseData = await api.get("/api/admin/vendors/onboarding/case-summary");
-    const caseTypes = caseData.caseTypes;
-    const summaries = caseData.summaries;
+    const caseTypes = ONBOARDING_CASE_TYPES;
+    const { summaries } = await api.get("/api/admin/vendors/onboarding/case-summary");
 
     const notStarted = vendors.filter((v) => v.onboardingStage === "not_started");
     const inProgress = vendors
@@ -449,9 +496,9 @@ export async function renderAdminReview(container) {
       <p class="review-checklist-hint">
         ${notStarted.length} vendor${notStarted.length === 1 ? "" : "s"} on file ${notStarted.length === 1 ? "hasn't" : "haven't"}
         had onboarding started yet -- every vendor already on file before this tracker existed
-        defaults here rather than to In Progress. Search by name and click Start to log the welcome
-        email case and move one onto the board below. A brand new vendor (Vendors tab -- Add vendor)
-        starts as In Progress automatically instead.
+        defaults here rather than to In Progress. Search by name and click Start to record the
+        welcome email and move one onto the board below. A brand new vendor (Vendors tab -- Add
+        vendor) starts as In Progress automatically instead.
       </p>
       <div class="onboarding-start-search">
         <input type="text" id="onboarding-start-search-input" placeholder="Search vendor name to start onboarding..." />
@@ -495,7 +542,7 @@ export async function renderAdminReview(container) {
         `;
         row.querySelector(".onboarding-start-btn").addEventListener("click", async () => {
           try {
-            await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: "Onboarding - Request", status: "New" });
+            await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: WELCOME_EMAIL_REQUEST_TYPE, status: "Sent" });
             vendorsCache = null;
             await drawVendorOnboarding(content);
           } catch (err) {
@@ -563,6 +610,7 @@ export async function renderAdminReview(container) {
         <button class="btn btn-secondary onboarding-open-vendor-btn" type="button">Open vendor</button>
         <button class="btn btn-link onboarding-log-toggle" type="button">Full case history</button>
       </div>
+      ${renderWelcomeEmailLine(caseSummary.request)}
       <div class="onboarding-cases">
         ${caseTypes.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
       </div>
@@ -581,6 +629,7 @@ export async function renderAdminReview(container) {
       vendorExpanded.add(v.id);
       goTo("vendors");
     });
+    wireWelcomeEmailLine(el, v, () => drawVendorOnboarding(content));
 
     const deniedReasonSave = el.querySelector(".onboarding-denied-reason-save");
     if (deniedReasonSave) {
@@ -597,22 +646,7 @@ export async function renderAdminReview(container) {
 
     caseTypes.forEach((ct) => {
       const caseEl = el.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
-      const toggleBtn = caseEl.querySelector(".onboarding-case-log-new");
-      const form = caseEl.querySelector(".onboarding-case-form");
-      toggleBtn.addEventListener("click", () => {
-        form.hidden = !form.hidden;
-      });
-      caseEl.querySelector(".onboarding-case-save").addEventListener("click", async () => {
-        const status = caseEl.querySelector(".onboarding-case-status-select").value;
-        const referenceNumber = caseEl.querySelector(".onboarding-case-ref-input").value.trim();
-        try {
-          await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: ct.type, status, referenceNumber });
-          vendorsCache = null;
-          await drawVendorOnboarding(content);
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
+      wireCasePill(caseEl, v, ct, () => drawVendorOnboarding(content));
     });
 
     const logToggle = el.querySelector(".onboarding-log-toggle");
@@ -641,15 +675,78 @@ export async function renderAdminReview(container) {
           <button type="button" class="btn btn-link onboarding-case-log-new">Log update</button>
         </div>
         ${coiRef ? `<div class="onboarding-case-coi-ref">${escapeHtml(coiRef)}</div>` : ""}
+        ${latest && latest.note ? `<div class="onboarding-case-note">${escapeHtml(latest.note)}</div>` : ""}
         <div class="onboarding-case-form" hidden>
           <select class="onboarding-case-status-select">
             ${CASE_STATUS_OPTIONS.map((s) => `<option value="${s}">${s}</option>`).join("")}
           </select>
           <input type="text" class="onboarding-case-ref-input" placeholder="Case # (optional)" />
+          <input type="text" class="onboarding-case-note-input" placeholder="Note (optional, e.g. what's missing)" />
           <button type="button" class="btn btn-primary onboarding-case-save">Save</button>
         </div>
       </div>
     `;
+  }
+
+  // Shared between the Onboarding board's rows and the vendor edit modal's
+  // own Cases section -- both render the same case-pill markup
+  // (renderCasePillHtml) and need the same "toggle a small log-update
+  // form, save it, then re-render" behavior. The note is stored in its own
+  // column, never appended to `status` itself, since deriveOnboardingStage
+  // (db.js) matches `status` against "approved"/"denied" exactly.
+  function wireCasePill(caseEl, v, ct, onLogged) {
+    const toggleBtn = caseEl.querySelector(".onboarding-case-log-new");
+    const form = caseEl.querySelector(".onboarding-case-form");
+    toggleBtn.addEventListener("click", () => {
+      form.hidden = !form.hidden;
+    });
+    caseEl.querySelector(".onboarding-case-save").addEventListener("click", async () => {
+      const status = caseEl.querySelector(".onboarding-case-status-select").value;
+      const referenceNumber = caseEl.querySelector(".onboarding-case-ref-input").value.trim();
+      const note = caseEl.querySelector(".onboarding-case-note-input").value.trim();
+      try {
+        await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: ct.type, status, referenceNumber, note });
+        vendorsCache = null;
+        await onLogged();
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
+  }
+
+  // The vendor edit modal's own view of the same 4 cases the Onboarding
+  // board tracks -- so seeing (and logging) a vendor's case status doesn't
+  // require leaving the modal to go search for it on a separate tab. Only
+  // one vendor's cases are needed here, so it fetches that vendor's own
+  // `/requests` log directly rather than the board's bulk case-summary
+  // endpoint (which computes this for every vendor at once).
+  async function renderVendorCasesSection(host, v) {
+    host.innerHTML = `<p class="review-checklist-hint">Loading cases…</p>`;
+    const entries = await api.get(`/api/admin/vendors/${v.id}/requests`);
+    host.innerHTML = `
+      ${renderWelcomeEmailLine(latestCaseOfType(entries, WELCOME_EMAIL_REQUEST_TYPE))}
+      <div class="onboarding-cases">
+        ${ONBOARDING_CASE_TYPES.map((ct) => renderCasePillHtml(v, ct, latestCaseOfType(entries, ct.type))).join("")}
+      </div>
+      <button type="button" class="btn btn-link vendor-case-history-toggle">Full case history</button>
+      <div class="onboarding-case-log" hidden></div>
+    `;
+    wireWelcomeEmailLine(host, v, () => renderVendorCasesSection(host, v));
+    ONBOARDING_CASE_TYPES.forEach((ct) => {
+      const caseEl = host.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
+      wireCasePill(caseEl, v, ct, () => renderVendorCasesSection(host, v));
+    });
+    const historyToggle = host.querySelector(".vendor-case-history-toggle");
+    const historyHost = host.querySelector(".onboarding-case-log");
+    let historyLoaded = false;
+    historyToggle.addEventListener("click", async () => {
+      historyHost.hidden = !historyHost.hidden;
+      historyToggle.textContent = historyHost.hidden ? "Full case history" : "Hide case history";
+      if (!historyHost.hidden && !historyLoaded) {
+        historyLoaded = true;
+        await renderCaseLog(historyHost, v);
+      }
+    });
   }
 
   async function renderCaseLog(host, v) {
@@ -667,6 +764,7 @@ export async function renderAdminReview(container) {
                 <strong>${escapeHtml(e.requestType)}</strong>${e.referenceNumber ? ` #${escapeHtml(e.referenceNumber)}` : ""}
                 — <span class="badge badge-${caseStatusBadgeClass(e.status)}">${escapeHtml(e.status || "no status")}</span>
                 <span class="task-comment-time">${new Date(e.updatedAt || e.requestedAt).toLocaleString()}</span>
+                ${e.note ? `<br /><span class="onboarding-case-note">${escapeHtml(e.note)}</span>` : ""}
               </p>
             `
                 )
@@ -859,12 +957,80 @@ export async function renderAdminReview(container) {
   // 292-row list every time is exactly the "doesn't feel like an
   // application" friction the pop-up dialog pattern (modal.js) exists to
   // fix elsewhere (WOM Smartsheet detail, document viewer). Same fix here.
+  const VENDOR_DOC_CATEGORIES = [
+    { value: "coi", label: "COI (Certificate of Insurance)" },
+    { value: "w9", label: "W-9" },
+    { value: "ach", label: "ACH / Bank Letter" },
+    { value: "vpo_waiver", label: "VPO Waiver" },
+    { value: "vendor_other", label: "Other Vendor Document" },
+  ];
+
+  // A COI (or other document) that arrived before it was clear which
+  // vendor it belonged to gets parked on a task instead (see tasks.js's
+  // own Documents panel) -- this is the other end of that: once the
+  // vendor's known, assign it here rather than re-uploading it, which
+  // moves the same file (not a copy) from the task onto this vendor's
+  // own record.
+  async function renderAssignTaskDocumentControl(host, v, onAssigned) {
+    let pending = [];
+    try {
+      pending = await api.get("/api/files/task-documents");
+    } catch {
+      pending = [];
+    }
+    if (pending.length === 0) {
+      host.innerHTML = "";
+      return;
+    }
+    host.innerHTML = `
+      <div class="vendor-assign-task-doc">
+        <select class="vendor-assign-task-doc-select">
+          ${pending
+            .map((f) => `<option value="${escapeHtml(f.id)}">${escapeHtml(f.originalName)} — from task: ${escapeHtml(f.taskTitle || "(task deleted)")}</option>`)
+            .join("")}
+        </select>
+        <select class="vendor-assign-task-doc-category">
+          ${VENDOR_DOC_CATEGORIES.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
+        </select>
+        <button type="button" class="btn btn-secondary vendor-assign-task-doc-btn">Assign to this vendor</button>
+      </div>
+    `;
+    host.querySelector(".vendor-assign-task-doc-btn").addEventListener("click", async () => {
+      const fileId = host.querySelector(".vendor-assign-task-doc-select").value;
+      const category = host.querySelector(".vendor-assign-task-doc-category").value;
+      try {
+        await api.patch(`/api/files/${fileId}/relocate`, { relatedType: "vendor", relatedId: v.id, category });
+        await onAssigned();
+        await renderAssignTaskDocumentControl(host, v, onAssigned);
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
+  }
+
   function openVendorEditModal(v, content) {
     const { body, close } = openModal({
       title: v.name,
       size: "large",
       bodyHtml: renderVendorEditForm(v),
     });
+    renderVendorCasesSection(body.querySelector(".vendor-cases-section"), v);
+    const documentsPanel = body.querySelector(".vendor-documents-panel");
+    const refreshDocumentsPanel = () =>
+      renderAttachments(documentsPanel, {
+        title: "Vendor Documents",
+        relatedType: "vendor",
+        relatedId: v.id,
+        categories: VENDOR_DOC_CATEGORIES,
+        canUpload: true,
+        groupByCategory: true,
+        emptyText: "No documents on file yet.",
+      });
+    refreshDocumentsPanel();
+    const assignHost = document.createElement("div");
+    assignHost.className = "vendor-assign-task-doc-host";
+    documentsPanel.after(assignHost);
+    renderAssignTaskDocumentControl(assignHost, v, refreshDocumentsPanel);
     const form = body.querySelector(".vendor-edit-form");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -1035,6 +1201,18 @@ export async function renderAdminReview(container) {
       .join("");
 
     return `
+      <h4>Onboarding cases</h4>
+      <div class="vendor-cases-section"></div>
+
+      <h4>Documents</h4>
+      <div class="vendor-documents-panel"></div>
+      <p class="review-checklist-hint">
+        These are the vendor's actual documents on file -- separate from onboarding
+        <strong>case status</strong> above (has ServiceEdge approved the COI/W-9/Payment case) and
+        from the document-checklist verification below (does the attached document itself meet
+        requirements).
+      </p>
+
       <form class="vendor-edit-form">
         <div class="vendor-edit-grid">
           <label class="profile-field"><span>Vendor name</span><input name="name" value="${escapeHtml(v.name)}" required /></label>
@@ -1052,6 +1230,7 @@ export async function renderAdminReview(container) {
           <label class="profile-field"><span>Successful invoice records</span><input name="successfulInvoiceRecords" type="number" min="0" value="${v.successfulInvoiceRecords ?? ""}" /></label>
           <label class="profile-field"><span>Successful since date</span><input name="successfulSinceDate" type="date" value="${escapeHtml((v.successfulSinceDate || "").slice(0, 10))}" /></label>
         </div>
+
         <label class="profile-field"><span>Tracker work examples</span><textarea name="trackerWorkExamples" rows="2">${escapeHtml(v.trackerWorkExamples || "")}</textarea></label>
         <label class="profile-field"><span>Potential coverage outside Midwest (online)</span><textarea name="coverageOutsideMidwest" rows="2">${escapeHtml(v.coverageOutsideMidwest || "")}</textarea></label>
         <label class="profile-field"><span>Notes</span><textarea name="notes" rows="2">${escapeHtml(v.notes || "")}</textarea></label>
@@ -1061,11 +1240,6 @@ export async function renderAdminReview(container) {
             : ""
         }
 
-        <p class="review-checklist-hint">
-          The sections below verify the vendor's actual documents on file against requirements --
-          separate from onboarding <strong>case status</strong> (has ServiceEdge approved the COI/W-9/
-          Payment case), which is tracked on the Onboarding tab instead.
-        </p>
         <h4>COI (Certificate of Insurance) requirements</h4>
         <p class="review-checklist-hint">
           Picking a Service above fills these with the limits Toyota requires for that service type

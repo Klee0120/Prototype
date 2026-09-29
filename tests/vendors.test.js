@@ -347,3 +347,50 @@ test("vendors: onboarding stage derives from COI/W-9/Payment case status", async
     assert.equal(res.status, 403);
   });
 });
+
+// A case's status has to stay an exact match against "approved"/"denied"
+// for deriveOnboardingStage to keep working -- so a reason like "missing
+// Auto Liability language" needs its own column, not text appended onto
+// status itself.
+test("vendors: a case can carry a note without corrupting stage derivation", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Needs Adjustment Co" } });
+  const vendorId = create.body.id;
+
+  await t.test("logging a case with a note stores both separately", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Needs Adjustment", note: "Missing Auto Liability language" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body[0].status, "Needs Adjustment");
+    assert.equal(res.body[0].note, "Missing Auto Liability language");
+  });
+
+  await t.test("a note doesn't move the vendor to Denied or Onboarded -- status alone still drives that", async () => {
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "in_progress");
+  });
+
+  await t.test("updating a case entry can change the note independently of status", async () => {
+    const list = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" });
+    const entryId = list.body[0].id;
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${entryId}`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Approved", note: "Resubmitted with correct language" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body[0].status, "Approved");
+    assert.equal(res.body[0].note, "Resubmitted with correct language");
+  });
+
+  await t.test("a case logged with no note at all defaults to an empty string, not null", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - W8/W9", status: "New" },
+    });
+    assert.equal(res.body[0].note, "");
+  });
+});

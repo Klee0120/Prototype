@@ -87,7 +87,7 @@ export async function renderAttachments(host, opts) {
         section.innerHTML = `<div class="attachments-section-title">${escapeHtml(catLabel)}</div><div class="attachments-list"></div>`;
         const listEl = section.querySelector(".attachments-list");
         if (catFiles.length === 0) {
-          listEl.innerHTML = `<p class="empty-note">No ${escapeHtml(catLabel.toLowerCase())}s saved for this month yet.</p>`;
+          listEl.innerHTML = `<p class="empty-note">${escapeHtml(opts.emptyText || `No ${catLabel.toLowerCase()}s saved for this month yet.`)}</p>`;
         } else {
           catFiles.forEach((f, i) => listEl.appendChild(renderFileRow(f, catFiles, i)));
         }
