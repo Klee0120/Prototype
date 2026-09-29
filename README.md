@@ -282,6 +282,30 @@ Demo logins:
   Any box left unchecked (or a stale invoice date) marks that vendor
   "Doc checks incomplete" on the Vendors list and rolls up into the
   Priorities tab, same flagging idea as an outdated form.
+- **Vendors -> Onboarding tab**: mirrors the email-folder-per-vendor
+  workflow used to track onboarding by hand -- each vendor carries an
+  `onboardingStage` (`not_started` / `in_progress` / `denied` /
+  `onboarded`; adding a vendor from the Vendors tab defaults it straight to
+  **in_progress**, since adding one here is starting to onboard it) and,
+  once denied, a free-text `deniedReason` (e.g. "ACH issue", "COI"). The
+  Onboarding tab lists **In Progress** (sorted most-stale-first) and
+  **Denied** vendors separately, flagging any In Progress vendor with no
+  activity in 7+ days (`ONBOARDING_STALE_DAYS` in `adminReview.js`) the
+  same red-flag treatment `.review-row-pending` uses elsewhere. Each row's
+  **Case Log** finally surfaces `vendor_requests` -- the onboarding/
+  compliance case-log table (a COI case, a Toyota onboarding case, etc.,
+  with a free-text status since real statuses like "Denied - No Response -
+  Start over Case" don't reduce to a boolean) that was built alongside the
+  compliance tracker early on but never had a screen of its own; logging a
+  status update here (or editing one) touches the vendor's own
+  `updated_at`, which is what staleness reads -- so "add a note" really
+  does reset the 7-day clock, matching the real "did anyone touch this
+  case recently" question. Moving a vendor's stage or denied reason from
+  this tab reuses the same `PATCH /api/admin/vendors/:id` the main Vendors
+  edit form uses, carrying every other field through unchanged (that
+  endpoint replaces the whole record, not just the fields sent -- same
+  "don't accidentally blank the rest of it" lesson as the roster's
+  Terminate action).
 - **Schedule tab**: a month calendar of **WOM project work only** — no E&F
   time and no time off, since the point is seeing what's already scheduled
   project-wise, not a general timesheet view (Tech Allocation and Weekly
@@ -571,7 +595,32 @@ Demo logins:
     line (`wom_sync_log` table, survives a page reload) with a **View Sync
     Details** toggle for the full breakdown -- diffed directly against the
     tasks table before/after that specific sync call, not inferred from
-    WOM row counts.
+    WOM row counts. The details panel now also names **which WOM changed
+    and which fields** (estimate/applied/Maximo #/subsidiary code/
+    location) -- `diffFields`/`valuesDiffer` in `server/data/db.js` compare
+    against the WOM's actual previous values first, so "N WOMs updated"
+    only counts a WOM that genuinely changed, not every already-synced WOM
+    the sheet still happens to mention (previously *every* row reaching
+    that branch counted as "updated" regardless of whether anything about
+    it differed, which is why the count was too large to mean anything).
+    Persisted on `wom_sync_log.changed_woms_json` so the list survives a
+    page reload, not just the sync that produced it.
+  - **A sheet row with neither a real WOM # nor a real project name is
+    skipped outright**, not synced in as an unidentifiable
+    `PENDING-<rowId>` WOM -- some sheets keep header/legend/key rows near
+    the top ("CODE", "Check Box < F/U Already", a blank filler row) that
+    aren't work requests at all. `"-"` and `"0"` in the WOM # column both
+    count as "no real code," matching how a spreadsheet actually marks a
+    blank cell. A sync also cleans up a junk pending WOM an earlier sync
+    (before this check existed) already created, once that row still has
+    nothing real on it -- safe to hard-delete outright, since a row like
+    that could never have real hours allocated against it.
+  - **Pending/requested WOMs (no real WOM # yet) are left out of WOM
+    Lookup** (admin) and the technician's own read-only Locations & WOM
+    list -- both are for finding a WOM you already have hours/pricing to
+    look up, and a placeholder with nothing real on it yet doesn't belong
+    there. They still show up in the main WOM Projects list and
+    Priorities, where following up on them *is* the point.
   - **Manual tasks**: anyone can add one (a technician's own follow-up is
     force-assigned to themselves; only an admin can hand a task to someone
     else or drop it into a role queue with no owner yet), and everyone can

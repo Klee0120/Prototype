@@ -178,3 +178,97 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     assert.ok(actions.includes("VENDOR_DELETED"));
   });
 });
+
+test("vendors: onboarding tracker (stage, denied reason, case log)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let vendorId;
+
+  await t.test("a newly added vendor defaults to In Progress -- adding one here is starting to onboard it", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Momentum Mechanical" } });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.onboardingStage, "in_progress");
+    assert.equal(res.body.deniedReason, "");
+    vendorId = res.body.id;
+  });
+
+  await t.test("rejects an invalid onboarding stage", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", onboardingStage: "sort-of-onboarded" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("moving it to Denied with a reason doesn't touch its other fields", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", phone: "555-0100", onboardingStage: "denied", deniedReason: "ACH issue" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.onboardingStage, "denied");
+    assert.equal(res.body.deniedReason, "ACH issue");
+    assert.equal(res.body.phone, "555-0100");
+  });
+
+  await t.test("not sending onboardingStage on an unrelated edit leaves the stage alone", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", phone: "555-0199" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.onboardingStage, "denied");
+    assert.equal(res.body.deniedReason, "ACH issue");
+    assert.equal(res.body.phone, "555-0199");
+  });
+
+  await t.test("stage changes are audited distinctly from a plain update", async () => {
+    const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = res.body.find((e) => e.action === "VENDOR_ONBOARDING_STAGE_CHANGED");
+    assert.ok(entry, "expected a VENDOR_ONBOARDING_STAGE_CHANGED audit entry");
+    assert.match(entry.details, /ACH issue/);
+  });
+
+  await t.test("a technician cannot read a vendor's case log", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("case log starts empty", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, []);
+  });
+
+  await t.test("logging a status update appears in the case log and bumps the vendor's own activity clock", async () => {
+    const before = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const beforeUpdatedAt = before.body.find((v) => v.id === vendorId).updatedAt;
+
+    // Guarantee a measurable clock difference regardless of how fast the
+    // two calls happen to run back to back.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Status Update", status: "Waiting on COI from vendor" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.length, 1);
+    assert.equal(res.body[0].status, "Waiting on COI from vendor");
+
+    const after = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const afterUpdatedAt = after.body.find((v) => v.id === vendorId).updatedAt;
+    assert.ok(new Date(afterUpdatedAt) > new Date(beforeUpdatedAt), "expected updatedAt to advance after a case-log entry");
+  });
+
+  await t.test("updating a case log entry's status is reflected and re-audited as vendor activity", async () => {
+    const list = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" });
+    const entryId = list.body[0].id;
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${entryId}`, {
+      userId: "ADMIN",
+      body: { requestType: "Status Update", status: "COI received -- reviewing" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body[0].status, "COI received -- reviewing");
+  });
+});

@@ -6,7 +6,7 @@ const router = express.Router();
 router.use(requireAuth, requireAdmin);
 
 function validateVendorBody(body) {
-  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords } = body || {};
+  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage } = body || {};
   if (!name || !String(name).trim()) return "name is required";
   if (cwStatus && !db.CW_STATUSES.includes(cwStatus)) return `cwStatus must be one of: ${db.CW_STATUSES.join(", ")}`;
   if (toyotaStatus && !db.TOYOTA_STATUSES.includes(toyotaStatus)) {
@@ -14,6 +14,9 @@ function validateVendorBody(body) {
   }
   if (formsStatus && !db.FORMS_STATUSES.includes(formsStatus)) {
     return `formsStatus must be one of: ${db.FORMS_STATUSES.join(", ")}`;
+  }
+  if (onboardingStage && !db.ONBOARDING_STAGES.includes(onboardingStage)) {
+    return `onboardingStage must be one of: ${db.ONBOARDING_STAGES.join(", ")}`;
   }
   if (successfulInvoiceRecords != null && successfulInvoiceRecords !== "") {
     const n = Number(successfulInvoiceRecords);
@@ -43,6 +46,13 @@ router.patch("/:id", (req, res) => {
   if (error) return res.status(400).json({ error });
 
   const vendor = db.updateVendor(req.params.id, { ...req.body, name: String(req.body.name).trim() });
+  if (vendor.onboardingStage !== existing.onboardingStage) {
+    db.addAudit(
+      req.user.id,
+      "VENDOR_ONBOARDING_STAGE_CHANGED",
+      `${req.user.name} moved ${vendor.name} to ${vendor.onboardingStage}${vendor.onboardingStage === "denied" && vendor.deniedReason ? ` (${vendor.deniedReason})` : ""}`
+    );
+  }
   db.addAudit(req.user.id, "VENDOR_UPDATED", `${req.user.name} updated vendor ${vendor.name}`);
   res.json(vendor);
 });
@@ -61,6 +71,12 @@ router.delete("/:id", (req, res) => {
 // a free-text status instead of a simple complete/reopen toggle, since the
 // real cases carry varied statuses ("Approved", "Waiting", "Denied - No
 // Response - Start over Case") that don't reduce to a boolean.
+router.get("/:id/requests", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.listVendorRequests(vendor.id));
+});
+
 router.post("/:id/requests", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });

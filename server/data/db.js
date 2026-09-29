@@ -290,6 +290,13 @@ db.exec(`
   );
 `);
 
+// A sync's actual per-WOM changes (code/description/which fields differed),
+// as JSON -- so "View Sync Details" can say what changed, not just how many
+// rows were touched, and still show it after a page reload.
+if (!hasColumn("wom_sync_log", "changed_woms_json")) {
+  db.exec("ALTER TABLE wom_sync_log ADD COLUMN changed_woms_json TEXT");
+}
+
 // Additive columns for existing databases created before the roster
 // expansion — safe to just add, unlike the relational rebuild above.
 for (const col of ["email", "phone", "ukg_id", "position", "hire_date", "termination_date"]) {
@@ -556,6 +563,25 @@ for (const col of VENDOR_FORM_CHECK_BOOL_COLUMNS) {
 // flagged stale once it's more than 2 years old (see W9_INVOICE_MAX_AGE_YEARS).
 if (!hasColumn("vendors", "w9_invoice_date")) {
   db.exec("ALTER TABLE vendors ADD COLUMN w9_invoice_date TEXT");
+}
+// Mirrors the email-folder workflow already used to track onboarding by
+// hand: a vendor sits "in_progress" while it's actively being worked,
+// moves to "denied" (with a reason) or "onboarded" when it's resolved.
+// "not_started" is the default for the bulk of already-imported vendors
+// that were never run through an explicit onboarding process here.
+if (!hasColumn("vendors", "onboarding_stage")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN onboarding_stage TEXT NOT NULL DEFAULT 'not_started'");
+}
+if (!hasColumn("vendors", "denied_reason")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN denied_reason TEXT DEFAULT ''");
+}
+// Case-log entries need their own updated_at too -- the real signal for
+// "has anyone touched this vendor in the last 7 days" is the most recent
+// touch to *either* the vendor record or one of its case-log entries, not
+// just whichever the vendor row's own updated_at happens to reflect.
+if (!hasColumn("vendor_requests", "updated_at")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN updated_at TEXT");
+  db.exec("UPDATE vendor_requests SET updated_at = requested_at WHERE updated_at IS NULL");
 }
 
 seedIfEmpty();
@@ -963,10 +989,14 @@ function presentVendorRow(v) {
     formChecksComplete,
     w9InvoiceDate: v.w9_invoice_date || null,
     w9InvoiceStale,
+    onboardingStage: v.onboarding_stage,
+    deniedReason: v.denied_reason || "",
     createdAt: v.created_at,
     updatedAt: v.updated_at,
   };
 }
+
+const ONBOARDING_STAGES = ["not_started", "in_progress", "denied", "onboarded"];
 
 function listVendors() {
   return db.prepare("SELECT * FROM vendors ORDER BY name").all().map(presentVendorRow);
@@ -1005,6 +1035,8 @@ function createVendor(fields) {
     ...VENDOR_COI_FIELDS.map(([, col]) => col),
     ...VENDOR_FORM_CHECK_FIELDS.map(([, col]) => col),
     "w9_invoice_date",
+    "onboarding_stage",
+    "denied_reason",
     "created_at",
     "updated_at",
   ];
@@ -1032,6 +1064,11 @@ function createVendor(fields) {
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
     fields.w9InvoiceDate || null,
+    // Adding a vendor here is, in practice, the start of onboarding it --
+    // default to "in_progress" rather than "not_started" so it shows up on
+    // the Onboarding tab immediately, without an extra step.
+    ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : "in_progress",
+    fields.deniedReason || "",
     now,
     now,
   ];
@@ -1042,7 +1079,8 @@ function createVendor(fields) {
 }
 
 function updateVendor(id, fields) {
-  if (!findVendor(id)) return null;
+  const existing = findVendor(id);
+  if (!existing) return null;
   const coiLimits = fields.coiLimits || {};
   const formChecks = fields.formChecks || {};
   db.prepare(
@@ -1055,6 +1093,8 @@ function updateVendor(id, fields) {
       ${VENDOR_COI_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
       ${VENDOR_FORM_CHECK_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
       w9_invoice_date = ?,
+      onboarding_stage = ?,
+      denied_reason = ?,
       updated_at = ?
      WHERE id = ?`
   ).run(
@@ -1081,6 +1121,8 @@ function updateVendor(id, fields) {
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
     fields.w9InvoiceDate || null,
+    ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : existing.onboardingStage,
+    fields.deniedReason != null ? fields.deniedReason : existing.deniedReason,
     new Date().toISOString(),
     Number(id)
   );
@@ -1105,24 +1147,34 @@ function listVendorRequests(vendorId) {
   return db
     .prepare(
       `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status,
-              requested_at AS requestedAt
+              requested_at AS requestedAt, updated_at AS updatedAt
        FROM vendor_requests WHERE vendor_id = ? ORDER BY id DESC`
     )
     .all(vendorId);
 }
 
 function addVendorRequest(vendorId, requestType, referenceNumber, status) {
+  const now = new Date().toISOString();
   db.prepare(
-    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, requested_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(vendorId, requestType, referenceNumber || "", status || "", new Date().toISOString());
+    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(vendorId, requestType, referenceNumber || "", status || "", now, now);
+  touchVendorActivity(vendorId);
   return listVendorRequests(vendorId);
 }
 
 function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status }) {
   db.prepare(
-    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ? WHERE id = ? AND vendor_id = ?"
-  ).run(requestType, referenceNumber || "", status || "", requestId, vendorId);
+    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
+  ).run(requestType, referenceNumber || "", status || "", new Date().toISOString(), requestId, vendorId);
+  touchVendorActivity(vendorId);
   return listVendorRequests(vendorId);
+}
+
+// A case-log touch is real onboarding activity even though it isn't a
+// field on the vendor row itself -- bump the vendor's own updated_at too,
+// since that's what staleness (see vendorOnboardingSummary) is read from.
+function touchVendorActivity(vendorId) {
+  db.prepare("UPDATE vendors SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), vendorId);
 }
 
 function deleteVendorRequest(vendorId, requestId) {
@@ -1898,7 +1950,7 @@ function ensureRecurringTasks() {
 function recordSyncLog(fields) {
   db.prepare(
     `INSERT INTO wom_sync_log (synced_at, synced_by, woms_created, woms_promoted, woms_updated,
-     tasks_created, tasks_completed, exceptions_flagged, total_rows) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     tasks_created, tasks_completed, exceptions_flagged, total_rows, changed_woms_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     new Date().toISOString(),
     fields.syncedBy || null,
@@ -1908,13 +1960,22 @@ function recordSyncLog(fields) {
     fields.tasksCreated || 0,
     fields.tasksCompleted || 0,
     fields.exceptionsFlagged || 0,
-    fields.totalRows || 0
+    fields.totalRows || 0,
+    JSON.stringify(fields.changedWoms || [])
   );
   return getLastSyncLog();
 }
 
 function getLastSyncLog() {
-  return db.prepare("SELECT * FROM wom_sync_log ORDER BY id DESC LIMIT 1").get() || null;
+  const row = db.prepare("SELECT * FROM wom_sync_log ORDER BY id DESC LIMIT 1").get();
+  if (!row) return null;
+  let changedWoms = [];
+  try {
+    changedWoms = row.changed_woms_json ? JSON.parse(row.changed_woms_json) : [];
+  } catch {
+    changedWoms = [];
+  }
+  return { ...row, changedWoms };
 }
 
 function markWomSmartsheetReflected(code) {
@@ -2014,12 +2075,35 @@ function matchLocationCodeByName(rawName) {
 // same as before this became an options object (this used to be a long
 // positional-argument list; a plain object stopped that from growing
 // unreadable every time another sheet column needed pulling in).
+// Whether an already-stored value actually differs from what this sync
+// would write -- so "N WOMs updated" (and the change list behind "View
+// Sync Details") only counts a WOM whose data genuinely changed, not every
+// already-open WOM the sheet still happens to mention.
+function valuesDiffer(existingValue, nextValue) {
+  if (existingValue == null && nextValue == null) return false;
+  if (existingValue == null || nextValue == null) return true;
+  return Number(existingValue) !== Number(nextValue) && String(existingValue) !== String(nextValue);
+}
+
+function diffFields(existing, next) {
+  const fields = [];
+  if (next.estimatedPrice != null && valuesDiffer(existing.estimated_price, next.estimatedPrice)) fields.push("estimate");
+  if (next.appliedPrice != null && valuesDiffer(existing.applied_price, next.appliedPrice)) fields.push("applied");
+  if (next.maximoNumber && valuesDiffer(existing.maximo_number, next.maximoNumber)) fields.push("Maximo #");
+  if (next.subsidiaryCode && valuesDiffer(existing.subsidiary_code, next.subsidiaryCode)) fields.push("subsidiary code");
+  if (next.matchedLocationCode && !existing.location_code) fields.push("location");
+  return fields;
+}
+
 function syncWomsFromSheetRows(rows, columns) {
   const { wom: womColumn, estimate: estimateColumn, applied: appliedColumn, description: descriptionColumn } = columns;
   const { dateRequested: dateRequestedColumn, maximo: maximoColumn, location: locationColumn, subsidiary: subsidiaryColumn } = columns;
   let created = 0;
   let promoted = 0;
   let updated = 0;
+  // What actually changed this sync, WOM by WOM -- the answer to "when I
+  // sync, I have no idea what's been changed."
+  const changedWoms = [];
   const stamp = new Date().toISOString();
 
   for (const row of rows) {
@@ -2028,12 +2112,17 @@ function syncWomsFromSheetRows(rows, columns) {
 
     const rawCode = womColumn ? row[womColumn] : null;
     const trimmedCode = rawCode != null ? String(rawCode).trim() : "";
-    const realCode = trimmedCode && trimmedCode !== "0" ? trimmedCode : null;
+    // "0" and "-" are both placeholder/blank markers a spreadsheet cell
+    // shows for "nothing entered yet," not an actual WOM #.
+    const realCode = trimmedCode && trimmedCode !== "0" && trimmedCode !== "-" ? trimmedCode : null;
     const requested = Boolean(dateRequestedColumn && String(row[dateRequestedColumn] ?? "").trim());
     const rowNumber = row.__smartsheetRowNumber || null;
-    const description =
-      (descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim()) ||
-      (rowNumber ? `Smartsheet request (Line ${rowNumber})` : `Smartsheet request (row ${rowId})`);
+    const hasRealDescription = Boolean(descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim());
+    const description = hasRealDescription
+      ? String(row[descriptionColumn]).trim()
+      : rowNumber
+        ? `Smartsheet request (Line ${rowNumber})`
+        : `Smartsheet request (row ${rowId})`;
     const estimatedPrice = estimateColumn ? parseDollarAmount(row[estimateColumn]) : null;
     const appliedPrice = appliedColumn ? parseDollarAmount(row[appliedColumn]) : null;
     const maximoNumber = (maximoColumn && row[maximoColumn] && String(row[maximoColumn]).trim()) || null;
@@ -2043,6 +2132,24 @@ function syncWomsFromSheetRows(rows, columns) {
 
     const existing = findWomBySmartsheetRowId(rowId);
 
+    // A row with neither a real WOM # nor a real project name isn't a work
+    // request -- it's a header/legend/key row some sheets keep near the
+    // top ("CODE", "Check Box < F/U Already", "Work Done < Needs", etc.),
+    // or a blank filler row. Never manufacture a "PENDING-<rowId>" WOM
+    // nobody can identify for one; clean up one a sync created before this
+    // check existed (safe to hard-delete -- a row like this could never
+    // have real hours allocated against it).
+    if (!realCode && !hasRealDescription) {
+      if (existing) {
+        db.prepare(
+          "UPDATE tasks SET status = 'cancelled', last_status_change_at = ? WHERE related_wom_code = ? AND status NOT IN ('completed','cancelled')"
+        ).run(stamp, existing.code);
+        db.prepare("DELETE FROM wom_status_history WHERE wom_code = ?").run(existing.code);
+        deleteWom(existing.code, { force: true });
+      }
+      continue;
+    }
+
     if (!existing) {
       const code = realCode || `PENDING-${rowId}`;
       // A real WOM # this app already has a record for, created some other
@@ -2050,12 +2157,16 @@ function syncWomsFromSheetRows(rows, columns) {
       // adopt it rather than erroring on a duplicate code.
       const collision = findWom(code);
       if (collision) {
+        const fields = diffFields(collision, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode });
         db.prepare(
           `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
            location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
            smartsheet_row_number = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
         ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, rowId, code);
-        updated++;
+        if (fields.length > 0) {
+          updated++;
+          changedWoms.push({ code, description: collision.description, fields });
+        }
         ensurePseStage(code);
         continue;
       }
@@ -2076,6 +2187,7 @@ function syncWomsFromSheetRows(rows, columns) {
          smartsheet_row_number = ? WHERE code = ?`
       ).run(realCode, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
       promoted++;
+      changedWoms.push({ code: realCode, description: existing.description, fields: ["status: now open (real WOM # arrived)"] });
       recordWomStatusChange(realCode, "status", existing.status, "open", { source: "smartsheet_sync" });
       ensurePseStage(realCode);
       continue;
@@ -2088,21 +2200,28 @@ function syncWomsFromSheetRows(rows, columns) {
          smartsheet_row_number = ? WHERE code = ?`
       ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
       updated++;
+      changedWoms.push({ code: existing.code, description: existing.description, fields: ["status: now requested"] });
       recordWomStatusChange(existing.code, "status", "pending", "requested", { source: "smartsheet_sync" });
       ensurePseStage(existing.code);
       continue;
     }
 
-    db.prepare(
-      `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-       location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
-       smartsheet_row_number = ? WHERE code = ?`
-    ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
-    updated++;
-    ensurePseStage(existing.code);
+    {
+      const fields = diffFields(existing, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode });
+      db.prepare(
+        `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
+         location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+         smartsheet_row_number = ? WHERE code = ?`
+      ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
+      if (fields.length > 0) {
+        updated++;
+        changedWoms.push({ code: existing.code, description: existing.description, fields });
+      }
+      ensurePseStage(existing.code);
+    }
   }
 
-  return { created, promoted, updated, total: rows.length };
+  return { created, promoted, updated, total: rows.length, changedWoms };
 }
 
 // ---- UKG hours (per-day source of truth) ----
@@ -2565,6 +2684,7 @@ module.exports = {
   CW_STATUSES,
   TOYOTA_STATUSES,
   FORMS_STATUSES,
+  ONBOARDING_STAGES,
   listVendors,
   findVendor,
   createVendor,

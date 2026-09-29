@@ -1220,6 +1220,43 @@ h1, h2, h3, h4 {
   border-radius: 8px;
 }
 
+/* ---- Vendor onboarding ---- */
+
+.onboarding-row .onboarding-stage-select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.onboarding-denied-reason {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.onboarding-denied-reason input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.onboarding-case-entry {
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+.onboarding-case-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.onboarding-case-add input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 /* ---- Tables ---- */
 
 .detail-table {
@@ -1542,6 +1579,21 @@ h1, h2, h3, h4 {
 .smartsheet-status-off {
   background: var(--warn-bg);
   color: var(--warn);
+}
+
+.smartsheet-changed-woms-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin: 12px 0 6px;
+}
+
+.smartsheet-changed-woms-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.smartsheet-changed-woms-list li {
+  margin: 4px 0;
 }
 
 .smartsheet-preview-table {

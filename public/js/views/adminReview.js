@@ -65,7 +65,7 @@ const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
   { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "schedule", "overview", "review"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
-  { key: "vendors", label: "Vendors", tabs: ["vendors"] },
+  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
   { key: "financials", label: "Financials", tabs: ["psetasks", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
@@ -82,6 +82,7 @@ const TAB_LABELS = {
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendors",
+  onboarding: "Onboarding",
   woms: "Locations & WOM",
   womlookup: "WOM Lookup",
   audit: "Audit Trail",
@@ -254,6 +255,7 @@ export async function renderAdminReview(container) {
       jumpToTech = null;
     }
     else if (activeTab === "vendors") await drawVendors(content);
+    else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "psetasks") await drawPseTasks(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
@@ -309,6 +311,198 @@ export async function renderAdminReview(container) {
   async function drawVendors(content) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
     renderVendorsUI(content);
+  }
+
+  const ONBOARDING_STAGE_OPTIONS = [
+    { value: "not_started", label: "Not started" },
+    { value: "in_progress", label: "In Progress" },
+    { value: "denied", label: "Denied" },
+    { value: "onboarded", label: "Onboarded" },
+  ];
+  const ONBOARDING_STALE_DAYS = 7;
+
+  // updateVendor rewrites the whole record, not just the fields being
+  // changed here -- carry every other field through unchanged (same
+  // "don't accidentally blank the rest of the record" lesson as the
+  // roster's own Terminate action) so flipping a stage or logging a case
+  // update from this tab never touches anything else about the vendor.
+  function vendorFullPayload(v, overrides) {
+    return {
+      name: v.name,
+      jdeVendorNumber: v.jdeVendorNumber,
+      cwStatus: v.cwStatus,
+      toyotaStatus: v.toyotaStatus,
+      formsStatus: v.formsStatus,
+      rawStatusText: v.rawStatusText,
+      poEmail: v.poEmail,
+      invoicedPreviously: v.invoicedPreviously,
+      successfulInvoiceRecords: v.successfulInvoiceRecords,
+      successfulSinceDate: v.successfulSinceDate,
+      midwestSitesSeen: v.midwestSitesSeen,
+      services: v.services,
+      trackerWorkExamples: v.trackerWorkExamples,
+      coverageOutsideMidwest: v.coverageOutsideMidwest,
+      phone: v.phone,
+      email: v.email,
+      onlineSourceUrl: v.onlineSourceUrl,
+      notes: v.notes,
+      coiMeetsRequiredLimits: v.coiMeetsRequiredLimits,
+      coiMeetsLanguageRequirements: v.coiMeetsLanguageRequirements,
+      coiLimits: v.coiLimits,
+      formChecks: v.formChecks,
+      w9InvoiceDate: v.w9InvoiceDate,
+      onboardingStage: v.onboardingStage,
+      deniedReason: v.deniedReason,
+      ...overrides,
+    };
+  }
+
+  function daysSince(iso) {
+    return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  }
+
+  // Mirrors working an email folder per vendor: pick one up while it's
+  // "In Progress", log status updates as they happen (the case log below,
+  // finally surfacing server/data/db.js's vendor_requests -- built earlier
+  // alongside the compliance tracker but never wired into any screen),
+  // flag it once nobody's touched it in a week, and move it to Denied
+  // (with a reason) or Onboarded when it's resolved.
+  async function drawVendorOnboarding(content) {
+    const vendors = await api.get("/api/admin/vendors");
+    const inProgress = vendors.filter((v) => v.onboardingStage === "in_progress").sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
+    const denied = vendors.filter((v) => v.onboardingStage === "denied").sort((a, b) => a.name.localeCompare(b.name));
+
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Vendors currently being onboarded, plus ones that were denied -- adding a vendor (Vendors tab)
+        starts it here automatically. A vendor with no update logged in ${ONBOARDING_STALE_DAYS}+ days is
+        flagged so nothing quietly sits untouched.
+      </p>
+      <h3>In Progress (${inProgress.length})</h3>
+      <div class="review-list" id="onboarding-in-progress-list"></div>
+      <h3>Denied (${denied.length})</h3>
+      <div class="review-list" id="onboarding-denied-list"></div>
+    `;
+
+    const inProgressList = content.querySelector("#onboarding-in-progress-list");
+    if (inProgress.length === 0) {
+      inProgressList.innerHTML = `<p class="empty-note">Nothing currently being onboarded.</p>`;
+    } else {
+      inProgress.forEach((v) => inProgressList.appendChild(renderOnboardingRow(v, content)));
+    }
+
+    const deniedList = content.querySelector("#onboarding-denied-list");
+    if (denied.length === 0) {
+      deniedList.innerHTML = `<p class="empty-note">No denied vendors.</p>`;
+    } else {
+      denied.forEach((v) => deniedList.appendChild(renderOnboardingRow(v, content)));
+    }
+  }
+
+  function renderOnboardingRow(v, content) {
+    const el = document.createElement("div");
+    const age = daysSince(v.updatedAt);
+    const stale = v.onboardingStage === "in_progress" && age >= ONBOARDING_STALE_DAYS;
+    el.className = `review-row onboarding-row${stale ? " review-row-pending" : ""}`;
+
+    const stageOptions = ONBOARDING_STAGE_OPTIONS.map(
+      (s) => `<option value="${s.value}" ${v.onboardingStage === s.value ? "selected" : ""}>${s.label}</option>`
+    ).join("");
+
+    el.innerHTML = `
+      <div class="review-row-summary">
+        <span class="review-row-name">${escapeHtml(v.name)}</span>
+        <span class="wom-desc">${age === 0 ? "updated today" : `${age}d since last update`}</span>
+        ${stale ? `<span class="badge badge-rejected">Stale</span>` : ""}
+        ${v.deniedReason ? `<span class="badge badge-draft">${escapeHtml(v.deniedReason)}</span>` : ""}
+        <select class="onboarding-stage-select">${stageOptions}</select>
+        <button class="btn btn-link onboarding-log-toggle" type="button">Case Log</button>
+      </div>
+      <div class="onboarding-denied-reason" ${v.onboardingStage === "denied" ? "" : "hidden"}>
+        <input type="text" class="onboarding-denied-reason-input" placeholder="Reason (e.g. ACH issue, COI)" value="${escapeHtml(v.deniedReason)}" />
+        <button type="button" class="btn btn-link onboarding-denied-reason-save">Save reason</button>
+      </div>
+      <div class="review-row-detail onboarding-case-log" hidden></div>
+    `;
+
+    const stageSelect = el.querySelector(".onboarding-stage-select");
+    const deniedReasonBlock = el.querySelector(".onboarding-denied-reason");
+    stageSelect.addEventListener("change", async () => {
+      const newStage = stageSelect.value;
+      try {
+        await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { onboardingStage: newStage }));
+        vendorsCache = null;
+        deniedReasonBlock.hidden = newStage !== "denied";
+        await drawVendorOnboarding(content);
+      } catch (err) {
+        window.alert(err.message);
+        stageSelect.value = v.onboardingStage;
+      }
+    });
+
+    el.querySelector(".onboarding-denied-reason-save").addEventListener("click", async () => {
+      const reasonInput = el.querySelector(".onboarding-denied-reason-input");
+      try {
+        await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
+        vendorsCache = null;
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
+
+    const logToggle = el.querySelector(".onboarding-log-toggle");
+    const logHost = el.querySelector(".onboarding-case-log");
+    let logLoaded = false;
+    logToggle.addEventListener("click", async () => {
+      logHost.hidden = !logHost.hidden;
+      logToggle.textContent = logHost.hidden ? "Case Log" : "Hide Case Log";
+      if (!logHost.hidden && !logLoaded) {
+        logLoaded = true;
+        await renderCaseLog(logHost, v);
+      }
+    });
+
+    return el;
+  }
+
+  async function renderCaseLog(host, v) {
+    host.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
+    const entries = await api.get(`/api/admin/vendors/${v.id}/requests`);
+    host.innerHTML = `
+      <div class="onboarding-case-entries">
+        ${
+          entries.length === 0
+            ? `<p class="empty-note">No status updates logged yet.</p>`
+            : entries
+                .map(
+                  (e) => `
+              <p class="onboarding-case-entry">
+                <strong>${escapeHtml(e.requestType)}</strong>${e.referenceNumber ? ` #${escapeHtml(e.referenceNumber)}` : ""}
+                — ${escapeHtml(e.status || "no status")}
+                <span class="task-comment-time">${new Date(e.updatedAt || e.requestedAt).toLocaleString()}</span>
+              </p>
+            `
+                )
+                .join("")
+        }
+      </div>
+      <div class="onboarding-case-add">
+        <input type="text" class="onboarding-case-status" placeholder="Status update (e.g. Waiting on COI from vendor)" />
+        <button type="button" class="btn btn-link onboarding-case-add-btn">Log update</button>
+      </div>
+    `;
+    host.querySelector(".onboarding-case-add-btn").addEventListener("click", async () => {
+      const input = host.querySelector(".onboarding-case-status");
+      const status = input.value.trim();
+      if (!status) return;
+      try {
+        await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: "Status Update", status });
+        vendorsCache = null;
+        await renderCaseLog(host, v);
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
   }
 
   function filteredVendors() {
@@ -1936,7 +2130,29 @@ export async function renderAdminReview(container) {
           <li>${lastSync.exceptions_flagged} workflow exception(s) flagged</li>
           <li>${lastSync.total_rows} sheet row(s) processed</li>
         </ul>
+        ${renderChangedWomsList(lastSync.changedWoms)}
       </div>
+    `;
+  }
+
+  // The actual "what changed" answer -- one line per WOM this sync touched,
+  // naming which fields differed, instead of just a total count. A WOM
+  // whose values already matched the sheet doesn't appear here at all,
+  // even though it's still part of "N sheet rows processed" above.
+  function renderChangedWomsList(changedWoms) {
+    if (!changedWoms || changedWoms.length === 0) {
+      return `<p class="empty-note">No WOM fields actually changed this sync -- every matching row already had current data.</p>`;
+    }
+    return `
+      <div class="smartsheet-changed-woms-title">What changed</div>
+      <ul class="smartsheet-changed-woms-list">
+        ${changedWoms
+          .map(
+            (c) =>
+              `<li><span class="wom-code">${escapeHtml(c.code)}</span> ${escapeHtml(c.description || "")} — ${escapeHtml(c.fields.join(", "))}</li>`
+          )
+          .join("")}
+      </ul>
     `;
   }
 
@@ -2584,7 +2800,13 @@ export async function renderAdminReview(container) {
   // tabs here are. Read-only, and open to techs too (see techHome.js) since
   // it's a lookup tool, not a management screen.
   async function drawWomLookup(content) {
-    const [woms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
+    const [allWoms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
+    // "Pending"/"requested" WOMs have no real WOM # yet -- there's nothing
+    // to look up hours/pricing against, so they don't belong in a tool for
+    // finding a WOM you already have hours/pricing on. They still show up
+    // in the main WOM Projects list and Priorities, where following up on
+    // them is the actual point.
+    const woms = allWoms.filter((w) => w.status !== "pending" && w.status !== "requested");
     const sorted = [...woms].sort((a, b) => a.code.localeCompare(b.code));
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");

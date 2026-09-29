@@ -53,7 +53,10 @@ export async function renderTechHome(container) {
   }
 
   async function drawLocationsAndWoms(content) {
-    const [locations, woms] = await Promise.all([api.get("/api/locations"), api.get("/api/woms")]);
+    const [locations, allWoms] = await Promise.all([api.get("/api/locations"), api.get("/api/woms")]);
+    // Pending/requested WOMs have no real WOM # yet -- nothing to look up
+    // or charge time to, so they're left out of this reference list.
+    const woms = allWoms.filter((w) => w.status !== "pending" && w.status !== "requested");
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
 
     content.innerHTML = `

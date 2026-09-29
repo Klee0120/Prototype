@@ -588,6 +588,7 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       tasksCompleted,
       exceptionsFlagged,
       totalRows: result.total,
+      changedWoms: result.changedWoms,
     });
 
     db.addAudit(

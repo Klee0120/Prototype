@@ -412,4 +412,140 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
     });
     assert.equal(notFound.status, 404);
   });
+
+  await t.test("a row with no WOM # and no project name is skipped outright, not synced as a pending WOM", async () => {
+    // Real sheets keep header/legend/key rows near the top ("CODE",
+    // "Check Box < F/U Already", etc.) with every real-content column
+    // blank -- these aren't work requests and shouldn't manufacture an
+    // unidentifiable "PENDING-<rowId>" WOM.
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          { id: 601, cells: [{ columnId: 8, value: "CODE:", displayValue: "CODE:" }] },
+          { id: 602, cells: [{ columnId: 1, value: 0, displayValue: "-" }] },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.created, 0);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.ok(!list.body.some((w) => w.code === "PENDING-601"));
+      assert.ok(!list.body.some((w) => w.code === "PENDING-602"));
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("a junk pending WOM from before this check existed gets cleaned up once its row still has nothing real on it", async () => {
+    // Simulate the old behavior having already created one (a row that did
+    // carry a real project name, so it synced in as usual)...
+    const create = stubFetchOnce({
+      ok: true,
+      json: async () => sheetWith([{ id: 603, cells: [{ columnId: 4, value: "Placeholder request", displayValue: "Placeholder request" }] }]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.ok(list.body.some((w) => w.code === "PENDING-603"));
+    } finally {
+      create();
+    }
+
+    // ...then that same row's project name gets cleared out on the sheet
+    // (or was itself a header row all along) -- the next sync should
+    // remove the WOM it never should have kept, not just leave it stale.
+    const clear = stubFetchOnce({
+      ok: true,
+      json: async () => sheetWith([{ id: 603, cells: [] }]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      assert.ok(!list.body.some((w) => w.code === "PENDING-603"));
+    } finally {
+      clear();
+    }
+  });
+
+  await t.test("re-syncing identical values reports no changes; a real change is named in changedWoms", async () => {
+    const first = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 604,
+            cells: [
+              { columnId: 1, value: "20999999", displayValue: "20999999" },
+              { columnId: 2, value: 1000, displayValue: "$1,000.00" },
+              { columnId: 4, value: "Roof patch", displayValue: "Roof patch" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.created, 1);
+    } finally {
+      first();
+    }
+
+    // Same row, same values -- nothing actually changed.
+    const same = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 604,
+            cells: [
+              { columnId: 1, value: "20999999", displayValue: "20999999" },
+              { columnId: 2, value: 1000, displayValue: "$1,000.00" },
+              { columnId: 4, value: "Roof patch", displayValue: "Roof patch" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.updated, 0);
+      assert.deepEqual(res.body.changedWoms, []);
+    } finally {
+      same();
+    }
+
+    // Now the estimate actually changes.
+    const changed = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 604,
+            cells: [
+              { columnId: 1, value: "20999999", displayValue: "20999999" },
+              { columnId: 2, value: 1250, displayValue: "$1,250.00" },
+              { columnId: 4, value: "Roof patch", displayValue: "Roof patch" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.updated, 1);
+      assert.equal(res.body.changedWoms.length, 1);
+      assert.equal(res.body.changedWoms[0].code, "20999999");
+      assert.ok(res.body.changedWoms[0].fields.includes("estimate"));
+
+      const lastSync = (await server.call("GET", "/api/admin/smartsheet/status", { userId: "ADMIN" })).body.lastSync;
+      assert.equal(lastSync.changedWoms[0].code, "20999999");
+    } finally {
+      changed();
+    }
+  });
 });
