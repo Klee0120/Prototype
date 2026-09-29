@@ -91,9 +91,15 @@ Demo logins:
   not an inline form expanding into the page -- feedback from real use was
   that the inline pattern didn't feel like a real application. Converted:
   + New Task (Priorities), + Schedule a WOM (Schedule), + Add vendor
-  (Vendors), + Add technician (Roster). A read-only detail panel (clicking
-  a Schedule entry, a task card's "Details") stays inline, on purpose --
-  this is specifically for *creating a new record*, not for viewing one.
+  (Vendors), + Add technician (Roster). `openModal` also takes a
+  `size: "large"` variant (a bigger, content-sized dialog rather than the
+  standard ~560px form width) for a view that's genuinely a lot of data --
+  a WOM's **Smartsheet detail** (every raw column/value from its tracker
+  row) opens this way instead of pushing the rest of the WOM list down,
+  and the document viewer (below) uses the same size. A small, simple
+  read-only panel (clicking a Schedule entry, a task card's "Details")
+  still stays inline -- the line is really about how much room something
+  needs, not "create vs. view."
 - **Document viewer**: every attachment list (`public/js/views/attachments.js`,
   shared by employee Forms on File/Documents, vendor documents, WOM docs,
   UKG screenshots/receipts, and Labor Reports) got a **View** action next
