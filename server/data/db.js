@@ -257,6 +257,29 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  -- A user-defined recurring task, distinct from the fixed hardcoded specs
+  -- in ensureRecurringTasks() -- this is "remind me to do X every Monday
+  -- and Wednesday" set up by hand from the New Task form, rather than a
+  -- built-in admin responsibility. The template itself is never shown as
+  -- a task; ensureRecurringTasks() upserts today's actual task row (by a
+  -- source key derived from this template's id + today's date) whenever
+  -- today's weekday is in days_of_week, the same lazy-on-read pattern
+  -- every other recurring task in this app already uses.
+  CREATE TABLE IF NOT EXISTS recurring_task_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    assigned_to TEXT,
+    assigned_role TEXT,
+    related_wom_code TEXT,
+    days_of_week TEXT NOT NULL,
+    due_time TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+  );
+
   -- A WOM's own status/stage changes, kept separately from the woms table
   -- itself (which only ever holds the CURRENT value) so how long a project
   -- spent in each step can be calculated later. changed_at is the real
@@ -2023,6 +2046,89 @@ function ensureRecurringTasks() {
       { reopenIfClosed: false }
     );
   }
+
+  // User-defined recurring tasks (see recurring_task_templates above) --
+  // today's occurrence exists once today's weekday is in the template's
+  // days_of_week, keyed so re-running this on every page load never
+  // duplicates it and never un-completes it before the day rolls over.
+  const todayIso = iso(now);
+  for (const template of listRecurringTaskTemplates({ activeOnly: true })) {
+    const daysOfWeek = JSON.parse(template.daysOfWeek);
+    if (!daysOfWeek.includes(now.getDay())) continue;
+    upsertTaskBySourceKey(
+      `RECURRING-USER-${template.id}-${todayIso}`,
+      {
+        title: template.title,
+        description: template.description || "",
+        assignedTo: template.assignedTo,
+        assignedRole: template.assignedRole,
+        category: "recurring",
+        priority: template.priority,
+        dueAt: template.dueTime ? `${todayIso}T${template.dueTime}` : todayIso,
+        relatedWomCode: template.relatedWomCode,
+        source: "recurring",
+        workflowRule: `RECURRING-USER-${template.id}`,
+      },
+      { reopenIfClosed: false }
+    );
+  }
+}
+
+function createRecurringTaskTemplate(fields) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO recurring_task_templates
+       (title, description, priority, assigned_to, assigned_role, related_wom_code, days_of_week, due_time, active, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    )
+    .run(
+      fields.title,
+      fields.description || "",
+      fields.priority || "normal",
+      fields.assignedTo || null,
+      fields.assignedRole || null,
+      fields.relatedWomCode || null,
+      JSON.stringify(fields.daysOfWeek),
+      fields.dueTime || null,
+      fields.createdBy || null,
+      now
+    );
+  return findRecurringTaskTemplate(Number(result.lastInsertRowid));
+}
+
+function presentRecurringTaskTemplate(t) {
+  return {
+    id: t.id,
+    title: t.title,
+    description: t.description,
+    priority: t.priority,
+    assignedTo: t.assigned_to,
+    assignedRole: t.assigned_role,
+    relatedWomCode: t.related_wom_code,
+    daysOfWeek: t.days_of_week,
+    dueTime: t.due_time,
+    active: Boolean(t.active),
+    createdBy: t.created_by,
+    createdAt: t.created_at,
+  };
+}
+
+function findRecurringTaskTemplate(id) {
+  const row = db.prepare("SELECT * FROM recurring_task_templates WHERE id = ?").get(id);
+  return row ? presentRecurringTaskTemplate(row) : null;
+}
+
+function listRecurringTaskTemplates({ activeOnly = false } = {}) {
+  const rows = activeOnly
+    ? db.prepare("SELECT * FROM recurring_task_templates WHERE active = 1").all()
+    : db.prepare("SELECT * FROM recurring_task_templates ORDER BY id DESC").all();
+  return rows.map(presentRecurringTaskTemplate);
+}
+
+function setRecurringTaskTemplateActive(id, active) {
+  db.prepare("UPDATE recurring_task_templates SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
+  return findRecurringTaskTemplate(id);
 }
 
 // The "Last sync: ... / N tasks created / View Sync Details" panel needs
@@ -2859,6 +2965,10 @@ module.exports = {
   recordWomStatusChange,
   listWomStatusHistory,
   ensureRecurringTasks,
+  createRecurringTaskTemplate,
+  listRecurringTaskTemplates,
+  findRecurringTaskTemplate,
+  setRecurringTaskTemplateActive,
   recordSyncLog,
   getLastSyncLog,
   markWomSmartsheetReflected,

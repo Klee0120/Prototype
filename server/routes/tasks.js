@@ -195,16 +195,33 @@ router.get("/:id", requireAuth, (req, res) => {
   });
 });
 
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 router.post("/", requireAuth, (req, res) => {
   const isAdmin = req.user.role === "admin";
-  const { title, description, priority, dueAt, category, relatedWomCode, relatedVendorId, relatedLocationCode, relatedTechId, relatedPo } =
-    req.body || {};
+  const {
+    title,
+    description,
+    priority,
+    dueAt,
+    dueTime,
+    category,
+    relatedWomCode,
+    relatedVendorId,
+    relatedLocationCode,
+    relatedTechId,
+    relatedPo,
+    recurring,
+    recurrenceDays,
+  } = req.body || {};
   let { assignedTo, assignedRole } = req.body || {};
   if (!title) return res.status(400).json({ error: "title is required" });
   if (priority && !db.TASK_PRIORITIES.includes(priority)) {
     return res.status(400).json({ error: `priority must be one of: ${db.TASK_PRIORITIES.join(", ")}` });
   }
   if (relatedWomCode && !db.findWom(relatedWomCode)) return res.status(400).json({ error: `Unknown WOM: ${relatedWomCode}` });
+  if (dueTime && !TIME_RE.test(dueTime)) return res.status(400).json({ error: "dueTime must be HH:MM (24-hour)" });
 
   // A tech can hand themselves a follow-up but can't assign work to anyone
   // else or drop it into an admin/financial/reviewer queue.
@@ -213,6 +230,44 @@ router.post("/", requireAuth, (req, res) => {
     assignedRole = "tech";
   }
 
+  // A recurring task is a template ("every Monday and Wednesday"), not a
+  // single task row -- ensureRecurringTasks (called lazily on every GET,
+  // same as every other recurring task in this app) upserts today's actual
+  // occurrence whenever today's weekday matches. Only admins get to set
+  // one up, same as an unassigned role-queue task.
+  if (recurring) {
+    if (!isAdmin) return res.status(403).json({ error: "Only an admin can create a recurring task" });
+    if (!Array.isArray(recurrenceDays) || recurrenceDays.length === 0) {
+      return res.status(400).json({ error: "recurrenceDays must be a non-empty array of weekday numbers (0=Sunday..6=Saturday)" });
+    }
+    if (!recurrenceDays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) {
+      return res.status(400).json({ error: "recurrenceDays must each be 0-6 (0=Sunday..6=Saturday)" });
+    }
+
+    const template = db.createRecurringTaskTemplate({
+      title,
+      description,
+      priority: priority || "normal",
+      assignedTo: assignedTo || null,
+      assignedRole: assignedRole || null,
+      relatedWomCode: relatedWomCode || null,
+      daysOfWeek: recurrenceDays,
+      dueTime: dueTime || null,
+      createdBy: req.user.id,
+    });
+    db.ensureRecurringTasks();
+    const todayTask = db.findTaskBySourceKey(`RECURRING-USER-${template.id}-${new Date().toISOString().slice(0, 10)}`);
+
+    db.addAudit(
+      req.user.id,
+      "TASK_CREATED",
+      `${req.user.name} created a recurring task: ${title} (every ${recurrenceDays.map((d) => WEEKDAY_NAMES[d]).join("/")})`
+    );
+    return res.status(201).json({ recurring: true, template, todayTask: todayTask ? presentTask(todayTask) : null });
+  }
+
+  const combinedDueAt = dueAt && dueTime ? `${dueAt}T${dueTime}` : dueAt || null;
+
   const task = db.createTask({
     title,
     description,
@@ -220,7 +275,7 @@ router.post("/", requireAuth, (req, res) => {
     assignedRole: assignedRole || null,
     category: category || "manual",
     priority: priority || "normal",
-    dueAt: dueAt || null,
+    dueAt: combinedDueAt,
     relatedWomCode: relatedWomCode || null,
     relatedVendorId: relatedVendorId || null,
     relatedLocationCode: relatedLocationCode || null,

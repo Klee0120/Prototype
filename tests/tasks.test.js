@@ -321,3 +321,98 @@ test("smartsheet sync: task/exception counters and the persisted last-sync summa
     assert.equal(res.body.lastSync.tasks_created, 1);
   });
 });
+
+// A user-defined recurring task ("remind me every Monday and Wednesday")
+// is a template, not a single task row -- ensureRecurringTasks (called
+// lazily on every GET, same lazy-on-read pattern the app's own fixed
+// recurring responsibilities already use) upserts today's occurrence
+// whenever today's weekday is in the template's days.
+test("tasks: user-defined recurring tasks", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const today = new Date().getDay();
+  const notToday = (today + 3) % 7;
+
+  await t.test("a technician can't create a recurring task", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "T1001",
+      body: { title: "Weekly thing", recurring: true, recurrenceDays: [today] },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects an empty recurrenceDays array", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Weekly thing", recurring: true, recurrenceDays: [] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rejects an out-of-range weekday number", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Weekly thing", recurring: true, recurrenceDays: [7] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("creating a recurring task that includes today generates today's occurrence immediately", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Check the mail", recurring: true, recurrenceDays: [today], assignedRole: "admin" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.recurring, true);
+    assert.ok(res.body.todayTask, "expected today's occurrence to already exist");
+    assert.equal(res.body.todayTask.title, "Check the mail");
+    assert.equal(res.body.todayTask.category, "recurring");
+  });
+
+  await t.test("creating a recurring task that excludes today does not generate an occurrence yet", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Not today's thing", recurring: true, recurrenceDays: [notToday] },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.todayTask, null);
+  });
+
+  await t.test("the generated occurrence shows up on the unassigned admin-role board", async () => {
+    const res = await server.call("GET", "/api/tasks?view=unassigned&role=admin", { userId: "ADMIN" });
+    assert.ok(res.body.some((t) => t.title === "Check the mail"));
+  });
+
+  await t.test("re-fetching the task list doesn't duplicate today's occurrence", async () => {
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    const res = await server.call("GET", "/api/tasks?view=unassigned&role=admin", { userId: "ADMIN" });
+    assert.equal(res.body.filter((t) => t.title === "Check the mail").length, 1);
+  });
+
+  await t.test("completing today's occurrence doesn't get re-opened by the next fetch, same as other recurring tasks", async () => {
+    const list = await server.call("GET", "/api/tasks?view=unassigned&role=admin", { userId: "ADMIN" });
+    const occurrence = list.body.find((t) => t.title === "Check the mail");
+    await server.call("PATCH", `/api/tasks/${occurrence.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    const after = await server.call("GET", `/api/tasks?view=completed`, { userId: "ADMIN" });
+    assert.ok(after.body.some((t) => t.id === occurrence.id && t.status === "completed"));
+  });
+
+  await t.test("rejects a malformed dueTime", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Bad time", dueTime: "25:99" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a plain (non-recurring) task combines dueAt date and dueTime into one timestamp", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Timed task", dueAt: "2026-05-01", dueTime: "14:30" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.dueAt, "2026-05-01T14:30");
+  });
+});

@@ -721,16 +721,38 @@ Demo logins:
     vendor-compliance cleanup (monthly) -- each keyed to its own period
     (e.g. the Monday of the current week) so it's a no-op once that
     period's task already exists.
+  - **User-defined recurring tasks** ("+ New Task" -> **Repeats on
+    specific days of the week**), distinct from the fixed specs just
+    above: pick any set of weekdays and a task gets created automatically
+    on each one going forward, without re-adding it by hand every time.
+    A checked template lives in its own `recurring_task_templates` table
+    (title/description/priority/assignee/role/WOM/days-of-week/a daily
+    due time) rather than as a task row itself -- `ensureRecurringTasks()`
+    upserts *today's* actual task (source key
+    `RECURRING-USER-<templateId>-<today>`) whenever today's weekday is in
+    the template, the same lazy-on-read, never-duplicated,
+    never-un-completed-early pattern the fixed recurring specs already
+    use. Admin-only to create (same as assigning into a role queue).
+  - **"+ New Task" is a real form now**, not a stack of unlabeled inputs --
+    sectioned into What (title/description), When (priority, due date
+    *and time*, or the recurring day-picker above), Who (assignee/role,
+    admin only), Related (WOM #), and Attachment. A one-time task's due
+    date and time combine into a single `dueAt` timestamp server-side
+    (`YYYY-MM-DDTHH:MM`) rather than needing a separate time field on the
+    task itself.
   - **A task can carry documents that aren't filed to any vendor yet**
-    (admin-only, task detail panel): a COI from a renewal email is
-    real compliance material the moment it lands, even before it's clear
-    which vendor record it belongs to (or before that vendor exists in
-    this app at all) -- rather than forcing a choice up front, "+ New
-    Task" plus this panel gives it somewhere to live (create a task like
-    "File COI from Aon once vendor confirmed", attach the PDF there) so it
-    isn't lost, without it being tied to any vendor. Reuses `server/routes/
-    files.js`'s existing generic relatedType/relatedId file system with a
-    new `task` relatedType, sharing the exact same category vocabulary
+    (admin-only, task detail panel, and now attachable right at creation
+    from "+ New Task" too -- skipped for a recurring task, since there's
+    no single task row yet to attach it to until the first occurrence
+    exists): a COI from a renewal email is real compliance material the
+    moment it lands, even before it's clear which vendor record it
+    belongs to (or before that vendor exists in this app at all) --
+    rather than forcing a choice up front, a task gives it somewhere to
+    live (create a task like "File COI from Aon once vendor confirmed",
+    attach the PDF there) so it isn't lost, without it being tied to any
+    vendor. Reuses `server/routes/files.js`'s existing generic
+    relatedType/relatedId file system with a new `task` relatedType,
+    sharing the exact same category vocabulary
     (`coi`/`w9`/`ach`/`vpo_waiver`/`vendor_other`, plus a plain `document`)
     as a vendor's own files -- filing it for real later is a plain
     re-upload onto that vendor's record under the same category, no

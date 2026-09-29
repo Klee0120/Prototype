@@ -1322,6 +1322,32 @@ h1, h2, h3, h4 {
   margin-top: 10px;
 }
 
+.task-new-form h4 {
+  margin-top: 16px;
+}
+.task-new-repeats-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin: 8px 0;
+}
+.task-new-weekday-picker {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.task-new-weekday {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: normal;
+}
+.task-new-attachment-section {
+  margin-top: 12px;
+}
+
 .onboarding-case-form {
   display: flex;
   flex-wrap: wrap;

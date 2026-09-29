@@ -242,59 +242,168 @@ export async function renderTaskBoard(container) {
     const people = staff ? [...staff.technicians, ...staff.admins] : [];
     const { body, close } = openModal({
       title: "New Task",
+      size: "large",
       bodyHtml: `
-        <div class="modal-form task-new-form">
-          <input class="task-new-title" type="text" placeholder="Title" />
-          <input class="task-new-desc" type="text" placeholder="Description (optional)" />
-          <select class="task-new-priority">
-            ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}" ${k === "normal" ? "selected" : ""}>${l}</option>`).join("")}
-          </select>
-          <input class="task-new-due" type="date" />
-          <input class="task-new-wom" type="text" placeholder="Related WOM # (optional)" />
+        <form class="modal-form task-new-form">
+          <h4>What</h4>
+          <label class="profile-field"><span>Title</span><input class="task-new-title" type="text" required /></label>
+          <label class="profile-field"><span>Description</span><textarea class="task-new-desc" rows="2"></textarea></label>
+
+          <h4>When</h4>
+          <label class="task-new-repeats-label">
+            <input type="checkbox" class="task-new-repeats" /> Repeats on specific days of the week
+          </label>
+          <div class="task-new-once-fields">
+            <div class="vendor-edit-grid">
+              <label class="profile-field"><span>Priority</span>
+                <select class="task-new-priority">
+                  ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}" ${k === "normal" ? "selected" : ""}>${l}</option>`).join("")}
+                </select>
+              </label>
+              <label class="profile-field"><span>Due date</span><input class="task-new-due" type="date" /></label>
+              <label class="profile-field"><span>Due time (optional)</span><input class="task-new-due-time" type="time" /></label>
+            </div>
+          </div>
+          <div class="task-new-recurring-fields" hidden>
+            <p class="review-checklist-hint">
+              Creates a task automatically on each day checked, every week, starting today if today is
+              one of them -- no separate task to keep re-adding by hand.
+            </p>
+            <div class="task-new-weekday-picker">
+              ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                .map((label, i) => `<label class="task-new-weekday"><input type="checkbox" value="${i}" /> ${label}</label>`)
+                .join("")}
+            </div>
+            <div class="vendor-edit-grid">
+              <label class="profile-field"><span>Priority</span>
+                <select class="task-new-priority-recurring">
+                  ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}" ${k === "normal" ? "selected" : ""}>${l}</option>`).join("")}
+                </select>
+              </label>
+              <label class="profile-field"><span>Due time each day (optional)</span><input class="task-new-recurring-time" type="time" /></label>
+            </div>
+          </div>
+
           ${
             isAdmin
               ? `
-            <select class="task-new-assignee">
-              <option value="">Unassigned</option>
-              ${people.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
-            </select>
-            <select class="task-new-role">
-              <option value="">No role queue</option>
-              ${["admin", "reviewer", "financial", "tech"].map((r) => `<option value="${r}">${ROLE_LABELS[r]}</option>`).join("")}
-            </select>
+            <h4>Who</h4>
+            <div class="vendor-edit-grid">
+              <label class="profile-field"><span>Assign to</span>
+                <select class="task-new-assignee">
+                  <option value="">Unassigned</option>
+                  ${people.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("")}
+                </select>
+              </label>
+              <label class="profile-field"><span>Role queue</span>
+                <select class="task-new-role">
+                  <option value="">No role queue</option>
+                  ${["admin", "reviewer", "financial", "tech"].map((r) => `<option value="${r}">${ROLE_LABELS[r]}</option>`).join("")}
+                </select>
+              </label>
+            </div>
           `
               : ""
           }
+
+          <h4>Related</h4>
+          <label class="profile-field"><span>Related WOM # (optional)</span><input class="task-new-wom" type="text" /></label>
+
+          <div class="task-new-attachment-section">
+            <h4>Attachment</h4>
+            <p class="review-checklist-hint">
+              A document that came with this task (a form Kevin sent, a COI that just arrived) --
+              once the task is created, its Details panel can move this same file onto an employee's
+              or vendor's own record once you know which one it belongs to, without re-uploading it.
+            </p>
+            <div class="vendor-edit-grid">
+              <label class="profile-field"><span>Category</span>
+                <select class="task-new-attachment-category">
+                  ${TASK_DOC_CATEGORIES.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
+                </select>
+              </label>
+              <label class="profile-field"><span>File (optional)</span><input class="task-new-attachment-file" type="file" /></label>
+            </div>
+          </div>
+
           <div class="modal-form-actions">
-            <button class="btn btn-primary task-new-save" type="button">Create task</button>
+            <button class="btn btn-primary task-new-save" type="submit">Create task</button>
           </div>
           <div class="task-new-error"></div>
-        </div>
+        </form>
       `,
     });
-    body.querySelector(".task-new-save").addEventListener("click", async () => {
+
+    const repeatsToggle = body.querySelector(".task-new-repeats");
+    const onceFields = body.querySelector(".task-new-once-fields");
+    const recurringFields = body.querySelector(".task-new-recurring-fields");
+    const attachmentSection = body.querySelector(".task-new-attachment-section");
+    repeatsToggle.addEventListener("change", () => {
+      onceFields.hidden = repeatsToggle.checked;
+      recurringFields.hidden = !repeatsToggle.checked;
+      // A recurring task is a template, not a single task row, until its
+      // first occurrence exists -- keeping attachment out of that gap
+      // avoids either silently dropping the file or attaching it to a
+      // template that isn't itself a real, addressable task.
+      attachmentSection.hidden = repeatsToggle.checked;
+    });
+
+    const form = body.querySelector(".task-new-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errorEl = body.querySelector(".task-new-error");
+      errorEl.innerHTML = "";
       const title = body.querySelector(".task-new-title").value.trim();
       if (!title) {
-        body.querySelector(".task-new-error").innerHTML = `<p class="attachments-error">Title is required.</p>`;
+        errorEl.innerHTML = `<p class="attachments-error">Title is required.</p>`;
         return;
       }
-      const newTaskBody = {
+
+      const base = {
         title,
         description: body.querySelector(".task-new-desc").value.trim(),
-        priority: body.querySelector(".task-new-priority").value,
-        dueAt: body.querySelector(".task-new-due").value || null,
         relatedWomCode: body.querySelector(".task-new-wom").value.trim() || null,
       };
       if (isAdmin) {
-        newTaskBody.assignedTo = body.querySelector(".task-new-assignee").value || null;
-        newTaskBody.assignedRole = body.querySelector(".task-new-role").value || null;
+        base.assignedTo = body.querySelector(".task-new-assignee").value || null;
+        base.assignedRole = body.querySelector(".task-new-role").value || null;
       }
+
+      const file = body.querySelector(".task-new-attachment-file").files[0];
+      const category = body.querySelector(".task-new-attachment-category").value;
+
       try {
-        await api.post("/api/tasks", newTaskBody);
+        if (repeatsToggle.checked) {
+          const recurrenceDays = Array.from(body.querySelectorAll(".task-new-weekday input:checked")).map((el) => Number(el.value));
+          if (recurrenceDays.length === 0) {
+            errorEl.innerHTML = `<p class="attachments-error">Pick at least one day of the week.</p>`;
+            return;
+          }
+          const res = await api.post("/api/tasks", {
+            ...base,
+            recurring: true,
+            recurrenceDays,
+            priority: body.querySelector(".task-new-priority-recurring").value,
+            dueTime: body.querySelector(".task-new-recurring-time").value || null,
+          });
+          if (!res.todayTask) {
+            window.alert(
+              "Recurring task saved. Today isn't one of the selected days, so the first occurrence will appear on its own on the next matching day."
+            );
+          }
+        } else {
+          const newTask = await api.post("/api/tasks", {
+            ...base,
+            priority: body.querySelector(".task-new-priority").value,
+            dueAt: body.querySelector(".task-new-due").value || null,
+            dueTime: body.querySelector(".task-new-due-time").value || null,
+          });
+          if (file) await api.uploadFile("task", newTask.id, category, file);
+        }
         close();
         await draw();
       } catch (err) {
-        body.querySelector(".task-new-error").innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        errorEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       }
     });
   }
