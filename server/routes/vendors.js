@@ -29,6 +29,13 @@ router.get("/", (req, res) => {
   res.json(db.listVendors());
 });
 
+// Bulk read behind the Onboarding board: the latest case of each canonical
+// type (COI, W-9, Payment, Request) for every vendor that has any case
+// activity, in one round trip instead of one call per vendor shown.
+router.get("/onboarding/case-summary", (req, res) => {
+  res.json({ caseTypes: db.ONBOARDING_CASE_TYPES, summaries: db.listOnboardingCaseSummaries() });
+});
+
 router.post("/", (req, res) => {
   const error = validateVendorBody(req.body);
   if (error) return res.status(400).json({ error });
@@ -77,6 +84,22 @@ router.get("/:id/requests", (req, res) => {
   res.json(db.listVendorRequests(vendor.id));
 });
 
+// addVendorRequest/updateVendorRequest/deleteVendorRequest each re-derive
+// the vendor's onboardingStage from the latest case of each required type
+// (see db.js) -- comparing before/after here lets a stage change that
+// results from logging a case get the same audit trail a direct stage
+// change already gets.
+function auditStageChangeIfAny(req, vendorBefore) {
+  const after = db.findVendor(vendorBefore.id);
+  if (after.onboardingStage !== vendorBefore.onboardingStage) {
+    db.addAudit(
+      req.user.id,
+      "VENDOR_ONBOARDING_STAGE_CHANGED",
+      `${req.user.name} moved ${after.name} to ${after.onboardingStage} (case update)`
+    );
+  }
+}
+
 router.post("/:id/requests", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
@@ -90,6 +113,7 @@ router.post("/:id/requests", (req, res) => {
     "VENDOR_REQUEST_ADDED",
     `${req.user.name} logged a ${requestType} case${referenceNumber ? ` (#${referenceNumber})` : ""} for ${vendor.name}`
   );
+  auditStageChangeIfAny(req, vendor);
   res.status(201).json(requests);
 });
 
@@ -106,6 +130,7 @@ router.patch("/:id/requests/:requestId", (req, res) => {
     status,
   });
   db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated a case for ${vendor.name}`);
+  auditStageChangeIfAny(req, vendor);
   res.json(requests);
 });
 
@@ -115,6 +140,7 @@ router.delete("/:id/requests/:requestId", (req, res) => {
 
   const requests = db.deleteVendorRequest(vendor.id, Number(req.params.requestId));
   db.addAudit(req.user.id, "VENDOR_REQUEST_REMOVED", `${req.user.name} removed a case for ${vendor.name}`);
+  auditStageChangeIfAny(req, vendor);
   res.json(requests);
 });
 

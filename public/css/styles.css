@@ -1222,12 +1222,6 @@ h1, h2, h3, h4 {
 
 /* ---- Vendor onboarding ---- */
 
-.onboarding-row .onboarding-stage-select {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
 .onboarding-denied-reason {
   display: flex;
   gap: 8px;
@@ -1245,16 +1239,59 @@ h1, h2, h3, h4 {
   margin: 6px 0;
 }
 
-.onboarding-case-add {
+.onboarding-cases {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   margin-top: 10px;
 }
-.onboarding-case-add input {
-  flex: 1;
-  padding: 8px 10px;
+
+.onboarding-case {
   border: 1px solid var(--border);
   border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface-alt, #f8f9fb);
+}
+
+.onboarding-case-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.onboarding-case-label {
+  font-weight: 600;
+  min-width: 130px;
+}
+
+.onboarding-case-ref {
+  font-size: 12px;
+  color: var(--text-muted, #666);
+}
+
+.onboarding-case-coi-ref {
+  font-size: 12px;
+  color: var(--text-muted, #666);
+  margin-top: 4px;
+}
+
+.onboarding-case-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.onboarding-case-form[hidden] {
+  display: none;
+}
+.onboarding-case-form select,
+.onboarding-case-form input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.onboarding-case-form input {
+  flex: 1;
 }
 
 /* ---- Tables ---- */

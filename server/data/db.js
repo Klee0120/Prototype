@@ -1142,7 +1142,19 @@ function deleteVendor(id) {
 // number and a free-text status -- the real tracker uses varied statuses
 // ("Approved", "Waiting", "Denied - No Response - Start over Case") that
 // don't reduce cleanly to a fixed enum, so status is left as free text
-// rather than force-fitting it.
+// rather than force-fitting it. Four request_type values are treated as
+// the canonical onboarding cases (matching ServiceEdge's own case types
+// exactly, so entering one here means the same thing it does there); any
+// other request_type is still logged and shown, it just isn't one of the
+// cases that drives onboardingStage below.
+const ONBOARDING_CASE_TYPES = [
+  { type: "Onboarding - Request", key: "request", label: "Welcome Email / Request" },
+  { type: "Onboarding - COI", key: "coi", label: "COI" },
+  { type: "Onboarding - W8/W9", key: "w9", label: "W-9" },
+  { type: "Onboarding - Payment Details", key: "payment", label: "Payment / ACH" },
+];
+const ONBOARDING_CASE_TYPE_BY_KEY = Object.fromEntries(ONBOARDING_CASE_TYPES.map((c) => [c.key, c.type]));
+
 function listVendorRequests(vendorId) {
   return db
     .prepare(
@@ -1153,12 +1165,71 @@ function listVendorRequests(vendorId) {
     .all(vendorId);
 }
 
+// The vendor's overall onboarding stage is derived from the latest case of
+// each of the three required types (COI, W-9, Payment) rather than stored
+// by hand -- ServiceEdge itself works this way: re-submitting after a
+// denial opens a brand new case rather than editing the old one, so
+// "current status" always means the most recently touched case of that
+// type. All three approved moves the vendor to onboarded; any one denied
+// (as its latest case) moves the vendor to denied; any case activity at
+// all short of that is in_progress; no case activity yet is not_started.
+function latestRequestOfType(vendorId, requestType) {
+  return db
+    .prepare(
+      `SELECT * FROM vendor_requests WHERE vendor_id = ? AND request_type = ? ORDER BY updated_at DESC, id DESC LIMIT 1`
+    )
+    .get(vendorId, requestType);
+}
+
+function deriveOnboardingStage(vendorId) {
+  const request = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.request);
+  const coi = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
+  const w9 = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.w9);
+  const payment = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.payment);
+  const norm = (r) => (r ? String(r.status || "").trim().toLowerCase() : "");
+  const required = [coi, w9, payment];
+  if (required.some((r) => norm(r) === "denied")) return "denied";
+  if (required.every((r) => r && norm(r) === "approved")) return "onboarded";
+  if (request || coi || w9 || payment) return "in_progress";
+  return "not_started";
+}
+
+function syncOnboardingStage(vendorId) {
+  const stage = deriveOnboardingStage(vendorId);
+  db.prepare("UPDATE vendors SET onboarding_stage = ? WHERE id = ?").run(stage, vendorId);
+  return stage;
+}
+
+// One row per vendor that has any onboarding case activity at all, each
+// showing the latest case of each of the four canonical types -- the bulk
+// read behind the Onboarding board, so it can show every vendor's case
+// status without an API round trip per vendor.
+function listOnboardingCaseSummaries() {
+  const rows = db
+    .prepare(
+      `SELECT vendor_id AS vendorId, request_type AS requestType, reference_number AS referenceNumber,
+              status, updated_at AS updatedAt
+       FROM vendor_requests ORDER BY updated_at ASC, id ASC`
+    )
+    .all();
+  const typeToKey = Object.fromEntries(ONBOARDING_CASE_TYPES.map((c) => [c.type, c.key]));
+  const summaries = {};
+  for (const r of rows) {
+    const key = typeToKey[r.requestType];
+    if (!key) continue;
+    if (!summaries[r.vendorId]) summaries[r.vendorId] = {};
+    summaries[r.vendorId][key] = { referenceNumber: r.referenceNumber, status: r.status, updatedAt: r.updatedAt };
+  }
+  return summaries;
+}
+
 function addVendorRequest(vendorId, requestType, referenceNumber, status) {
   const now = new Date().toISOString();
   db.prepare(
     "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
   ).run(vendorId, requestType, referenceNumber || "", status || "", now, now);
   touchVendorActivity(vendorId);
+  syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
 
@@ -1167,6 +1238,7 @@ function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber
     "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
   ).run(requestType, referenceNumber || "", status || "", new Date().toISOString(), requestId, vendorId);
   touchVendorActivity(vendorId);
+  syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
 
@@ -1179,6 +1251,7 @@ function touchVendorActivity(vendorId) {
 
 function deleteVendorRequest(vendorId, requestId) {
   db.prepare("DELETE FROM vendor_requests WHERE id = ? AND vendor_id = ?").run(requestId, vendorId);
+  syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
 
@@ -2695,6 +2768,8 @@ module.exports = {
   addVendorRequest,
   updateVendorRequest,
   deleteVendorRequest,
+  ONBOARDING_CASE_TYPES,
+  listOnboardingCaseSummaries,
   ONBOARDING_TASKS,
   getOnboardingProgress,
   setOnboardingTask,

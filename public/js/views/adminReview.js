@@ -342,13 +342,30 @@ export async function renderAdminReview(container) {
     renderVendorsUI(content);
   }
 
-  const ONBOARDING_STAGE_OPTIONS = [
-    { value: "not_started", label: "Not started" },
-    { value: "in_progress", label: "In Progress" },
-    { value: "denied", label: "Denied" },
-    { value: "onboarded", label: "Onboarded" },
-  ];
   const ONBOARDING_STALE_DAYS = 7;
+  const CASE_STATUS_OPTIONS = ["New", "In Review", "Needs Adjustment", "Approved", "Denied"];
+  function caseStatusBadgeClass(status) {
+    const s = String(status || "").trim().toLowerCase();
+    if (s === "approved") return "approved";
+    if (s === "denied") return "rejected";
+    return "draft";
+  }
+  // The four coverage figures Krista actually reads off the welcome email
+  // she sends vendors (GL, Auto, WC, Umbrella) -- shown next to the COI
+  // case as a reference while she checks a submitted certificate, pulled
+  // from the same COI matrix that already drives the Vendors tab's
+  // Services dropdown, not re-entered here.
+  function coiRequirementLine(v) {
+    const entry = v.services && COI_MATRIX_BY_LABEL[v.services];
+    if (!entry) return "";
+    const r = entry.requirements;
+    const parts = [];
+    if (r.glOcc && r.glOcc !== "-") parts.push(`GL ${r.glOcc}${r.glAgg && r.glAgg !== "-" ? ` / ${r.glAgg}` : ""}`);
+    if (r.auto && r.auto !== "-") parts.push(`Auto ${r.auto}`);
+    if (r.wc && r.wc !== "-") parts.push(`WC ${r.wc}`);
+    if (r.exs && r.exs !== "-") parts.push(`Umbrella ${r.exs}`);
+    return parts.length ? `Required (${v.services}): ${parts.join(" · ")}` : "";
+  }
 
   // updateVendor rewrites the whole record, not just the fields being
   // changed here -- carry every other field through unchanged (same
@@ -390,93 +407,161 @@ export async function renderAdminReview(container) {
     return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
   }
 
-  // Mirrors working an email folder per vendor: pick one up while it's
-  // "In Progress", log status updates as they happen (the case log below,
-  // finally surfacing server/data/db.js's vendor_requests -- built earlier
-  // alongside the compliance tracker but never wired into any screen),
-  // flag it once nobody's touched it in a week, and move it to Denied
-  // (with a reason) or Onboarded when it's resolved.
+  // Mirrors ServiceEdge's own onboarding model: a vendor being onboarded
+  // has (up to) three independent cases -- COI, W-9, Payment Details --
+  // each carrying its own status, plus a Request case that just marks the
+  // welcome email as sent. Re-submitting after a denial opens a brand new
+  // case of the same type rather than editing the old one (that's how
+  // ServiceEdge itself works), so "current status" for each case type is
+  // always its latest entry -- computed server-side in
+  // deriveOnboardingStage (db.js), never set by hand here. All three
+  // approved moves a vendor to Onboarded; any one denied moves it to
+  // Denied; adding a vendor (Vendors tab) starts it here automatically as
+  // In Progress. This board shows status only, never a vendor's actual
+  // documents -- those stay on the vendor's own Documents tab -- so anyone
+  // with admin access can see exactly where a vendor stands without
+  // touching anything private.
   async function drawVendorOnboarding(content) {
-    const vendors = await api.get("/api/admin/vendors");
-    const inProgress = vendors.filter((v) => v.onboardingStage === "in_progress").sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
+    if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    const vendors = vendorsCache;
+    const caseData = await api.get("/api/admin/vendors/onboarding/case-summary");
+    const caseTypes = caseData.caseTypes;
+    const summaries = caseData.summaries;
+
+    const inProgress = vendors
+      .filter((v) => v.onboardingStage === "in_progress")
+      .sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
     const denied = vendors.filter((v) => v.onboardingStage === "denied").sort((a, b) => a.name.localeCompare(b.name));
+    const complianceNeeded = vendors
+      .filter((v) => v.onboardingStage === "onboarded" && (v.formsStatus === "outdated" || !v.formChecksComplete || v.w9InvoiceStale))
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     content.innerHTML = `
       <p class="review-checklist-hint">
-        Vendors currently being onboarded, plus ones that were denied -- adding a vendor (Vendors tab)
-        starts it here automatically. A vendor with no update logged in ${ONBOARDING_STALE_DAYS}+ days is
-        flagged so nothing quietly sits untouched.
+        Onboarding is tracked as ServiceEdge tracks it -- a COI case, a W-9 case, and a Payment
+        Details case per vendor, each independently approved or denied. All three approved moves a
+        vendor to Onboarded; any one denied moves it to Denied. Adding a vendor (Vendors tab) starts
+        it here automatically. A vendor with no case update in ${ONBOARDING_STALE_DAYS}+ days is
+        flagged so nothing quietly sits untouched. This board shows case status only, never a
+        vendor's actual documents.
       </p>
       <h3>In Progress (${inProgress.length})</h3>
       <div class="review-list" id="onboarding-in-progress-list"></div>
       <h3>Denied (${denied.length})</h3>
       <div class="review-list" id="onboarding-denied-list"></div>
+      <h3>Compliance Needed (${complianceNeeded.length})</h3>
+      <p class="review-checklist-hint">
+        Already-onboarded vendors whose forms have gone out of date -- vendor document compliance
+        only, separate from technician/employee compliance (see Roster).
+      </p>
+      <div class="review-list" id="onboarding-compliance-list"></div>
     `;
 
     const inProgressList = content.querySelector("#onboarding-in-progress-list");
     if (inProgress.length === 0) {
       inProgressList.innerHTML = `<p class="empty-note">Nothing currently being onboarded.</p>`;
     } else {
-      inProgress.forEach((v) => inProgressList.appendChild(renderOnboardingRow(v, content)));
+      inProgress.forEach((v) => inProgressList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
     }
 
     const deniedList = content.querySelector("#onboarding-denied-list");
     if (denied.length === 0) {
       deniedList.innerHTML = `<p class="empty-note">No denied vendors.</p>`;
     } else {
-      denied.forEach((v) => deniedList.appendChild(renderOnboardingRow(v, content)));
+      denied.forEach((v) => deniedList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
+    }
+
+    const complianceList = content.querySelector("#onboarding-compliance-list");
+    if (complianceNeeded.length === 0) {
+      complianceList.innerHTML = `<p class="empty-note">No onboarded vendors are out of compliance.</p>`;
+    } else {
+      complianceNeeded.forEach((v) => complianceList.appendChild(renderComplianceRow(v, content)));
     }
   }
 
-  function renderOnboardingRow(v, content) {
+  function renderComplianceRow(v, content) {
+    const el = document.createElement("div");
+    el.className = "review-row onboarding-row";
+    el.innerHTML = `
+      <div class="review-row-summary">
+        <span class="review-row-name">${escapeHtml(v.name)}</span>
+        ${v.formsStatus === "outdated" ? `<span class="badge badge-rejected">Forms Outdated</span>` : ""}
+        ${!v.formChecksComplete ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
+        ${v.w9InvoiceStale ? `<span class="badge badge-rejected">W-9 invoice stale</span>` : ""}
+        <button class="btn btn-secondary onboarding-open-vendor-btn" type="button">Open vendor</button>
+      </div>
+    `;
+    el.querySelector(".onboarding-open-vendor-btn").addEventListener("click", () => {
+      vendorExpanded.add(v.id);
+      goTo("vendors");
+    });
+    return el;
+  }
+
+  function renderOnboardingRow(v, content, caseTypes, caseSummary) {
     const el = document.createElement("div");
     const age = daysSince(v.updatedAt);
     const stale = v.onboardingStage === "in_progress" && age >= ONBOARDING_STALE_DAYS;
     el.className = `review-row onboarding-row${stale ? " review-row-pending" : ""}`;
-
-    const stageOptions = ONBOARDING_STAGE_OPTIONS.map(
-      (s) => `<option value="${s.value}" ${v.onboardingStage === s.value ? "selected" : ""}>${s.label}</option>`
-    ).join("");
 
     el.innerHTML = `
       <div class="review-row-summary">
         <span class="review-row-name">${escapeHtml(v.name)}</span>
         <span class="wom-desc">${age === 0 ? "updated today" : `${age}d since last update`}</span>
         ${stale ? `<span class="badge badge-rejected">Stale</span>` : ""}
-        ${v.deniedReason ? `<span class="badge badge-draft">${escapeHtml(v.deniedReason)}</span>` : ""}
-        <select class="onboarding-stage-select">${stageOptions}</select>
-        <button class="btn btn-link onboarding-log-toggle" type="button">Case Log</button>
+        <button class="btn btn-secondary onboarding-open-vendor-btn" type="button">Open vendor</button>
+        <button class="btn btn-link onboarding-log-toggle" type="button">Full case history</button>
       </div>
-      <div class="onboarding-denied-reason" ${v.onboardingStage === "denied" ? "" : "hidden"}>
-        <input type="text" class="onboarding-denied-reason-input" placeholder="Reason (e.g. ACH issue, COI)" value="${escapeHtml(v.deniedReason)}" />
-        <button type="button" class="btn btn-link onboarding-denied-reason-save">Save reason</button>
+      <div class="onboarding-cases">
+        ${caseTypes.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
       </div>
+      ${
+        v.onboardingStage === "denied"
+          ? `<div class="onboarding-denied-reason">
+               <input type="text" class="onboarding-denied-reason-input" placeholder="Note (optional, e.g. which case and why)" value="${escapeHtml(v.deniedReason)}" />
+               <button type="button" class="btn btn-link onboarding-denied-reason-save">Save note</button>
+             </div>`
+          : ""
+      }
       <div class="review-row-detail onboarding-case-log" hidden></div>
     `;
 
-    const stageSelect = el.querySelector(".onboarding-stage-select");
-    const deniedReasonBlock = el.querySelector(".onboarding-denied-reason");
-    stageSelect.addEventListener("change", async () => {
-      const newStage = stageSelect.value;
-      try {
-        await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { onboardingStage: newStage }));
-        vendorsCache = null;
-        deniedReasonBlock.hidden = newStage !== "denied";
-        await drawVendorOnboarding(content);
-      } catch (err) {
-        window.alert(err.message);
-        stageSelect.value = v.onboardingStage;
-      }
+    el.querySelector(".onboarding-open-vendor-btn").addEventListener("click", () => {
+      vendorExpanded.add(v.id);
+      goTo("vendors");
     });
 
-    el.querySelector(".onboarding-denied-reason-save").addEventListener("click", async () => {
-      const reasonInput = el.querySelector(".onboarding-denied-reason-input");
-      try {
-        await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
-        vendorsCache = null;
-      } catch (err) {
-        window.alert(err.message);
-      }
+    const deniedReasonSave = el.querySelector(".onboarding-denied-reason-save");
+    if (deniedReasonSave) {
+      deniedReasonSave.addEventListener("click", async () => {
+        const reasonInput = el.querySelector(".onboarding-denied-reason-input");
+        try {
+          await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
+          vendorsCache = null;
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+
+    caseTypes.forEach((ct) => {
+      const caseEl = el.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
+      const toggleBtn = caseEl.querySelector(".onboarding-case-log-new");
+      const form = caseEl.querySelector(".onboarding-case-form");
+      toggleBtn.addEventListener("click", () => {
+        form.hidden = !form.hidden;
+      });
+      caseEl.querySelector(".onboarding-case-save").addEventListener("click", async () => {
+        const status = caseEl.querySelector(".onboarding-case-status-select").value;
+        const referenceNumber = caseEl.querySelector(".onboarding-case-ref-input").value.trim();
+        try {
+          await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: ct.type, status, referenceNumber });
+          vendorsCache = null;
+          await drawVendorOnboarding(content);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
     });
 
     const logToggle = el.querySelector(".onboarding-log-toggle");
@@ -484,7 +569,7 @@ export async function renderAdminReview(container) {
     let logLoaded = false;
     logToggle.addEventListener("click", async () => {
       logHost.hidden = !logHost.hidden;
-      logToggle.textContent = logHost.hidden ? "Case Log" : "Hide Case Log";
+      logToggle.textContent = logHost.hidden ? "Full case history" : "Hide case history";
       if (!logHost.hidden && !logLoaded) {
         logLoaded = true;
         await renderCaseLog(logHost, v);
@@ -494,6 +579,28 @@ export async function renderAdminReview(container) {
     return el;
   }
 
+  function renderCasePillHtml(v, ct, latest) {
+    const coiRef = ct.key === "coi" ? coiRequirementLine(v) : "";
+    return `
+      <div class="onboarding-case" data-case-key="${ct.key}">
+        <div class="onboarding-case-summary">
+          <span class="onboarding-case-label">${escapeHtml(ct.label)}</span>
+          <span class="badge badge-${caseStatusBadgeClass(latest && latest.status)}">${latest ? escapeHtml(latest.status || "No status") : "Not started"}</span>
+          ${latest && latest.referenceNumber ? `<span class="onboarding-case-ref">#${escapeHtml(latest.referenceNumber)}</span>` : ""}
+          <button type="button" class="btn btn-link onboarding-case-log-new">Log update</button>
+        </div>
+        ${coiRef ? `<div class="onboarding-case-coi-ref">${escapeHtml(coiRef)}</div>` : ""}
+        <div class="onboarding-case-form" hidden>
+          <select class="onboarding-case-status-select">
+            ${CASE_STATUS_OPTIONS.map((s) => `<option value="${s}">${s}</option>`).join("")}
+          </select>
+          <input type="text" class="onboarding-case-ref-input" placeholder="Case # (optional)" />
+          <button type="button" class="btn btn-primary onboarding-case-save">Save</button>
+        </div>
+      </div>
+    `;
+  }
+
   async function renderCaseLog(host, v) {
     host.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
     const entries = await api.get(`/api/admin/vendors/${v.id}/requests`);
@@ -501,13 +608,13 @@ export async function renderAdminReview(container) {
       <div class="onboarding-case-entries">
         ${
           entries.length === 0
-            ? `<p class="empty-note">No status updates logged yet.</p>`
+            ? `<p class="empty-note">No cases logged yet.</p>`
             : entries
                 .map(
                   (e) => `
               <p class="onboarding-case-entry">
                 <strong>${escapeHtml(e.requestType)}</strong>${e.referenceNumber ? ` #${escapeHtml(e.referenceNumber)}` : ""}
-                — ${escapeHtml(e.status || "no status")}
+                — <span class="badge badge-${caseStatusBadgeClass(e.status)}">${escapeHtml(e.status || "no status")}</span>
                 <span class="task-comment-time">${new Date(e.updatedAt || e.requestedAt).toLocaleString()}</span>
               </p>
             `
@@ -515,23 +622,7 @@ export async function renderAdminReview(container) {
                 .join("")
         }
       </div>
-      <div class="onboarding-case-add">
-        <input type="text" class="onboarding-case-status" placeholder="Status update (e.g. Waiting on COI from vendor)" />
-        <button type="button" class="btn btn-link onboarding-case-add-btn">Log update</button>
-      </div>
     `;
-    host.querySelector(".onboarding-case-add-btn").addEventListener("click", async () => {
-      const input = host.querySelector(".onboarding-case-status");
-      const status = input.value.trim();
-      if (!status) return;
-      try {
-        await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: "Status Update", status });
-        vendorsCache = null;
-        await renderCaseLog(host, v);
-      } catch (err) {
-        window.alert(err.message);
-      }
-    });
   }
 
   function filteredVendors() {

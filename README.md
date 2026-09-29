@@ -288,30 +288,47 @@ Demo logins:
   Any box left unchecked (or a stale invoice date) marks that vendor
   "Doc checks incomplete" on the Vendors list and rolls up into the
   Priorities tab, same flagging idea as an outdated form.
-- **Vendors -> Onboarding tab**: mirrors the email-folder-per-vendor
-  workflow used to track onboarding by hand -- each vendor carries an
-  `onboardingStage` (`not_started` / `in_progress` / `denied` /
-  `onboarded`; adding a vendor from the Vendors tab defaults it straight to
-  **in_progress**, since adding one here is starting to onboard it) and,
-  once denied, a free-text `deniedReason` (e.g. "ACH issue", "COI"). The
-  Onboarding tab lists **In Progress** (sorted most-stale-first) and
-  **Denied** vendors separately, flagging any In Progress vendor with no
-  activity in 7+ days (`ONBOARDING_STALE_DAYS` in `adminReview.js`) the
-  same red-flag treatment `.review-row-pending` uses elsewhere. Each row's
-  **Case Log** finally surfaces `vendor_requests` -- the onboarding/
-  compliance case-log table (a COI case, a Toyota onboarding case, etc.,
-  with a free-text status since real statuses like "Denied - No Response -
-  Start over Case" don't reduce to a boolean) that was built alongside the
-  compliance tracker early on but never had a screen of its own; logging a
-  status update here (or editing one) touches the vendor's own
-  `updated_at`, which is what staleness reads -- so "add a note" really
-  does reset the 7-day clock, matching the real "did anyone touch this
-  case recently" question. Moving a vendor's stage or denied reason from
-  this tab reuses the same `PATCH /api/admin/vendors/:id` the main Vendors
-  edit form uses, carrying every other field through unchanged (that
-  endpoint replaces the whole record, not just the fields sent -- same
-  "don't accidentally blank the rest of it" lesson as the roster's
-  Terminate action).
+- **Vendors -> Onboarding tab**: mirrors ServiceEdge's own onboarding model
+  rather than a single hand-set status -- a vendor being onboarded has up
+  to four independent **cases** (`vendor_requests` rows with one of four
+  canonical `request_type` values: `Onboarding - Request`,
+  `Onboarding - COI`, `Onboarding - W8/W9`, `Onboarding - Payment
+  Details`), each carrying its own free-text status (real ServiceEdge
+  statuses -- "Approved", "Denied", "Denied - No Response - Start over
+  Case" -- don't reduce to a boolean, so status stays free text). A
+  vendor's `onboardingStage` is **derived**, never set by hand:
+  `deriveOnboardingStage()` (`db.js`) looks at the *latest* case of each of
+  the three required types (COI/W-9/Payment) -- all three approved moves
+  the vendor to `onboarded`, any one denied (as its latest case) moves it
+  to `denied`, any case activity at all short of that is `in_progress`,
+  none yet is `not_started`. This matches how ServiceEdge itself works:
+  re-submitting after a denial opens a **brand new case** of the same
+  type rather than editing the old one, so "current status" always means
+  the most recently touched case -- `syncOnboardingStage()` re-derives and
+  persists the stage after every case add/update/delete, and
+  `routes/vendors.js` audits a `VENDOR_ONBOARDING_STAGE_CHANGED` entry
+  whenever that derivation actually changes it. Adding a vendor from the
+  Vendors tab still defaults it straight to `in_progress` (no cases
+  needed to show up here at all). The board has three sections: **In
+  Progress** (sorted most-stale-first) and **Denied**, each vendor row
+  showing all four cases as status pills with an inline "Log update" mini
+  form (status + optional case #) right there -- no need to open the
+  vendor's own record to log a case -- plus **Compliance Needed**, already
+  `onboarded` vendors whose forms have since gone `outdated` or failed a
+  doc check, each linking straight to that vendor's edit form on the main
+  Vendors tab. A COI case shows the vendor's required coverage limits
+  (GL/Auto/WC/Umbrella, from the same Toyota COI matrix that drives the
+  Vendors tab's Services dropdown) right next to it as a reference while
+  reviewing a submitted certificate. Staleness (`ONBOARDING_STALE_DAYS =
+  7`) still reads the vendor's own `updated_at`, bumped by any case
+  add/update the same way it always was. A bulk
+  `GET /api/admin/vendors/onboarding/case-summary` endpoint returns the
+  latest case of each type for every vendor with any case activity in one
+  round trip, so the board doesn't need a request per vendor shown. This
+  board deliberately shows case **status only** -- never a vendor's actual
+  uploaded documents (those stay on that vendor's own record) -- so any
+  admin can see exactly where a vendor stands without touching anything
+  private.
 - **Schedule tab**: a month calendar of **WOM project work only** — no E&F
   time and no time off, since the point is seeing what's already scheduled
   project-wise, not a general timesheet view (Tech Allocation and Weekly

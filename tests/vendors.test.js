@@ -272,3 +272,78 @@ test("vendors: onboarding tracker (stage, denied reason, case log)", async (t) =
     assert.equal(res.body[0].status, "COI received -- reviewing");
   });
 });
+
+// ServiceEdge itself tracks onboarding as separate COI / W-9 / Payment
+// Details cases, each independently approved or denied, and re-submitting
+// after a denial opens a brand new case rather than editing the old one.
+// onboardingStage mirrors that: it's derived from the latest case of each
+// type, not set by hand, so it stays correct through exactly that
+// deny-then-reopen-a-new-case pattern.
+test("vendors: onboarding stage derives from COI/W-9/Payment case status", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Morley and Associates" } });
+  const vendorId = create.body.id;
+
+  await t.test("no cases yet -- defaults to In Progress from creation, not Not Started", async () => {
+    assert.equal(create.body.onboardingStage, "in_progress");
+  });
+
+  async function logCase(requestType, status, referenceNumber) {
+    return server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType, status, referenceNumber },
+    });
+  }
+
+  await t.test("one case approved, two still missing -- stays In Progress", async () => {
+    const res = await logCase("Onboarding - COI", "Approved", "00801516");
+    assert.equal(res.status, 201);
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "in_progress");
+  });
+
+  await t.test("a case denied moves the vendor to Denied", async () => {
+    await logCase("Onboarding - W8/W9", "Denied", "00801509b");
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "denied");
+  });
+
+  await t.test("re-submitting opens a new case rather than editing the denied one, and approving it clears Denied", async () => {
+    await logCase("Onboarding - W8/W9", "Approved", "00801509");
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    // COI and W-9 are approved, Payment hasn't had a case logged yet.
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "in_progress");
+  });
+
+  await t.test("all three approved moves the vendor to Onboarded", async () => {
+    await logCase("Onboarding - Payment Details", "Denied", "00801515");
+    await logCase("Onboarding - Payment Details", "Approved", "00809233");
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "onboarded");
+  });
+
+  await t.test("stage-changing case updates are audited", async () => {
+    const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entries = res.body.filter((e) => e.action === "VENDOR_ONBOARDING_STAGE_CHANGED" && e.details.includes("Morley"));
+    assert.ok(entries.some((e) => e.details.includes("denied")), "expected an audit entry for moving to denied");
+    assert.ok(entries.some((e) => e.details.includes("onboarded")), "expected an audit entry for moving to onboarded");
+  });
+
+  await t.test("bulk case-summary endpoint returns the latest case of each type", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/onboarding/case-summary", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.caseTypes.length, 4);
+    const summary = res.body.summaries[vendorId];
+    assert.equal(summary.coi.status, "Approved");
+    assert.equal(summary.w9.status, "Approved");
+    assert.equal(summary.payment.status, "Approved");
+    assert.equal(summary.payment.referenceNumber, "00809233");
+  });
+
+  await t.test("a technician cannot read the bulk case-summary either", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/onboarding/case-summary", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+});
