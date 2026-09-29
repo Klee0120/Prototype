@@ -264,12 +264,23 @@ Demo logins:
   approved, **Forms** current/outdated — each defaulting to "unknown" until
   set), plus detail fields (phone/email/PO email, services, Midwest sites
   seen, invoicing history, notes, etc.). Search by name/JDE#/service and
-  filter by C&W or Toyota status; click a vendor to expand and edit, or
-  remove it outright (unlike locations/WOMs, which can't currently be
-  deleted — see "Where this stands"). `scripts/import-vendors.js` bulk-loads
-  or updates vendor records from a JSON file — built for importing an
-  existing vendor tracker spreadsheet once, safe to re-run (matches
-  existing vendors by JDE # or name and updates them instead of duplicating).
+  filter by C&W or Toyota status; **Open** launches the edit form as a
+  pop-up dialog (not an inline expand in the list -- with 292 real
+  vendors, scrolling back down to find your row every time was exactly the
+  friction the pop-up pattern elsewhere in the app exists to avoid), where
+  it can be edited or removed outright (unlike locations/WOMs, which can't
+  currently be deleted — see "Where this stands"). Two badges
+  ("Onboarding: In Progress" / "Onboarding: Denied") show right on the
+  main list row when relevant, so a vendor's onboarding case status is
+  visible without switching to the Onboarding tab at all -- an already-
+  onboarded vendor shows neither, keeping the common case quiet.
+  `scripts/import-vendors.js` bulk-loads or updates vendor records from a
+  JSON file — built for importing an existing vendor tracker spreadsheet
+  once, safe to re-run (matches existing vendors by JDE # or name and
+  updates them instead of duplicating). Every vendor imported this way (or
+  existing before the case-based onboarding tracker below was built)
+  defaults to `not_started` rather than `in_progress` -- see **Start
+  Onboarding** below for how one of those actually gets picked up.
 - **Vendor document compliance checklist**: specific checkboxes verified
   against the actual attached COI/W-9/ACH document, separate from the COI
   coverage-limit checks (`coiMeetsRequiredLimits`/`coiMeetsLanguageRequirements`)
@@ -328,7 +339,22 @@ Demo logins:
   board deliberately shows case **status only** -- never a vendor's actual
   uploaded documents (those stay on that vendor's own record) -- so any
   admin can see exactly where a vendor stands without touching anything
-  private.
+  private. Distinct from the document-compliance checklist above -- that's
+  "does the attached COI/W-9/ACH document itself meet requirements,"
+  this is "has ServiceEdge approved the case" -- the vendor edit modal
+  says so explicitly since both live under "COI"/"W-9" naming and are easy
+  to conflate.
+  A **Start Onboarding** search sits above the board for exactly this: all
+  292 real vendors (imported before this tracker existed) default to
+  `not_started`, which is invisible on a board that only lists In
+  Progress/Denied/Compliance Needed -- there was otherwise no way to
+  actually begin onboarding one of them. Typing a name filters
+  `not_started` vendors client-side (already-loaded `vendorsCache`, no
+  extra request); **Start Onboarding** logs an `Onboarding - Request` case
+  with status "New", which is enough case activity on its own to move the
+  vendor to `in_progress` and onto the board below. A vendor added fresh
+  through **+ Add vendor** still skips this step entirely and starts
+  `in_progress` immediately, same as before.
 - **Schedule tab**: a month calendar of **WOM project work only** — no E&F
   time and no time off, since the point is seeing what's already scheduled
   project-wise, not a general timesheet view (Tech Allocation and Weekly
@@ -612,6 +638,22 @@ Demo logins:
     vendor-compliance cleanup (monthly) -- each keyed to its own period
     (e.g. the Monday of the current week) so it's a no-op once that
     period's task already exists.
+  - **A task can carry documents that aren't filed to any vendor yet**
+    (admin-only, task detail panel): a COI from a renewal email is
+    real compliance material the moment it lands, even before it's clear
+    which vendor record it belongs to (or before that vendor exists in
+    this app at all) -- rather than forcing a choice up front, "+ New
+    Task" plus this panel gives it somewhere to live (create a task like
+    "File COI from Aon once vendor confirmed", attach the PDF there) so it
+    isn't lost, without it being tied to any vendor. Reuses `server/routes/
+    files.js`'s existing generic relatedType/relatedId file system with a
+    new `task` relatedType, sharing the exact same category vocabulary
+    (`coi`/`w9`/`ach`/`vpo_waiver`/`vendor_other`, plus a plain `document`)
+    as a vendor's own files -- filing it for real later is a plain
+    re-upload onto that vendor's record under the same category, no
+    re-labeling. Same admin-only read/write rule as vendor documents (a
+    technician never sees it, even if the task happens to be assigned to
+    them).
   - **Smartsheet sync now reports what it actually changed downstream**:
     the sync panel persists a **"Last sync: &lt;when&gt; -- N WOMs
     updated, N tasks created, N tasks completed, N workflow exceptions"**

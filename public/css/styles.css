@@ -1239,6 +1239,17 @@ h1, h2, h3, h4 {
   margin: 6px 0;
 }
 
+.onboarding-start-search {
+  margin-bottom: 10px;
+}
+.onboarding-start-search input {
+  width: 100%;
+  max-width: 420px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 .onboarding-cases {
   display: flex;
   flex-direction: column;

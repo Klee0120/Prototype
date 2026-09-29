@@ -213,3 +213,67 @@ test("files: attachments (upload/list/download/delete) authorization", async (t)
     assert.equal(res.status, 403);
   });
 });
+
+// A COI (or W-9, etc.) can come in before Krista's picked a vendor to file
+// it against -- e.g. a renewal email from Aon she hasn't worked yet. She
+// needs somewhere to park the document without it being tied to any
+// vendor, tracked on a task instead: same compliance-document handling
+// (admin-only, never technician-visible) as a vendor's own files.
+test("files: task attachments (documents not yet filed to a vendor)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const task = await server.call("POST", "/api/tasks", {
+    userId: "ADMIN",
+    body: { title: "File COI from Aon once vendor is confirmed" },
+  });
+  const taskId = task.body.id;
+
+  await t.test("an admin can attach a COI to a task", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "task", relatedId: String(taskId), category: "coi" },
+      fileName: "aon-coi-renewal.pdf",
+      mimeType: "application/pdf",
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.category, "coi");
+    assert.equal(res.body.relatedId, String(taskId));
+  });
+
+  await t.test("a technician cannot upload to a task", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "T1001",
+      fields: { relatedType: "task", relatedId: String(taskId), category: "coi" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician cannot list a task's attachments", async () => {
+    const res = await server.call("GET", `/api/files?relatedType=task&relatedId=${taskId}`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("an admin sees the attached file listed against the task", async () => {
+    const res = await server.call("GET", `/api/files?relatedType=task&relatedId=${taskId}`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 1);
+    assert.equal(res.body[0].originalName, "aon-coi-renewal.pdf");
+  });
+
+  await t.test("rejects a category that isn't a task-document category", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "task", relatedId: String(taskId), category: "receipt" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("uploading against a task that doesn't exist 404s", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "task", relatedId: "999999", category: "coi" },
+    });
+    assert.equal(res.status, 404);
+  });
+});

@@ -428,6 +428,7 @@ export async function renderAdminReview(container) {
     const caseTypes = caseData.caseTypes;
     const summaries = caseData.summaries;
 
+    const notStarted = vendors.filter((v) => v.onboardingStage === "not_started");
     const inProgress = vendors
       .filter((v) => v.onboardingStage === "in_progress")
       .sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
@@ -440,11 +441,22 @@ export async function renderAdminReview(container) {
       <p class="review-checklist-hint">
         Onboarding is tracked as ServiceEdge tracks it -- a COI case, a W-9 case, and a Payment
         Details case per vendor, each independently approved or denied. All three approved moves a
-        vendor to Onboarded; any one denied moves it to Denied. Adding a vendor (Vendors tab) starts
-        it here automatically. A vendor with no case update in ${ONBOARDING_STALE_DAYS}+ days is
-        flagged so nothing quietly sits untouched. This board shows case status only, never a
-        vendor's actual documents.
+        vendor to Onboarded; any one denied moves it to Denied. A vendor with no case update in
+        ${ONBOARDING_STALE_DAYS}+ days is flagged so nothing quietly sits untouched. This board shows
+        case status only, never a vendor's actual documents.
       </p>
+      <h3>Start Onboarding</h3>
+      <p class="review-checklist-hint">
+        ${notStarted.length} vendor${notStarted.length === 1 ? "" : "s"} on file ${notStarted.length === 1 ? "hasn't" : "haven't"}
+        had onboarding started yet -- every vendor already on file before this tracker existed
+        defaults here rather than to In Progress. Search by name and click Start to log the welcome
+        email case and move one onto the board below. A brand new vendor (Vendors tab -- Add vendor)
+        starts as In Progress automatically instead.
+      </p>
+      <div class="onboarding-start-search">
+        <input type="text" id="onboarding-start-search-input" placeholder="Search vendor name to start onboarding..." />
+      </div>
+      <div class="review-list" id="onboarding-start-results"></div>
       <h3>In Progress (${inProgress.length})</h3>
       <div class="review-list" id="onboarding-in-progress-list"></div>
       <h3>Denied (${denied.length})</h3>
@@ -456,6 +468,45 @@ export async function renderAdminReview(container) {
       </p>
       <div class="review-list" id="onboarding-compliance-list"></div>
     `;
+
+    const searchInput = content.querySelector("#onboarding-start-search-input");
+    const startResults = content.querySelector("#onboarding-start-results");
+    function renderStartResults(query) {
+      const q = query.trim().toLowerCase();
+      if (!q) {
+        startResults.innerHTML = `<p class="empty-note">Type a vendor name to find one to start.</p>`;
+        return;
+      }
+      const matches = notStarted.filter((v) => v.name.toLowerCase().includes(q));
+      if (matches.length === 0) {
+        startResults.innerHTML = `<p class="empty-note">No not-started vendor matches "${escapeHtml(query)}".</p>`;
+        return;
+      }
+      startResults.innerHTML = "";
+      matches.slice(0, 20).forEach((v) => {
+        const row = document.createElement("div");
+        row.className = "review-row onboarding-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(v.name)}</span>
+            <span class="vendor-jde">${escapeHtml(v.jdeVendorNumber || "No JDE #")}</span>
+            <button class="btn btn-primary onboarding-start-btn" type="button">Start Onboarding</button>
+          </div>
+        `;
+        row.querySelector(".onboarding-start-btn").addEventListener("click", async () => {
+          try {
+            await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: "Onboarding - Request", status: "New" });
+            vendorsCache = null;
+            await drawVendorOnboarding(content);
+          } catch (err) {
+            window.alert(err.message);
+          }
+        });
+        startResults.appendChild(row);
+      });
+    }
+    renderStartResults("");
+    searchInput.addEventListener("input", () => renderStartResults(searchInput.value));
 
     const inProgressList = content.querySelector("#onboarding-in-progress-list");
     if (inProgress.length === 0) {
@@ -740,6 +791,15 @@ export async function renderAdminReview(container) {
     } else {
       filtered.forEach((v) => list.appendChild(renderVendorRow(v, content)));
     }
+    // vendorExpanded is now a one-shot deep-link queue (set by the
+    // Onboarding board's "Open vendor" button and the Priorities
+    // outdated-forms jump) rather than persistent expanded-row state --
+    // consume it by opening that vendor's modal, then clear it.
+    if (vendorExpanded.size > 0) {
+      const toOpen = filtered.find((v) => vendorExpanded.has(v.id));
+      vendorExpanded.clear();
+      if (toOpen) openVendorEditModal(toOpen, content);
+    }
   }
 
   function openAddVendorModal(content) {
@@ -762,6 +822,10 @@ export async function renderAdminReview(container) {
             </select>
             ${renderServicesSelect("")}
           </div>
+          <p class="review-checklist-hint">
+            Starts this vendor as In Progress on the Onboarding tab automatically, with all 4 cases
+            (Request, COI, W-9, Payment) not yet started.
+          </p>
           <div class="modal-form-actions">
             <button type="submit" class="btn btn-primary">Add vendor</button>
           </div>
@@ -790,73 +854,79 @@ export async function renderAdminReview(container) {
     });
   }
 
+  // Opening a vendor used to expand its edit form inline in the list --
+  // fine for a short list, but scrolling back down to find your spot in a
+  // 292-row list every time is exactly the "doesn't feel like an
+  // application" friction the pop-up dialog pattern (modal.js) exists to
+  // fix elsewhere (WOM Smartsheet detail, document viewer). Same fix here.
+  function openVendorEditModal(v, content) {
+    const { body, close } = openModal({
+      title: v.name,
+      size: "large",
+      bodyHtml: renderVendorEditForm(v),
+    });
+    const form = body.querySelector(".vendor-edit-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.patch(`/api/admin/vendors/${v.id}`, {
+          name: form.name.value.trim(),
+          jdeVendorNumber: form.jdeVendorNumber.value.trim(),
+          cwStatus: form.cwStatus.value,
+          toyotaStatus: form.toyotaStatus.value,
+          formsStatus: form.formsStatus.value,
+          phone: form.phone.value.trim(),
+          email: form.email.value.trim(),
+          poEmail: form.poEmail.value.trim(),
+          onlineSourceUrl: form.onlineSourceUrl.value.trim(),
+          midwestSitesSeen: form.midwestSitesSeen.value.trim(),
+          services: form.services.value.trim(),
+          invoicedPreviously: form.invoicedPreviously.value.trim(),
+          successfulInvoiceRecords: form.successfulInvoiceRecords.value === "" ? null : Number(form.successfulInvoiceRecords.value),
+          successfulSinceDate: form.successfulSinceDate.value || null,
+          trackerWorkExamples: form.trackerWorkExamples.value.trim(),
+          coverageOutsideMidwest: form.coverageOutsideMidwest.value.trim(),
+          notes: form.notes.value.trim(),
+          coiMeetsRequiredLimits: form.coiMeetsRequiredLimits.checked,
+          coiMeetsLanguageRequirements: form.coiMeetsLanguageRequirements.checked,
+          coiLimits: Object.fromEntries(
+            Object.keys(COI_LIMIT_LABELS).map((key) => [key, form[`coi_${key}`].value.trim()])
+          ),
+          formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, form[key].checked])),
+          w9InvoiceDate: form.w9InvoiceDate.value || null,
+        });
+        vendorsCache = null;
+        close();
+        await drawVendors(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+    form.querySelector('select[name="services"]').addEventListener("change", (e) => {
+      const matrixEntry = COI_MATRIX_BY_LABEL[e.target.value];
+      if (!matrixEntry) return;
+      for (const [coiKey, matrixKey] of Object.entries(COI_LIMIT_TO_MATRIX_KEY)) {
+        form[`coi_${coiKey}`].value = matrixEntry.requirements[matrixKey] || "";
+      }
+    });
+    body.querySelector(".cancel-vendor-edit").addEventListener("click", () => close());
+    body.querySelector(".delete-vendor-btn").addEventListener("click", async () => {
+      if (!window.confirm(`Remove vendor "${v.name}"? This can't be undone.`)) return;
+      try {
+        await api.delete(`/api/admin/vendors/${v.id}`);
+        vendorsCache = null;
+        close();
+        await drawVendors(content);
+      } catch (err) {
+        window.alert(`Could not remove: ${err.message}`);
+      }
+    });
+  }
+
   function renderVendorRow(v, content) {
     const el = document.createElement("div");
     el.className = "review-row vendor-row";
-
-    if (vendorExpanded.has(v.id)) {
-      el.innerHTML = renderVendorEditForm(v);
-      const form = el.querySelector(".vendor-edit-form");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const msg = form.querySelector(".save-message");
-        try {
-          await api.patch(`/api/admin/vendors/${v.id}`, {
-            name: form.name.value.trim(),
-            jdeVendorNumber: form.jdeVendorNumber.value.trim(),
-            cwStatus: form.cwStatus.value,
-            toyotaStatus: form.toyotaStatus.value,
-            formsStatus: form.formsStatus.value,
-            phone: form.phone.value.trim(),
-            email: form.email.value.trim(),
-            poEmail: form.poEmail.value.trim(),
-            onlineSourceUrl: form.onlineSourceUrl.value.trim(),
-            midwestSitesSeen: form.midwestSitesSeen.value.trim(),
-            services: form.services.value.trim(),
-            invoicedPreviously: form.invoicedPreviously.value.trim(),
-            successfulInvoiceRecords: form.successfulInvoiceRecords.value === "" ? null : Number(form.successfulInvoiceRecords.value),
-            successfulSinceDate: form.successfulSinceDate.value || null,
-            trackerWorkExamples: form.trackerWorkExamples.value.trim(),
-            coverageOutsideMidwest: form.coverageOutsideMidwest.value.trim(),
-            notes: form.notes.value.trim(),
-            coiMeetsRequiredLimits: form.coiMeetsRequiredLimits.checked,
-            coiMeetsLanguageRequirements: form.coiMeetsLanguageRequirements.checked,
-            coiLimits: Object.fromEntries(
-              Object.keys(COI_LIMIT_LABELS).map((key) => [key, form[`coi_${key}`].value.trim()])
-            ),
-            formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, form[key].checked])),
-            w9InvoiceDate: form.w9InvoiceDate.value || null,
-          });
-          vendorsCache = null;
-          await drawVendors(content);
-        } catch (err) {
-          msg.textContent = err.message;
-        }
-      });
-      form.querySelector('select[name="services"]').addEventListener("change", (e) => {
-        const matrixEntry = COI_MATRIX_BY_LABEL[e.target.value];
-        if (!matrixEntry) return;
-        for (const [coiKey, matrixKey] of Object.entries(COI_LIMIT_TO_MATRIX_KEY)) {
-          form[`coi_${coiKey}`].value = matrixEntry.requirements[matrixKey] || "";
-        }
-      });
-      el.querySelector(".cancel-vendor-edit").addEventListener("click", () => {
-        vendorExpanded.delete(v.id);
-        refreshVendorList(content);
-      });
-      el.querySelector(".delete-vendor-btn").addEventListener("click", async () => {
-        if (!window.confirm(`Remove vendor "${v.name}"? This can't be undone.`)) return;
-        try {
-          await api.delete(`/api/admin/vendors/${v.id}`);
-          vendorsCache = null;
-          vendorExpanded.delete(v.id);
-          await drawVendors(content);
-        } catch (err) {
-          window.alert(`Could not remove: ${err.message}`);
-        }
-      });
-      return el;
-    }
 
     el.innerHTML = `
       <div class="review-row-summary vendor-summary">
@@ -866,12 +936,13 @@ export async function renderAdminReview(container) {
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.formsStatus]}">${escapeHtml(FORMS_STATUS_LABELS[v.formsStatus])}</span>
         ${!v.formChecksComplete || v.w9InvoiceStale ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
+        ${v.onboardingStage === "in_progress" ? `<span class="badge badge-draft">Onboarding: In Progress</span>` : ""}
+        ${v.onboardingStage === "denied" ? `<span class="badge badge-rejected">Onboarding: Denied</span>` : ""}
         <button class="btn btn-secondary vendor-open-btn" type="button">Open</button>
       </div>
     `;
     el.querySelector(".vendor-open-btn").addEventListener("click", () => {
-      vendorExpanded.add(v.id);
-      refreshVendorList(content);
+      openVendorEditModal(v, content);
     });
     return el;
   }
@@ -990,6 +1061,11 @@ export async function renderAdminReview(container) {
             : ""
         }
 
+        <p class="review-checklist-hint">
+          The sections below verify the vendor's actual documents on file against requirements --
+          separate from onboarding <strong>case status</strong> (has ServiceEdge approved the COI/W-9/
+          Payment case), which is tracked on the Onboarding tab instead.
+        </p>
         <h4>COI (Certificate of Insurance) requirements</h4>
         <p class="review-checklist-hint">
           Picking a Service above fills these with the limits Toyota requires for that service type

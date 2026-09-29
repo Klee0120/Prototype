@@ -21,6 +21,13 @@ const CATEGORY_BY_RELATED = {
   // four report kinds, distinguished by category, all filed by month/year.
   labor_report: new Set(["labor_report", "wom_report", "financial_report", "gl_report"]),
   vendor: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other"]),
+  // A document that's come in (e.g. a COI from Aon) but isn't ready to be
+  // filed against a specific vendor's own record yet -- attach it to a
+  // task instead, so it's tracked and doesn't get lost, without the file
+  // (or the task) being tied to any vendor. Same category vocabulary as
+  // `vendor` above, so filing it onto the real vendor record later is a
+  // straight re-upload with no re-labeling.
+  task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -33,20 +40,22 @@ function canRead(user, relatedType, relatedId) {
   // Vendor forms (COI, W-9, etc.) are compliance documents a technician has
   // no reason to see -- their own vendor lookup is a separate, much
   // narrower read-only endpoint that never touches this files system.
-  if (relatedType === "vendor") return false;
+  // Task attachments follow the same rule -- they're the same kind of
+  // compliance document, just not filed against a vendor yet.
+  if (relatedType === "vendor" || relatedType === "task") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
   return false;
 }
 
-// Technician forms/certifications and vendor forms are both admin-managed
-// compliance documents; every other category can be attached by whoever
-// owns the record (or an admin).
+// Technician forms/certifications, vendor forms, and task attachments are
+// all admin-managed compliance documents; every other category can be
+// attached by whoever owns the record (or an admin).
 function canWrite(user, relatedType, relatedId, category) {
   if (user.role === "admin") return true;
   if (category === "tech_form") return false;
-  if (relatedType === "vendor") return false;
+  if (relatedType === "vendor" || relatedType === "task") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   return false;
@@ -56,6 +65,7 @@ function relatedRecordExists(relatedType, relatedId) {
   if (relatedType === "wom") return Boolean(db.findWom(relatedId));
   if (relatedType === "technician") return Boolean(db.findTechnician(relatedId));
   if (relatedType === "vendor") return Boolean(db.findVendor(relatedId));
+  if (relatedType === "task") return Boolean(db.findTask(relatedId));
   if (relatedType === "week") return Boolean(db.findTechnician(parseWeekRelatedId(relatedId).techId));
   // Labor reports aren't tied to a record that already exists elsewhere --
   // they're just an admin-only monthly archive, keyed by "YYYY-MM".

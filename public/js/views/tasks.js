@@ -1,6 +1,23 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { openModal } from "../modal.js";
+import { renderAttachments } from "./attachments.js";
+
+// A document that's come in but isn't ready to be filed against a specific
+// vendor's own record yet (e.g. a COI from Aon for a renewal she hasn't
+// worked yet) -- attach it here instead of skipping the vendor lookup step,
+// so it's tracked on a task and not lost, without tying either the file or
+// the task to any vendor. Same category vocabulary server/routes/files.js
+// uses for a vendor's own documents, so filing it for real later is just a
+// re-upload under the same category, no re-labeling.
+const TASK_DOC_CATEGORIES = [
+  { value: "coi", label: "COI (Certificate of Insurance)" },
+  { value: "w9", label: "W-9" },
+  { value: "ach", label: "ACH / Bank Letter" },
+  { value: "vpo_waiver", label: "VPO Waiver" },
+  { value: "vendor_other", label: "Other Vendor Document" },
+  { value: "document", label: "Document" },
+];
 
 // The one reusable task board both the admin Priorities section and the
 // technician My Work tab mount -- role-based and employee-based views come
@@ -360,12 +377,23 @@ export async function renderTaskBoard(container) {
       <p class="review-checklist-hint">${why} (${escapeHtml(timeline)}.)</p>
       <div class="task-pse-actions"></div>
       <div class="review-actions task-status-actions"></div>
+      ${isAdmin ? `<div class="task-attachments"></div>` : ""}
       <div class="task-comments"></div>
       <div class="task-comment-form"></div>
     `;
 
     const tookOverStatus = wom && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
     if (!tookOverStatus) renderStatusActions(host.querySelector(".task-status-actions"), t);
+    if (isAdmin) {
+      await renderAttachments(host.querySelector(".task-attachments"), {
+        title: "Documents (not filed to a vendor)",
+        relatedType: "task",
+        relatedId: t.id,
+        categories: TASK_DOC_CATEGORIES,
+        canUpload: true,
+        emptyText: "No documents attached to this task yet.",
+      });
+    }
     renderComments(host.querySelector(".task-comments"), t.comments);
     renderCommentForm(host.querySelector(".task-comment-form"), t.id, host);
   }
