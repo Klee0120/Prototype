@@ -1031,37 +1031,67 @@ export async function renderAdminReview(container) {
     assignHost.className = "vendor-assign-task-doc-host";
     documentsPanel.after(assignHost);
     renderAssignTaskDocumentControl(assignHost, v, refreshDocumentsPanel);
+    // Two independent forms, two independent saves -- the document
+    // checklist pairs with Documents above it (where the files it verifies
+    // actually get uploaded) rather than being buried at the bottom of the
+    // general vendor-info form. Both PATCH through vendorFullPayload so
+    // saving one never blanks fields only the other form edits; `v` is
+    // kept current after each save so a second save in the same modal
+    // session carries forward what the first one just changed, not what
+    // was on screen when the modal first opened.
+    const docChecksForm = body.querySelector(".vendor-doc-checks-form");
+    docChecksForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = docChecksForm.querySelector(".save-message");
+      try {
+        const updated = await api.patch(
+          `/api/admin/vendors/${v.id}`,
+          vendorFullPayload(v, {
+            coiMeetsRequiredLimits: docChecksForm.coiMeetsRequiredLimits.checked,
+            coiMeetsLanguageRequirements: docChecksForm.coiMeetsLanguageRequirements.checked,
+            coiLimits: Object.fromEntries(
+              Object.keys(COI_LIMIT_LABELS).map((key) => [key, docChecksForm[`coi_${key}`].value.trim()])
+            ),
+            formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, docChecksForm[key].checked])),
+            w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null,
+          })
+        );
+        Object.assign(v, updated);
+        vendorsCache = null;
+        msg.textContent = "Saved.";
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+
     const form = body.querySelector(".vendor-edit-form");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = form.querySelector(".save-message");
       try {
-        await api.patch(`/api/admin/vendors/${v.id}`, {
-          name: form.name.value.trim(),
-          jdeVendorNumber: form.jdeVendorNumber.value.trim(),
-          cwStatus: form.cwStatus.value,
-          toyotaStatus: form.toyotaStatus.value,
-          formsStatus: form.formsStatus.value,
-          phone: form.phone.value.trim(),
-          email: form.email.value.trim(),
-          poEmail: form.poEmail.value.trim(),
-          onlineSourceUrl: form.onlineSourceUrl.value.trim(),
-          midwestSitesSeen: form.midwestSitesSeen.value.trim(),
-          services: form.services.value.trim(),
-          invoicedPreviously: form.invoicedPreviously.value.trim(),
-          successfulInvoiceRecords: form.successfulInvoiceRecords.value === "" ? null : Number(form.successfulInvoiceRecords.value),
-          successfulSinceDate: form.successfulSinceDate.value || null,
-          trackerWorkExamples: form.trackerWorkExamples.value.trim(),
-          coverageOutsideMidwest: form.coverageOutsideMidwest.value.trim(),
-          notes: form.notes.value.trim(),
-          coiMeetsRequiredLimits: form.coiMeetsRequiredLimits.checked,
-          coiMeetsLanguageRequirements: form.coiMeetsLanguageRequirements.checked,
-          coiLimits: Object.fromEntries(
-            Object.keys(COI_LIMIT_LABELS).map((key) => [key, form[`coi_${key}`].value.trim()])
-          ),
-          formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, form[key].checked])),
-          w9InvoiceDate: form.w9InvoiceDate.value || null,
-        });
+        const updated = await api.patch(
+          `/api/admin/vendors/${v.id}`,
+          vendorFullPayload(v, {
+            name: form.name.value.trim(),
+            jdeVendorNumber: form.jdeVendorNumber.value.trim(),
+            cwStatus: form.cwStatus.value,
+            toyotaStatus: form.toyotaStatus.value,
+            formsStatus: form.formsStatus.value,
+            phone: form.phone.value.trim(),
+            email: form.email.value.trim(),
+            poEmail: form.poEmail.value.trim(),
+            onlineSourceUrl: form.onlineSourceUrl.value.trim(),
+            midwestSitesSeen: form.midwestSitesSeen.value.trim(),
+            services: form.services.value.trim(),
+            invoicedPreviously: form.invoicedPreviously.value.trim(),
+            successfulInvoiceRecords: form.successfulInvoiceRecords.value === "" ? null : Number(form.successfulInvoiceRecords.value),
+            successfulSinceDate: form.successfulSinceDate.value || null,
+            trackerWorkExamples: form.trackerWorkExamples.value.trim(),
+            coverageOutsideMidwest: form.coverageOutsideMidwest.value.trim(),
+            notes: form.notes.value.trim(),
+          })
+        );
+        Object.assign(v, updated);
         vendorsCache = null;
         close();
         await drawVendors(content);
@@ -1073,7 +1103,7 @@ export async function renderAdminReview(container) {
       const matrixEntry = COI_MATRIX_BY_LABEL[e.target.value];
       if (!matrixEntry) return;
       for (const [coiKey, matrixKey] of Object.entries(COI_LIMIT_TO_MATRIX_KEY)) {
-        form[`coi_${coiKey}`].value = matrixEntry.requirements[matrixKey] || "";
+        docChecksForm[`coi_${coiKey}`].value = matrixEntry.requirements[matrixKey] || "";
       }
     });
     body.querySelector(".cancel-vendor-edit").addEventListener("click", () => close());
@@ -1208,11 +1238,65 @@ export async function renderAdminReview(container) {
       <div class="vendor-documents-panel"></div>
       <p class="review-checklist-hint">
         These are the vendor's actual documents on file -- separate from onboarding
-        <strong>case status</strong> above (has ServiceEdge approved the COI/W-9/Payment case) and
-        from the document-checklist verification below (does the attached document itself meet
-        requirements).
+        <strong>case status</strong> above (has ServiceEdge approved the COI/W-9/Payment case). The
+        checklist right below is how received documents get verified against requirements, so it
+        lives right next to where they're uploaded rather than further down the page.
       </p>
 
+      <form class="vendor-doc-checks-form">
+        <h4>COI (Certificate of Insurance) requirements</h4>
+        <p class="review-checklist-hint">
+          Picking a Service on the vendor info form below fills these with the limits Toyota
+          requires for that service type (from the insurance matrix) -- still editable if this
+          vendor has a negotiated exception. Check the boxes once the vendor's actual COI (uploaded
+          above) has been reviewed against them.
+        </p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="coiMeetsRequiredLimits" ${v.coiMeetsRequiredLimits ? "checked" : ""} /> Meets required limits</label>
+          <label><input type="checkbox" name="coiMeetsLanguageRequirements" ${v.coiMeetsLanguageRequirements ? "checked" : ""} /> Meets language requirements</label>
+        </div>
+        <div class="vendor-edit-grid">${coiLimitInputs}</div>
+
+        <h4>COI document checks</h4>
+        <p class="review-checklist-hint">Verified against the actual COI document uploaded above.</p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="coiIsAcord25_2016_03" ${v.formChecks.coiIsAcord25_2016_03 ? "checked" : ""} /> Issued on ACORD 25 form (2016/03 version)</label>
+          <label><input type="checkbox" name="coiMatchesW9" ${v.formChecks.coiMatchesW9 ? "checked" : ""} /> Matches W-9 name &amp; address</label>
+        </div>
+
+        <h4>W-9 document checks</h4>
+        <p class="review-checklist-hint">Verified against the actual W-9 document uploaded above.</p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="w9SignedDated" ${v.formChecks.w9SignedDated ? "checked" : ""} /> Signed and dated</label>
+          <label><input type="checkbox" name="w9CorrectVersion" ${v.formChecks.w9CorrectVersion ? "checked" : ""} /> October 2018 or March 2024 version</label>
+          <label><input type="checkbox" name="w9HasPhone" ${v.formChecks.w9HasPhone ? "checked" : ""} /> Has phone number</label>
+          <label><input type="checkbox" name="w9HasRemitToAddress" ${v.formChecks.w9HasRemitToAddress ? "checked" : ""} /> Has remit-to address</label>
+          <label><input type="checkbox" name="w9HasName" ${v.formChecks.w9HasName ? "checked" : ""} /> Has vendor name</label>
+        </div>
+        <label class="profile-field vendor-w9-invoice-field">
+          <span>Blank invoice date on file${v.w9InvoiceStale ? ` <span class="badge badge-rejected">Over 2 years old</span>` : ""}</span>
+          <input type="date" name="w9InvoiceDate" value="${v.w9InvoiceDate || ""}" />
+        </label>
+
+        <h4>ACH document checks</h4>
+        <p class="review-checklist-hint">Verified against the actual ACH/bank letter uploaded above.</p>
+        <div class="vendor-coi-checks">
+          <label><input type="checkbox" name="achBankLetterhead" ${v.formChecks.achBankLetterhead ? "checked" : ""} /> On bank letterhead</label>
+          <label><input type="checkbox" name="achHasW9Name" ${v.formChecks.achHasW9Name ? "checked" : ""} /> Has W-9 name</label>
+          <label><input type="checkbox" name="achHasW9Address" ${v.formChecks.achHasW9Address ? "checked" : ""} /> Has W-9 address</label>
+        </div>
+        ${
+          !v.formChecksComplete || v.w9InvoiceStale
+            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks above aren't confirmed yet. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old." : ""}</p>`
+            : ""
+        }
+        <div class="vendor-edit-actions">
+          <button type="submit" class="btn btn-primary">Save document checks</button>
+          <span class="save-message doc-checks-save-message"></span>
+        </div>
+      </form>
+
+      <h4>Vendor Info</h4>
       <form class="vendor-edit-form">
         <div class="vendor-edit-grid">
           <label class="profile-field"><span>Vendor name</span><input name="name" value="${escapeHtml(v.name)}" required /></label>
@@ -1237,52 +1321,6 @@ export async function renderAdminReview(container) {
         ${
           v.rawStatusText
             ? `<p class="vendor-raw-status">Original tracker status text: <em>${escapeHtml(v.rawStatusText)}</em></p>`
-            : ""
-        }
-
-        <h4>COI (Certificate of Insurance) requirements</h4>
-        <p class="review-checklist-hint">
-          Picking a Service above fills these with the limits Toyota requires for that service type
-          (from the insurance matrix) -- still editable if this vendor has a negotiated exception.
-          Check the boxes once the vendor's actual COI (attached below) has been reviewed against them.
-        </p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="coiMeetsRequiredLimits" ${v.coiMeetsRequiredLimits ? "checked" : ""} /> Meets required limits</label>
-          <label><input type="checkbox" name="coiMeetsLanguageRequirements" ${v.coiMeetsLanguageRequirements ? "checked" : ""} /> Meets language requirements</label>
-        </div>
-        <div class="vendor-edit-grid">${coiLimitInputs}</div>
-
-        <h4>COI document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual COI document attached below.</p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="coiIsAcord25_2016_03" ${v.formChecks.coiIsAcord25_2016_03 ? "checked" : ""} /> Issued on ACORD 25 form (2016/03 version)</label>
-          <label><input type="checkbox" name="coiMatchesW9" ${v.formChecks.coiMatchesW9 ? "checked" : ""} /> Matches W-9 name &amp; address</label>
-        </div>
-
-        <h4>W-9 document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual W-9 document attached below.</p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="w9SignedDated" ${v.formChecks.w9SignedDated ? "checked" : ""} /> Signed and dated</label>
-          <label><input type="checkbox" name="w9CorrectVersion" ${v.formChecks.w9CorrectVersion ? "checked" : ""} /> October 2018 or March 2024 version</label>
-          <label><input type="checkbox" name="w9HasPhone" ${v.formChecks.w9HasPhone ? "checked" : ""} /> Has phone number</label>
-          <label><input type="checkbox" name="w9HasRemitToAddress" ${v.formChecks.w9HasRemitToAddress ? "checked" : ""} /> Has remit-to address</label>
-          <label><input type="checkbox" name="w9HasName" ${v.formChecks.w9HasName ? "checked" : ""} /> Has vendor name</label>
-        </div>
-        <label class="profile-field vendor-w9-invoice-field">
-          <span>Blank invoice date on file${v.w9InvoiceStale ? ` <span class="badge badge-rejected">Over 2 years old</span>` : ""}</span>
-          <input type="date" name="w9InvoiceDate" value="${v.w9InvoiceDate || ""}" />
-        </label>
-
-        <h4>ACH document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual ACH/bank letter attached below.</p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="achBankLetterhead" ${v.formChecks.achBankLetterhead ? "checked" : ""} /> On bank letterhead</label>
-          <label><input type="checkbox" name="achHasW9Name" ${v.formChecks.achHasW9Name ? "checked" : ""} /> Has W-9 name</label>
-          <label><input type="checkbox" name="achHasW9Address" ${v.formChecks.achHasW9Address ? "checked" : ""} /> Has W-9 address</label>
-        </div>
-        ${
-          !v.formChecksComplete || v.w9InvoiceStale
-            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks above aren't confirmed yet. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old." : ""}</p>`
             : ""
         }
 
