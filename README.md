@@ -661,6 +661,15 @@ Demo logins:
   outstanding) and calls out Mondays specifically (timecards + vendor case
   updates on ServiceEdge) -- fixed defaults for now, not yet
   admin-configurable goal numbers; see "Where this stands."
+  That badge count comes from 9 parallel API calls
+  (`computePriorityCount()`), which against a real dataset (292 vendors,
+  234+ WOMs with embedded raw Smartsheet data each) is not cheap. It used
+  to run before every single page render -- every nav click, and the very
+  first screen after login -- so the whole app waited on it every time.
+  It now runs in the background after the page has already rendered, and
+  the badge fills in a moment later without blocking anything else; a
+  `drawGeneration` counter discards a stale badge refresh if the admin has
+  already navigated elsewhere by the time it resolves.
 - **Short-hours flag, symmetric with the existing OT-not-on-WOM flag**: a
   week that comes in more than 3 hours under 40 (and has UKG hours entered
   at all, so this never fires on a week that's simply not been touched yet

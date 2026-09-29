@@ -193,6 +193,13 @@ export async function renderAdminReview(container) {
   // clicking back into e.g. Timekeeping returns to where you left off
   // instead of always resetting to its first sub-tab.
   const sectionLastTab = {};
+  // The Priorities nav pill's count -- last known value, shown immediately
+  // on every redraw rather than blocking the whole page on 9 parallel admin
+  // summary calls just to maybe paint a number on one pill (see
+  // refreshPriorityBadge). Starts at 0 (no badge) until the first fetch
+  // lands, then keeps whatever it last found.
+  let priorityCount = 0;
+  let drawGeneration = 0;
 
   function goTo(tab) {
     // Coming back to Vendors from somewhere else should start collapsed
@@ -207,7 +214,7 @@ export async function renderAdminReview(container) {
   draw();
 
   async function draw() {
-    const priorityCount = await computePriorityCount();
+    const myGeneration = ++drawGeneration;
     const currentSection = sectionForTab(activeTab);
 
     container.innerHTML = `
@@ -258,6 +265,29 @@ export async function renderAdminReview(container) {
     else if (activeTab === "psetasks") await drawPseTasks(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
+
+    refreshPriorityBadge(myGeneration);
+  }
+
+  // Runs after the actual tab content is already on screen, not before --
+  // the count is informational (a pill on the Priorities nav button), not
+  // something worth making every single tab switch wait on. Guards against
+  // a slow fetch clobbering the badge after the user's already navigated
+  // elsewhere by checking drawGeneration hasn't moved on since this call
+  // started.
+  async function refreshPriorityBadge(myGeneration) {
+    const count = await computePriorityCount();
+    if (myGeneration !== drawGeneration) return;
+    priorityCount = count;
+    const nav = container.querySelector('.nav-section[data-section="priorities"]');
+    if (!nav) return;
+    const existingBadge = nav.querySelector(".tab-badge");
+    if (count > 0) {
+      if (existingBadge) existingBadge.textContent = count;
+      else nav.insertAdjacentHTML("beforeend", ` <span class="tab-badge">${count}</span>`);
+    } else if (existingBadge) {
+      existingBadge.remove();
+    }
   }
 
   // Four report kinds (WOM, Labor, Financial, GL), filed by month/year and
