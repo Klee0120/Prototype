@@ -124,11 +124,34 @@ Demo logins:
   **"Locations & WOM"** (view-only — every location and every WOM project,
   including closed/invoiced ones, so a technician can see what's out there
   and what they've worked on historically; no add/edit/close controls at
-  all), and **"My Documents"** (view-only Forms & Certifications and
-  Documents from their own profile — the same records an admin manages from
-  the Technicians tab, just read-only here). Technicians can view their own
-  stuff but can't delete anything anywhere in the app, including their own
-  uploads — deleting is admin-only, full stop.
+  all), **"Vendors"** (see below), and **"My Documents"** (view-only Forms
+  & Certifications and Documents from their own profile — the same records
+  an admin manages from the Technicians tab, just read-only here).
+  Technicians can view their own stuff but can't delete anything anywhere
+  in the app, including their own uploads — deleting is admin-only, full
+  stop.
+- **Technician's own "Vendors" tab**: a narrow, read-only vendor directory
+  (`GET /api/vendors`, `server/routes/vendorLookup.js`) -- name,
+  phone/email, services, online source URL, nothing about forms, COI
+  limits, onboarding cases, or any other admin/compliance detail. The
+  filter is the point: a vendor merely *appearing* on a list a technician
+  looks at reads as "this is fine to use," so only a vendor that's
+  `cwStatus: active`, `toyotaStatus: approved`, and `formsStatus` not
+  `outdated` is returned at all -- one that's inactive, not Toyota-
+  approved, or has outdated forms is left out entirely rather than shown
+  with a different badge or greyed out. A vendor explicitly denied during
+  a case recheck (Onboarding tab) is excluded too, even if its older
+  status fields still say active/approved. Deliberately gated on those
+  real-world status fields rather than the case-based onboarding tracker
+  (`onboardingStage`) above -- that tracker defaults every one of the 292
+  vendors already on file to `not_started` (it postdates them), and
+  requiring full case approval before a technician could see a vendor
+  would hide the entire existing vendor base they already legitimately
+  use today; `onboardingStage` is only ever consulted here to catch an
+  explicit `denied`. This endpoint existed for a while with no screen
+  calling it (`presentVendorForLookup` was already written narrow, per its
+  own comment, well before this tab was built) -- it just wasn't filtered
+  yet and nothing in the client called it.
 - **Admin enters UKG hours per day, per technician** (Weekly Review → a
   technician's Details) — this is the actual source-of-truth input, not mock
   data; it's what the tech's target is checked against

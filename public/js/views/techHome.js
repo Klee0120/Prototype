@@ -32,6 +32,7 @@ export async function renderTechHome(container) {
         <button class="tab ${activeTab === "week" ? "active" : ""}" data-tab="week">My Week</button>
         <button class="tab ${activeTab === "schedule" ? "active" : ""}" data-tab="schedule">Schedule</button>
         <button class="tab ${activeTab === "locations" ? "active" : ""}" data-tab="locations">Locations &amp; WOM</button>
+        <button class="tab ${activeTab === "vendors" ? "active" : ""}" data-tab="vendors">Vendors</button>
         <button class="tab ${activeTab === "documents" ? "active" : ""}" data-tab="documents">My Documents</button>
       </div>
       <div id="tab-content" class="tab-content"></div>
@@ -48,8 +49,63 @@ export async function renderTechHome(container) {
     if (activeTab === "mywork") await renderTaskBoard(content);
     else if (activeTab === "schedule") await renderSchedule(content);
     else if (activeTab === "locations") await drawLocationsAndWoms(content);
+    else if (activeTab === "vendors") await drawApprovedVendors(content);
     else if (activeTab === "documents") await drawMyDocuments(content);
     else await renderTechWeek(content);
+  }
+
+  // Deliberately not the same list the admin Vendors tab shows: this is
+  // only vendors cleared to actually use (server-side filtered in
+  // server/routes/vendorLookup.js on cwStatus/toyotaStatus/formsStatus,
+  // plus excluding a vendor actively denied in a case recheck) -- a
+  // vendor that isn't active/approved, has outdated forms, or was just
+  // denied is left off entirely rather than shown with a different badge,
+  // since a vendor just *appearing* here reads as "this is fine to use."
+  async function drawApprovedVendors(content) {
+    const vendors = await api.get("/api/vendors");
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Vendors cleared to use right now. One still being onboarded, or one with a compliance issue
+        to sort out, won't show up here yet -- ask an admin if you don't see one you're expecting.
+      </p>
+      <input class="tech-vendor-search" type="text" placeholder="Vendor name or service" />
+      <p class="vendor-count"></p>
+      <div class="review-list" id="tech-vendor-list"></div>
+    `;
+    const countEl = content.querySelector(".vendor-count");
+    const listEl = content.querySelector("#tech-vendor-list");
+
+    function renderList(query) {
+      const q = query.trim().toLowerCase();
+      const matches = q
+        ? vendors.filter((v) => v.name.toLowerCase().includes(q) || (v.services || "").toLowerCase().includes(q))
+        : vendors;
+      countEl.textContent = `${matches.length} vendor${matches.length === 1 ? "" : "s"}.`;
+      if (matches.length === 0) {
+        listEl.innerHTML = `<p class="empty-note">No approved vendors match.</p>`;
+        return;
+      }
+      listEl.innerHTML = "";
+      matches
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach((v) => {
+          const row = document.createElement("div");
+          row.className = "review-row";
+          row.innerHTML = `
+            <div class="review-row-summary">
+              <span class="review-row-name">${escapeHtml(v.name)}</span>
+              ${v.services ? `<span class="wom-desc">${escapeHtml(v.services)}</span>` : ""}
+              ${v.phone ? `<span class="vendor-jde">${escapeHtml(v.phone)}</span>` : ""}
+              ${v.email ? `<span class="vendor-jde">${escapeHtml(v.email)}</span>` : ""}
+            </div>
+          `;
+          listEl.appendChild(row);
+        });
+    }
+
+    renderList("");
+    content.querySelector(".tech-vendor-search").addEventListener("input", (e) => renderList(e.target.value));
   }
 
   async function drawLocationsAndWoms(content) {
