@@ -36,6 +36,23 @@ export async function logout() {
   render();
 }
 
+// A session dying server-side (expired, or a restart that lost it) used to
+// leave every tab that fetches data silently blank -- the header still
+// showed the logged-in name from cached state, and nothing ever
+// re-checked it until this stopped being silent. api.js can't import from
+// here (this module already imports api.js), so it broadcasts a plain
+// window event on any 401 from a request that believed it had a token;
+// this is the one place that reacts, however many of a page's parallel
+// API calls happened to hit it first (the loggedOutMessage guard below
+// keeps a second/third simultaneous 401 from re-triggering the redirect).
+let loggedOutMessage = null;
+window.addEventListener("laborapp:session-expired", () => {
+  if (!state.user) return;
+  setUser(null);
+  loggedOutMessage = "Your session expired -- please log in again.";
+  render();
+});
+
 export function escapeHtml(str) {
   return String(str == null ? "" : str).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;",
@@ -51,7 +68,8 @@ const root = document.getElementById("app");
 export async function render() {
   if (!state.user) {
     root.innerHTML = "";
-    root.appendChild(renderLogin());
+    root.appendChild(renderLogin(loggedOutMessage));
+    loggedOutMessage = null;
     return;
   }
 

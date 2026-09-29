@@ -1146,6 +1146,25 @@ by their existing keys.
   over plain HTTP, so credentials and data travel unencrypted over the
   network. Real HTTPS needs a domain name pointed at the droplet's IP (a
   bare IP can't get a trusted certificate) — a separate decision still ahead.
+- **A dead session used to fail silently.** If a session token the browser
+  still holds stops being valid server-side (it expired, or the token row
+  is simply gone), every tab that fetches data on load hit a 401, threw,
+  and left its content pane completely blank -- the header still showed
+  the logged-in name the whole time, since that's just cached `state.user`
+  from the original login, never re-checked. It looked exactly like a
+  crash, on every tab, with nothing in the UI explaining why (this is
+  exactly what running `journalctl`/`curl` end up ruling out one by one --
+  the server was never the problem, the session was). `api.js`'s
+  `request()`/`uploadFile()`/`fetchFileBlob()` now broadcast a
+  `window` `"laborapp:session-expired"` event on any 401 that happened
+  with a token attached (as opposed to an ordinary wrong-PIN 401 on the
+  login form itself, which never had a token to begin with) -- api.js
+  can't import `app.js` (the reverse import already exists), so a
+  `window` event is the decoupling instead of a circular one. `app.js`
+  listens once and, guarded so a second/third simultaneous 401 from a
+  page's other parallel calls doesn't re-fire it, clears the cached user
+  and bounces to the login screen with "Your session expired -- please
+  log in again." instead of a silent blank tab.
 - **Vendor documents (COI/W-9/ACH, which can carry bank routing/account
   numbers and tax IDs) are already access-controlled at the application
   layer** — `server/routes/files.js`'s `canRead`/`canWrite` refuse any

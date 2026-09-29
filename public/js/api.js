@@ -8,6 +8,21 @@ function currentSessionToken() {
   }
 }
 
+// A 401 on a request that *believed* it was authenticated (a token was
+// attached) means the session died server-side -- expired, or the server
+// restarted and this specific token's row is gone. Left alone, every tab
+// that fetches data on load just throws silently and stays blank, while
+// the header still shows the logged-in name from cached state, since
+// nothing else ever re-checks it. Broadcasting this (rather than each
+// call site handling it) means one login page redirect regardless of
+// which of the many API calls on a page happened to be the one that hit
+// it first, without api.js importing app.js (see app.js's listener).
+function reportIfSessionExpired(status, token) {
+  if (status === 401 && token) {
+    window.dispatchEvent(new CustomEvent("laborapp:session-expired"));
+  }
+}
+
 async function request(method, path, body) {
   const headers = { "Content-Type": "application/json" };
   const token = currentSessionToken();
@@ -27,6 +42,7 @@ async function request(method, path, body) {
   }
 
   if (!res.ok) {
+    reportIfSessionExpired(res.status, token);
     const message = (data && data.error) || `Request failed (${res.status})`;
     const err = new Error(message);
     err.status = res.status;
@@ -60,6 +76,7 @@ async function uploadFile(relatedType, relatedId, category, file, extra) {
     data = null;
   }
   if (!res.ok) {
+    reportIfSessionExpired(res.status, token);
     throw new Error((data && data.error) || `Upload failed (${res.status})`);
   }
   return data;
@@ -72,6 +89,7 @@ async function fetchFileBlob(id) {
 
   const res = await fetch(`/api/files/${encodeURIComponent(id)}/download`, { headers });
   if (!res.ok) {
+    reportIfSessionExpired(res.status, token);
     let message = `Could not load file (${res.status})`;
     try {
       message = (await res.json()).error || message;

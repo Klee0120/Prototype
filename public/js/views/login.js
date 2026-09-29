@@ -1,7 +1,7 @@
 import { api } from "../api.js";
 import { setUser, render } from "../app.js";
 
-export function renderLogin() {
+export function renderLogin(initialMessage) {
   const wrap = document.createElement("div");
   wrap.className = "login-wrap";
   wrap.innerHTML = `
@@ -13,7 +13,7 @@ export function renderLogin() {
       <label for="login-pin">PIN</label>
       <input id="login-pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="****" required />
       <button type="submit" class="btn btn-primary">Log in</button>
-      <p class="login-error" id="login-error" hidden></p>
+      <p class="login-error" id="login-error" ${initialMessage ? "" : "hidden"}>${initialMessage || ""}</p>
     </form>
   `;
 
