@@ -515,6 +515,14 @@ if (!hasColumn("woms", "pse_stage")) {
   db.exec("ALTER TABLE woms ADD COLUMN pse_followup_at TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN pse_stage_updated_at TEXT");
 }
+// Which email address the PSE was actually sent to at Toyota, and when --
+// recorded on the "PSE produced -- send to Toyota" action itself, since
+// otherwise that step is a bare button click with no record of who at
+// Toyota received it or on what date, which matters when following up.
+if (!hasColumn("woms", "pse_toyota_email")) {
+  db.exec("ALTER TABLE woms ADD COLUMN pse_toyota_email TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN pse_toyota_sent_at TEXT");
+}
 // Which admin plays the "reviewer" role in the PSE pipeline (produces the
 // PSE, liaises with Toyota, approves Status 95) -- distinct from the
 // "financial" role (generates the WOM/PO, monitors charges, invoices),
@@ -1564,7 +1572,14 @@ function listPseTasks(admin) {
     .sort((a, b) => (a.pse_followup_at || "").localeCompare(b.pse_followup_at || ""));
 }
 
-function applyPseAction(code, actionKey, admin) {
+// `extra.followupAt`, when given, overrides the action's own fixed
+// followupDays computation -- lets "PSE produced" or "Still waiting" be
+// scheduled for a specific date instead of always exactly 14/30 days out.
+// `extra.toyotaEmail`/`extra.sentAt` are only meaningful on
+// mark_pse_produced (see PSE_ACTIONS) -- record which Toyota contact this
+// PSE actually went to and on what date, since otherwise that step is a
+// bare button click with no record of it for a later follow-up.
+function applyPseAction(code, actionKey, admin, extra = {}) {
   const wom = findWom(code);
   if (!wom) return { error: "not_found" };
   const action = PSE_ACTIONS[actionKey];
@@ -1577,7 +1592,8 @@ function applyPseAction(code, actionKey, admin) {
   if (nextStage === "same") nextStage = wom.pse_stage;
   else if (nextStage === "scheduleAware") nextStage = wom.pse_schedule_block ? "schedule_blocked" : "ready_to_schedule";
 
-  const followupAt = action.followupDays == null ? null : new Date(Date.now() + action.followupDays * 86400000).toISOString();
+  const defaultFollowupAt = action.followupDays == null ? null : new Date(Date.now() + action.followupDays * 86400000).toISOString();
+  const followupAt = action.followupDays != null && extra.followupAt ? extra.followupAt : defaultFollowupAt;
   const previousStage = wom.pse_stage;
   db.prepare("UPDATE woms SET pse_stage = ?, pse_followup_at = ?, pse_stage_updated_at = ? WHERE code = ?").run(
     nextStage,
@@ -1585,11 +1601,99 @@ function applyPseAction(code, actionKey, admin) {
     new Date().toISOString(),
     code
   );
+  if (actionKey === "mark_pse_produced" && extra.toyotaEmail) {
+    db.prepare("UPDATE woms SET pse_toyota_email = ?, pse_toyota_sent_at = ? WHERE code = ?").run(
+      extra.toyotaEmail,
+      extra.sentAt || new Date().toISOString(),
+      code
+    );
+  }
   recordWomStatusChange(code, "pse_stage", previousStage, nextStage, { changedAt: new Date().toISOString(), changedBy: admin.id, source: "pse_action" });
   syncPseStageTask(code, previousStage, nextStage);
   if (action.closesWom) setWomStatus(code, "invoiced", { changedBy: admin.id, source: "pse_action" });
 
   return { wom: findWom(code) };
+}
+
+// Standalone reschedule, decoupled from taking a stage-advancing action --
+// "I need to be able to find it and reschedule the task" for a WOM that's
+// simply sitting on a follow-up date that no longer fits, without needing
+// to re-trigger (or undo) whatever action set that date originally.
+function setPseFollowup(code, followupAt) {
+  const wom = findWom(code);
+  if (!wom) return null;
+  if (!wom.pse_stage) return { error: "not_in_pipeline" };
+  db.prepare("UPDATE woms SET pse_followup_at = ? WHERE code = ?").run(followupAt || null, code);
+  // The follow-up date is one of the fields PSE_STAGE_TASKS reads for
+  // awaiting_toyota_approval/awaiting_toyota_po -- refresh that task's own
+  // dueAt so the task board reflects the new date immediately.
+  refreshStageTask(code);
+  return { wom: findWom(code) };
+}
+
+// Aggregate estimated-vs-applied figures across every non-cancelled WOM --
+// the Financials-tab-wide view RFM needs (not just the ones currently
+// sitting in the PSE pipeline): total dollars quoted vs. actually applied,
+// how many came in over-quoted on labor (estimate higher than what was
+// actually applied -- money quoted that was never used), and how many
+// have a charge applied but no Toyota PO/Maximo # on file yet, both real
+// follow-up lists rather than just totals.
+function getWomCostSummary() {
+  const rows = db.prepare("SELECT * FROM woms WHERE status != 'cancelled'").all();
+  let totalEstimated = 0;
+  let totalApplied = 0;
+  let estimatedCount = 0;
+  let appliedCount = 0;
+  const overquoted = [];
+  const appliedNoPo = [];
+
+  for (const w of rows) {
+    if (w.estimated_price != null) {
+      totalEstimated += w.estimated_price;
+      estimatedCount++;
+    }
+    if (w.applied_price != null) {
+      totalApplied += w.applied_price;
+      appliedCount++;
+    }
+    if (w.estimated_price != null && w.applied_price != null && w.estimated_price > w.applied_price) {
+      overquoted.push({
+        code: w.code,
+        description: w.description,
+        locationCode: w.location_code,
+        estimatedPrice: w.estimated_price,
+        appliedPrice: w.applied_price,
+        overage: w.estimated_price - w.applied_price,
+      });
+    }
+    if (w.applied_price != null && !w.maximo_number) {
+      appliedNoPo.push({
+        code: w.code,
+        description: w.description,
+        locationCode: w.location_code,
+        appliedPrice: w.applied_price,
+        status: w.status,
+      });
+    }
+  }
+
+  overquoted.sort((a, b) => b.overage - a.overage);
+  appliedNoPo.sort((a, b) => b.appliedPrice - a.appliedPrice);
+
+  return {
+    totalWoms: rows.length,
+    estimatedCount,
+    appliedCount,
+    totalEstimated,
+    totalApplied,
+    totalDelta: totalEstimated - totalApplied,
+    overquotedCount: overquoted.length,
+    overquotedTotal: overquoted.reduce((sum, o) => sum + o.overage, 0),
+    overquoted,
+    appliedNoPoCount: appliedNoPo.length,
+    appliedNoPoTotal: appliedNoPo.reduce((sum, o) => sum + o.appliedPrice, 0),
+    appliedNoPo,
+  };
 }
 
 function setPseHold(code, { holdReason, holdNote }) {
@@ -2946,6 +3050,8 @@ module.exports = {
   ensurePseStage,
   listPseTasks,
   applyPseAction,
+  setPseFollowup,
+  getWomCostSummary,
   setPseHold,
   setPseScheduleBlock,
   advancePseOnComplete,

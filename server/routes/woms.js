@@ -52,6 +52,8 @@ function presentWom(w) {
     pseScheduleBlock: Boolean(w.pse_schedule_block),
     pseFollowupAt: w.pse_followup_at,
     pseStageUpdatedAt: w.pse_stage_updated_at,
+    pseToyotaEmail: w.pse_toyota_email,
+    pseToyotaSentAt: w.pse_toyota_sent_at,
   };
 }
 
@@ -184,7 +186,8 @@ router.get("/pse/tasks", requireAuth, requireAdmin, (req, res) => {
 });
 
 router.post("/:code/pse/actions/:action", requireAuth, requireAdmin, (req, res) => {
-  const result = db.applyPseAction(req.params.code, req.params.action, req.user);
+  const { toyotaEmail, sentAt, followupAt } = req.body || {};
+  const result = db.applyPseAction(req.params.code, req.params.action, req.user, { toyotaEmail, sentAt, followupAt });
   if (result.error === "not_found") return res.status(404).json({ error: "WOM not found" });
   if (result.error === "unknown_action") return res.status(400).json({ error: `Unknown action: ${req.params.action}` });
   if (result.error === "wrong_stage") {
@@ -199,6 +202,28 @@ router.post("/:code/pse/actions/:action", requireAuth, requireAdmin, (req, res) 
     `${req.user.name} advanced ${req.params.code} (${req.params.action}) to: ${(db.PSE_STAGES[result.wom.pse_stage] || {}).label || result.wom.pse_stage}`
   );
   res.json(presentWom(result.wom));
+});
+
+// Standalone reschedule -- changing a follow-up date shouldn't require
+// re-taking (or undoing) whatever action set it originally.
+router.patch("/:code/pse/followup", requireAuth, requireAdmin, (req, res) => {
+  const { followupAt } = req.body || {};
+  const result = db.setPseFollowup(req.params.code, followupAt || null);
+  if (!result) return res.status(404).json({ error: "WOM not found" });
+  if (result.error === "not_in_pipeline") return res.status(409).json({ error: `${req.params.code} isn't in the PSE pipeline` });
+
+  db.addAudit(
+    req.user.id,
+    "PSE_FOLLOWUP_RESCHEDULED",
+    `${req.user.name} rescheduled the follow-up for ${req.params.code} to ${followupAt ? new Date(followupAt).toLocaleDateString() : "none"}`
+  );
+  res.json(presentWom(result.wom));
+});
+
+// Financials-wide estimated-vs-applied summary -- every non-cancelled WOM,
+// not just the ones currently sitting in the PSE pipeline.
+router.get("/cost-summary", requireAuth, requireAdmin, (req, res) => {
+  res.json(db.getWomCostSummary());
 });
 
 // The two "holding" states (waiting on the vendor invoice, waiting on

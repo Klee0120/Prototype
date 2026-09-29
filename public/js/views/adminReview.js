@@ -67,7 +67,7 @@ const NAV_SECTIONS = [
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
-  { key: "financials", label: "Financials", tabs: ["psetasks", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["psetasks", "costanalysis", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
 
@@ -79,6 +79,7 @@ const TAB_LABELS = {
   overview: "Overview",
   review: "Weekly Review",
   psetasks: "PSE Tasks",
+  costanalysis: "Cost Analysis",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendors",
@@ -263,6 +264,7 @@ export async function renderAdminReview(container) {
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "psetasks") await drawPseTasks(content);
+    else if (activeTab === "costanalysis") await drawCostAnalysis(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
 
@@ -3091,6 +3093,13 @@ export async function renderAdminReview(container) {
 
     content.querySelectorAll(".pse-task-action").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        // "PSE produced -- send to Toyota" is the one action worth a real
+        // record of who at Toyota received it and when, for a later
+        // follow-up -- everything else can just fire immediately.
+        if (btn.dataset.action === "mark_pse_produced") {
+          openPseSentToToyotaModal(btn.dataset.code, content);
+          return;
+        }
         btn.disabled = true;
         try {
           await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/actions/${btn.dataset.action}`, {});
@@ -3100,6 +3109,10 @@ export async function renderAdminReview(container) {
           btn.disabled = false;
         }
       });
+    });
+
+    content.querySelectorAll(".pse-reschedule-btn").forEach((btn) => {
+      btn.addEventListener("click", () => openPseRescheduleModal(btn.dataset.code, btn.dataset.current, content));
     });
 
     content.querySelectorAll(".pse-hold-btn").forEach((btn) => {
@@ -3153,7 +3166,11 @@ export async function renderAdminReview(container) {
 
     const overdue = w.pseFollowupAt && new Date(w.pseFollowupAt) <= new Date();
     const followupBadge = w.pseFollowupAt
-      ? `<span class="badge badge-${overdue ? "rejected" : "draft"}">Follow up ${new Date(w.pseFollowupAt).toLocaleDateString()}</span>`
+      ? `<span class="badge badge-${overdue ? "rejected" : "draft"}">Follow up ${new Date(w.pseFollowupAt).toLocaleDateString()}</span>
+         <button type="button" class="btn btn-link pse-reschedule-btn" data-code="${escapeHtml(w.code)}" data-current="${escapeHtml(w.pseFollowupAt)}">Reschedule</button>`
+      : "";
+    const sentToToyotaLine = w.pseToyotaEmail
+      ? `<div class="wom-desc">Sent to Toyota: ${escapeHtml(w.pseToyotaEmail)}${w.pseToyotaSentAt ? ` on ${new Date(w.pseToyotaSentAt).toLocaleDateString()}` : ""}</div>`
       : "";
     const holdBadge = w.pseHoldReason
       ? `<span class="badge badge-rejected">On hold: ${escapeHtml(w.pseHoldReason === "other" ? w.pseHoldNote || "other" : PSE_HOLD_LABELS[w.pseHoldReason])}</span>`
@@ -3190,9 +3207,164 @@ export async function renderAdminReview(container) {
       w.smartsheetLink ? ` &middot; <a href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""
     }
         </div>
+        ${sentToToyotaLine}
         <div class="pse-task-actions">${buttons}${holdControls}${scheduleBlockToggle}</div>
       </div>
     `;
+  }
+
+  // "PSE produced -- send to Toyota" is worth a real record of who
+  // received it and when, for a later follow-up -- not just a bare
+  // button click. Email defaults to whatever was used last time (for
+  // this browser, not synced across admins) since it's usually the same
+  // contact call after call.
+  function openPseSentToToyotaModal(code, content) {
+    const lastEmail = localStorage.getItem("laborapp:lastToyotaEmail") || "";
+    const today = new Date().toISOString().slice(0, 10);
+    const { body, close } = openModal({
+      title: `Sent to Toyota -- ${code}`,
+      bodyHtml: `
+        <form class="modal-form pse-sent-form">
+          <label class="profile-field"><span>Email it was sent to</span><input type="email" name="toyotaEmail" value="${escapeHtml(lastEmail)}" required /></label>
+          <label class="profile-field"><span>Date sent</span><input type="date" name="sentAt" value="${today}" required /></label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Mark sent</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".pse-sent-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post(`/api/woms/${encodeURIComponent(code)}/pse/actions/mark_pse_produced`, {
+          toyotaEmail: form.toyotaEmail.value.trim(),
+          sentAt: new Date(form.sentAt.value).toISOString(),
+        });
+        localStorage.setItem("laborapp:lastToyotaEmail", form.toyotaEmail.value.trim());
+        close();
+        await drawPseTasks(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // Decoupled from taking a stage-advancing action -- moving a follow-up
+  // date shouldn't require re-triggering (or undoing) whatever action set
+  // it, so this is its own small modal off a "Reschedule" link.
+  function openPseRescheduleModal(code, currentIso, content) {
+    const { body, close } = openModal({
+      title: `Reschedule follow-up -- ${code}`,
+      bodyHtml: `
+        <form class="modal-form pse-reschedule-form">
+          <label class="profile-field"><span>Follow up on</span><input type="date" name="followupAt" value="${escapeHtml((currentIso || "").slice(0, 10))}" required /></label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".pse-reschedule-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(code)}/pse/followup`, {
+          followupAt: new Date(form.followupAt.value).toISOString(),
+        });
+        close();
+        await drawPseTasks(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // Financials-wide estimated-vs-applied picture -- every non-cancelled
+  // WOM, not just the ones currently sitting in the PSE pipeline. Two
+  // concrete follow-up lists rather than just totals: WOMs quoted higher
+  // than what actually got applied (money quoted on labor that was never
+  // used), and WOMs with a charge applied but no Toyota PO/Maximo # on
+  // file yet (a billing gap waiting to be closed).
+  async function drawCostAnalysis(content) {
+    const summary = await api.get("/api/woms/cost-summary");
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Estimated vs. applied across every WOM on file (cancelled ones excluded), not just what's
+        currently in the PSE pipeline.
+      </p>
+      <div class="task-tiles">
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalEstimated)}</div><div class="task-tile-label">Total Estimated (${summary.estimatedCount} WOMs)</div></div>
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalApplied)}</div><div class="task-tile-label">Total Applied (${summary.appliedCount} WOMs)</div></div>
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalDelta)}</div><div class="task-tile-label">Estimated &minus; Applied</div></div>
+        <div class="task-tile task-tile-clickable" data-target="cost-overquoted-list"><div class="task-tile-count">${summary.overquotedCount}</div><div class="task-tile-label">Overquoted on Labor</div></div>
+        <div class="task-tile task-tile-clickable" data-target="cost-applied-no-po-list"><div class="task-tile-count">${summary.appliedNoPoCount}</div><div class="task-tile-label">Applied, No Toyota PO Yet</div></div>
+      </div>
+
+      <h3>Overquoted on labor (${summary.overquotedCount})</h3>
+      <p class="review-checklist-hint">
+        Estimated price came in higher than what was actually applied -- $${formatMoney(summary.overquotedTotal)} in labor quoted
+        that was never used, across these WOMs.
+      </p>
+      <div class="review-list" id="cost-overquoted-list"></div>
+
+      <h3>Applied cost, no Toyota PO yet (${summary.appliedNoPoCount})</h3>
+      <p class="review-checklist-hint">
+        A charge has been applied against these WOMs, but there's no Maximo/PO # on file yet -- $${formatMoney(summary.appliedNoPoTotal)}
+        applied and not yet tied to a real PO.
+      </p>
+      <div class="review-list" id="cost-applied-no-po-list"></div>
+    `;
+
+    content.querySelectorAll(".task-tile-clickable").forEach((tile) => {
+      tile.addEventListener("click", () => {
+        content.querySelector(`#${tile.dataset.target}`).scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+
+    const overquotedList = content.querySelector("#cost-overquoted-list");
+    if (summary.overquoted.length === 0) {
+      overquotedList.innerHTML = `<p class="empty-note">No WOMs are overquoted on labor right now.</p>`;
+    } else {
+      summary.overquoted.forEach((w) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
+            <span class="wom-code">${escapeHtml(w.code)}</span>
+            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
+            <span class="wom-desc">Est $${formatMoney(w.estimatedPrice)} &middot; Applied $${formatMoney(w.appliedPrice)}</span>
+            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
+          </div>
+        `;
+        overquotedList.appendChild(row);
+      });
+    }
+
+    const appliedNoPoList = content.querySelector("#cost-applied-no-po-list");
+    if (summary.appliedNoPo.length === 0) {
+      appliedNoPoList.innerHTML = `<p class="empty-note">Every WOM with an applied cost has a Toyota PO on file.</p>`;
+    } else {
+      summary.appliedNoPo.forEach((w) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
+            <span class="wom-code">${escapeHtml(w.code)}</span>
+            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
+            <span class="badge badge-draft">${escapeHtml(w.status)}</span>
+            <span class="badge badge-rejected">$${formatMoney(w.appliedPrice)} applied</span>
+          </div>
+        `;
+        appliedNoPoList.appendChild(row);
+      });
+    }
   }
 
   // "WOM Lookup": pick any WOM and see everything about it in one place --

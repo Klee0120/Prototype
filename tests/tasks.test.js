@@ -303,6 +303,95 @@ test("task engine: WOM sync generates, updates, and completes workflow tasks wit
   });
 });
 
+test("PSE pipeline: recording the Toyota email/date sent, rescheduling a follow-up, and the cost summary", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  await syncOneOpenWom(server, "40000002", 951);
+
+  await t.test("mark_pse_produced with no email/date still works, same as before", async () => {
+    const res = await server.call("POST", "/api/woms/40000002/pse/actions/mark_pse_produced", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pseToyotaEmail, null);
+  });
+
+  await t.test("re-syncing to reset -- verify a fresh WOM records the Toyota email and sent date", async () => {
+    await syncOneOpenWom(server, "40000003", 952);
+    const res = await server.call("POST", "/api/woms/40000003/pse/actions/mark_pse_produced", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota.contact@toyota.com", sentAt: "2026-03-01T09:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pseToyotaEmail, "toyota.contact@toyota.com");
+    assert.equal(res.body.pseToyotaSentAt, "2026-03-01T09:00:00.000Z");
+  });
+
+  await t.test("a custom followupAt overrides the action's default +14 days", async () => {
+    await syncOneOpenWom(server, "40000004", 953);
+    const res = await server.call("POST", "/api/woms/40000004/pse/actions/mark_pse_produced", {
+      userId: "ADMIN",
+      body: { followupAt: "2026-12-25T00:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pseFollowupAt, "2026-12-25T00:00:00.000Z");
+  });
+
+  await t.test("the follow-up can be rescheduled directly, without re-taking the action", async () => {
+    const res = await server.call("PATCH", "/api/woms/40000004/pse/followup", {
+      userId: "ADMIN",
+      body: { followupAt: "2027-01-15T00:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pseFollowupAt, "2027-01-15T00:00:00.000Z");
+  });
+
+  await t.test("the rescheduled date is reflected on the task board too", async () => {
+    const res = await server.call("GET", "/api/tasks?role=reviewer", { userId: "ADMIN" });
+    const task = res.body.find((t2) => t2.sourceKey === "WOM-40000004-TOYOTA-APPROVAL");
+    assert.ok(task);
+    assert.equal(task.dueAt, "2027-01-15T00:00:00.000Z");
+  });
+
+  await t.test("rescheduling a WOM that's not in the PSE pipeline fails", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "90000001", description: "Not in pipeline" } });
+    const res = await server.call("PATCH", "/api/woms/90000001/pse/followup", { userId: "ADMIN", body: { followupAt: "2027-01-01" } });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("a technician can't reschedule a follow-up", async () => {
+    const res = await server.call("PATCH", "/api/woms/40000004/pse/followup", { userId: "T1001", body: { followupAt: "2027-01-01" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("cost summary totals estimated/applied across every non-cancelled WOM", async () => {
+    await server.call("PATCH", "/api/woms/40000002/pricing", { userId: "ADMIN", body: { estimatedPrice: 5000, appliedPrice: 3000 } });
+    await server.call("PATCH", "/api/woms/40000003/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1500 } });
+
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.totalEstimated >= 6000);
+    assert.ok(res.body.totalApplied >= 4500);
+  });
+
+  await t.test("a WOM with estimate > applied counts as overquoted, with the overage amount", async () => {
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.overquoted.find((o) => o.code === "40000002");
+    assert.ok(entry, "expected 40000002 (est 5000 > applied 3000) in the overquoted list");
+    assert.equal(entry.overage, 2000);
+    // 40000003 (est 1000 < applied 1500) should NOT be in the overquoted list.
+    assert.ok(!res.body.overquoted.some((o) => o.code === "40000003"));
+  });
+
+  await t.test("a WOM with an applied price but no Maximo #/PO shows up in appliedNoPo", async () => {
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    assert.ok(res.body.appliedNoPo.some((o) => o.code === "40000002"));
+  });
+
+  await t.test("a technician can't view the cost summary", async () => {
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+});
+
 test("smartsheet sync: task/exception counters and the persisted last-sync summary", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

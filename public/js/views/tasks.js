@@ -507,6 +507,44 @@ export async function renderTaskBoard(container) {
     renderCommentForm(host.querySelector(".task-comment-form"), t.id, host);
   }
 
+  // Mirrors adminReview.js's own PSE Tasks tab -- "PSE produced -- send to
+  // Toyota" is worth a real record of who received it and when, not just
+  // a bare button click. Email defaults to whatever was used last time
+  // (this browser only, not synced across admins).
+  function openPseSentToToyotaModal(womCode, onDone) {
+    const lastEmail = localStorage.getItem("laborapp:lastToyotaEmail") || "";
+    const today = new Date().toISOString().slice(0, 10);
+    const { body, close } = openModal({
+      title: `Sent to Toyota -- ${womCode}`,
+      bodyHtml: `
+        <form class="modal-form pse-sent-form">
+          <label class="profile-field"><span>Email it was sent to</span><input type="email" name="toyotaEmail" value="${escapeHtml(lastEmail)}" required /></label>
+          <label class="profile-field"><span>Date sent</span><input type="date" name="sentAt" value="${today}" required /></label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Mark sent</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".pse-sent-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post(`/api/woms/${encodeURIComponent(womCode)}/pse/actions/mark_pse_produced`, {
+          toyotaEmail: form.toyotaEmail.value.trim(),
+          sentAt: new Date(form.sentAt.value).toISOString(),
+        });
+        localStorage.setItem("laborapp:lastToyotaEmail", form.toyotaEmail.value.trim());
+        close();
+        await onDone();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
   // The real, domain-specific action for whatever PSE step this task
   // represents (e.g. "PSE produced -- send to Toyota"), not a generic
   // status change -- taking it calls the same endpoint the dedicated
@@ -573,6 +611,12 @@ export async function renderTaskBoard(container) {
 
     host.querySelectorAll(".task-pse-action-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        // Mirrors adminReview.js's own PSE Tasks tab: this one action is
+        // worth a real record of who at Toyota received it and when.
+        if (btn.dataset.action === "mark_pse_produced") {
+          openPseSentToToyotaModal(t.relatedWomCode, draw);
+          return;
+        }
         btn.disabled = true;
         try {
           await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/actions/${btn.dataset.action}`, {});

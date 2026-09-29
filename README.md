@@ -543,10 +543,11 @@ Demo logins:
   sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`):
   **Priorities**, **Timekeeping** (Tech Allocation, Schedule, Overview,
   Weekly Review), **Roster** (Technicians), **Vendors**, **WOM** (Locations
-  & WOM, plus the new WOM Lookup below), **Financials** (PSE Tasks, then
-  Reports -- kept separate from Timekeeping since PO/PSE pipeline tracking
-  and filing WOM/Labor/Financial/GL reports are financial tasks, not
-  timekeeping ones), and **Audit Trail**. A section
+  & WOM, plus the new WOM Lookup below), **Financials** (PSE Tasks, Cost
+  Analysis, then Reports -- kept separate from Timekeeping since PO/PSE
+  pipeline tracking, portfolio-wide cost tracking, and filing WOM/Labor/
+  Financial/GL reports are financial tasks, not timekeeping ones), and
+  **Audit Trail**. A section
   with only one tab behaves exactly as before (clicking it goes straight
   there); a section with more shows a second row of its own sub-tabs
   underneath, and remembers which sub-tab you were last on when you click
@@ -630,6 +631,55 @@ Demo logins:
   pending, or a free-text "other" -- purely an annotation, doesn't change
   the stage, just flags the task as blocked rather than actionable right
   now. Every transition is audit-logged (`PSE_STAGE_ADVANCED`).
+  - **"PSE produced -- send to Toyota" captures who it was sent to and
+    when** -- clicking that action opens a small modal (rather than firing
+    immediately) asking for the Toyota reviewer's email (defaulting from
+    `localStorage`, so it's remembered across WOMs) and the date sent
+    (defaulting to today, editable for a same-day-but-logged-late entry).
+    Both land on the WOM itself (`pse_toyota_email`/`pse_toyota_sent_at`)
+    and show up as a plain "Sent to Toyota: `email` on `date`" line right
+    on the task card from then on -- both in Financials &rarr; PSE Tasks
+    and on the matching task in Priorities &rarr; My Work, since they're
+    the same underlying WOM. Available from either surface
+    (`openPseSentToToyotaModal` in `adminReview.js` and its mirror in
+    `tasks.js`); the other PSE actions are unaffected and still fire
+    directly.
+  - **A follow-up date can be rescheduled directly, independent of the
+    "Still waiting" 30-day snooze** -- a **Reschedule** link next to any
+    "Follow Up" badge opens a single-date modal (`PATCH
+    /api/woms/:code/pse/followup`, admin-only, audit-logged as
+    `PSE_FOLLOWUP_RESCHEDULED`) that sets that exact date without moving
+    the WOM's stage or touching anything else it's carrying (Toyota email/
+    date included). This is how a follow-up gets pulled in or pushed out
+    on its own, separate from actually advancing or snoozing the stage.
+  - **Where does a PSE task actually go?** It never just disappears.
+    Completing a stage's task and creating the next stage's task
+    (`syncPseStageTask`) happens on *every* stage transition, identically
+    whether a person clicked the action button or an overnight Smartsheet
+    sync moved it (`ensurePseStage`/`applyPseAction` both call the same
+    function) -- so a WOM always has exactly one open task representing
+    wherever it currently sits, and that task shows up in both places at
+    once: the dedicated Financials &rarr; PSE Tasks list (grouped by
+    stage) and the general Priorities &rarr; My Work / Unassigned board
+    (as a `category: "pse"` task). There's no separate filter or hidden
+    holding pen -- if a WOM isn't showing up, it's either been completed
+    all the way to `closed` (see the stage table above) or the search/
+    filter on the current view is hiding it.
+- **Cost Analysis (under the Financials section, next to PSE Tasks)**: a
+  portfolio-wide estimated-vs-applied view across **every** WOM on file
+  (`GET /api/woms/cost-summary`, admin-only) -- not just the ones
+  currently in the PSE pipeline, so a WOM that was never routed through
+  PSE (or has already been invoiced and closed) still counts. Five stat
+  tiles up top: Total Estimated, Total Applied, Estimated minus Applied,
+  and two clickable counts that jump straight to their own list below --
+  **Overquoted on Labor** (WOMs where the estimated price came in higher
+  than what was actually applied, sorted by the largest overage first) and
+  **Applied, No Toyota PO Yet** (WOMs with an applied cost but no
+  `maximo_number` on file yet, sorted by the largest applied amount
+  first). Cancelled WOMs are excluded throughout. This is meant to answer
+  exactly the two questions that don't have a good answer anywhere else:
+  how much quoted labor is going unused, and how much money is on the
+  books without a real PO backing it yet.
 - **Task / workflow engine (Phase 1) -- "Priorities &rarr; My Work"**: a
   general-purpose task system built around one rule: **states create
   tasks, tasks create timestamps, timestamps create analytics.** Not a
@@ -1541,9 +1591,15 @@ server/
                               the WOM was ready_to_schedule -- see advancePseOnComplete),
                               GET pse/tasks (admin-only, role-filtered PSE pipeline task list),
                               POST :code/pse/actions/:action (admin-only, the state machine's own
-                              stage transitions), POST :code/pse/hold (vendor_invoice/
-                              labor_allocations/other, admin-only), POST :code/pse/schedule-block
-                              ("don't schedule until Toyota PO" flag, admin-only),
+                              stage transitions -- accepts toyotaEmail/sentAt on mark_pse_produced
+                              to record who a PSE was sent to and when), POST :code/pse/hold
+                              (vendor_invoice/labor_allocations/other, admin-only), POST
+                              :code/pse/schedule-block ("don't schedule until Toyota PO" flag,
+                              admin-only), PATCH :code/pse/followup (admin-only, reschedules the
+                              follow-up date on its own without touching stage/hold/Toyota fields,
+                              audit-logged as PSE_FOLLOWUP_RESCHEDULED), GET cost-summary
+                              (admin-only, estimated-vs-applied totals plus the overquoted-on-labor
+                              and applied-no-PO lists behind the Cost Analysis tab),
                               GET :code/history (admin-only, the wom_status_history rows behind
                               the task engine's WOM-triggered tasks -- every status/pse_stage
                               change with both real event time and detected-by-this-app time),
@@ -1699,7 +1755,15 @@ tests/
                                  workflow exception live (not just at task creation), wom_status_history
                                  recording both status and pse_stage transitions (admin-only to read),
                                  and the Smartsheet sync route's task/exception counters + persisted
-                                 wom_sync_log last-sync summary
+                                 wom_sync_log last-sync summary; user-defined recurring task templates
+                                 (creation validation, today-vs-non-today occurrence generation, no
+                                 duplication across repeated reads, completion persisting, dueTime
+                                 validation, dueAt+dueTime combining); PSE Toyota email/date capture on
+                                 mark_pse_produced (with/without an email, a custom followupAt
+                                 override), the standalone pse/followup reschedule endpoint (reflected
+                                 on the matching task, rejected for a WOM not in the pipeline,
+                                 technician forbidden), and the cost-summary endpoint's totals plus its
+                                 overquoted-on-labor and applied-no-PO lists (technician forbidden)
 public/
   index.html
   css/styles.css
