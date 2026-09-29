@@ -68,6 +68,11 @@ export function renderTechniciansTab(content, openTo) {
     ).join("");
 
     content.innerHTML = `
+      <p class="review-checklist-hint">
+        Terminating or retiring someone never deletes their record -- allocation history, documents,
+        and forms all stay in place. The Status filter below defaults to Active, so switch it to
+        Terminated (or All) to find someone who's left.
+      </p>
       <div class="roster-filters">
         <label class="roster-filter-field">
           <span>Location</span>
@@ -423,6 +428,14 @@ export function renderTechniciansTab(content, openTo) {
         });
         await api.patch(`/api/admin/technicians/${tech.id}/employment-status`, { status: "terminated" });
         close();
+        // Terminating doesn't delete anything -- allocation history,
+        // documents, forms, everything stays on their record -- but
+        // returning to the roster's own default "Active" filter makes
+        // whoever was just terminated immediately vanish from view, which
+        // reads as data loss even though nothing was actually lost.
+        // Opening their profile directly proves the record is still there.
+        profileTechId = tech.id;
+        profileSubTab = "basic";
         await draw();
       } catch (err) {
         msg.textContent = err.message;
