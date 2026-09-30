@@ -8,6 +8,13 @@ import { renderTaskBoard } from "./tasks.js";
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
 
+// External Smartsheet intake forms -- a tech can't create a WOM or a C&W PO
+// (not the Toyota PO tracked on the WOM lifecycle checklist -- a separate,
+// internal C&W purchase order) directly in this app, so these just hand off
+// to the real request forms rather than duplicating them here.
+const WOM_REQUEST_FORM_URL = "https://app.smartsheet.com/b/form/93627e8bdd8740539499cf0141f1102c";
+const CW_PO_REQUEST_FORM_URL = "https://app.smartsheet.com/b/form/3794301abedd49c88adf271f96484776";
+
 function formatMoney(n) {
   if (n == null) return "—";
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -116,7 +123,13 @@ export async function renderTechHome(container) {
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
 
     content.innerHTML = `
-      <p class="review-checklist-hint">View only -- for adding or changing a location or WOM project, ask an admin.</p>
+      <div class="review-actions">
+        <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
+        <a class="btn btn-secondary" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a C&amp;W PO ↗</a>
+      </div>
+      <p class="review-checklist-hint">
+        The lists below are view only -- for anything else (a location, or changing an existing WOM), ask an admin.
+      </p>
       <h3>Locations</h3>
       <div class="review-list" id="tech-location-list"></div>
       <h3>WOM Projects (including past/closed)</h3>

@@ -570,6 +570,21 @@ Demo logins:
   plus a new per-technician breakdown (`womHoursByTechnician`), just
   surfaced as its own lookup rather than buried in a budget-remaining
   calculation.
+- **"Request a new WOM" / "Request a C&W PO" links on the tech's
+  Locations & WOM tab** (`techHome.js`): a technician can't create a WOM or
+  a C&W purchase order in this app -- "C&W PO" here means a C&W-internal
+  purchase order, a different thing entirely from the Toyota PO tracked on
+  the WOM lifecycle checklist above, and from a vendor's own PO. Rather than
+  duplicating either intake form in-app, two buttons at the top of that tab
+  hand off to the real Smartsheet request forms (`WOM_REQUEST_FORM_URL`/
+  `CW_PO_REQUEST_FORM_URL`, opened in a new tab) -- the same plain
+  external-link pattern (`target="_blank" rel="noopener"`) the admin's own
+  "Open in Smartsheet ↗" links already use elsewhere, rather than embedding
+  either form (a real iframe embed isn't guaranteed to work depending on
+  Smartsheet's own framing settings, and this app never writes back to
+  Smartsheet regardless -- see the sync section below). The tab's own hint
+  text was updated to point elsewhere ("locations, or changing an existing
+  WOM") now that a new WOM/PO no longer needs an admin at all.
 - **Smartsheet Line # and direct link on every synced WOM**: a WOM that
   syncs in without a real WOM # or description yet (a bare request row) used
   to be nearly impossible to trace back to the actual Smartsheet request --
@@ -663,36 +678,53 @@ Demo logins:
     behind Normal-priority tasks with an earlier due date); the work is
     already done (step 4 complete -- whatever's left is pure administrative
     closeout standing between finished work and getting paid for it, always
-    worth flagging); or there's a **Toyota paperwork gap** -- a Toyota
-    change order (the applied cost, once posted, came in higher than the
-    original estimate on the project as a whole) or an applied cost with no
-    Maximo/PO # on file at all, whichever applies. Either paperwork-gap
-    case gets a "-- Needs change order or TOY PO" title suffix (spelled out
-    as "TOY PO" rather than just "PO" -- unqualified "PO" is ambiguous with
-    a vendor's own PO or a C&W internal one), counts as a workflow
-    exception, and routes the task straight to **RFM regardless of what
-    step its own progress would otherwise route it to** -- a Toyota
-    paperwork problem is RFM's to chase down no matter how far along the
-    rest of the checklist is. All of this is re-evaluated live, so a
-    correction that brings the numbers back in line or a PO that finally
-    arrives clears the flag automatically rather than it staying stuck.
-    Otherwise priority is Normal. The task list itself now sorts by full
-    priority tier first (Emergency down to Low), then due date --
-    previously only Emergency got special treatment, so a High-priority
-    task with no due date could sink below an old Normal one. High-priority
-    tasks read with a red badge (previously the same blue used for routine
-    in-progress status, which didn't read as urgent), and a task with a
-    Toyota paperwork gap additionally gets a 🚩 flag right on its row --
-    High alone doesn't distinguish "should get to this today" from "Toyota
-    paperwork is stuck," and the flag does. The Priorities board also has
-    two tiles specifically for RFM's own mental model of the backlog --
-    **PSE Not Sent** (`countWomLifecyclePseNotSent` in `server/data/db.js`)
-    and **Needs Change Order/TOY PO** (the same workflow-exception count,
-    just labeled for what it actually always means today rather than the
-    generic "Workflow Exceptions") -- so "how many PSEs do I need to
-    produce and send" and "how many change orders do I need to chase" are
-    both a glance at the top of the board, not something to infer from a
-    single "High Priority: N" total.
+    worth flagging); or there's a **Toyota paperwork gap** -- either an
+    applied cost with no Maximo/PO # on file at all, or a real **Toyota
+    change order** (the applied cost, once posted, came in higher than the
+    original estimate). Otherwise priority is Normal.
+    - **The two paperwork-gap cases are deliberately never the same
+      color.** A missing PO with no cost overage gets a "-- Needs Toyota
+      PO" title suffix and an **orange** badge (`urgency: "warn"`,
+      `.badge-warn` in `styles.css`) -- a paperwork-catch-up problem, still
+      needs chasing, but not (yet) a money problem. A real cost overage
+      gets a "-- Needs Toyota PO change order" title suffix, the same
+      **red** badge as Urgent/Emergency (`urgency: "urgent"`), and a 🚩
+      flag right on its row -- Toyota has to sign off on an actual dollar
+      difference, one notch more urgent than a plain missing PO, and the
+      flag exists specifically to call out that stronger case rather than
+      sitting on every exception regardless of severity (a flag that means
+      "somewhere in here is exceptional" reads as noise on a long list; one
+      that means "this is the worse kind" is worth a glance). Both cases
+      still count as a workflow exception (`isException`) and route the
+      task straight to **RFM regardless of what step its own progress would
+      otherwise route it to** -- a Toyota paperwork problem is RFM's to
+      chase down no matter how far along the rest of the checklist is. A
+      dedicated `isChangeOrder` flag (a `tasks.is_change_order` column,
+      separate from the general `is_exception`) is what actually drives the
+      color/flag split, rather than parsing the title text. All of this is
+      re-evaluated live, so a correction that brings the numbers back in
+      line or a PO that finally arrives clears both the color and the flag
+      automatically rather than either staying stuck. "TOY PO" (rather than
+      just "PO") is deliberate too -- unqualified "PO" is ambiguous with a
+      vendor's own PO or a C&W internal one (see the tech-facing "Request a
+      C&W PO" link below, a genuinely different kind of PO from either of
+      these).
+    - The task list itself sorts by full priority tier first (Emergency
+      down to Low), then due date -- previously only Emergency got special
+      treatment, so a High-priority task with no due date could sink below
+      an old Normal one. Plain High-priority tasks (no paperwork gap) still
+      read with a red badge (previously the same blue used for routine
+      in-progress status, which didn't read as urgent) -- only the two
+      paperwork-gap cases above split off their own orange tier. The
+      Priorities board also has two tiles specifically for RFM's own
+      mental model of the backlog -- **PSE Not Sent**
+      (`countWomLifecyclePseNotSent` in `server/data/db.js`) and **Needs
+      Change Order/TOY PO** (the combined workflow-exception count across
+      both paperwork-gap cases, just labeled for what it actually always
+      means today rather than the generic "Workflow Exceptions") -- so "how
+      many PSEs do I need to produce and send" and "how many of these need
+      chasing" are both a glance at the top of the board, not something to
+      infer from a single "High Priority: N" total.
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from

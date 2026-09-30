@@ -510,9 +510,10 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
     assert.equal(task.priority, "high");
-    assert.ok(task.title.includes("Needs change order or TOY PO"));
+    assert.ok(task.title.includes("Needs Toyota PO change order"));
     assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM");
     assert.equal(task.isException, true);
+    assert.equal(task.isChangeOrder, true, "a real cost overage is the change-order case specifically, not just a missing-PO gap");
 
     // Correcting the applied price back in line clears the flag -- it's
     // re-derived live every time, not stamped once and stuck.
@@ -522,6 +523,25 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
     assert.ok(!task.title.includes("change order"));
     assert.equal(task.isException, false);
+    assert.equal(task.isChangeOrder, false);
+  });
+
+  await t.test("a missing-PO gap reads 'warn' (orange); a real change order reads 'urgent' (red) -- never the same color", async () => {
+    await syncOneOpenWom(server, "40000005", 961);
+    await server.call("PATCH", "/api/woms/40000005/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+
+    let tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    let task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000005-LIFECYCLE");
+    assert.equal(task.isChangeOrder, false, "no PO on file, but no overage either -- the plain missing-PO case");
+    assert.equal(task.urgency, "warn");
+
+    await server.call("PATCH", "/api/woms/40000005/details", { userId: "ADMIN", body: { description: "Test job", maximoNumber: "PO-4005" } });
+    await server.call("PATCH", "/api/woms/40000005/pricing", { userId: "ADMIN", body: { estimatedPrice: 500, appliedPrice: 900 } });
+
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000005-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true);
+    assert.equal(task.urgency, "urgent", "a real cost overage reads as the same red tier as overdue -- one notch above a plain PO gap");
   });
 });
 
@@ -642,10 +662,12 @@ test("WOM lifecycle: a vendor-only job with a request date and applied cost but 
       const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
       const task = tasks.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
       assert.ok(task, "expected a lifecycle task for this WOM");
-      assert.ok(task.title.includes("Needs change order or TOY PO"), "an applied cost with no PO on file is a Toyota paperwork gap");
+      assert.ok(task.title.includes("Needs Toyota PO"), "an applied cost with no PO on file is a Toyota paperwork gap");
+      assert.ok(!task.title.includes("change order"), "no cost overage here -- this is the plain missing-PO case, not a change order");
       assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM regardless of checklist progress");
       assert.equal(task.priority, "high");
       assert.equal(task.isException, true);
+      assert.equal(task.isChangeOrder, false, "missing a PO alone isn't a change order -- reads orange, not red");
 
       // Once a real Maximo/PO # lands, the gap closes and the task moves on
       // to the next genuinely open step -- Review charges, a shared step
@@ -657,7 +679,7 @@ test("WOM lifecycle: a vendor-only job with a request date and applied cost but 
       assert.equal(patched.status, 200);
       const after = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
       const taskAfter = after.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
-      assert.ok(!taskAfter.title.includes("Needs change order or TOY PO"));
+      assert.ok(!taskAfter.title.includes("Needs Toyota PO"));
       assert.equal(taskAfter.assignedRole, null, "Review charges has no single role -- either RFM or Admin can take it");
       // Work is already done -- invoicing what's left is still worth
       // flagging, even with no paperwork gap anymore.

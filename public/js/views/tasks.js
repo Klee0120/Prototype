@@ -152,8 +152,12 @@ const ROLE_FILTER_OPTIONS = [
 // High reads as red (the same "rejected" class as Urgent/Emergency) rather
 // than the blue "submitted" class it used to -- blue doesn't read as
 // urgent, and a board full of High-priority rows needs to look like it,
-// not blend in with routine in-progress status pills.
-const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", high: "rejected", normal: "draft", low: "draft", done: "approved" };
+// not blend in with routine in-progress status pills. "warn" (orange) is
+// its own tier, one notch below the red ones -- a WOM missing its Toyota PO
+// with no cost overage is a paperwork-catch-up problem, not (yet) the money
+// problem a real change order is, and the two shouldn't compete for the
+// same "drop everything" red.
+const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", warn: "warn", high: "rejected", normal: "draft", low: "draft", done: "approved" };
 
 // What to say under an auto-trigger step that's still open -- mirrors
 // WOM_LIFECYCLE_STEPS in server/data/db.js (duplicated rather than shared,
@@ -915,7 +919,7 @@ export async function renderTaskBoard(container) {
       <div class="review-row-summary">
         ${isAdmin ? `<input type="checkbox" class="task-select-checkbox" data-id="${t.id}" />` : ""}
         <span class="review-row-name">
-          ${t.isException ? `<span class="task-exception-flag" title="Needs a Toyota change order or PO -- more urgent than plain High">🚩</span>` : ""}${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
+          ${t.isChangeOrder ? `<span class="task-exception-flag" title="A real cost overage -- Toyota needs to sign off on a change order">🚩</span>` : ""}${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
         <span class="task-card-meta">${escapeHtml(assignee)} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}${t.snoozedUntil ? ` &middot; <span class="task-due-soon">snoozed until ${escapeHtml(formatDate(t.snoozedUntil))}</span>` : ""}</span>

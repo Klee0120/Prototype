@@ -237,6 +237,7 @@ db.exec(`
     source_record_id TEXT,
     workflow_rule TEXT,
     is_exception INTEGER NOT NULL DEFAULT 0,
+    is_change_order INTEGER NOT NULL DEFAULT 0,
     created_by TEXT,
     created_at TEXT NOT NULL,
     assigned_at TEXT,
@@ -634,6 +635,16 @@ cleanupLegacyPseWorkflowTasks();
 // has to remember to reset).
 if (!hasColumn("tasks", "snoozed_until")) {
   db.exec("ALTER TABLE tasks ADD COLUMN snoozed_until TEXT");
+}
+// Splits the single "Toyota paperwork gap" exception into the two distinct
+// cases it's always actually been: no Toyota PO on file yet at all (a
+// paperwork-catch-up problem) vs. a real cost overage needing Toyota's
+// sign-off on a change order (a money problem, and the more urgent of the
+// two). is_exception alone couldn't tell a caller which one it was looking
+// at, so both rendered identically -- same red badge, same flag -- despite
+// meaning very different things to RFM.
+if (!hasColumn("tasks", "is_change_order")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN is_change_order INTEGER NOT NULL DEFAULT 0");
 }
 if (!tableExists("task_reschedules")) {
   db.exec(`
@@ -1765,8 +1776,8 @@ function refreshWomLifecycleTask(code) {
   // gets any older. Grouped with a change order under one umbrella since
   // both mean the same thing to RFM: something about this WOM's Toyota
   // paperwork needs attention before it can move on.
-  const needsPo = !wom.maximo_number && (wom.applied_price != null || wom.applied_contracted != null);
-  const needsChangeOrderOrPo = changeOrder || needsPo;
+  const needsPoOnly = !changeOrder && !wom.maximo_number && (wom.applied_price != null || wom.applied_contracted != null);
+  const needsChangeOrderOrPo = changeOrder || needsPoOnly;
   // Once the actual work is done, whatever's left (posting cost, review,
   // invoicing) is pure administrative closeout standing between finished
   // work and getting paid for it -- that's always worth flagging, not just
@@ -1775,7 +1786,16 @@ function refreshWomLifecycleTask(code) {
   upsertTaskBySourceKey(
     lifecycleTaskSourceKey(code),
     {
-      title: needsChangeOrderOrPo ? `WOM lifecycle: ${code} -- Needs change order or TOY PO` : `WOM lifecycle: ${code}`,
+      // Two distinct titles for two distinct problems -- a change order (a
+      // real cost overage Toyota needs to sign off on) reads as its own
+      // thing, not lumped in with the far more common "just no PO on file
+      // yet" gap. isChangeOrder (below) is what actually drives the red-vs-
+      // orange badge split; the title just spells out which one this is.
+      title: changeOrder
+        ? `WOM lifecycle: ${code} -- Needs Toyota PO change order`
+        : needsPoOnly
+          ? `WOM lifecycle: ${code} -- Needs Toyota PO`
+          : `WOM lifecycle: ${code}`,
       description: wom.description,
       category: "wom_workflow",
       // A Toyota paperwork gap is RFM's to chase down regardless of which
@@ -1784,6 +1804,7 @@ function refreshWomLifecycleTask(code) {
       assignedRole: needsChangeOrderOrPo ? "reviewer" : nextStep ? nextStep.role : null,
       priority: needsChangeOrderOrPo || sentToToyotaPending || workDone ? "high" : "normal",
       isException: needsChangeOrderOrPo,
+      isChangeOrder: changeOrder,
       relatedWomCode: code,
       relatedLocationCode: wom.location_code,
       source: "wom_workflow",
@@ -2104,8 +2125,8 @@ function createTask(fields) {
     .prepare(
       `INSERT INTO tasks (source_key, title, description, assigned_to, assigned_role, category, priority, due_at,
        status, related_wom_code, related_vendor_id, related_location_code, related_tech_id, related_po,
-       source, source_record_id, workflow_rule, is_exception, created_by, created_at, assigned_at, last_status_change_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       source, source_record_id, workflow_rule, is_exception, is_change_order, created_by, created_at, assigned_at, last_status_change_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.sourceKey || null,
@@ -2125,6 +2146,7 @@ function createTask(fields) {
       fields.sourceRecordId || null,
       fields.workflowRule || null,
       fields.isException ? 1 : 0,
+      fields.isChangeOrder ? 1 : 0,
       fields.createdBy || null,
       now,
       assignedTo ? now : null,
@@ -2153,7 +2175,7 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true } = {}
   db.prepare(
     `UPDATE tasks SET title = ?, description = ?, assigned_to = ?, assigned_role = ?, category = ?,
      priority = ?, due_at = ?, related_wom_code = ?, related_vendor_id = ?, related_location_code = ?,
-     related_tech_id = ?, related_po = ?, workflow_rule = ?, is_exception = ?,
+     related_tech_id = ?, related_po = ?, workflow_rule = ?, is_exception = ?, is_change_order = ?,
      status = CASE WHEN status IN ('completed','cancelled') THEN 'open' ELSE status END,
      completed_at = CASE WHEN status IN ('completed','cancelled') THEN NULL ELSE completed_at END,
      last_status_change_at = ?
@@ -2173,6 +2195,7 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true } = {}
     fields.relatedPo !== undefined ? fields.relatedPo || null : existing.related_po,
     fields.workflowRule ?? existing.workflow_rule,
     fields.isException !== undefined ? (fields.isException ? 1 : 0) : existing.is_exception,
+    fields.isChangeOrder !== undefined ? (fields.isChangeOrder ? 1 : 0) : existing.is_change_order,
     now,
     existing.id
   );

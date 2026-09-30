@@ -29,7 +29,14 @@ function computeTaskUrgency(t) {
   const overdue = dueAt !== null && !Number.isNaN(dueAt) && dueAt < now;
   const ageDays = (now - new Date(t.created_at).getTime()) / 86400000;
 
-  if (overdue || t.is_exception) return "urgent";
+  if (overdue) return "urgent";
+  // A real cost overage needing Toyota's sign-off on a change order is a
+  // money problem and reads as urgent (red) same as overdue does. Missing a
+  // Toyota PO on file at all, with no overage, is a paperwork-catch-up
+  // problem -- still needs chasing, but a visibly lighter tier (orange) so
+  // the two don't compete for the same "drop everything" attention.
+  if (t.is_change_order) return "urgent";
+  if (t.is_exception) return "warn";
   if (t.priority === "urgent") return "urgent";
   if (t.priority === "high" || ageDays > 14) return "high";
   if (dueAt !== null && dueAt - now < 86400000) return "high"; // due within 24h
@@ -72,6 +79,7 @@ function presentTask(t) {
     sourceRecordId: t.source_record_id,
     workflowRule: t.workflow_rule,
     isException: Boolean(t.is_exception),
+    isChangeOrder: Boolean(t.is_change_order),
     createdBy: t.created_by,
     createdByName: creator ? creator.name : null,
     createdAt: t.created_at,

@@ -932,6 +932,7 @@ h1, h2, h3, h4 {
 .badge-submitted { background: #eaf1fd; color: var(--accent-dark); }
 .badge-approved { background: var(--ok-bg); color: var(--ok); }
 .badge-rejected { background: var(--danger-bg); color: var(--danger); }
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
 
 .review-row-detail {
   margin-top: 10px;
