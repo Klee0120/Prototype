@@ -1257,6 +1257,24 @@ h1, h2, h3, h4 {
   margin-right: 4px;
 }
 
+.task-snooze-banner {
+  background: var(--warn-bg);
+  color: var(--warn);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.task-reschedule-notes {
+  margin-bottom: 12px;
+}
+.task-reschedule-note {
+  font-size: 13px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: #f6f7fa;
+  border-radius: var(--radius-sm);
+}
+
 .task-comment {
   font-size: 13px;
   margin: 6px 0;

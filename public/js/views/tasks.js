@@ -37,9 +37,13 @@ const VIEW_LABELS = {
   // Revisit this label if another kind of task ever sets isException too.
   exceptions: "Needs Change Order/TOY PO",
   recurring: "Recurring Tasks",
+  // Tasks snoozed forward via Reschedule -- hidden from every other view
+  // until their snooze date arrives, so this is the one place to still
+  // find and act on one early if something changes.
+  upcoming: "Upcoming",
   completed: "Completed",
 };
-const ADMIN_VIEWS = ["my", "team", "unassigned", "overdue", "waiting", "exceptions", "recurring", "completed"];
+const ADMIN_VIEWS = ["my", "team", "unassigned", "overdue", "waiting", "exceptions", "recurring", "upcoming", "completed"];
 const TECH_VIEWS = ["my", "team", "waiting", "overdue", "completed"];
 
 const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent", emergency: "Emergency" };
@@ -892,7 +896,7 @@ export async function renderTaskBoard(container) {
           ${t.isException ? `<span class="task-exception-flag" title="Needs a Toyota change order or PO -- more urgent than plain High">🚩</span>` : ""}${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
-        <span class="task-card-meta">${escapeHtml(assignee)} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}</span>
+        <span class="task-card-meta">${escapeHtml(assignee)} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}${t.snoozedUntil ? ` &middot; <span class="task-due-soon">snoozed until ${escapeHtml(formatDate(t.snoozedUntil))}</span>` : ""}</span>
         <button class="btn btn-link task-detail-toggle" type="button">Details</button>
       </div>
       <div class="review-row-detail task-card-detail" hidden></div>
@@ -950,6 +954,7 @@ export async function renderTaskBoard(container) {
     // edit. An admin can edit anyone's hand-added task; a non-admin only
     // their own.
     const canEdit = t.source === "manual" && (isAdmin || t.createdBy === state.user.id);
+    const snoozedActive = t.snoozedUntil && new Date(t.snoozedUntil).getTime() > Date.now();
 
     host.innerHTML = `
       ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
@@ -957,9 +962,33 @@ export async function renderTaskBoard(container) {
         ${why ? `${why} ` : ""}${wom && wom.smartsheetData ? `<button class="btn btn-link task-smartsheet-detail-btn" type="button">Smartsheet detail</button> ` : ""}${canEdit ? `<button class="btn btn-link task-edit-toggle" type="button">Edit</button>` : ""}
       </p>
       ${canEdit ? `<div class="task-edit-host" hidden></div>` : ""}
+      ${
+        isAdmin
+          ? snoozedActive
+            ? `<p class="task-snooze-banner">Snoozed until ${escapeHtml(formatDate(t.snoozedUntil))} -- hidden from your other lists until then.
+                <button class="btn btn-link task-unsnooze-btn" type="button">Bring back now</button></p>`
+            : `<p class="review-checklist-hint"><button class="btn btn-link task-reschedule-toggle" type="button">Reschedule</button></p>`
+          : ""
+      }
+      ${isAdmin ? `<div class="task-reschedule-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
       <div class="review-actions task-status-actions"></div>
       ${isAdmin ? `<div class="task-attachments"></div>` : ""}
+      ${
+        isAdmin && t.rescheduleNotes.length > 0
+          ? `<h5 class="task-activity-heading">Status Notes</h5>
+             <div class="task-reschedule-notes">
+               ${t.rescheduleNotes
+                 .map(
+                   (r) =>
+                     `<div class="task-reschedule-note"><strong>${escapeHtml(r.createdByName)}</strong> -- snoozed to ${escapeHtml(
+                       formatDate(r.snoozedUntil)
+                     )} <span class="task-card-meta">(${escapeHtml(formatDateTime(r.createdAt))})</span><div>${escapeHtml(r.note)}</div></div>`
+                 )
+                 .join("")}
+             </div>`
+          : ""
+      }
       <h5 class="task-activity-heading">Activity</h5>
       <div class="task-activity"></div>
       <div class="task-comment-form"></div>
@@ -1001,6 +1030,36 @@ export async function renderTaskBoard(container) {
           });
         }
       });
+    }
+
+    if (isAdmin) {
+      const rescheduleToggle = host.querySelector(".task-reschedule-toggle");
+      const rescheduleHost = host.querySelector(".task-reschedule-host");
+      if (rescheduleToggle && rescheduleHost) {
+        let rescheduleLoaded = false;
+        rescheduleToggle.addEventListener("click", () => {
+          const opening = rescheduleHost.hidden;
+          rescheduleHost.hidden = !opening;
+          rescheduleToggle.textContent = opening ? "Cancel" : "Reschedule";
+          if (opening && !rescheduleLoaded) {
+            rescheduleLoaded = true;
+            renderRescheduleForm(rescheduleHost, t, () => draw());
+          }
+        });
+      }
+      const unsnoozeBtn = host.querySelector(".task-unsnooze-btn");
+      if (unsnoozeBtn) {
+        unsnoozeBtn.addEventListener("click", async () => {
+          unsnoozeBtn.disabled = true;
+          try {
+            await api.post(`/api/tasks/${t.id}/unsnooze`, {});
+            await draw();
+          } catch (err) {
+            unsnoozeBtn.disabled = false;
+            window.alert(err.message);
+          }
+        });
+      }
     }
 
     const tookOverStatus = wom && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
@@ -1169,6 +1228,56 @@ export async function renderTaskBoard(container) {
           relatedTechId: employeePicker ? employeePicker.getId() : null,
         });
         await draw();
+      } catch (err) {
+        errorEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+  }
+
+  // "Reschedule" on a WOM-lifecycle task pending Toyota paperwork: RFM logs
+  // what's actually been confirmed so far (a dedicated note, not mixed into
+  // the Activity feed -- it's a standing status, not a one-off comment) and
+  // picks a follow-up date. The task is fully hidden from every other view
+  // until that date, and resurfaces automatically in the admin-only Upcoming
+  // tab -- or immediately, via "Bring back now" on the task itself.
+  function renderRescheduleForm(host, t, onDone) {
+    const defaultDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    host.innerHTML = `
+      <form class="modal-form task-reschedule-form">
+        <label class="profile-field"><span>Follow up on</span><input class="task-reschedule-date" type="date" value="${defaultDate}" required /></label>
+        <label class="profile-field"><span>Status note</span><textarea class="task-reschedule-note" rows="3" placeholder="e.g. Labor and vendor $ posted, still waiting on expenses." required></textarea></label>
+        <div class="modal-form-actions">
+          <button class="btn btn-primary" type="submit">Reschedule</button>
+          <button class="btn btn-link task-reschedule-cancel" type="button">Cancel</button>
+        </div>
+        <div class="task-reschedule-error"></div>
+      </form>
+    `;
+    host.querySelector(".task-reschedule-cancel").addEventListener("click", () => {
+      host.hidden = true;
+      const toggle = host.parentElement.querySelector(".task-reschedule-toggle");
+      if (toggle) toggle.textContent = "Reschedule";
+    });
+    host.querySelector(".task-reschedule-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errorEl = host.querySelector(".task-reschedule-error");
+      errorEl.innerHTML = "";
+      const note = host.querySelector(".task-reschedule-note").value.trim();
+      const dateVal = host.querySelector(".task-reschedule-date").value;
+      if (!note) {
+        errorEl.innerHTML = `<p class="attachments-error">A status note is required.</p>`;
+        return;
+      }
+      if (!dateVal) {
+        errorEl.innerHTML = `<p class="attachments-error">A follow-up date is required.</p>`;
+        return;
+      }
+      try {
+        await api.post(`/api/tasks/${t.id}/reschedule`, {
+          note,
+          snoozedUntil: new Date(dateVal).toISOString(),
+        });
+        await onDone();
       } catch (err) {
         errorEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       }

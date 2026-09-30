@@ -81,6 +81,7 @@ function presentTask(t) {
     lastStatusChangeAt: t.last_status_change_at,
     ageDays: Math.floor(ageMs / 86400000),
     urgency: computeTaskUrgency(t),
+    snoozedUntil: t.snoozed_until,
   };
 }
 
@@ -140,11 +141,20 @@ router.get("/", requireAuth, (req, res) => {
     case "completed":
       filters.status = ["completed"];
       break;
+    case "upcoming":
+      // The one place a snoozed task is still visible before its date
+      // arrives -- "pull it up if he needs to make changes." Admin-only,
+      // same as unassigned/exceptions/recurring above.
+      if (!isAdmin) return res.status(403).json({ error: "Admin access required" });
+      filters.snoozedOnly = true;
+      filters.status = db.OPEN_TASK_STATUSES;
+      break;
     case "my":
     default:
       filters.status = db.OPEN_TASK_STATUSES;
       break;
   }
+  if (view !== "upcoming") filters.excludeSnoozed = true;
 
   // Cross-employee filtering is admin-only, per spec -- everyone else is
   // already pinned to their own identity/role above.
@@ -203,6 +213,14 @@ router.get("/:id", requireAuth, (req, res) => {
       authorName: c.author_name,
       body: c.body,
       createdAt: c.created_at,
+    })),
+    rescheduleNotes: db.listTaskReschedules(task.id).map((r) => ({
+      id: r.id,
+      note: r.note,
+      snoozedUntil: r.snoozed_until,
+      createdBy: r.created_by,
+      createdByName: r.created_by_name,
+      createdAt: r.created_at,
     })),
   });
 });
@@ -381,6 +399,41 @@ router.post("/:id/comments", requireAuth, (req, res) => {
 
   const comments = db.addTaskComment(task.id, req.user.id, req.user.name, body.trim());
   res.status(201).json(comments.map((c) => ({ id: c.id, authorId: c.author_id, authorName: c.author_name, body: c.body, createdAt: c.created_at })));
+});
+
+// Snoozes a task forward with a required status note -- drops it out of
+// the default views (My Work, Team Work, Overdue, etc.) until snoozedUntil
+// arrives, when it reappears on its own. The Upcoming tab is the one place
+// it's still visible before then.
+router.post("/:id/reschedule", requireAuth, requireAdmin, (req, res) => {
+  const task = db.findTask(Number(req.params.id));
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  const { snoozedUntil, note } = req.body || {};
+  if (!note || !note.trim()) return res.status(400).json({ error: "note is required" });
+  if (!snoozedUntil || Number.isNaN(new Date(snoozedUntil).getTime())) {
+    return res.status(400).json({ error: "snoozedUntil must be a valid date" });
+  }
+
+  const updated = db.rescheduleTask(task.id, {
+    snoozedUntil: new Date(snoozedUntil).toISOString(),
+    note: note.trim(),
+    createdBy: req.user.id,
+    createdByName: req.user.name,
+  });
+  db.addAudit(req.user.id, "TASK_RESCHEDULED", `${req.user.name} rescheduled task "${task.title}" to ${snoozedUntil}: ${note.trim()}`);
+  res.json(presentTask(updated));
+});
+
+// Pulls a snoozed task back into the default views right now, without
+// waiting for its snooze date -- "pull it up if he needs to make changes."
+router.post("/:id/unsnooze", requireAuth, requireAdmin, (req, res) => {
+  const task = db.findTask(Number(req.params.id));
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  const updated = db.unsnoozeTask(task.id);
+  db.addAudit(req.user.id, "TASK_RESCHEDULED", `${req.user.name} brought task "${task.title}" back from Upcoming`);
+  res.json(presentTask(updated));
 });
 
 module.exports = router;

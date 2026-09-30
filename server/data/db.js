@@ -242,6 +242,7 @@ db.exec(`
     assigned_at TEXT,
     started_at TEXT,
     completed_at TEXT,
+    snoozed_until TEXT,
     last_status_change_at TEXT NOT NULL
   );
 
@@ -254,6 +255,23 @@ db.exec(`
     author_id TEXT NOT NULL,
     author_name TEXT NOT NULL,
     body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  -- A running status log for a WOM-workflow task that's being snoozed
+  -- forward week over week rather than acted on today ("$100 expenses
+  -- posted, labor posted, vendor $ posted" this week, a different note
+  -- next week) -- kept separate from task_comments (a request to keep this
+  -- as its own dedicated field, not mixed into the general activity feed),
+  -- and as its own timestamped log rather than one overwritable note since
+  -- the whole point is watching the story change across repeated snoozes.
+  CREATE TABLE IF NOT EXISTS task_reschedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    note TEXT NOT NULL,
+    snoozed_until TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_by_name TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
 
@@ -606,6 +624,30 @@ function cleanupLegacyPseWorkflowTasks() {
   return legacyIds.length;
 }
 cleanupLegacyPseWorkflowTasks();
+// A future date this task is snoozed until -- separate from due_at (an
+// ordinary task's own deadline, unaffected by any of this) so rescheduling
+// a WOM-workflow task forward doesn't change what it's actually due, just
+// when it's next worth looking at. My Work/Team Work/etc. hide a task
+// while snoozed_until is still in the future; the Upcoming tab is the one
+// place that still shows it, and a snooze clears itself the moment that
+// date arrives (a live comparison against "now," not a value anything
+// has to remember to reset).
+if (!hasColumn("tasks", "snoozed_until")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN snoozed_until TEXT");
+}
+if (!tableExists("task_reschedules")) {
+  db.exec(`
+    CREATE TABLE task_reschedules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      note TEXT NOT NULL,
+      snoozed_until TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_by_name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+}
 // Which admin plays the "reviewer" role in the PSE pipeline (produces the
 // PSE, liaises with Toyota, approves Status 95) -- distinct from the
 // "financial" role (generates the WOM/PO, monitors charges, invoices),
@@ -2167,12 +2209,49 @@ function setTaskStatus(id, status) {
 // placeholder WOM's leftover follow-up, a mistaken manual entry) -- not
 // exposed as a UI action, since "cancelled" already covers "this isn't
 // happening" for everything else; this is a step further, for one-off
-// cleanup. Takes its comments and any attached files with it rather than
-// leaving them orphaned (no FK/cascade on either table).
+// cleanup. Takes its comments, reschedule notes, and any attached files
+// with it rather than leaving them orphaned (no FK/cascade on any table).
 function deleteTask(id) {
   db.prepare("DELETE FROM task_comments WHERE task_id = ?").run(id);
+  db.prepare("DELETE FROM task_reschedules WHERE task_id = ?").run(id);
   db.prepare("DELETE FROM files WHERE related_type = 'task' AND related_id = ?").run(String(id));
   db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+}
+
+// Snoozes a task forward with a required note explaining why -- e.g. "$100
+// expenses posted, labor posted, vendor $ posted" this week, a different
+// note next week if it's snoozed again. Kept as its own growing log
+// (listTaskReschedules) rather than one overwritable field, so the full
+// story of repeated snoozes is still there later. The task itself is
+// otherwise untouched: its real priority/exception/role keep being
+// computed exactly as they always are (for a WOM lifecycle task, on the
+// next sync/action/lazy catch-up) -- snoozing only changes whether it
+// shows up in the default views right now, never what it actually needs.
+function rescheduleTask(id, { snoozedUntil, note, createdBy, createdByName }) {
+  const existing = findTask(id);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  db.prepare("UPDATE tasks SET snoozed_until = ? WHERE id = ?").run(snoozedUntil, id);
+  db.prepare(
+    "INSERT INTO task_reschedules (task_id, note, snoozed_until, created_by, created_by_name, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(id, note, snoozedUntil, createdBy, createdByName, now);
+  return findTask(id);
+}
+
+// Brings a snoozed task back to the default views right now, without
+// waiting for its snooze date -- "pull it up if he needs to make changes."
+// Doesn't touch the reschedule log; that history stays regardless.
+function unsnoozeTask(id) {
+  const existing = findTask(id);
+  if (!existing) return null;
+  db.prepare("UPDATE tasks SET snoozed_until = NULL WHERE id = ?").run(id);
+  return findTask(id);
+}
+
+function listTaskReschedules(taskId) {
+  // Oldest first, same chronological convention as the Activity feed --
+  // this is a running history of status updates, read top to bottom.
+  return db.prepare("SELECT * FROM task_reschedules WHERE task_id = ? ORDER BY created_at ASC").all(taskId);
 }
 
 // A person editing what/why a hand-added task is about, after the fact --
@@ -2289,6 +2368,20 @@ function listTasks(filters = {}) {
   if (filters.dueOn) {
     clauses.push("due_at LIKE ?");
     params.push(`${filters.dueOn}%`);
+  }
+  // My Work/Team Work/etc. all hide a snoozed task until its snooze date
+  // arrives -- "then I don't see it on my list" -- while the Upcoming view
+  // (filters.snoozedOnly) shows exactly the opposite: only tasks still
+  // snoozed into the future. Comparing against a timestamp taken once here
+  // rather than SQLite's own now() keeps a single call's view consistent.
+  const nowIso = new Date().toISOString();
+  if (filters.excludeSnoozed) {
+    clauses.push("(snoozed_until IS NULL OR snoozed_until <= ?)");
+    params.push(nowIso);
+  }
+  if (filters.snoozedOnly) {
+    clauses.push("snoozed_until IS NOT NULL AND snoozed_until > ?");
+    params.push(nowIso);
   }
   // "Assigned to me, or an unclaimed task matching one of my roles" -- the
   // shared shape behind both My Work (tech and admin) and the role-scoped
@@ -3457,6 +3550,9 @@ module.exports = {
   setTaskStatus,
   updateTask,
   deleteTask,
+  rescheduleTask,
+  unsnoozeTask,
+  listTaskReschedules,
   assignTask,
   addTaskComment,
   listTaskComments,

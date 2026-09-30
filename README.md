@@ -713,6 +713,45 @@ Demo logins:
     follow-up date on its own. The existing general task-edit feature (see
     below) can still hand-adjust a lifecycle task's own due date if one is
     ever needed, but nothing does so automatically.
+  - **Reschedule (snooze with a status note), and the Upcoming tab** --
+    for a task genuinely stuck on the Toyota paperwork gap above (posted
+    cost, no PO yet), RFM often can't move it forward today; they can only
+    confirm what's been posted so far and check back later. The
+    "Reschedule" button on the task detail panel (admin-only, next to
+    "Smartsheet detail"/"Edit") opens a small inline form -- a follow-up
+    date (defaults to one week out) and a **required** status note (e.g.
+    "$100 expenses posted, labor posted, still waiting on vendor $") --
+    and on submit the task drops out of every default view (My Work, Team
+    Work, Overdue, Needs Change Order/TOY PO, etc.) until that date
+    arrives, at which point it reappears there on its own with no action
+    needed. `tasks.snoozed_until` (`rescheduleTask`/`unsnoozeTask` in
+    `server/data/db.js`, `POST /api/tasks/:id/reschedule` and
+    `POST /api/tasks/:id/unsnooze`) is purely a visibility flag -- it never
+    touches the task's own computed priority, role, or exception state
+    (still driven entirely by `refreshWomLifecycleTask`/the checklist), so
+    a snoozed WOM-paperwork-gap task is still High/flagged the moment it's
+    back in view.
+    - **A dedicated, append-only history, not the Activity/comment feed.**
+      Each reschedule appends a row to its own `task_reschedules` table
+      (`listTaskReschedules`) rather than overwriting a single field or
+      mixing into `task_comments` -- a standing status ("what's actually
+      confirmed as of the last check-in") reads differently than a
+      one-off remark, and RFM needs the full trail across repeated
+      follow-ups, not just the latest note. It renders in its own "Status
+      Notes" section on the task detail panel, above the existing
+      "Activity" feed, oldest first (same chronological convention as
+      Activity).
+    - **Fully hidden until due, with one place to still find it.** A new
+      admin-only **Upcoming** view/tab (`view=upcoming`,
+      `filters.snoozedOnly`) is the *only* place a snoozed task remains
+      visible before its follow-up date -- everywhere else it's
+      completely absent, on the theory that a list RFM checks daily
+      shouldn't include things there's deliberately nothing to do about
+      yet. Its row shows the snooze date directly ("snoozed until
+      10/7/2026"), and its detail panel shows a banner plus a "Bring back
+      now" button for pulling it into every other view immediately, e.g.
+      to log a correction or act on it early once the missing paperwork
+      actually shows up.
   - **Where does a lifecycle task actually go, and what happens once it's
     fully checked off?** It never just disappears. The same one task
     (`lifecycleTaskSourceKey`, upserted by `refreshWomLifecycleTask` after

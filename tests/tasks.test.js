@@ -1096,3 +1096,132 @@ test("tasks: an admin can look up another role's queue while still on the My Wor
     assert.ok(res.body.some((t2) => t2.id === created.body.id));
   });
 });
+
+test("tasks: reschedule/snooze a task into the Upcoming tab", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  async function makeTask(title) {
+    const created = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title } });
+    assert.equal(created.status, 201);
+    return created.body.id;
+  }
+
+  await t.test("rescheduling requires a note", async () => {
+    const taskId = await makeTask("Needs a note");
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "ADMIN",
+      body: { snoozedUntil: "2099-01-01" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rescheduling requires a valid snoozedUntil date", async () => {
+    const taskId = await makeTask("Needs a date");
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "Labor posted, waiting on vendor invoice.", snoozedUntil: "not-a-date" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a non-admin can't reschedule a task", async () => {
+    const taskId = await makeTask("Not yours to snooze");
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "T1002",
+      body: { note: "trying anyway", snoozedUntil: "2099-01-01" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a successful reschedule hides the task from My/Team Work and surfaces it in Upcoming only", async () => {
+    const taskId = await makeTask("$100 expenses posted, still waiting on vendor $");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "$100 expenses posted, labor posted, still waiting on vendor $.", snoozedUntil: future },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.snoozedUntil);
+
+    const team = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!team.body.some((t2) => t2.id === taskId), "snoozed task must not show up in Team Work");
+
+    const my = await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    assert.ok(!my.body.some((t2) => t2.id === taskId), "snoozed task must not show up in My Work");
+
+    const upcoming = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    assert.ok(upcoming.body.some((t2) => t2.id === taskId), "snoozed task should be visible in Upcoming");
+
+    const detail = await server.call("GET", `/api/tasks/${taskId}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 1);
+    assert.equal(detail.body.rescheduleNotes[0].note, "$100 expenses posted, labor posted, still waiting on vendor $.");
+    assert.equal(detail.body.rescheduleNotes[0].createdByName, "Krista Lee");
+  });
+
+  await t.test("repeated reschedules build a growing history, most recent last", async () => {
+    const taskId = await makeTask("Follow-up chain");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${taskId}/reschedule`, { userId: "ADMIN", body: { note: "Round one.", snoozedUntil: future } });
+    await server.call("POST", `/api/tasks/${taskId}/reschedule`, { userId: "ADMIN", body: { note: "Round two.", snoozedUntil: future } });
+
+    const detail = await server.call("GET", `/api/tasks/${taskId}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 2);
+    assert.equal(detail.body.rescheduleNotes[0].note, "Round one.");
+    assert.equal(detail.body.rescheduleNotes[1].note, "Round two.");
+  });
+
+  await t.test("Bring back now (unsnooze) immediately restores default visibility", async () => {
+    const taskId = await makeTask("Pull this back up");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${taskId}/reschedule`, { userId: "ADMIN", body: { note: "Waiting on PO.", snoozedUntil: future } });
+
+    const stillHidden = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!stillHidden.body.some((t2) => t2.id === taskId));
+
+    const unsnooze = await server.call("POST", `/api/tasks/${taskId}/unsnooze`, { userId: "ADMIN" });
+    assert.equal(unsnooze.status, 200);
+    assert.equal(unsnooze.body.snoozedUntil, null);
+
+    const restored = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(restored.body.some((t2) => t2.id === taskId), "task should reappear in Team Work right away");
+
+    const upcoming = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    assert.ok(!upcoming.body.some((t2) => t2.id === taskId), "task should no longer sit in Upcoming once brought back");
+
+    const detail = await server.call("GET", `/api/tasks/${taskId}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 1, "unsnoozing clears visibility but keeps the status-note history");
+  });
+
+  await t.test("only an admin can view the Upcoming tab", async () => {
+    const res = await server.call("GET", "/api/tasks?view=upcoming", { userId: "T1002" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("snoozing a WOM-lifecycle task doesn't alter its own priority, role, or exception state", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "SNOOZE-WOM-1", description: "Vendor-only job" } });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-1/details", {
+      userId: "ADMIN",
+      body: { description: "Vendor-only job", locationCode: "PRINCETON" },
+    });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-1/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+
+    const before = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = before.body.find((t2) => t2.sourceKey === "WOM-SNOOZE-WOM-1-LIFECYCLE");
+    assert.ok(task, "expected the lifecycle task to exist");
+    assert.equal(task.priority, "high");
+    assert.equal(task.isException, true);
+
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${task.id}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "Expenses posted, waiting on PO.", snoozedUntil: future },
+    });
+
+    const upcoming = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    const snoozed = upcoming.body.find((t2) => t2.id === task.id);
+    assert.ok(snoozed);
+    assert.equal(snoozed.priority, "high", "snoozing must not change the underlying priority computation");
+    assert.equal(snoozed.isException, true, "snoozing must not change the underlying exception computation");
+  });
+});
