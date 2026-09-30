@@ -89,6 +89,8 @@ export function renderTechniciansTab(content, openTo) {
           </select>
         </label>
         <button class="btn btn-secondary add-technician-toggle" type="button">+ Add technician</button>
+        <button class="btn btn-secondary add-admin-toggle" type="button">+ Add Admin</button>
+        <button class="btn btn-secondary add-rfm-toggle" type="button">+ Add RFM</button>
         <button class="btn btn-secondary terminate-technician-toggle" type="button">Terminate employee</button>
         <button class="btn btn-link bulk-add-toggle" type="button">${showBulkAddForm ? "Cancel bulk add" : "Bulk add technicians"}</button>
         <button class="btn btn-link admin-accounts-toggle" type="button">${showAdminAccounts ? "Hide admin accounts" : "Manage admin accounts"}</button>
@@ -128,6 +130,12 @@ export function renderTechniciansTab(content, openTo) {
     });
     content.querySelector(".add-technician-toggle").addEventListener("click", () => {
       openAddModal(locations);
+    });
+    content.querySelector(".add-admin-toggle").addEventListener("click", () => {
+      openAddAdminModal({ makeRfm: false });
+    });
+    content.querySelector(".add-rfm-toggle").addEventListener("click", () => {
+      openAddAdminModal({ makeRfm: true });
     });
     content.querySelector(".terminate-technician-toggle").addEventListener("click", () => {
       openTerminateModal(techs);
@@ -363,6 +371,58 @@ export function renderTechniciansTab(content, openTo) {
           position: form.position.value.trim(),
           hireDate: isoFromUs(form.hireDate.value),
         });
+        close();
+        await draw();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // Same create-admin capability the Manage admin accounts panel already
+  // has, just surfaced as a top-level action next to + Add technician
+  // instead of requiring that panel to be opened first -- creating an
+  // admin login is common enough (a new RFM or a new office admin) to
+  // deserve the same visibility as adding a technician. +Add RFM does the
+  // same create, then immediately designates the new account as RFM in
+  // one step (setPseReviewer already clears whoever held it before, so
+  // this doubles as "transfer RFM to a brand-new account" too) -- no
+  // separate trip to the admin accounts table required.
+  function openAddAdminModal({ makeRfm }) {
+    const { body, close } = openModal({
+      title: makeRfm ? "Add RFM" : "Add Admin",
+      bodyHtml: `
+        <form class="add-admin-modal-form modal-form">
+          <div class="add-tech-grid">
+            <input name="id" placeholder="ID (e.g. ADMIN2)" required />
+            <input name="name" placeholder="Full name" required />
+            <input name="pin" placeholder="PIN" required inputmode="numeric" />
+          </div>
+          ${
+            makeRfm
+              ? `<p class="review-checklist-hint">This becomes the one admin who sends PSEs to Toyota and reviews charges -- it automatically replaces whoever holds RFM today.</p>`
+              : ""
+          }
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">${makeRfm ? "Create and set as RFM" : "Create admin"}</button>
+          </div>
+          <span class="save-message add-admin-modal-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".add-admin-modal-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".add-admin-modal-message");
+      try {
+        const admin = await api.post("/api/admin/admins", {
+          id: form.id.value.trim(),
+          name: form.name.value.trim(),
+          pin: form.pin.value.trim(),
+        });
+        if (makeRfm) {
+          await api.patch(`/api/admin/admins/${encodeURIComponent(admin.id)}/pse-reviewer`, { isPseReviewer: true });
+        }
         close();
         await draw();
       } catch (err) {

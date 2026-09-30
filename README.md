@@ -667,9 +667,11 @@ Demo logins:
     change order (the applied cost, once posted, came in higher than the
     original estimate on the project as a whole) or an applied cost with no
     Maximo/PO # on file at all, whichever applies. Either paperwork-gap
-    case gets a "-- Needs change order or PO" title suffix, counts as a
-    workflow exception, and routes the task straight to **RFM regardless of
-    what step its own progress would otherwise route it to** -- a Toyota
+    case gets a "-- Needs change order or TOY PO" title suffix (spelled out
+    as "TOY PO" rather than just "PO" -- unqualified "PO" is ambiguous with
+    a vendor's own PO or a C&W internal one), counts as a workflow
+    exception, and routes the task straight to **RFM regardless of what
+    step its own progress would otherwise route it to** -- a Toyota
     paperwork problem is RFM's to chase down no matter how far along the
     rest of the checklist is. All of this is re-evaluated live, so a
     correction that brings the numbers back in line or a PO that finally
@@ -677,7 +679,20 @@ Demo logins:
     Otherwise priority is Normal. The task list itself now sorts by full
     priority tier first (Emergency down to Low), then due date --
     previously only Emergency got special treatment, so a High-priority
-    task with no due date could sink below an old Normal one.
+    task with no due date could sink below an old Normal one. High-priority
+    tasks read with a red badge (previously the same blue used for routine
+    in-progress status, which didn't read as urgent), and a task with a
+    Toyota paperwork gap additionally gets a 🚩 flag right on its row --
+    High alone doesn't distinguish "should get to this today" from "Toyota
+    paperwork is stuck," and the flag does. The Priorities board also has
+    two tiles specifically for RFM's own mental model of the backlog --
+    **PSE Not Sent** (`countWomLifecyclePseNotSent` in `server/data/db.js`)
+    and **Needs Change Order/TOY PO** (the same workflow-exception count,
+    just labeled for what it actually always means today rather than the
+    generic "Workflow Exceptions") -- so "how many PSEs do I need to
+    produce and send" and "how many change orders do I need to chase" are
+    both a glance at the top of the board, not something to infer from a
+    single "High Priority: N" total.
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from
@@ -1084,10 +1099,18 @@ Demo logins:
   (`setUser` in `app.js`) so it's correct on the next reload/login; the
   header text on screen at the moment of the rename itself doesn't
   live-refresh (it's only drawn once per page load). The same panel also
-  has a **"Set as reviewer" / "Reviewer -- remove"** toggle per admin,
-  designating who plays the "reviewer" role in the WOM lifecycle checklist
-  (see PSE Tasks below) -- only one at a time, enforced server-side
-  (`PATCH /api/admin/admins/:id/pse-reviewer`).
+  has a **"Set as RFM" / "RFM -- remove"** toggle per admin, designating
+  who plays the `reviewer` role in the WOM lifecycle checklist (see PSE
+  Tasks below, and the role-label note there on why this reads "RFM" on
+  screen) -- only one at a time, enforced server-side
+  (`PATCH /api/admin/admins/:id/pse-reviewer`; setting a new one always
+  clears whoever held it before, so this one toggle is also how RFM gets
+  transferred to someone else, not just designated the first time).
+  **+ Add Admin / + Add RFM** on the main Roster page (next to +
+  Add technician) surface this same admin-creation capability up front,
+  for the common case of onboarding a brand-new admin or RFM without
+  first opening the Manage admin accounts panel -- + Add RFM creates the
+  account and immediately sets it as RFM in the same step.
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:

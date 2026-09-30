@@ -1253,6 +1253,10 @@ h1, h2, h3, h4 {
   background: var(--danger-bg);
 }
 
+.task-exception-flag {
+  margin-right: 4px;
+}
+
 .task-comment {
   font-size: 13px;
   margin: 6px 0;

@@ -30,7 +30,12 @@ const VIEW_LABELS = {
   unassigned: "Unassigned",
   overdue: "Overdue",
   waiting: "Waiting",
-  exceptions: "Workflow Exceptions",
+  // Every workflow exception today is a WOM lifecycle task with a Toyota
+  // paperwork gap (see needsChangeOrderOrPo in server/data/db.js) -- named
+  // for exactly that rather than the generic "Workflow Exceptions," since
+  // "how many of these do I have" is the whole point of this tile/tab.
+  // Revisit this label if another kind of task ever sets isException too.
+  exceptions: "Needs Change Order/TOY PO",
   recurring: "Recurring Tasks",
   completed: "Completed",
 };
@@ -140,7 +145,11 @@ const ROLE_FILTER_OPTIONS = [
 ];
 // Reuses the same badge color classes the rest of the app already uses for
 // status pills, rather than inventing a second palette just for urgency.
-const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", high: "submitted", normal: "draft", low: "draft", done: "approved" };
+// High reads as red (the same "rejected" class as Urgent/Emergency) rather
+// than the blue "submitted" class it used to -- blue doesn't read as
+// urgent, and a board full of High-priority rows needs to look like it,
+// not blend in with routine in-progress status pills.
+const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", high: "rejected", normal: "draft", low: "draft", done: "approved" };
 
 // What to say under an auto-trigger step that's still open -- mirrors
 // WOM_LIFECYCLE_STEPS in server/data/db.js (duplicated rather than shared,
@@ -360,7 +369,8 @@ export async function renderTaskBoard(container) {
         ${renderTile("High Priority", summary.highPriority, null)}
         ${renderTile("Waiting", summary.waiting, "waiting")}
         ${renderTile("Recurring", summary.recurring, isAdmin ? "recurring" : null)}
-        ${renderTile("Workflow Exceptions", summary.exceptions, isAdmin ? "exceptions" : null)}
+        ${isAdmin ? renderTile("PSE Not Sent", summary.pseNotSent, null) : ""}
+        ${renderTile(VIEW_LABELS.exceptions, summary.exceptions, isAdmin ? "exceptions" : null)}
       </div>
       <div class="tabs task-view-tabs">
         ${views.map((v) => `<button class="tab ${view === v ? "active" : ""}" data-view="${v}">${VIEW_LABELS[v]}</button>`).join("")}
@@ -879,7 +889,7 @@ export async function renderTaskBoard(container) {
       <div class="review-row-summary">
         ${isAdmin ? `<input type="checkbox" class="task-select-checkbox" data-id="${t.id}" />` : ""}
         <span class="review-row-name">
-          ${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
+          ${t.isException ? `<span class="task-exception-flag" title="Needs a Toyota change order or PO -- more urgent than plain High">🚩</span>` : ""}${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
         <span class="task-card-meta">${escapeHtml(assignee)} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}</span>

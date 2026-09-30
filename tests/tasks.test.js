@@ -510,7 +510,7 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
     assert.equal(task.priority, "high");
-    assert.ok(task.title.includes("Needs change order or PO"));
+    assert.ok(task.title.includes("Needs change order or TOY PO"));
     assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM");
     assert.equal(task.isException, true);
 
@@ -642,7 +642,7 @@ test("WOM lifecycle: a vendor-only job with a request date and applied cost but 
       const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
       const task = tasks.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
       assert.ok(task, "expected a lifecycle task for this WOM");
-      assert.ok(task.title.includes("Needs change order or PO"), "an applied cost with no PO on file is a Toyota paperwork gap");
+      assert.ok(task.title.includes("Needs change order or TOY PO"), "an applied cost with no PO on file is a Toyota paperwork gap");
       assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM regardless of checklist progress");
       assert.equal(task.priority, "high");
       assert.equal(task.isException, true);
@@ -657,13 +657,43 @@ test("WOM lifecycle: a vendor-only job with a request date and applied cost but 
       assert.equal(patched.status, 200);
       const after = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
       const taskAfter = after.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
-      assert.ok(!taskAfter.title.includes("Needs change order or PO"));
+      assert.ok(!taskAfter.title.includes("Needs change order or TOY PO"));
       assert.equal(taskAfter.assignedRole, null, "Review charges has no single role -- either RFM or Admin can take it");
       // Work is already done -- invoicing what's left is still worth
       // flagging, even with no paperwork gap anymore.
       assert.equal(taskAfter.priority, "high");
     }
   );
+});
+
+test("tasks: the summary's PSE-not-sent count and exception flag", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a synced WOM (sent_to_toyota still open) counts toward pseNotSent", async () => {
+    await syncOneOpenWom(server, "80000001", 995);
+    const summary = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    assert.equal(summary.status, 200);
+    assert.ok(summary.body.pseNotSent >= 1);
+  });
+
+  await t.test("sending the PSE to Toyota removes it from the count", async () => {
+    const before = (await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" })).body.pseNotSent;
+    await server.call("POST", "/api/woms/80000001/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota@example.com" },
+    });
+    const after = (await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" })).body.pseNotSent;
+    assert.equal(after, before - 1);
+  });
+
+  await t.test("a task with isException true is flagged in the API response", async () => {
+    await syncOneOpenWom(server, "80000002", 996);
+    await server.call("PATCH", "/api/woms/80000002/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-80000002-LIFECYCLE");
+    assert.equal(task.isException, true, "applied cost with no Maximo/PO # on file is a Toyota paperwork gap");
+  });
 });
 
 test("WOM lifecycle: recording the Toyota email/date sent, and the cost summary", async (t) => {

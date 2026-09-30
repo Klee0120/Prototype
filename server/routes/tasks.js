@@ -180,6 +180,7 @@ router.get("/summary", requireAuth, (req, res) => {
     waiting: openTasks.filter((t) => t.status === "waiting").length,
     recurring: openTasks.filter((t) => t.category === "recurring").length,
     exceptions: openTasks.filter((t) => t.is_exception).length,
+    pseNotSent: db.countWomLifecyclePseNotSent(),
   });
 });
 

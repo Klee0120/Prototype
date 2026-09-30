@@ -565,6 +565,47 @@ if (!hasColumn("woms", "estimated_labor")) {
 if (!hasColumn("woms", "date_requested")) {
   db.exec("ALTER TABLE woms ADD COLUMN date_requested TEXT");
 }
+// One-time cleanup for tasks left behind by the old 9-stage PSE state
+// machine this app used before the WOM lifecycle checklist replaced it
+// ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
+// removing that code never deleted the task rows it had already created,
+// so they've sat on every board since as permanently-stuck clutter no
+// current code path can ever complete or clean up (nothing sets `pse_stage`
+// anymore, so nothing can ever move them). Identified by the exact
+// `workflow_rule` values that old code used (the stage name itself --
+// see PSE_STAGE_TASKS in git history, commit 04e4c8f, for the full
+// mapping); the current lifecycle checklist always uses 'wom_lifecycle'
+// instead, so this can never match anything the current code creates.
+// A plain function (not inline top-level code) so it's callable again --
+// it's still run once below at load time, and safe to call again any time
+// after, since once these rows are gone the condition never matches again.
+function cleanupLegacyPseWorkflowTasks() {
+  const legacyPseWorkflowRules = [
+    "pse_review",
+    "awaiting_toyota_approval",
+    "generate_wom_po",
+    "awaiting_toyota_po",
+    "schedule_blocked",
+    "ready_to_schedule",
+    "check_expenses",
+    "pending_status95_approval",
+    "ready_to_invoice",
+  ];
+  const legacyIds = db
+    .prepare(`SELECT id FROM tasks WHERE workflow_rule IN (${legacyPseWorkflowRules.map(() => "?").join(",")})`)
+    .all(...legacyPseWorkflowRules)
+    .map((r) => r.id);
+  if (legacyIds.length > 0) {
+    db.prepare(`DELETE FROM task_comments WHERE task_id IN (${legacyIds.map(() => "?").join(",")})`).run(...legacyIds);
+    db.prepare(`DELETE FROM files WHERE related_type = 'task' AND related_id IN (${legacyIds.map(() => "?").join(",")})`).run(
+      ...legacyIds.map(String)
+    );
+    db.prepare(`DELETE FROM tasks WHERE id IN (${legacyIds.map(() => "?").join(",")})`).run(...legacyIds);
+    console.log(`Cleaned up ${legacyIds.length} leftover task(s) from the retired PSE stage machine.`);
+  }
+  return legacyIds.length;
+}
+cleanupLegacyPseWorkflowTasks();
 // Which admin plays the "reviewer" role in the PSE pipeline (produces the
 // PSE, liaises with Toyota, approves Status 95) -- distinct from the
 // "financial" role (generates the WOM/PO, monitors charges, invoices),
@@ -1692,7 +1733,7 @@ function refreshWomLifecycleTask(code) {
   upsertTaskBySourceKey(
     lifecycleTaskSourceKey(code),
     {
-      title: needsChangeOrderOrPo ? `WOM lifecycle: ${code} -- Needs change order or PO` : `WOM lifecycle: ${code}`,
+      title: needsChangeOrderOrPo ? `WOM lifecycle: ${code} -- Needs change order or TOY PO` : `WOM lifecycle: ${code}`,
       description: wom.description,
       category: "wom_workflow",
       // A Toyota paperwork gap is RFM's to chase down regardless of which
@@ -1775,6 +1816,23 @@ function refreshAllOpenWomLifecycles() {
     .map((r) => r.related_wom_code)
     .filter(Boolean);
   for (const code of codes) checkWomLifecycleAutoSteps(code);
+}
+
+// How many open WOM lifecycle tasks still haven't had "Send PSE to Toyota"
+// logged -- the at-a-glance count behind the Priorities board's own tile,
+// since "how many PSEs do I need to produce and send" is exactly the
+// question a plain "High Priority: N" total doesn't answer on its own.
+function countWomLifecyclePseNotSent() {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as n FROM tasks t
+       WHERE t.workflow_rule = 'wom_lifecycle' AND t.status NOT IN ('completed', 'cancelled')
+       AND NOT EXISTS (
+         SELECT 1 FROM wom_lifecycle_steps s WHERE s.wom_code = t.related_wom_code AND s.step_key = 'sent_to_toyota'
+       )`
+    )
+    .get();
+  return row.n;
 }
 
 // One of the two manual steps (send to Toyota, review charges, invoice).
@@ -3383,6 +3441,8 @@ module.exports = {
   getWomLifecycleSteps,
   checkWomLifecycleAutoSteps,
   refreshAllOpenWomLifecycles,
+  countWomLifecyclePseNotSent,
+  cleanupLegacyPseWorkflowTasks,
   completeWomLifecycleStep,
   listWomLifecycleTasks,
   getWomCostSummary,
