@@ -187,13 +187,13 @@ export function renderTechniciansTab(content, openTo) {
           person's name on everything they did.
         </p>
         <p class="review-checklist-hint">
-          <strong>PSE reviewer</strong> is whichever admin produces PSEs, liaises with Toyota, and
-          approves Status 95 in the PSE Tasks pipeline (Financials tab) -- every other active admin
-          handles the financial side (issuing the WOM/PO, monitoring charges, invoicing). Only one
+          <strong>RFM</strong> is whichever admin produces PSEs, liaises with Toyota, and reviews
+          charges on the WOM lifecycle checklist (Financials tab) -- every other active admin
+          handles the rest (issuing the WOM/PO, monitoring charges, invoicing). Only one
           admin can hold it at a time.
         </p>
         <table class="detail-table admin-accounts-table">
-          <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>PSE reviewer</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>RFM</th><th></th></tr></thead>
           <tbody>
             ${admins
               .map(
@@ -216,8 +216,8 @@ export function renderTechniciansTab(content, openTo) {
                 <td>
                   ${
                     a.isPseReviewer
-                      ? `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="false" type="button">Reviewer -- remove</button>`
-                      : `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="true" type="button">Set as reviewer</button>`
+                      ? `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="false" type="button">RFM -- remove</button>`
+                      : `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="true" type="button">Set as RFM</button>`
                   }
                 </td>
                 <td>

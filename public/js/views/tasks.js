@@ -119,7 +119,25 @@ function groupTasks(tasks, mode) {
     (g) => g.items.length > 0
   );
 }
-const ROLE_LABELS = { admin: "Admin", reviewer: "Reviewer", financial: "Financial", tech: "Technician" };
+// "reviewer" and "financial" are still the stored role values underneath
+// (see pseRoleFor in server/data/db.js -- they gate who can act on which
+// PSE step), but showing four labels for what's really three kinds of
+// people was more granular than useful day-to-day: "financial" reads as
+// plain "Admin" here, same as the generic admin role, and "reviewer" reads
+// as "RFM" (Toyota's own term for the role). The underlying values are
+// unchanged, so filtering/permissions elsewhere still work exactly as
+// before -- this only changes what's displayed.
+const ROLE_LABELS = { admin: "Admin", reviewer: "RFM", financial: "Admin", tech: "Tech" };
+// The role filter's own three choices -- "Admin" searches both the "admin"
+// and "financial" stored values in one go (a comma-separated role= the
+// server splits back into an IN-list, see GET /api/tasks), since picking
+// "Admin" should mean "anything the office handles," not force choosing
+// which of the two underlying buckets to look in.
+const ROLE_FILTER_OPTIONS = [
+  ["admin,financial", "Admin"],
+  ["tech", "Tech"],
+  ["reviewer", "RFM"],
+];
 // Reuses the same badge color classes the rest of the app already uses for
 // status pills, rather than inventing a second palette just for urgency.
 const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", high: "submitted", normal: "draft", low: "draft", done: "approved" };
@@ -133,6 +151,27 @@ const WOM_LIFECYCLE_STEP_HINTS = {
   work_complete: "Completes automatically once the WOM is marked complete from Timekeeping.",
   cost_applied: "Completes automatically once an applied cost is on file for this WOM.",
 };
+
+// Mirrors nextLifecycleStep in server/data/db.js -- see the comment there.
+// Not simply the first incomplete step: steps can complete out of order
+// (e.g. a WOM synced in with a Maximo/PO # already on file has plainly
+// already cleared Toyota approval, even though nobody's clicked "Send PSE
+// to Toyota" in this app to log it), so this looks for the first open step
+// *after* the furthest one that's actually done, falling back to the
+// classic first-incomplete-overall only if nothing's open past that point
+// (a lingering earlier gap, e.g. sent_to_toyota never logged even though
+// everything after it is done). Exported so adminReview.js's PSE Tasks tab
+// computes the exact same "next up" step this task-detail view does.
+export function nextLifecycleStep(steps) {
+  let lastDoneIndex = -1;
+  steps.forEach((s, i) => {
+    if (s.completedAt) lastDoneIndex = i;
+  });
+  for (let i = lastDoneIndex + 1; i < steps.length; i++) {
+    if (!steps[i].completedAt) return steps[i];
+  }
+  return steps.find((s) => !s.completedAt) || null;
+}
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -178,6 +217,12 @@ export async function renderTaskBoard(container) {
   // no re-fetch needed.
   let groupBy = "type";
   let lastTasks = [];
+  // Collapsed by default -- the filter row (assignee/role/location/WOM/
+  // vendor/category/due date/status) is a lot to show up front when the
+  // My Work tab's own default list is usually exactly what's wanted.
+  // Opens automatically once any filter is actually set (e.g. from a WOM
+  // lookup elsewhere), and stays open across redraws once toggled on.
+  let filtersOpen = false;
 
   await draw();
 
@@ -299,6 +344,12 @@ export async function renderTaskBoard(container) {
     const [summary, tasks] = await Promise.all([api.get("/api/tasks/summary"), api.get(`/api/tasks?${queryString()}`)]);
     lastTasks = tasks;
 
+    // Any filter already set (e.g. left on from earlier this session) means
+    // the panel should be open so it's obvious the list isn't the plain
+    // default -- otherwise a narrowed-down list with no visible reason why
+    // is more confusing than the panel being open.
+    if (Object.values(filters).some(Boolean)) filtersOpen = true;
+
     container.innerHTML = `
       <p class="review-checklist-hint">
         Work generated automatically from WOM status changes and recurring responsibilities, plus anything added by hand.
@@ -314,18 +365,31 @@ export async function renderTaskBoard(container) {
       <div class="tabs task-view-tabs">
         ${views.map((v) => `<button class="tab ${view === v ? "active" : ""}" data-view="${v}">${VIEW_LABELS[v]}</button>`).join("")}
       </div>
-      ${isAdmin ? `<div id="task-filters"></div>` : ""}
       <div class="review-actions">
         <button class="btn btn-secondary task-new-btn" type="button">+ New Task</button>
+        ${
+          isAdmin
+            ? `<button class="btn btn-link task-filters-toggle" type="button">${filtersOpen ? "Hide filters" : "Filters"}</button>`
+            : ""
+        }
         <label class="task-group-by-label">Group by
           <select class="task-group-by">
             ${Object.entries(GROUP_BY_LABELS).map(([k, l]) => `<option value="${k}" ${k === groupBy ? "selected" : ""}>${l}</option>`).join("")}
           </select>
         </label>
       </div>
+      ${isAdmin ? `<div id="task-filters" class="${filtersOpen ? "" : "task-filters-collapsed"}"></div>` : ""}
       <div class="task-bulk-toolbar" id="task-bulk-toolbar"></div>
       <div class="review-list" id="task-list"></div>
     `;
+
+    if (isAdmin) {
+      container.querySelector(".task-filters-toggle").addEventListener("click", (e) => {
+        filtersOpen = !filtersOpen;
+        container.querySelector("#task-filters").classList.toggle("task-filters-collapsed", !filtersOpen);
+        e.currentTarget.textContent = filtersOpen ? "Hide filters" : "Filters";
+      });
+    }
 
     container.querySelectorAll(".task-tile[data-view]").forEach((el) => {
       el.addEventListener("click", () => {
@@ -369,7 +433,7 @@ export async function renderTaskBoard(container) {
         </select>
         <select class="task-filter-role">
           <option value="">Any role</option>
-          ${["admin", "reviewer", "financial", "tech"].map((r) => `<option value="${r}" ${filters.role === r ? "selected" : ""}>${r}</option>`).join("")}
+          ${ROLE_FILTER_OPTIONS.map(([value, label]) => `<option value="${value}" ${filters.role === value ? "selected" : ""}>${label}</option>`).join("")}
         </select>
         <select class="task-filter-location">
           <option value="">Any location</option>
@@ -498,7 +562,7 @@ export async function renderTaskBoard(container) {
               <label class="profile-field"><span>Role queue</span>
                 <select class="task-new-role">
                   <option value="">No role queue</option>
-                  ${["admin", "reviewer", "financial", "tech"].map((r) => `<option value="${r}">${ROLE_LABELS[r]}</option>`).join("")}
+                  ${["admin", "reviewer", "tech"].map((r) => `<option value="${r}">${ROLE_LABELS[r]}</option>`).join("")}
                 </select>
               </label>
             </div>
@@ -865,9 +929,9 @@ export async function renderTaskBoard(container) {
     // stays a separate hint above the activity feed rather than an entry
     // in it. A manual/other-generated task has nothing extra to explain
     // here; the feed's own first entry ("X added this task") covers it.
-    const nextLifecycleStep = wom && wom.lifecycleSteps ? wom.lifecycleSteps.find((s) => !s.completedAt) : null;
-    const why = nextLifecycleStep
-      ? `Part of the WOM lifecycle checklist for ${escapeHtml(t.relatedWomCode)} -- next up: "${escapeHtml(nextLifecycleStep.label)}."`
+    const nextStepForDisplay = wom && wom.lifecycleSteps ? nextLifecycleStep(wom.lifecycleSteps) : null;
+    const why = nextStepForDisplay
+      ? `Part of the WOM lifecycle checklist for ${escapeHtml(t.relatedWomCode)} -- next up: "${escapeHtml(nextStepForDisplay.label)}."`
       : null;
     // Editing is for a task someone actually typed in by hand -- an
     // automated WOM-workflow task's fields are that workflow's own source
@@ -880,7 +944,7 @@ export async function renderTaskBoard(container) {
     host.innerHTML = `
       ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
       <p class="review-checklist-hint">
-        ${why ? `${why} ` : ""}${canEdit ? `<button class="btn btn-link task-edit-toggle" type="button">Edit</button>` : ""}
+        ${why ? `${why} ` : ""}${wom && wom.smartsheetData ? `<button class="btn btn-link task-smartsheet-detail-btn" type="button">Smartsheet detail</button> ` : ""}${canEdit ? `<button class="btn btn-link task-edit-toggle" type="button">Edit</button>` : ""}
       </p>
       ${canEdit ? `<div class="task-edit-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
@@ -890,6 +954,26 @@ export async function renderTaskBoard(container) {
       <div class="task-activity"></div>
       <div class="task-comment-form"></div>
     `;
+
+    const smartsheetDetailBtn = host.querySelector(".task-smartsheet-detail-btn");
+    if (smartsheetDetailBtn) {
+      smartsheetDetailBtn.addEventListener("click", () => {
+        const rows = Object.entries(wom.smartsheetData)
+          .filter(([key]) => key !== "__smartsheetRowId")
+          .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(value == null || value === "" ? "—" : String(value))}</td></tr>`)
+          .join("");
+        openModal({
+          title: `Smartsheet Detail — ${wom.code}`,
+          size: "large",
+          bodyHtml: `
+            <table class="detail-table wom-smartsheet-table">
+              <thead><tr><th>Column</th><th>Value</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          `,
+        });
+      });
+    }
 
     if (canEdit) {
       const editToggle = host.querySelector(".task-edit-toggle");
@@ -1159,7 +1243,7 @@ export async function renderTaskBoard(container) {
 
     const reviewerNote =
       isAdmin && !reviewerAdminId
-        ? `<p class="review-checklist-hint">No PSE reviewer is designated yet (Roster &rarr; Manage admin accounts), so any admin can take a reviewer/financial step.</p>`
+        ? `<p class="review-checklist-hint">No RFM is designated yet (Roster &rarr; Manage admin accounts), so any admin can take a step.</p>`
         : "";
 
     host.innerHTML = `
@@ -1168,7 +1252,7 @@ export async function renderTaskBoard(container) {
       <div class="wom-lifecycle-action"></div>
     `;
 
-    const nextStep = steps.find((s) => !s.completedAt);
+    const nextStep = nextLifecycleStep(steps);
     const actionHost = host.querySelector(".wom-lifecycle-action");
     if (!nextStep) return true;
 

@@ -600,51 +600,84 @@ Demo logins:
 
   | # | Step | Role | How it completes |
   |---|---|---|---|
-  | 1 | Send PSE to Toyota | Reviewer | Manual -- "PSE produced -- send to Toyota" button, captures the Toyota email + date sent |
-  | 2 | Create WOM & PO | Financial | Auto -- completes itself once a Maximo/PO # is on file for the WOM |
-  | 3 | Schedule vendor | Tech | Auto -- completes itself once any hours are allocated against the WOM on the calendar |
-  | 4 | Work complete | Tech | Auto -- completes itself once the WOM is marked complete (timecards) |
-  | 5 | Post applied cost | Financial | Auto -- completes itself once an applied cost is on file for the WOM |
+  | 1 | Send PSE to Toyota | RFM | Manual -- "PSE produced -- send to Toyota" button, captures the Toyota email + date sent; also auto-completes if the tracker's own "Date Requested" column is already filled in |
+  | 2 | Create WOM & PO | Admin | Auto -- completes itself once a Maximo/PO # is on file for the WOM |
+  | 3 | Schedule vendor | Tech | Auto -- completes itself once any hours are allocated against the WOM on the calendar, or once a cost is applied (see below) |
+  | 4 | Work complete | Tech | Auto -- completes itself once the WOM is marked complete (timecards), or once a cost is applied (see below) |
+  | 5 | Post applied cost | Admin | Auto -- completes itself once an applied cost is on file for the WOM |
   | 6 | Review charges | *(shared -- RFM & Admin together)* | Manual -- a single "Mark reviewed" click, no role gate |
-  | 7 | Invoice | Financial | Manual -- a small form for batch # and invoice #; also flips the WOM's own `status` to `invoiced` |
+  | 7 | Invoice | Admin | Manual -- a small form for batch # and invoice #; also flips the WOM's own `status` to `invoiced` |
 
   Two roles still split the manual work, matching how this is actually
-  done -- **Reviewer** (exactly one admin at a time, designated via a
-  **"Set as reviewer"** toggle in Manage admin accounts on the Roster tab)
-  sends the PSE to Toyota; **Financial** (any other active admin) creates
-  the WOM/PO, posts cost, and invoices. If nobody's been designated
-  reviewer yet, every admin can act on every step, so the feature isn't
-  locked up before that one-time setup. "Review charges" has no role at
-  all -- it's a shared step either an RFM or an Admin can check off, since
-  reviewing charges together is a joint action rather than one person's
-  job. Every step still carries a role field even where it's auto-completed
-  (used for queue-visibility -- e.g. "Schedule vendor" and "Work complete"
-  are tagged Tech even though nothing here gives a technician a button to
+  done -- **RFM** (exactly one admin at a time, designated via a
+  **"Set as RFM"** toggle in Manage admin accounts on the Roster tab; still
+  stored internally as the `reviewer` role -- `pseRoleFor` in
+  `server/data/db.js` -- since that's what actually gates who can act on
+  which step) sends the PSE to Toyota; **Admin** (any other active admin,
+  stored internally as `financial`) creates the WOM/PO, posts cost, and
+  invoices. Both this checklist's role filter and the Priorities board's
+  own role filter/labels collapse down to three choices this way --
+  **Admin**, **Tech**, **RFM** -- rather than surfacing the underlying
+  `admin`/`financial`/`reviewer`/`tech` split directly; picking "Admin" in
+  a filter searches both `admin` and `financial` at once
+  (`role=admin,financial`, split back into an `IN` list server-side -- see
+  `listTasks` in `server/data/db.js`). If nobody's been designated RFM yet,
+  every admin can act on every step, so the feature isn't locked up before
+  that one-time setup. "Review charges" has no role at all -- it's a shared
+  step either an RFM or an Admin can check off, since reviewing charges
+  together is a joint action rather than one person's job. Every step
+  still carries a role field even where it's auto-completed (used for
+  queue-visibility -- e.g. "Schedule vendor" and "Work complete" are
+  tagged Tech even though nothing here gives a technician a button to
   click, since a calendar entry or a timecard is what completes them).
   Completing a manual step is always audit-logged (`WOM_LIFECYCLE_STEP_COMPLETED`).
-  - **Steps can complete out of order.** The checklist doesn't enforce a
-    strict sequence -- e.g. a Maximo/PO # can land before the PSE is
-    formally logged as sent to Toyota, and that's fine; each step just
-    reflects whether its own underlying condition is true. The task's
-    "next up" label always shows whichever step is *first* in the list
-    that isn't yet done, even if a later step already is, since that's
-    still the next thing genuinely missing from the record.
+  - **A cost applied is treated as proof the earlier fulfillment steps
+    happened, even with nothing else on file to show it.** A vendor-only
+    job -- no internal technician ever logs hours against it in this
+    app -- never satisfies "Schedule vendor"'s allocation check or "Work
+    complete"'s status check on their own, so without this, such a WOM
+    would sit stuck on those two steps forever despite plainly being done
+    (a vendor can't be paid for work that was never scheduled or
+    finished). Whenever any applied cost is on file, "Schedule vendor" and
+    "Work complete" both auto-complete alongside "Post applied cost" if
+    they haven't already.
+  - **Steps can complete out of order**, and the task's "next up" step
+    (and the role it's routed to) is picked accordingly -- not simply the
+    first incomplete step in the table above, which would leave a WOM
+    stuck showing as RFM's problem forever the moment any later step
+    completed first (exactly the shape most of the existing backlog was in
+    on day one of this feature: Toyota's already approved a real PO, but
+    nobody's clicked "Send PSE to Toyota" in this app to log it).
+    `nextLifecycleStep` (in `server/data/db.js`, mirrored in
+    `tasks.js` and reused from there in `adminReview.js`) instead finds the
+    furthest-completed step and returns whichever step right after it is
+    still open, falling back to the classic first-incomplete-overall only
+    if nothing's open past that point (a lingering earlier gap, e.g. "Send
+    PSE to Toyota" never logged even though everything after it, including
+    invoicing, is done -- the task correctly stays open and routed to RFM
+    rather than closing with a gap still unfilled).
   - **The task's priority is computed live, not manually set**
     (`refreshWomLifecycleTask` in `server/data/db.js`), and reads High
-    whenever any of three things is true: the PSE hasn't been sent to
-    Toyota yet (step 1 still open -- the very first gate, so it shouldn't
-    get buried behind Normal-priority tasks with an earlier due date);
-    there's a **Toyota change order** -- the applied cost, once posted, came
-    in higher than the original estimate on the project as a whole (title
-    gets a "-- Toyota change order" suffix and the task also counts as a
-    workflow exception, both re-evaluated live so a correction to the
-    numbers clears the flag automatically rather than it staying stuck);
-    or there's contracted-services cost already applied to a vendor with no
-    Toyota PO on file yet (see Cost Analysis below). Otherwise it's Normal.
-    The task list itself now sorts by full priority tier first (Emergency
-    down to Low), then due date -- previously only Emergency got special
-    treatment, so a High-priority task with no due date could sink below an
-    old Normal one.
+    whenever any of these is true: the PSE hasn't been sent to Toyota yet
+    (step 1 still open -- the very first gate, so it shouldn't get buried
+    behind Normal-priority tasks with an earlier due date); the work is
+    already done (step 4 complete -- whatever's left is pure administrative
+    closeout standing between finished work and getting paid for it, always
+    worth flagging); or there's a **Toyota paperwork gap** -- a Toyota
+    change order (the applied cost, once posted, came in higher than the
+    original estimate on the project as a whole) or an applied cost with no
+    Maximo/PO # on file at all, whichever applies. Either paperwork-gap
+    case gets a "-- Needs change order or PO" title suffix, counts as a
+    workflow exception, and routes the task straight to **RFM regardless of
+    what step its own progress would otherwise route it to** -- a Toyota
+    paperwork problem is RFM's to chase down no matter how far along the
+    rest of the checklist is. All of this is re-evaluated live, so a
+    correction that brings the numbers back in line or a PO that finally
+    arrives clears the flag automatically rather than it staying stuck.
+    Otherwise priority is Normal. The task list itself now sorts by full
+    priority tier first (Emergency down to Low), then due date --
+    previously only Emergency got special treatment, so a High-priority
+    task with no due date could sink below an old Normal one.
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from

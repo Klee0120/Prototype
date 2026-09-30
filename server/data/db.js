@@ -555,6 +555,16 @@ if (!hasColumn("woms", "estimated_labor")) {
   db.exec("ALTER TABLE woms ADD COLUMN applied_contracted REAL");
   db.exec("ALTER TABLE woms ADD COLUMN vendor_id INTEGER");
 }
+// The tracker's own "Date Requested" column, kept verbatim (not just the
+// transient pending/requested-promotion check syncWomsFromSheetRows already
+// does with it) -- a real WOM that already has this filled in has plainly
+// already cleared Toyota approval, even if nobody's clicked "Send PSE to
+// Toyota" in this app to log it. Lets checkWomLifecycleAutoSteps complete
+// that checklist step from the sheet's own record instead of leaving the
+// entire pre-existing backlog stuck showing as still needing to be sent.
+if (!hasColumn("woms", "date_requested")) {
+  db.exec("ALTER TABLE woms ADD COLUMN date_requested TEXT");
+}
 // Which admin plays the "reviewer" role in the PSE pipeline (produces the
 // PSE, liaises with Toyota, approves Status 95) -- distinct from the
 // "financial" role (generates the WOM/PO, monitors charges, invoices),
@@ -1601,6 +1611,37 @@ function getWomLifecycleSteps(code) {
   }));
 }
 
+// Which step is "next" for queue-routing purposes (assignedRole) -- not
+// simply the first incomplete step in the fixed list order, since steps can
+// complete out of order (see the comment on WOM_LIFECYCLE_STEPS). A WOM
+// synced in from Smartsheet with a Maximo/PO # already on file has plainly
+// already been through Toyota approval, even though nobody's clicked
+// "Send PSE to Toyota" in this app to log it -- most of the existing
+// backlog is in exactly this shape on day one of this feature. Picking the
+// first incomplete step overall would leave every one of those stuck
+// showing as the RFM's problem forever, even once a tech has genuinely
+// moved it forward (e.g. scheduling the vendor). Instead, this finds the
+// furthest-completed step and returns whichever step right after it is
+// still open -- so real progress (a later step completing) moves the
+// task's queue forward even if an earlier step's box was never checked.
+// The checklist display itself is unaffected -- every step still shows its
+// own true completion state regardless of this.
+function nextLifecycleStep(steps) {
+  let lastDoneIndex = -1;
+  steps.forEach((s, i) => {
+    if (s.completedAt) lastDoneIndex = i;
+  });
+  for (let i = lastDoneIndex + 1; i < steps.length; i++) {
+    if (!steps[i].completedAt) return steps[i];
+  }
+  // Nothing open after the furthest point reached -- but an earlier step
+  // can still be a lingering unfilled gap (e.g. "sent to Toyota" never
+  // logged even though everything after it, including invoicing, is done).
+  // Surface that rather than treating the checklist as if nothing were
+  // left, so the task stays routed to whoever owns that gap.
+  return steps.find((s) => !s.completedAt) || null;
+}
+
 // Idempotent and never re-stamps an already-complete step -- safe to call
 // as often as needed without corrupting when a step actually completed.
 function markWomLifecycleStepComplete(code, stepKey, completedBy) {
@@ -1623,7 +1664,7 @@ function refreshWomLifecycleTask(code) {
   const wom = findWom(code);
   if (!wom) return;
   const steps = getWomLifecycleSteps(code);
-  const nextStep = steps.find((s) => !s.completedAt);
+  const nextStep = nextLifecycleStep(steps);
   const sentToToyotaPending = !steps.find((s) => s.key === "sent_to_toyota").completedAt;
   // A change order: the real applied cost is in (so it's not just an
   // in-progress estimate) and it came in higher than what Toyota approved
@@ -1634,20 +1675,32 @@ function refreshWomLifecycleTask(code) {
   const costAppliedDone = Boolean(steps.find((s) => s.key === "cost_applied").completedAt);
   const changeOrder =
     costAppliedDone && wom.applied_price != null && wom.estimated_price != null && wom.applied_price > wom.estimated_price;
-  // Money's already gone out to a vendor for contracted services, but there's
-  // still no real Toyota PO on file -- a billing gap that needs closing
-  // before it gets any older, so it's worth the same urgency as an unsent
-  // PSE even if every checklist step otherwise looks fine.
-  const contractedNoPo = !wom.maximo_number && wom.applied_contracted != null && wom.applied_contracted > 0;
+  // Money's already gone out (any cost applied at all, not just the
+  // contracted-services portion -- a vendor-only job may never have an
+  // itemized breakdown on file, only the aggregate), but there's still no
+  // real Toyota PO on file -- a billing gap that needs closing before it
+  // gets any older. Grouped with a change order under one umbrella since
+  // both mean the same thing to RFM: something about this WOM's Toyota
+  // paperwork needs attention before it can move on.
+  const needsPo = !wom.maximo_number && (wom.applied_price != null || wom.applied_contracted != null);
+  const needsChangeOrderOrPo = changeOrder || needsPo;
+  // Once the actual work is done, whatever's left (posting cost, review,
+  // invoicing) is pure administrative closeout standing between finished
+  // work and getting paid for it -- that's always worth flagging, not just
+  // when something's additionally gone wrong.
+  const workDone = Boolean(steps.find((s) => s.key === "work_complete").completedAt);
   upsertTaskBySourceKey(
     lifecycleTaskSourceKey(code),
     {
-      title: changeOrder ? `WOM lifecycle: ${code} -- Toyota change order` : `WOM lifecycle: ${code}`,
+      title: needsChangeOrderOrPo ? `WOM lifecycle: ${code} -- Needs change order or PO` : `WOM lifecycle: ${code}`,
       description: wom.description,
       category: "wom_workflow",
-      assignedRole: nextStep ? nextStep.role : null,
-      priority: changeOrder || sentToToyotaPending || contractedNoPo ? "high" : "normal",
-      isException: changeOrder,
+      // A Toyota paperwork gap is RFM's to chase down regardless of which
+      // checklist step the rest of the job's progress would otherwise
+      // route it to.
+      assignedRole: needsChangeOrderOrPo ? "reviewer" : nextStep ? nextStep.role : null,
+      priority: needsChangeOrderOrPo || sentToToyotaPending || workDone ? "high" : "normal",
+      isException: needsChangeOrderOrPo,
       relatedWomCode: code,
       relatedLocationCode: wom.location_code,
       source: "wom_workflow",
@@ -1656,7 +1709,10 @@ function refreshWomLifecycleTask(code) {
     },
     { reopenIfClosed: false }
   );
-  if (!nextStep) completeTaskBySourceKey(lifecycleTaskSourceKey(code));
+  // nextStep can be null while an earlier step is still open (it only looks
+  // *after* the furthest-completed one) -- so completion still has to check
+  // every step, not just "nothing left after the furthest point reached."
+  if (steps.every((s) => s.completedAt)) completeTaskBySourceKey(lifecycleTaskSourceKey(code));
 }
 
 // Re-evaluates every auto-trigger step against the WOM's current data and
@@ -1672,6 +1728,18 @@ function checkWomLifecycleAutoSteps(code) {
   const steps = getWomLifecycleSteps(code);
   const isDone = (key) => Boolean(steps.find((s) => s.key === key).completedAt);
 
+  // A WOM that already has a request date on the tracker has plainly
+  // already cleared Toyota approval -- most of the existing backlog looks
+  // exactly like this, since nobody's going back to click "Send PSE to
+  // Toyota" in this app for a job that was already sent before this
+  // checklist existed. Fills in a best-effort sent-at date from the
+  // tracker's own record; the email stays unset (Smartsheet doesn't
+  // capture who it went to), so the "Sent to Toyota: X on Y" line just
+  // doesn't show until/unless someone fills that in by hand.
+  if (!isDone("sent_to_toyota") && wom.date_requested) {
+    markWomLifecycleStepComplete(code, "sent_to_toyota", "sync");
+    db.prepare("UPDATE woms SET pse_toyota_sent_at = COALESCE(pse_toyota_sent_at, ?) WHERE code = ?").run(wom.date_requested, code);
+  }
   if (!isDone("wom_po_created") && wom.maximo_number) {
     markWomLifecycleStepComplete(code, "wom_po_created", "sync");
   }
@@ -1684,6 +1752,14 @@ function checkWomLifecycleAutoSteps(code) {
   }
   if (!isDone("cost_applied") && wom.applied_price != null) {
     markWomLifecycleStepComplete(code, "cost_applied", "sync");
+  }
+  // A cost can't be applied for work that was never scheduled or finished
+  // -- if it's on file, that alone is proof enough for a vendor-only job
+  // with no internal technician hours ever logged against it in this app,
+  // which never satisfies the allocation/status checks above on their own.
+  if (wom.applied_price != null) {
+    if (!isDone("vendor_scheduled")) markWomLifecycleStepComplete(code, "vendor_scheduled", "sync");
+    if (!isDone("work_complete")) markWomLifecycleStepComplete(code, "work_complete", "sync");
   }
   refreshWomLifecycleTask(code);
 }
@@ -1752,7 +1828,7 @@ function listWomLifecycleTasks(admin) {
     .filter(Boolean)
     .filter((w) => {
       const steps = getWomLifecycleSteps(w.code);
-      const nextStep = steps.find((s) => !s.completedAt);
+      const nextStep = nextLifecycleStep(steps);
       if (!nextStep || nextStep.role === null) return true;
       return role === null || nextStep.role === role;
     });
@@ -2110,8 +2186,13 @@ function listTasks(filters = {}) {
     params.push(filters.assignedTo);
   }
   if (filters.assignedRole) {
-    clauses.push("assigned_role = ?");
-    params.push(filters.assignedRole);
+    // A single role string, or an array (e.g. the task board's "Admin"
+    // filter option covers both the "admin" and "financial" stored role
+    // values, since day-to-day those read as the same bucket of office
+    // work) -- same array-or-string flexibility filters.status already has.
+    const roleList = Array.isArray(filters.assignedRole) ? filters.assignedRole : [filters.assignedRole];
+    clauses.push(`assigned_role IN (${roleList.map(() => "?").join(",")})`);
+    params.push(...roleList);
   }
   if (filters.category) {
     clauses.push("category = ?");
@@ -2559,6 +2640,7 @@ function syncWomsFromSheetRows(rows, columns) {
     // shows for "nothing entered yet," not an actual WOM #.
     const realCode = trimmedCode && trimmedCode !== "0" && trimmedCode !== "-" ? trimmedCode : null;
     const requested = Boolean(dateRequestedColumn && String(row[dateRequestedColumn] ?? "").trim());
+    const dateRequestedValue = (dateRequestedColumn && row[dateRequestedColumn] && String(row[dateRequestedColumn]).trim()) || null;
     const rowNumber = row.__smartsheetRowNumber || null;
     const hasRealDescription = Boolean(descriptionColumn && row[descriptionColumn] && String(row[descriptionColumn]).trim());
     const description = hasRealDescription
@@ -2610,7 +2692,7 @@ function syncWomsFromSheetRows(rows, columns) {
         db.prepare(
           `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
            location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-           applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+           applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
            smartsheet_raw_data = ?, smartsheet_synced_at = ?,
            smartsheet_row_number = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
         ).run(
@@ -2624,6 +2706,7 @@ function syncWomsFromSheetRows(rows, columns) {
           appliedLabor,
           appliedContracted,
           matchedVendorId,
+          dateRequestedValue,
           rawData,
           stamp,
           rowNumber,
@@ -2640,9 +2723,9 @@ function syncWomsFromSheetRows(rows, columns) {
       const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
-         location_code, estimated_labor, estimated_contracted, applied_labor, applied_contracted, vendor_id,
+         location_code, estimated_labor, estimated_contracted, applied_labor, applied_contracted, vendor_id, date_requested,
          smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         description,
@@ -2657,6 +2740,7 @@ function syncWomsFromSheetRows(rows, columns) {
         appliedLabor,
         appliedContracted,
         matchedVendorId,
+        dateRequestedValue,
         rawData,
         String(rowId),
         rowNumber,
@@ -2671,7 +2755,7 @@ function syncWomsFromSheetRows(rows, columns) {
       db.prepare(
         `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
          subsidiary_code = ?, location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -2686,6 +2770,7 @@ function syncWomsFromSheetRows(rows, columns) {
         appliedLabor,
         appliedContracted,
         matchedVendorId,
+        dateRequestedValue,
         rawData,
         stamp,
         rowNumber,
@@ -2702,7 +2787,7 @@ function syncWomsFromSheetRows(rows, columns) {
       db.prepare(
         `UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, maximo_number = ?,
          subsidiary_code = ?, location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -2716,6 +2801,7 @@ function syncWomsFromSheetRows(rows, columns) {
         appliedLabor,
         appliedContracted,
         matchedVendorId,
+        dateRequestedValue,
         rawData,
         stamp,
         rowNumber,
@@ -2733,7 +2819,7 @@ function syncWomsFromSheetRows(rows, columns) {
       db.prepare(
         `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
          location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -2747,6 +2833,7 @@ function syncWomsFromSheetRows(rows, columns) {
         appliedLabor,
         appliedContracted,
         matchedVendorId,
+        dateRequestedValue,
         rawData,
         stamp,
         rowNumber,

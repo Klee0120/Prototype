@@ -28,6 +28,7 @@ function presentWom(w) {
     estimatedPrice: w.estimated_price,
     appliedPrice: w.applied_price,
     smartsheetSyncedAt: w.smartsheet_synced_at,
+    dateRequested: w.date_requested,
     // Every column from the tracker's own row, verbatim -- every estimate/
     // applied line item, PO numbers, invoice/batch tracking, RFM/PSE
     // approval flags, whatever else the sheet has -- not just the handful

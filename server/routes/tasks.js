@@ -101,7 +101,13 @@ router.get("/", requireAuth, (req, res) => {
   const filters = {};
   const nowIso = new Date().toISOString();
 
-  const scopeToViewer = !isAdmin || view === "my";
+  // Picking a specific role or person to look up (the filter row) means the
+  // admin wants to see THAT queue, not their own -- ANDing it with "my
+  // roles" on top of "my work" would silently return nothing whenever the
+  // role/person picked isn't one of the viewer's own (e.g. an admin looking
+  // up "tech" tasks while still sitting on the My Work tab).
+  const hasExplicitLookup = isAdmin && (req.query.role || req.query.assignedTo);
+  const scopeToViewer = !isAdmin || (view === "my" && !hasExplicitLookup);
   if (scopeToViewer) filters.forViewer = { id: req.user.id, roles };
 
   switch (view) {
@@ -144,7 +150,7 @@ router.get("/", requireAuth, (req, res) => {
   // already pinned to their own identity/role above.
   if (isAdmin) {
     if (req.query.assignedTo) filters.assignedTo = req.query.assignedTo;
-    if (req.query.role) filters.assignedRole = req.query.role;
+    if (req.query.role) filters.assignedRole = String(req.query.role).split(",");
     if (req.query.location) filters.relatedLocationCode = req.query.location;
     if (req.query.wom) filters.relatedWomCode = req.query.wom;
     if (req.query.vendor) filters.relatedVendorId = req.query.vendor;

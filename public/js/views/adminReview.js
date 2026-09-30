@@ -6,7 +6,7 @@ import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
-import { renderTaskBoard } from "./tasks.js";
+import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { openModal } from "../modal.js";
 
 const STATUS_LABELS = {
@@ -3069,7 +3069,7 @@ export async function renderAdminReview(container) {
         ${
           data.reviewerAdminId
             ? ""
-            : "No PSE/Toyota reviewer is designated yet (Roster tab &rarr; Manage admin accounts), so everyone can act on every step for now."
+            : "No RFM is designated yet (Roster tab &rarr; Manage admin accounts), so everyone can act on every step for now."
         }
       </p>
       <div class="pse-task-list">
@@ -3119,7 +3119,7 @@ export async function renderAdminReview(container) {
   // click), or the real action for a manual one the viewer's role can take.
   function renderPseTaskCard(w, isReviewer, isFinancial) {
     const roleAllowed = (role) => role === null || (role === "reviewer" ? isReviewer : isFinancial);
-    const nextStep = w.lifecycleSteps.find((s) => !s.completedAt);
+    const nextStep = nextLifecycleStep(w.lifecycleSteps);
 
     const stepRows = w.lifecycleSteps
       .map((s) => {

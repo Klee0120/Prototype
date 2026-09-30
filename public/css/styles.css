@@ -1186,6 +1186,10 @@ h1, h2, h3, h4 {
   margin-bottom: 14px;
 }
 
+.task-filters-collapsed {
+  display: none;
+}
+
 .task-card-meta {
   font-size: 12px;
   color: var(--muted);

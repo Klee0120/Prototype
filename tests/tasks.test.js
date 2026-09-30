@@ -485,8 +485,19 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
 
   await t.test("a cost overage after 'Post applied cost' flags the task as a Toyota change order, High priority", async () => {
     await syncOneOpenWom(server, "40000004", 960);
+    // A Maximo/PO # already on file -- isolates this test to the change-
+    // order condition specifically, without also tripping the separate
+    // "needs change order or PO" case for having no PO at all.
+    await server.call("PATCH", "/api/woms/40000004/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-4004" },
+    });
     await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
-    let tasks = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    // Not scoped to any one role -- applying pricing this early auto-
+    // completes "Post applied cost" out of order (ahead of sent_to_toyota),
+    // which per the furthest-progress rule can legitimately move the task's
+    // queue role forward too; the role itself isn't what this test is about.
+    let tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     let task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
     assert.equal(task.priority, "high", "still pending sent_to_toyota, no overage yet");
     assert.ok(!task.title.includes("change order"));
@@ -496,21 +507,163 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     const res = await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1400 } });
     assert.equal(res.status, 200);
 
-    tasks = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
     assert.equal(task.priority, "high");
-    assert.ok(task.title.includes("Toyota change order"));
+    assert.ok(task.title.includes("Needs change order or PO"));
+    assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM");
     assert.equal(task.isException, true);
 
     // Correcting the applied price back in line clears the flag -- it's
     // re-derived live every time, not stamped once and stuck.
     const corrected = await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
     assert.equal(corrected.status, 200);
-    tasks = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
     assert.ok(!task.title.includes("change order"));
     assert.equal(task.isException, false);
   });
+});
+
+test("WOM lifecycle: a step completing out of order moves the task's queue role forward", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a WOM synced in with a Maximo/PO # already on file routes straight to the tech queue, not RFM", async () => {
+    // Most of the existing backlog looks exactly like this on day one of
+    // the checklist feature: Toyota's already approved a real PO, but
+    // nobody's gone back and clicked "Send PSE to Toyota" in this app to
+    // log it. The task should reflect the real progress (PO's in hand,
+    // waiting on a tech to schedule it) rather than getting stuck showing
+    // as the RFM's problem forever just because step 1's box was never
+    // checked.
+    const created = await syncOneOpenWom(server, "70000001", 990);
+    await server.call("PATCH", "/api/woms/70000001/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-777", locationCode: "PRINCETON" },
+    });
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-70000001-LIFECYCLE");
+    assert.ok(task, "expected a lifecycle task for the synced WOM");
+    assert.equal(task.assignedRole, "tech", "wom_po_created is done, so the next real gap is scheduling the vendor");
+
+    const wom = await server.call("GET", "/api/woms/70000001/lookup", { userId: "ADMIN" });
+    assert.ok(wom.body.lifecycleSteps.find((s) => s.key === "wom_po_created").completedAt);
+    assert.ok(!wom.body.lifecycleSteps.find((s) => s.key === "sent_to_toyota").completedAt, "sent_to_toyota is still genuinely unlogged");
+  });
+
+  await t.test("once every step after the gap is also done, the task falls back to the lingering earlier gap instead of closing", async () => {
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: { day: "Mon", allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "70000001", hours: 4 }] },
+    });
+    assert.equal(put.status, 200);
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" }); // lazy catch-up
+    await server.call("POST", "/api/woms/70000001/complete", { userId: "T1001" });
+    await server.call("PATCH", "/api/woms/70000001/pricing", { userId: "ADMIN", body: { appliedPrice: 400 } });
+    await server.call("POST", "/api/woms/70000001/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    const invoiced = await server.call("POST", "/api/woms/70000001/lifecycle/invoiced", {
+      userId: "ADMIN",
+      body: { batchNumber: "B9", invoiceNumber: "INV-9" },
+    });
+    assert.equal(invoiced.status, 200);
+
+    // Every step except sent_to_toyota is now done -- the task must NOT
+    // silently complete (it's still missing that one record), and it
+    // should fall back to routing to whoever owns that lingering gap.
+    const tasks = await server.call("GET", "/api/tasks?view=team&status=open", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-70000001-LIFECYCLE");
+    assert.ok(task, "expected the lifecycle task to still be open, not completed");
+    assert.equal(task.assignedRole, "reviewer");
+  });
+});
+
+test("WOM lifecycle: a vendor-only job with a request date and applied cost but no PO -- real-world shape", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const COLUMNS_WITH_REQUESTED_DATE = [
+    { id: 1, title: "WOM #" },
+    { id: 3, title: "Applied WOM $ - Project Summary" },
+    { id: 4, title: "Project Name" },
+    { id: 5, title: "Date Requested" },
+  ];
+  function sheetWithDateRequested(rows) {
+    return { name: "Midwest PSE Request Tracker", columns: COLUMNS_WITH_REQUESTED_DATE, rows };
+  }
+
+  await t.test(
+    "a WOM with a Date Requested and an applied cost, but no Maximo #, auto-completes everything except " +
+      "wom_po_created and flags a Toyota paperwork gap",
+    async () => {
+      const restore = stubFetchOnce({
+        ok: true,
+        json: async () =>
+          sheetWithDateRequested([
+            {
+              id: 900,
+              cells: [
+                { columnId: 1, value: "20552227", displayValue: "20552227" },
+                { columnId: 3, value: 450, displayValue: "$450.00" },
+                { columnId: 4, value: "Vendor-only repair job", displayValue: "Vendor-only repair job" },
+                { columnId: 5, value: "2026-08-15", displayValue: "8/15/2026" },
+              ],
+            },
+          ]),
+      });
+      try {
+        const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+        assert.equal(res.status, 200);
+      } finally {
+        restore();
+      }
+
+      const wom = await server.call("GET", "/api/woms/20552227/lookup", { userId: "ADMIN" });
+      assert.equal(wom.status, 200);
+      const stepDone = (key) => Boolean(wom.body.lifecycleSteps.find((s) => s.key === key).completedAt);
+      // A request date on file is proof enough Toyota already approved
+      // this, even though nobody clicked "Send PSE to Toyota" in this app.
+      assert.ok(stepDone("sent_to_toyota"), "sent_to_toyota should auto-complete from the tracker's own Date Requested column");
+      // No Maximo/PO # ever arrived for this row -- correctly still open,
+      // and exactly what should get flagged below.
+      assert.ok(!stepDone("wom_po_created"));
+      // Cost has been applied -- for a vendor-only job with no internal
+      // technician hours ever logged against it, that alone is proof the
+      // work was scheduled and finished.
+      assert.ok(stepDone("vendor_scheduled"), "an applied cost implies the vendor was scheduled, even with no internal allocation on file");
+      assert.ok(stepDone("work_complete"), "an applied cost implies the work is done");
+      assert.ok(stepDone("cost_applied"));
+      assert.ok(!stepDone("charges_reviewed"));
+      assert.ok(!stepDone("invoiced"));
+
+      const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+      const task = tasks.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
+      assert.ok(task, "expected a lifecycle task for this WOM");
+      assert.ok(task.title.includes("Needs change order or PO"), "an applied cost with no PO on file is a Toyota paperwork gap");
+      assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM regardless of checklist progress");
+      assert.equal(task.priority, "high");
+      assert.equal(task.isException, true);
+
+      // Once a real Maximo/PO # lands, the gap closes and the task moves on
+      // to the next genuinely open step -- Review charges, a shared step
+      // with no role gate.
+      const patched = await server.call("PATCH", "/api/woms/20552227/details", {
+        userId: "ADMIN",
+        body: { description: "Vendor-only repair job", maximoNumber: "PO-22227" },
+      });
+      assert.equal(patched.status, 200);
+      const after = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+      const taskAfter = after.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
+      assert.ok(!taskAfter.title.includes("Needs change order or PO"));
+      assert.equal(taskAfter.assignedRole, null, "Review charges has no single role -- either RFM or Admin can take it");
+      // Work is already done -- invoicing what's left is still worth
+      // flagging, even with no paperwork gap anymore.
+      assert.equal(taskAfter.priority, "high");
+    }
+  );
 });
 
 test("WOM lifecycle: recording the Toyota email/date sent, and the cost summary", async (t) => {
@@ -877,5 +1030,39 @@ test("tasks: sorted by priority tier first, then due date", async (t) => {
     const res = await server.call("GET", "/api/tasks?view=team&assignedTo=T1002", { userId: "ADMIN" });
     const ids = res.body.map((t2) => t2.id);
     assert.ok(ids.indexOf(emergency.body.id) < ids.indexOf(high.body.id));
+  });
+});
+
+test("tasks: an admin can look up another role's queue while still on the My Work view", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("filtering by role=tech under the default (My Work) view isn't silently scoped to the admin's own roles", async () => {
+    // An admin's own roles never include "tech" -- before the fix, adding
+    // an explicit role filter on top of the default view="my" scope ANDed
+    // the two together and always returned nothing for a role the viewer
+    // doesn't personally have, even though the task genuinely exists.
+    const created = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Unclaimed tech task", assignedRole: "tech" },
+    });
+    assert.equal(created.status, 201);
+
+    const withoutView = await server.call("GET", "/api/tasks?role=tech", { userId: "ADMIN" });
+    assert.ok(
+      withoutView.body.some((t2) => t2.id === created.body.id),
+      "expected the unclaimed tech task to show up when looking it up by role, even on the default view"
+    );
+  });
+
+  await t.test("filtering by a specific person also isn't scoped to the admin's own roles", async () => {
+    const created = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "For T1002 specifically", assignedTo: "T1002" },
+    });
+    assert.equal(created.status, 201);
+
+    const res = await server.call("GET", "/api/tasks?assignedTo=T1002", { userId: "ADMIN" });
+    assert.ok(res.body.some((t2) => t2.id === created.body.id));
   });
 });
