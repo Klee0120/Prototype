@@ -90,6 +90,7 @@ function presentTask(t) {
 // board is always caught up whenever anyone opens it.
 function catchUpTasks() {
   db.ensureRecurringTasks();
+  db.refreshAllOpenWomLifecycles();
 }
 
 router.get("/", requireAuth, (req, res) => {

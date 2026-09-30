@@ -124,36 +124,15 @@ const ROLE_LABELS = { admin: "Admin", reviewer: "Reviewer", financial: "Financia
 // status pills, rather than inventing a second palette just for urgency.
 const URGENCY_BADGE_CLASS = { emergency: "rejected", urgent: "rejected", high: "submitted", normal: "draft", low: "draft", done: "approved" };
 
-// Which real PSE actions apply at each pse_stage -- mirrors PSE_STAGE_ACTIONS
-// in adminReview.js's own PSE Tasks tab. Duplicated rather than shared
-// (same pattern as this app's other per-view lookup tables) so a WOM-
-// workflow task's detail panel can actually take the real action, instead
-// of a generic "mark complete" that would just close the task card without
-// touching the WOM's real pse_stage at all.
-const PSE_STAGE_ACTIONS = {
-  pse_review: [{ action: "mark_pse_produced", label: "PSE produced -- send to Toyota", role: "reviewer" }],
-  awaiting_toyota_approval: [
-    { action: "toyota_approved", label: "Toyota approved", role: "reviewer" },
-    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
-  ],
-  generate_wom_po: [
-    { action: "generated_with_po", label: "Generated -- PO in hand", role: "financial" },
-    { action: "generated_missing_po", label: "Generated -- still missing Toyota PO", role: "financial" },
-  ],
-  awaiting_toyota_po: [
-    { action: "po_received", label: "PO received", role: "reviewer" },
-    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
-  ],
-  schedule_blocked: [{ action: "clear_schedule_block", label: "Clear block -- ready to schedule", role: "reviewer" }],
-  check_expenses: [{ action: "send_status95", label: "Send for Status 95 approval", role: "financial" }],
-  pending_status95_approval: [
-    { action: "approve_status95", label: "Approve", role: "reviewer" },
-    { action: "reject_status95", label: "Not sufficient -- back to Admin", role: "reviewer" },
-  ],
-  ready_to_invoice: [{ action: "mark_invoiced", label: "Mark invoiced", role: "financial" }],
+// What to say under an auto-trigger step that's still open -- mirrors
+// WOM_LIFECYCLE_STEPS in server/data/db.js (duplicated rather than shared,
+// same pattern as this app's other per-view lookup tables).
+const WOM_LIFECYCLE_STEP_HINTS = {
+  wom_po_created: "Completes automatically once a Maximo/PO # is on file for this WOM.",
+  vendor_scheduled: "Completes automatically once this WOM is put on a technician's calendar.",
+  work_complete: "Completes automatically once the WOM is marked complete from Timekeeping.",
+  cost_applied: "Completes automatically once an applied cost is on file for this WOM.",
 };
-const PSE_SCHEDULE_BLOCK_STAGES = ["generate_wom_po", "awaiting_toyota_po", "schedule_blocked"];
-const PSE_HOLD_LABELS = { vendor_invoice: "vendor invoice", labor_allocations: "labor allocations", other: "other" };
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -209,7 +188,7 @@ export async function renderTaskBoard(container) {
       api.get("/api/admin/admins"),
       api.get("/api/locations"),
       api.get("/api/admin/vendors"),
-      api.get("/api/woms/pse/tasks"),
+      api.get("/api/woms/lifecycle/tasks"),
     ]);
     staffCache = {
       technicians: technicians.filter((t) => t.employmentStatus === "active"),
@@ -886,7 +865,10 @@ export async function renderTaskBoard(container) {
     // stays a separate hint above the activity feed rather than an entry
     // in it. A manual/other-generated task has nothing extra to explain
     // here; the feed's own first entry ("X added this task") covers it.
-    const why = wom ? `Part of the WOM workflow -- ${escapeHtml(t.relatedWomCode)} is currently at "${escapeHtml(wom.pseStageLabel || wom.pseStage)}."` : null;
+    const nextLifecycleStep = wom && wom.lifecycleSteps ? wom.lifecycleSteps.find((s) => !s.completedAt) : null;
+    const why = nextLifecycleStep
+      ? `Part of the WOM lifecycle checklist for ${escapeHtml(t.relatedWomCode)} -- next up: "${escapeHtml(nextLifecycleStep.label)}."`
+      : null;
     // Editing is for a task someone actually typed in by hand -- an
     // automated WOM-workflow task's fields are that workflow's own source
     // of truth and would just get overwritten by the next sync/action, so
@@ -1124,7 +1106,7 @@ export async function renderTaskBoard(container) {
       e.preventDefault();
       const msg = form.querySelector(".save-message");
       try {
-        await api.post(`/api/woms/${encodeURIComponent(womCode)}/pse/actions/mark_pse_produced`, {
+        await api.post(`/api/woms/${encodeURIComponent(womCode)}/lifecycle/sent_to_toyota`, {
           toyotaEmail: form.toyotaEmail.value.trim(),
           sentAt: new Date(form.sentAt.value).toISOString(),
         });
@@ -1137,20 +1119,18 @@ export async function renderTaskBoard(container) {
     });
   }
 
-  // The real, domain-specific action for whatever PSE step this task
-  // represents (e.g. "PSE produced -- send to Toyota"), not a generic
-  // status change -- taking it calls the same endpoint the dedicated
-  // Financials -> PSE Tasks page uses, so it actually advances the WOM.
-  // Returns true when it rendered real controls (the caller then skips the
-  // generic Start/Waiting/Complete/Cancel buttons); false to fall back to
-  // those, for a stage (like "ready to schedule") with no PSE action of
-  // its own.
+  // The WOM lifecycle checklist, in place of a generic "mark complete" --
+  // every step, in order, with a checkmark and when/how it completed for
+  // the ones already done, and for whichever step is next: either a plain
+  // explanation (an auto-trigger step completes itself once its data
+  // changes -- nothing to click) or the real action button/form (a manual
+  // step, when the viewer's role matches it). Returns true when it rendered
+  // (the caller then skips the generic Start/Waiting/Complete/Cancel
+  // buttons, since progress here already tracks real state); false for a
+  // WOM lookup that came back with no checklist at all.
   async function renderPseActions(host, t, wom) {
-    const stage = wom.pseStage;
-    const stageActions = PSE_STAGE_ACTIONS[stage] || [];
-    const canHold = stage === "check_expenses";
-    const canScheduleBlock = PSE_SCHEDULE_BLOCK_STAGES.includes(stage);
-    if (stageActions.length === 0 && !canHold && !canScheduleBlock) return false;
+    const steps = wom.lifecycleSteps;
+    if (!steps || steps.length === 0) return false;
 
     let reviewerAdminId = null;
     if (isAdmin) {
@@ -1158,104 +1138,83 @@ export async function renderTaskBoard(container) {
       reviewerAdminId = staff.reviewerAdminId;
     }
     // No reviewer designated yet -- see Roster -> Manage admin accounts --
-    // means any admin can take either role for now, same rule the PSE
-    // Tasks page itself uses.
+    // means any admin can take either role for now, same rule the
+    // Financials -> PSE Tasks page itself uses.
     const isReviewer = !reviewerAdminId || reviewerAdminId === state.user.id;
     const isFinancial = !reviewerAdminId || reviewerAdminId !== state.user.id;
+    const roleAllowed = (role) => role === null || (role === "reviewer" ? isReviewer : isFinancial);
 
-    const buttons = stageActions
-      .filter((a) => (a.role === "reviewer" ? isReviewer : isFinancial))
-      .map((a) => `<button type="button" class="btn btn-secondary task-pse-action-btn" data-action="${a.action}">${escapeHtml(a.label)}</button>`)
+    const rows = steps
+      .map((s) => {
+        const done = Boolean(s.completedAt);
+        const meta = done ? `${s.completedBy === "sync" ? "auto-completed" : "completed"} ${formatDateTime(s.completedAt)}` : "";
+        return `
+        <div class="wom-lifecycle-step${done ? " wom-lifecycle-step-done" : ""}">
+          <span class="wom-lifecycle-step-icon">${done ? "✓" : "○"}</span>
+          <span class="wom-lifecycle-step-label">${escapeHtml(s.label)}</span>
+          <span class="wom-lifecycle-step-meta">${escapeHtml(meta)}</span>
+        </div>`;
+      })
       .join("");
 
-    const holdControls = canHold
-      ? wom.pseHoldReason
-        ? `<button type="button" class="btn btn-link task-pse-hold-clear-btn">Clear hold</button>`
-        : `
-          <button type="button" class="btn btn-link task-pse-hold-btn" data-reason="vendor_invoice">Hold: vendor invoice</button>
-          <button type="button" class="btn btn-link task-pse-hold-btn" data-reason="labor_allocations">Hold: labor allocations</button>
-          <button type="button" class="btn btn-link task-pse-hold-btn" data-reason="other">Hold: other…</button>
-        `
-      : "";
-
-    const scheduleBlockToggle = canScheduleBlock
-      ? `<label class="pse-schedule-block-label">
-          <input type="checkbox" class="task-pse-schedule-block-toggle" ${wom.pseScheduleBlock ? "checked" : ""} />
-          Don't schedule until Toyota PO
-        </label>`
-      : "";
-
-    if (!buttons && !holdControls && !scheduleBlockToggle) return false;
-
-    const holdNote = wom.pseHoldReason
-      ? `<p class="review-checklist-hint">On hold: ${escapeHtml(wom.pseHoldReason === "other" ? wom.pseHoldNote || "other" : PSE_HOLD_LABELS[wom.pseHoldReason])}.</p>`
-      : "";
     const reviewerNote =
       isAdmin && !reviewerAdminId
-        ? `<p class="review-checklist-hint">No PSE reviewer is designated yet (Roster &rarr; Manage admin accounts), so any admin can take this step.</p>`
+        ? `<p class="review-checklist-hint">No PSE reviewer is designated yet (Roster &rarr; Manage admin accounts), so any admin can take a reviewer/financial step.</p>`
         : "";
 
     host.innerHTML = `
       ${reviewerNote}
-      ${holdNote}
-      <div class="review-actions">${buttons}${holdControls}${scheduleBlockToggle}</div>
+      <div class="wom-lifecycle-checklist">${rows}</div>
+      <div class="wom-lifecycle-action"></div>
     `;
 
-    host.querySelectorAll(".task-pse-action-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        // Mirrors adminReview.js's own PSE Tasks tab: this one action is
-        // worth a real record of who at Toyota received it and when.
-        if (btn.dataset.action === "mark_pse_produced") {
-          openPseSentToToyotaModal(t.relatedWomCode, draw);
-          return;
-        }
-        btn.disabled = true;
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/actions/${btn.dataset.action}`, {});
-          await draw();
-        } catch (err) {
-          window.alert(err.message);
-          btn.disabled = false;
-        }
-      });
-    });
-    host.querySelectorAll(".task-pse-hold-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const reason = btn.dataset.reason;
-        let note;
-        if (reason === "other") {
-          note = window.prompt("What's this WOM waiting on?");
-          if (note == null) return;
-        }
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/hold`, { holdReason: reason, holdNote: note });
-          await draw();
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
-    });
-    const clearBtn = host.querySelector(".task-pse-hold-clear-btn");
-    if (clearBtn) {
-      clearBtn.addEventListener("click", async () => {
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/hold`, {});
-          await draw();
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
+    const nextStep = steps.find((s) => !s.completedAt);
+    const actionHost = host.querySelector(".wom-lifecycle-action");
+    if (!nextStep) return true;
+
+    if (nextStep.trigger === "auto") {
+      if (WOM_LIFECYCLE_STEP_HINTS[nextStep.key]) {
+        actionHost.innerHTML = `<p class="review-checklist-hint">${escapeHtml(WOM_LIFECYCLE_STEP_HINTS[nextStep.key])}</p>`;
+      }
+      return true;
     }
-    const scheduleToggle = host.querySelector(".task-pse-schedule-block-toggle");
-    if (scheduleToggle) {
-      scheduleToggle.addEventListener("change", async (e) => {
-        const checked = e.target.checked;
+    if (!isAdmin || !roleAllowed(nextStep.role)) return true;
+
+    if (nextStep.key === "sent_to_toyota") {
+      actionHost.innerHTML = `<div class="review-actions"><button type="button" class="btn btn-secondary wom-lifecycle-toyota-btn">PSE produced -- send to Toyota</button></div>`;
+      actionHost.querySelector(".wom-lifecycle-toyota-btn").addEventListener("click", () => openPseSentToToyotaModal(t.relatedWomCode, draw));
+    } else if (nextStep.key === "charges_reviewed") {
+      actionHost.innerHTML = `<div class="review-actions"><button type="button" class="btn btn-secondary wom-lifecycle-reviewed-btn">Mark reviewed</button></div>`;
+      actionHost.querySelector(".wom-lifecycle-reviewed-btn").addEventListener("click", async () => {
         try {
-          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/pse/schedule-block`, { blocked: checked });
+          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/lifecycle/charges_reviewed`, {});
           await draw();
         } catch (err) {
           window.alert(err.message);
-          e.target.checked = !checked;
+        }
+      });
+    } else if (nextStep.key === "invoiced") {
+      actionHost.innerHTML = `
+        <form class="modal-form wom-lifecycle-invoice-form">
+          <div class="vendor-edit-grid">
+            <label class="profile-field"><span>Batch #</span><input class="wom-lifecycle-batch" type="text" required /></label>
+            <label class="profile-field"><span>Invoice #</span><input class="wom-lifecycle-invoice" type="text" required /></label>
+          </div>
+          <button type="submit" class="btn btn-secondary">Invoice</button>
+          <span class="save-message"></span>
+        </form>
+      `;
+      actionHost.querySelector(".wom-lifecycle-invoice-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const msg = actionHost.querySelector(".save-message");
+        try {
+          await api.post(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/lifecycle/invoiced`, {
+            batchNumber: actionHost.querySelector(".wom-lifecycle-batch").value.trim(),
+            invoiceNumber: actionHost.querySelector(".wom-lifecycle-invoice").value.trim(),
+          });
+          await draw();
+        } catch (err) {
+          msg.textContent = err.message;
         }
       });
     }

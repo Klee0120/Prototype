@@ -1254,6 +1254,39 @@ h1, h2, h3, h4 {
   margin: 6px 0;
 }
 
+/* The WOM lifecycle checklist -- a plain ordered list of steps, a filled
+   checkmark for a done one and its own muted "completed/auto-completed at"
+   note, an empty circle for one still open. */
+.wom-lifecycle-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 10px;
+}
+.wom-lifecycle-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.wom-lifecycle-step-done {
+  color: var(--ink);
+}
+.wom-lifecycle-step-icon {
+  width: 16px;
+  text-align: center;
+  color: var(--border);
+}
+.wom-lifecycle-step-done .wom-lifecycle-step-icon {
+  color: var(--ok);
+  font-weight: 700;
+}
+.wom-lifecycle-step-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .task-activity-heading {
   margin: 14px 0 4px;
   font-size: 13px;

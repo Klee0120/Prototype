@@ -299,6 +299,18 @@ db.exec(`
     source TEXT NOT NULL
   );
 
+  -- The WOM lifecycle checklist's own progress -- one row per WOM per step
+  -- once it's completed (an incomplete step has no row at all). Backs the
+  -- one persistent task per WOM described where WOM_LIFECYCLE_STEPS is
+  -- defined, instead of a single pse_stage column.
+  CREATE TABLE IF NOT EXISTS wom_lifecycle_steps (
+    wom_code TEXT NOT NULL,
+    step_key TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    completed_by TEXT,
+    PRIMARY KEY (wom_code, step_key)
+  );
+
   CREATE TABLE IF NOT EXISTS wom_sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     synced_at TEXT NOT NULL,
@@ -499,14 +511,10 @@ if (!hasColumn("woms", "maximo_number")) {
 if (!hasColumn("woms", "smartsheet_raw_data")) {
   db.exec("ALTER TABLE woms ADD COLUMN smartsheet_raw_data TEXT");
 }
-// The PSE/PO pipeline (see PSE_STAGES below) tracked separately from the
-// existing `status` column -- status still gates whether a WOM can be
-// allocated to (open/closed/etc.), while pse_stage tracks where it sits in
-// the real-world PSE-to-invoice workflow (a WOM can be "open" for weeks
-// while its pse_stage moves through several steps). NULL means this WOM
-// isn't in the pipeline at all (created by hand rather than synced from
-// Smartsheet, or from before this feature existed) -- it just won't show
-// up on anyone's PSE task list.
+// Legacy columns from an earlier stage-machine version of the PSE/PO
+// pipeline, superseded by the WOM lifecycle checklist below
+// (wom_lifecycle_steps) -- kept only because SQLite can't cheaply drop a
+// column, and no code reads them anymore.
 if (!hasColumn("woms", "pse_stage")) {
   db.exec("ALTER TABLE woms ADD COLUMN pse_stage TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN pse_hold_reason TEXT");
@@ -522,6 +530,12 @@ if (!hasColumn("woms", "pse_stage")) {
 if (!hasColumn("woms", "pse_toyota_email")) {
   db.exec("ALTER TABLE woms ADD COLUMN pse_toyota_email TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN pse_toyota_sent_at TEXT");
+}
+// The last two steps of the WOM lifecycle checklist -- batch/invoice #
+// entered together, the moment that's ready to bill Toyota.
+if (!hasColumn("woms", "batch_number")) {
+  db.exec("ALTER TABLE woms ADD COLUMN batch_number TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN invoice_number TEXT");
 }
 // Which admin plays the "reviewer" role in the PSE pipeline (produces the
 // PSE, liaises with Toyota, approves Status 95) -- distinct from the
@@ -1478,54 +1492,24 @@ function setWomStatus(code, status, { changedBy, source } = {}) {
   return findWom(code);
 }
 
-// ---- PSE / PO pipeline ----
+// ---- WOM lifecycle checklist ----
 //
-// Tracks a WOM through the real-world PSE-to-invoice workflow (create WOM
-// request -> produce PSE -> Toyota approval -> issue PO -> schedule work ->
-// check expenses -> Status 95 approval -> invoice), separately from the
-// `status` column above, which only ever gates whether a WOM can be
-// allocated to. A WOM can be "open" (allocatable) for its entire time in
-// this pipeline; pse_stage tracks where it sits within that.
+// One persistent task per WOM (not recreated per stage the way an earlier
+// version of this worked) that just fills in as real events happen: create
+// WOM request -> send PSE to Toyota -> create WOM & PO -> schedule vendor
+// -> work complete -> post applied cost -> review charges -> invoice. Each
+// step either completes itself the moment its underlying data changes
+// (checkWomLifecycleAutoSteps, called after every sync and every relevant
+// admin edit) or is completed by a button click from whoever holds its
+// role. The whole checklist -- who did what, and when -- sits permanently
+// on the task once done, the same way a WOM's own file attachments already
+// do, rather than being thrown away once the WOM moves on.
 //
-// Two roles split the work: "reviewer" (produces the PSE, liaises with
-// Toyota, approves Status 95 -- one specific admin) and "financial" (issues
-// the WOM/PO, monitors charges, invoices -- any other active admin). NULL
-// pse_stage means a WOM isn't in this pipeline at all (created by hand
-// rather than synced from Smartsheet) and never shows up on anyone's list.
-const PSE_STAGES = {
-  pse_review: { label: "Review & produce PSE", role: "reviewer" },
-  awaiting_toyota_approval: { label: "Awaiting Toyota approval", role: "reviewer" },
-  generate_wom_po: { label: "Generate WOM / PO", role: "financial" },
-  awaiting_toyota_po: { label: "Awaiting Toyota PO #", role: "reviewer" },
-  schedule_blocked: { label: "Blocked from scheduling (PO pending)", role: "reviewer" },
-  ready_to_schedule: { label: "Ready to schedule", role: null },
-  check_expenses: { label: "Check expenses & invoicing", role: "financial" },
-  pending_status95_approval: { label: "Sent for Status 95 approval", role: "reviewer" },
-  ready_to_invoice: { label: "Approved -- ready to invoice", role: "financial" },
-  closed: { label: "Invoiced / closed", role: null },
-};
-
-const PSE_HOLD_REASONS = ["vendor_invoice", "labor_allocations", "other"];
-
-// One entry per action a task list button can fire. `next: "same"` re-sets
-// the follow-up date without changing stage (a snooze); `"scheduleAware"`
-// resolves to schedule_blocked or ready_to_schedule depending on
-// pse_schedule_block at the moment the action runs. followupDays sets
-// pse_followup_at that many days out (null clears it).
-const PSE_ACTIONS = {
-  mark_pse_produced: { from: ["pse_review"], role: "reviewer", next: "awaiting_toyota_approval", followupDays: 14 },
-  snooze_followup: { from: ["awaiting_toyota_approval", "awaiting_toyota_po"], role: "reviewer", next: "same", followupDays: 30 },
-  toyota_approved: { from: ["awaiting_toyota_approval"], role: "reviewer", next: "generate_wom_po", followupDays: null },
-  generated_missing_po: { from: ["generate_wom_po"], role: "financial", next: "awaiting_toyota_po", followupDays: 14 },
-  generated_with_po: { from: ["generate_wom_po"], role: "financial", next: "scheduleAware", followupDays: null },
-  po_received: { from: ["awaiting_toyota_po"], role: "reviewer", next: "scheduleAware", followupDays: null },
-  clear_schedule_block: { from: ["schedule_blocked"], role: "reviewer", next: "ready_to_schedule", followupDays: null },
-  send_status95: { from: ["check_expenses"], role: "financial", next: "pending_status95_approval", followupDays: null },
-  approve_status95: { from: ["pending_status95_approval"], role: "reviewer", next: "ready_to_invoice", followupDays: null },
-  reject_status95: { from: ["pending_status95_approval"], role: "reviewer", next: "check_expenses", followupDays: null },
-  mark_invoiced: { from: ["ready_to_invoice"], role: "financial", next: "closed", followupDays: null, closesWom: true },
-};
-
+// Two roles split the manual steps: "reviewer" (RFM -- sends PSE to
+// Toyota) and "financial" (any other active admin -- creates the WOM/PO,
+// posts cost, invoices). "Review charges" has no single owner: either role
+// can complete it, matching how that step is actually done in practice
+// (whoever gets to it first).
 function getPseReviewerId() {
   const row = db.prepare("SELECT id FROM technicians WHERE role = 'admin' AND is_pse_reviewer = 1").get();
   return row ? row.id : null;
@@ -1538,106 +1522,188 @@ function setPseReviewer(adminId) {
   if (adminId) db.prepare("UPDATE technicians SET is_pse_reviewer = 1 WHERE id = ? AND role = 'admin'").run(adminId);
 }
 
-// Nobody designated yet shouldn't lock reviewer-only actions out entirely
-// -- until that one-time setup happens, any admin can take either role.
+// Nobody designated yet shouldn't lock reviewer-only steps out entirely --
+// until that one-time setup happens, any admin can take either role.
 function pseRoleFor(adminId) {
   const reviewer = getPseReviewerId();
   if (!reviewer) return null; // null = "any role allowed", checked below
   return adminId === reviewer ? "reviewer" : "financial";
 }
 
-// Auto-enters a WOM into the pipeline the first time it syncs in from
-// Smartsheet -- never re-enters one already past this point, so a later
-// sync touching the same row doesn't reset progress someone's already
-// made on it.
-function ensurePseStage(code) {
-  const wom = db.prepare("SELECT pse_stage FROM woms WHERE code = ?").get(code);
-  if (!wom || wom.pse_stage) return;
-  db.prepare("UPDATE woms SET pse_stage = 'pse_review', pse_stage_updated_at = ? WHERE code = ?").run(new Date().toISOString(), code);
-  recordWomStatusChange(code, "pse_stage", null, "pse_review", { source: "smartsheet_sync" });
-  syncPseStageTask(code, null, "pse_review");
+const WOM_LIFECYCLE_STEPS = [
+  { key: "sent_to_toyota", label: "Send PSE to Toyota", role: "reviewer", trigger: "manual" },
+  { key: "wom_po_created", label: "Create WOM & PO", role: "financial", trigger: "auto" },
+  { key: "vendor_scheduled", label: "Schedule vendor", role: "tech", trigger: "auto" },
+  { key: "work_complete", label: "Work complete", role: "tech", trigger: "auto" },
+  { key: "cost_applied", label: "Post applied cost", role: "financial", trigger: "auto" },
+  { key: "charges_reviewed", label: "Review charges", role: null, trigger: "manual" },
+  { key: "invoiced", label: "Invoice", role: "financial", trigger: "manual" },
+];
+
+function lifecycleTaskSourceKey(womCode) {
+  return `WOM-${womCode}-LIFECYCLE`;
 }
 
-function listPseTasks(admin) {
-  const role = pseRoleFor(admin.id);
-  return db
-    .prepare("SELECT * FROM woms WHERE pse_stage IS NOT NULL AND pse_stage != 'closed'")
+// Every step definition plus its completion state for one WOM -- a step
+// with no row in wom_lifecycle_steps yet is simply incomplete.
+function getWomLifecycleSteps(code) {
+  const rows = db.prepare("SELECT * FROM wom_lifecycle_steps WHERE wom_code = ?").all(code);
+  const byKey = Object.fromEntries(rows.map((r) => [r.step_key, r]));
+  return WOM_LIFECYCLE_STEPS.map((step) => ({
+    ...step,
+    completedAt: byKey[step.key] ? byKey[step.key].completed_at : null,
+    completedBy: byKey[step.key] ? byKey[step.key].completed_by : null,
+  }));
+}
+
+// Idempotent and never re-stamps an already-complete step -- safe to call
+// as often as needed without corrupting when a step actually completed.
+function markWomLifecycleStepComplete(code, stepKey, completedBy) {
+  const existing = db.prepare("SELECT 1 FROM wom_lifecycle_steps WHERE wom_code = ? AND step_key = ?").get(code, stepKey);
+  if (existing) return;
+  db.prepare("INSERT INTO wom_lifecycle_steps (wom_code, step_key, completed_at, completed_by) VALUES (?, ?, ?, ?)").run(
+    code,
+    stepKey,
+    new Date().toISOString(),
+    completedBy || null
+  );
+}
+
+// Re-syncs the ONE persistent task for this WOM against its current
+// checklist state -- assignedRole tracks whichever step is next (so it
+// shows in the right person's queue), and the task only ever completes
+// once, the moment every step is done. reopenIfClosed: false means a
+// finished checklist stays finished even if this gets called again later.
+function refreshWomLifecycleTask(code) {
+  const wom = findWom(code);
+  if (!wom) return;
+  const steps = getWomLifecycleSteps(code);
+  const nextStep = steps.find((s) => !s.completedAt);
+  upsertTaskBySourceKey(
+    lifecycleTaskSourceKey(code),
+    {
+      title: `WOM lifecycle: ${code}`,
+      description: wom.description,
+      category: "wom_workflow",
+      assignedRole: nextStep ? nextStep.role : null,
+      priority: "normal",
+      relatedWomCode: code,
+      relatedLocationCode: wom.location_code,
+      source: "wom_workflow",
+      sourceRecordId: code,
+      workflowRule: "wom_lifecycle",
+    },
+    { reopenIfClosed: false }
+  );
+  if (!nextStep) completeTaskBySourceKey(lifecycleTaskSourceKey(code));
+}
+
+// Re-evaluates every auto-trigger step against the WOM's current data and
+// marks any newly-satisfied one complete. Called after a sync touches this
+// WOM, after an admin hand-edits its pricing/details, after the tech
+// "mark complete" action, and lazily for every still-open lifecycle task
+// on every task-list read (see refreshAllOpenWomLifecycles) -- so a step
+// like "Schedule vendor" (driven by an allocation existing, not any single
+// write path this app controls end-to-end) still catches up on its own.
+function checkWomLifecycleAutoSteps(code) {
+  const wom = findWom(code);
+  if (!wom) return;
+  const steps = getWomLifecycleSteps(code);
+  const isDone = (key) => Boolean(steps.find((s) => s.key === key).completedAt);
+
+  if (!isDone("wom_po_created") && wom.maximo_number) {
+    markWomLifecycleStepComplete(code, "wom_po_created", "sync");
+  }
+  if (!isDone("vendor_scheduled")) {
+    const hasAllocation = db.prepare("SELECT 1 FROM allocations WHERE wom_code = ? AND type = 'wom' AND hours > 0 LIMIT 1").get(code);
+    if (hasAllocation) markWomLifecycleStepComplete(code, "vendor_scheduled", "sync");
+  }
+  if (!isDone("work_complete") && wom.status === "closed") {
+    markWomLifecycleStepComplete(code, "work_complete", "sync");
+  }
+  if (!isDone("cost_applied") && wom.applied_price != null) {
+    markWomLifecycleStepComplete(code, "cost_applied", "sync");
+  }
+  refreshWomLifecycleTask(code);
+}
+
+// Called from the task-list route on every read (same lazy pattern as
+// ensureRecurringTasks) -- catches a step like "Schedule vendor" up to
+// date for every WOM whose checklist isn't finished yet, without needing a
+// hook in every allocation-writing route.
+function refreshAllOpenWomLifecycles() {
+  const codes = db
+    .prepare("SELECT DISTINCT related_wom_code FROM tasks WHERE workflow_rule = 'wom_lifecycle' AND status != 'completed'")
     .all()
-    .map(womWithRemaining)
-    .filter((w) => {
-      const stage = PSE_STAGES[w.pse_stage];
-      if (!stage || !stage.role) return false;
-      return role === null || stage.role === role;
-    })
-    .sort((a, b) => (a.pse_followup_at || "").localeCompare(b.pse_followup_at || ""));
+    .map((r) => r.related_wom_code)
+    .filter(Boolean);
+  for (const code of codes) checkWomLifecycleAutoSteps(code);
 }
 
-// `extra.followupAt`, when given, overrides the action's own fixed
-// followupDays computation -- lets "PSE produced" or "Still waiting" be
-// scheduled for a specific date instead of always exactly 14/30 days out.
-// `extra.toyotaEmail`/`extra.sentAt` are only meaningful on
-// mark_pse_produced (see PSE_ACTIONS) -- record which Toyota contact this
-// PSE actually went to and on what date, since otherwise that step is a
-// bare button click with no record of it for a later follow-up.
-function applyPseAction(code, actionKey, admin, extra = {}) {
+// One of the two manual steps (send to Toyota, review charges, invoice).
+// `extra` carries whatever that specific step needs: toyotaEmail/sentAt
+// for sent_to_toyota, batchNumber/invoiceNumber for invoiced -- ignored
+// for charges_reviewed, which is a bare click.
+function completeWomLifecycleStep(code, stepKey, admin, extra = {}) {
   const wom = findWom(code);
   if (!wom) return { error: "not_found" };
-  const action = PSE_ACTIONS[actionKey];
-  if (!action) return { error: "unknown_action" };
-  if (!action.from.includes(wom.pse_stage)) return { error: "wrong_stage", currentStage: wom.pse_stage };
+  const step = WOM_LIFECYCLE_STEPS.find((s) => s.key === stepKey);
+  if (!step) return { error: "unknown_step" };
+  if (step.trigger !== "manual") return { error: "not_manual" };
+  const steps = getWomLifecycleSteps(code);
+  if (steps.find((s) => s.key === stepKey).completedAt) return { error: "already_done" };
+
   const role = pseRoleFor(admin.id);
-  if (role !== null && role !== action.role) return { error: "wrong_role" };
+  if (role !== null && step.role !== null && role !== step.role) return { error: "wrong_role" };
 
-  let nextStage = action.next;
-  if (nextStage === "same") nextStage = wom.pse_stage;
-  else if (nextStage === "scheduleAware") nextStage = wom.pse_schedule_block ? "schedule_blocked" : "ready_to_schedule";
-
-  const defaultFollowupAt = action.followupDays == null ? null : new Date(Date.now() + action.followupDays * 86400000).toISOString();
-  const followupAt = action.followupDays != null && extra.followupAt ? extra.followupAt : defaultFollowupAt;
-  const previousStage = wom.pse_stage;
-  db.prepare("UPDATE woms SET pse_stage = ?, pse_followup_at = ?, pse_stage_updated_at = ? WHERE code = ?").run(
-    nextStage,
-    followupAt,
-    new Date().toISOString(),
-    code
-  );
-  if (actionKey === "mark_pse_produced" && extra.toyotaEmail) {
+  if (stepKey === "sent_to_toyota") {
+    if (!extra.toyotaEmail) return { error: "email_required" };
     db.prepare("UPDATE woms SET pse_toyota_email = ?, pse_toyota_sent_at = ? WHERE code = ?").run(
       extra.toyotaEmail,
       extra.sentAt || new Date().toISOString(),
       code
     );
   }
-  recordWomStatusChange(code, "pse_stage", previousStage, nextStage, { changedAt: new Date().toISOString(), changedBy: admin.id, source: "pse_action" });
-  syncPseStageTask(code, previousStage, nextStage);
-  if (action.closesWom) setWomStatus(code, "invoiced", { changedBy: admin.id, source: "pse_action" });
+  if (stepKey === "invoiced") {
+    if (!extra.batchNumber || !extra.invoiceNumber) return { error: "batch_and_invoice_required" };
+    db.prepare("UPDATE woms SET batch_number = ?, invoice_number = ? WHERE code = ?").run(extra.batchNumber, extra.invoiceNumber, code);
+    setWomStatus(code, "invoiced", { changedBy: admin.id, source: "wom_lifecycle" });
+  }
 
+  markWomLifecycleStepComplete(code, stepKey, admin.id);
+  refreshWomLifecycleTask(code);
   return { wom: findWom(code) };
 }
 
-// Standalone reschedule, decoupled from taking a stage-advancing action --
-// "I need to be able to find it and reschedule the task" for a WOM that's
-// simply sitting on a follow-up date that no longer fits, without needing
-// to re-trigger (or undo) whatever action set that date originally.
-function setPseFollowup(code, followupAt) {
-  const wom = findWom(code);
-  if (!wom) return null;
-  if (!wom.pse_stage) return { error: "not_in_pipeline" };
-  db.prepare("UPDATE woms SET pse_followup_at = ? WHERE code = ?").run(followupAt || null, code);
-  // The follow-up date is one of the fields PSE_STAGE_TASKS reads for
-  // awaiting_toyota_approval/awaiting_toyota_po -- refresh that task's own
-  // dueAt so the task board reflects the new date immediately.
-  refreshStageTask(code);
-  return { wom: findWom(code) };
+// Financials-wide list, split by role the same way the old PSE task list
+// was: reviewer sees WOMs whose next step is theirs, financial sees theirs,
+// and (until a reviewer is designated) everyone sees everything so the
+// feature isn't locked up before that one-time setup.
+function listWomLifecycleTasks(admin) {
+  const role = pseRoleFor(admin.id);
+  const codes = db
+    .prepare("SELECT related_wom_code FROM tasks WHERE workflow_rule = 'wom_lifecycle' AND status != 'completed'")
+    .all()
+    .map((r) => r.related_wom_code)
+    .filter(Boolean);
+  return codes
+    .map((code) => womWithRemaining(findWom(code)))
+    .filter(Boolean)
+    .filter((w) => {
+      const steps = getWomLifecycleSteps(w.code);
+      const nextStep = steps.find((s) => !s.completedAt);
+      if (!nextStep || nextStep.role === null) return true;
+      return role === null || nextStep.role === role;
+    });
 }
 
 // Aggregate estimated-vs-applied figures across every non-cancelled WOM --
 // the Financials-tab-wide view RFM needs (not just the ones currently
-// sitting in the PSE pipeline): total dollars quoted vs. actually applied,
-// how many came in over-quoted on labor (estimate higher than what was
-// actually applied -- money quoted that was never used), and how many
-// have a charge applied but no Toyota PO/Maximo # on file yet, both real
-// follow-up lists rather than just totals.
+// sitting in the lifecycle checklist): total dollars quoted vs. actually
+// applied, how many came in over-quoted on labor (estimate higher than
+// what was actually applied -- money quoted that was never used), and how
+// many have a charge applied but no Toyota PO/Maximo # on file yet, both
+// real follow-up lists rather than just totals.
 function getWomCostSummary() {
   const rows = db.prepare("SELECT * FROM woms WHERE status != 'cancelled'").all();
   let totalEstimated = 0;
@@ -1696,35 +1762,6 @@ function getWomCostSummary() {
   };
 }
 
-function setPseHold(code, { holdReason, holdNote }) {
-  if (!findWom(code)) return null;
-  if (holdReason && !PSE_HOLD_REASONS.includes(holdReason)) return { error: "invalid_reason" };
-  db.prepare("UPDATE woms SET pse_hold_reason = ?, pse_hold_note = ? WHERE code = ?").run(
-    holdReason || null,
-    holdReason === "other" ? holdNote || null : null,
-    code
-  );
-  refreshStageTask(code);
-  return { wom: findWom(code) };
-}
-
-function setPseScheduleBlock(code, blocked) {
-  if (!findWom(code)) return null;
-  db.prepare("UPDATE woms SET pse_schedule_block = ? WHERE code = ?").run(blocked ? 1 : 0, code);
-  return findWom(code);
-}
-
-// Hooked into a technician's own "mark complete" action -- only advances a
-// WOM that was actually waiting to be worked (ready_to_schedule), so
-// marking complete on a WOM outside this pipeline (or already past this
-// point) never creates a phantom task.
-function advancePseOnComplete(code) {
-  const wom = db.prepare("SELECT pse_stage FROM woms WHERE code = ?").get(code);
-  if (!wom || wom.pse_stage !== "ready_to_schedule") return;
-  db.prepare("UPDATE woms SET pse_stage = 'check_expenses', pse_stage_updated_at = ? WHERE code = ?").run(new Date().toISOString(), code);
-  recordWomStatusChange(code, "pse_stage", "ready_to_schedule", "check_expenses", { source: "tech_complete" });
-  syncPseStageTask(code, "ready_to_schedule", "check_expenses");
-}
 
 // ---- Task / workflow engine ----
 //
@@ -1851,6 +1888,18 @@ function setTaskStatus(id, status) {
     id
   );
   return findTask(id);
+}
+
+// For permanently removing a task that should never have existed (a
+// placeholder WOM's leftover follow-up, a mistaken manual entry) -- not
+// exposed as a UI action, since "cancelled" already covers "this isn't
+// happening" for everything else; this is a step further, for one-off
+// cleanup. Takes its comments and any attached files with it rather than
+// leaving them orphaned (no FK/cascade on either table).
+function deleteTask(id) {
+  db.prepare("DELETE FROM task_comments WHERE task_id = ?").run(id);
+  db.prepare("DELETE FROM files WHERE related_type = 'task' AND related_id = ?").run(String(id));
+  db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
 }
 
 // A person editing what/why a hand-added task is about, after the fact --
@@ -2000,113 +2049,6 @@ function recordWomStatusChange(womCode, field, previousValue, newValue, { change
 
 function listWomStatusHistory(womCode) {
   return db.prepare("SELECT * FROM wom_status_history WHERE wom_code = ? ORDER BY id").all(womCode);
-}
-
-// What task (if any) should be open while a WOM sits at each pse_stage --
-// upserted on entry, completed on exit, via a deterministic per-WOM source
-// key (e.g. "WOM-20528831-REVIEW-EXPENSES") so re-syncing or re-clicking
-// through the pipeline never creates a duplicate.
-const PSE_STAGE_TASKS = {
-  pse_review: (wom) => ({ suffix: "PRODUCE-PSE", title: `Produce PSE for ${wom.code}`, assignedRole: "reviewer", priority: "normal" }),
-  awaiting_toyota_approval: (wom) => ({
-    suffix: "TOYOTA-APPROVAL",
-    title: `Follow up: Toyota approval for ${wom.code}`,
-    assignedRole: "reviewer",
-    priority: "normal",
-    dueAt: wom.pse_followup_at,
-  }),
-  generate_wom_po: (wom) => ({ suffix: "CREATE-WOM-PO", title: `Create WOM / issue PO for ${wom.code}`, assignedRole: "financial", priority: "high" }),
-  awaiting_toyota_po: (wom) => ({
-    suffix: "TOYOTA-PO",
-    title: `Follow up: Toyota PO # for ${wom.code}`,
-    assignedRole: "reviewer",
-    priority: "normal",
-    dueAt: wom.pse_followup_at,
-  }),
-  schedule_blocked: (wom) => ({ suffix: "CLEAR-PO-BLOCK", title: `Clear PO block for ${wom.code}`, assignedRole: "reviewer", priority: "normal" }),
-  ready_to_schedule: (wom) => ({ suffix: "SCHEDULE-WORK", title: `Schedule work for ${wom.code}`, assignedRole: "tech", priority: "high" }),
-  check_expenses: (wom) => ({
-    suffix: "REVIEW-EXPENSES",
-    title: `Review expenses for ${wom.code}`,
-    category: "financial",
-    assignedRole: "financial",
-    priority: "normal",
-    isException: Boolean(wom.pse_hold_reason),
-  }),
-  pending_status95_approval: (wom) => ({
-    suffix: "APPROVE-STATUS95",
-    title: `Approve ${wom.code} for billing (Status 95)`,
-    assignedRole: "reviewer",
-    priority: "high",
-  }),
-  ready_to_invoice: (wom) => ({
-    suffix: "GENERATE-BILL",
-    title: `Generate batch and bill Toyota for ${wom.code}`,
-    category: "financial",
-    assignedRole: "financial",
-    priority: "high",
-  }),
-};
-
-function pseTaskSourceKey(womCode, suffix) {
-  return `WOM-${womCode}-${suffix}`;
-}
-
-// Shared by syncPseStageTask (a real stage transition) and refreshStageTask
-// (something about the *current* stage changed, like a hold being set --
-// same task, same stage, just re-evaluating its fields such as isException).
-function upsertCurrentStageTask(wom, stage) {
-  const spec = stage && PSE_STAGE_TASKS[stage] ? PSE_STAGE_TASKS[stage](wom) : null;
-  if (!spec) return;
-  upsertTaskBySourceKey(pseTaskSourceKey(wom.code, spec.suffix), {
-    title: spec.title,
-    category: spec.category || "wom_workflow",
-    assignedRole: spec.assignedRole,
-    priority: spec.priority,
-    dueAt: spec.dueAt || null,
-    relatedWomCode: wom.code,
-    relatedLocationCode: wom.location_code,
-    isException: spec.isException,
-    source: "wom_workflow",
-    sourceRecordId: wom.code,
-    workflowRule: stage,
-  });
-}
-
-// A hold doesn't move pse_stage, but it changes whether the *current*
-// stage's task should read as a workflow exception (see check_expenses in
-// PSE_STAGE_TASKS) -- re-evaluate that task's fields against the fresh
-// hold state rather than waiting for the next real stage transition.
-function refreshStageTask(code) {
-  const wom = findWom(code);
-  if (wom && wom.pse_stage) upsertCurrentStageTask(wom, wom.pse_stage);
-}
-
-// Completes whichever task belongs to a WOM's OLD stage (if that stage has
-// one) and upserts the one for its NEW stage (if that one does) -- the
-// literal "states create tasks" rule, called every time pse_stage changes
-// regardless of what triggered it (a button click or a sync).
-function syncPseStageTask(womCode, previousStage, newStage) {
-  const wom = findWom(womCode);
-  if (!wom) return;
-
-  // A snooze re-fires the same stage it's already on (just pushing the
-  // follow-up date out) -- complete-then-reopen would be a pointless
-  // round trip through "completed", so only the upsert below runs, which
-  // already refreshes due_at on its own.
-  if (previousStage && previousStage !== newStage && PSE_STAGE_TASKS[previousStage]) {
-    completeTaskBySourceKey(pseTaskSourceKey(womCode, PSE_STAGE_TASKS[previousStage](wom).suffix));
-  }
-  upsertCurrentStageTask(wom, newStage);
-  // Closing the pipeline should never leave a stray open task behind, even
-  // if some earlier stage's task didn't get cleanly completed along the way
-  // (e.g. it was reopened by a Status 95 rejection loop after this WOM had
-  // already moved past it once).
-  if (newStage === "closed") {
-    for (const stageKey of Object.keys(PSE_STAGE_TASKS)) {
-      completeTaskBySourceKey(pseTaskSourceKey(womCode, PSE_STAGE_TASKS[stageKey](wom).suffix));
-    }
-  }
 }
 
 // Recurring admin work that isn't tied to any one WOM. Not backed by a
@@ -2485,7 +2427,7 @@ function syncWomsFromSheetRows(rows, columns) {
           updated++;
           changedWoms.push({ code, description: collision.description, fields });
         }
-        ensurePseStage(code);
+        checkWomLifecycleAutoSteps(code);
         continue;
       }
       const status = realCode ? "open" : requested ? "requested" : "pending";
@@ -2494,7 +2436,7 @@ function syncWomsFromSheetRows(rows, columns) {
          location_code, smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(code, description, status, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, String(rowId), rowNumber, stamp);
       created++;
-      ensurePseStage(code);
+      checkWomLifecycleAutoSteps(code);
       continue;
     }
 
@@ -2507,7 +2449,7 @@ function syncWomsFromSheetRows(rows, columns) {
       promoted++;
       changedWoms.push({ code: realCode, description: existing.description, fields: ["status: now open (real WOM # arrived)"] });
       recordWomStatusChange(realCode, "status", existing.status, "open", { source: "smartsheet_sync" });
-      ensurePseStage(realCode);
+      checkWomLifecycleAutoSteps(realCode);
       continue;
     }
 
@@ -2520,7 +2462,7 @@ function syncWomsFromSheetRows(rows, columns) {
       updated++;
       changedWoms.push({ code: existing.code, description: existing.description, fields: ["status: now requested"] });
       recordWomStatusChange(existing.code, "status", "pending", "requested", { source: "smartsheet_sync" });
-      ensurePseStage(existing.code);
+      checkWomLifecycleAutoSteps(existing.code);
       continue;
     }
 
@@ -2535,7 +2477,7 @@ function syncWomsFromSheetRows(rows, columns) {
         updated++;
         changedWoms.push({ code: existing.code, description: existing.description, fields });
       }
-      ensurePseStage(existing.code);
+      checkWomLifecycleAutoSteps(existing.code);
     }
   }
 
@@ -3069,18 +3011,15 @@ module.exports = {
   deleteWom,
   WOM_STATUSES,
   setWomStatus,
-  PSE_STAGES,
-  PSE_HOLD_REASONS,
   getPseReviewerId,
   setPseReviewer,
-  ensurePseStage,
-  listPseTasks,
-  applyPseAction,
-  setPseFollowup,
+  WOM_LIFECYCLE_STEPS,
+  getWomLifecycleSteps,
+  checkWomLifecycleAutoSteps,
+  refreshAllOpenWomLifecycles,
+  completeWomLifecycleStep,
+  listWomLifecycleTasks,
   getWomCostSummary,
-  setPseHold,
-  setPseScheduleBlock,
-  advancePseOnComplete,
   TASK_STATUSES,
   TASK_PRIORITIES,
   OPEN_TASK_STATUSES,
@@ -3091,6 +3030,7 @@ module.exports = {
   completeTaskBySourceKey,
   setTaskStatus,
   updateTask,
+  deleteTask,
   assignTask,
   addTaskComment,
   listTaskComments,

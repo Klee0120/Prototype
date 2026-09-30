@@ -97,7 +97,7 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
     }
   });
 
-  await t.test("a synced row carries its Smartsheet line number/link, and enters the PSE pipeline", async () => {
+  await t.test("a synced row carries its Smartsheet line number/link, and enters the WOM lifecycle checklist", async () => {
     const restore = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -121,8 +121,7 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.ok(created);
       assert.equal(created.smartsheetLineNumber, 17);
       assert.equal(created.smartsheetLink, "https://app.smartsheet.com/sheets/6392545882886020?rowId=510");
-      assert.equal(created.pseStage, "pse_review");
-      assert.equal(created.pseStageLabel, "Review & produce PSE");
+      assert.ok(created.lifecycleSteps.every((s) => !s.completedAt), "expected every lifecycle step to still be open");
     } finally {
       restore();
     }

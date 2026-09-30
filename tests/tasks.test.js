@@ -349,60 +349,126 @@ test("task engine: recurring tasks are idempotent within the same period", async
   });
 });
 
-test("task engine: WOM sync generates, updates, and completes workflow tasks with stable source keys", async (t) => {
+test("task engine: WOM sync creates one persistent lifecycle task that tracks the checklist's next step", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
-  await t.test("a synced WOM's pse_review stage creates a reviewer task with a deterministic source key", async () => {
+  await t.test("a synced WOM gets one lifecycle task, assigned to the reviewer role (its first step)", async () => {
     await syncOneOpenWom(server, "40000001", 950);
     const res = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
     const task = res.body.find((t2) => t2.relatedWomCode === "40000001");
-    assert.ok(task, "expected a workflow task for the synced WOM");
-    assert.equal(task.sourceKey, "WOM-40000001-PRODUCE-PSE");
+    assert.ok(task, "expected a lifecycle task for the synced WOM");
+    assert.equal(task.sourceKey, "WOM-40000001-LIFECYCLE");
     assert.equal(task.source, "wom_workflow");
     assert.equal(task.category, "wom_workflow");
+    assert.equal(task.assignedRole, "reviewer");
   });
 
   await t.test("re-syncing the same row doesn't duplicate the task", async () => {
     await syncOneOpenWom(server, "40000001", 950);
-    const res = await server.call("GET", "/api/tasks?role=reviewer&status=open", { userId: "ADMIN" });
+    const res = await server.call("GET", "/api/tasks?view=team&role=reviewer&status=open", { userId: "ADMIN" });
     const matches = res.body.filter((t2) => t2.relatedWomCode === "40000001");
     assert.equal(matches.length, 1);
   });
 
-  await t.test("advancing the PSE stage completes the old stage's task and creates the new one", async () => {
-    const advance = await server.call("POST", "/api/woms/40000001/pse/actions/mark_pse_produced", { userId: "ADMIN" });
+  await t.test("completing the reviewer step moves the same task's role to financial (its next step)", async () => {
+    const advance = await server.call("POST", "/api/woms/40000001/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota@example.com" },
+    });
     assert.equal(advance.status, 200);
+    assert.equal(advance.body.lifecycleSteps.find((s) => s.key === "sent_to_toyota").completedAt !== null, true);
 
-    const produced = await server.call("GET", "/api/tasks?status=completed", { userId: "ADMIN" });
-    const oldTask = produced.body.find((t2) => t2.sourceKey === "WOM-40000001-PRODUCE-PSE");
-    assert.ok(oldTask, "expected the pse_review task to be auto-completed");
-    assert.equal(oldTask.status, "completed");
-
-    const followUp = await server.call("GET", "/api/tasks?role=reviewer", { userId: "ADMIN" });
-    const newTask = followUp.body.find((t2) => t2.sourceKey === "WOM-40000001-TOYOTA-APPROVAL");
-    assert.ok(newTask, "expected the awaiting_toyota_approval task to be created");
+    const res = await server.call("GET", "/api/tasks?view=team&role=financial", { userId: "ADMIN" });
+    const task = res.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
+    assert.ok(task, "expected the same task to now show under the financial role");
+    assert.equal(task.status, "open");
   });
 
-  await t.test("marking work complete flags check_expenses as an exception when a hold is active", async () => {
-    // Fast-forward through the rest of the pipeline to ready_to_schedule.
-    await server.call("POST", "/api/woms/40000001/pse/actions/toyota_approved", { userId: "ADMIN" });
-    await server.call("POST", "/api/woms/40000001/pse/actions/generated_with_po", { userId: "ADMIN" });
-    await server.call("POST", "/api/woms/40000001/complete", { userId: "T1001" });
-    await server.call("POST", "/api/woms/40000001/pse/hold", { userId: "ADMIN", body: { holdReason: "vendor_invoice" } });
-
-    const res = await server.call("GET", "/api/tasks?view=exceptions", { userId: "ADMIN" });
-    const exceptionTask = res.body.find((t2) => t2.relatedWomCode === "40000001");
-    assert.ok(exceptionTask, "expected an exception task for the held WOM");
-    assert.equal(exceptionTask.sourceKey, "WOM-40000001-REVIEW-EXPENSES");
-  });
-
-  await t.test("WOM status history recorded both the status and pse_stage transitions", async () => {
-    const res = await server.call("GET", "/api/woms/40000001/history", { userId: "ADMIN" });
+  await t.test("a hand-entered Maximo/PO # auto-completes 'Create WOM & PO' and advances the task to the tech role", async () => {
+    const res = await server.call("PATCH", "/api/woms/40000001/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-999", locationCode: "PRINCETON" },
+    });
     assert.equal(res.status, 200);
-    assert.ok(res.body.some((h) => h.field === "pse_stage" && h.new_value === "pse_review"));
-    assert.ok(res.body.some((h) => h.field === "pse_stage" && h.new_value === "check_expenses"));
-    assert.ok(res.body.every((h) => h.detected_at));
+    assert.ok(res.body.lifecycleSteps.find((s) => s.key === "wom_po_created").completedAt);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team&role=tech", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
+    assert.ok(task, "expected the task to now be assigned to the tech role (Schedule vendor)");
+  });
+
+  await t.test("a tech putting the WOM on their calendar auto-completes 'Schedule vendor'", async () => {
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: { day: "Mon", allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "40000001", hours: 4 }] },
+    });
+    assert.equal(put.status, 200);
+
+    // The check runs lazily on the next task-list read (same pattern as
+    // ensureRecurringTasks), not on the allocation write itself.
+    const res = await server.call("GET", "/api/woms/40000001/lookup", { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    const after = await server.call("GET", "/api/woms/40000001/lookup", { userId: "ADMIN" });
+    assert.ok(!res.body.lifecycleSteps.find((s) => s.key === "vendor_scheduled").completedAt, "should not be complete before the catch-up read");
+    assert.ok(after.body.lifecycleSteps.find((s) => s.key === "vendor_scheduled").completedAt, "should be complete after the catch-up read");
+  });
+
+  await t.test("tech-complete auto-completes 'Work complete' and applied cost auto-completes 'Post applied cost'", async () => {
+    const complete = await server.call("POST", "/api/woms/40000001/complete", { userId: "T1001" });
+    assert.equal(complete.status, 200);
+    assert.ok(complete.body.lifecycleSteps.find((s) => s.key === "work_complete").completedAt);
+
+    const pricing = await server.call("PATCH", "/api/woms/40000001/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+    assert.equal(pricing.status, 200);
+    assert.ok(pricing.body.lifecycleSteps.find((s) => s.key === "cost_applied").completedAt);
+  });
+
+  await t.test("'Review charges' can be completed by either role -- a technician can't take it", async () => {
+    const asTech = await server.call("POST", "/api/woms/40000001/lifecycle/charges_reviewed", { userId: "T1001" });
+    assert.equal(asTech.status, 403);
+
+    const asAdmin = await server.call("POST", "/api/woms/40000001/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    assert.equal(asAdmin.status, 200);
+    assert.ok(asAdmin.body.lifecycleSteps.find((s) => s.key === "charges_reviewed").completedAt);
+  });
+
+  await t.test("invoicing requires both a batch # and an invoice #", async () => {
+    const missing = await server.call("POST", "/api/woms/40000001/lifecycle/invoiced", { userId: "ADMIN", body: { batchNumber: "B1" } });
+    assert.equal(missing.status, 400);
+  });
+
+  await t.test("invoicing completes the checklist, flips the WOM to invoiced, and completes the task", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/invoiced", {
+      userId: "ADMIN",
+      body: { batchNumber: "B1", invoiceNumber: "INV-1" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "invoiced");
+    assert.equal(res.body.batchNumber, "B1");
+    assert.equal(res.body.invoiceNumber, "INV-1");
+    assert.ok(res.body.lifecycleSteps.every((s) => s.completedAt), "expected every step to be complete");
+
+    const tasks = await server.call("GET", "/api/tasks?view=team&status=completed", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
+    assert.ok(task, "expected the lifecycle task to be marked completed");
+  });
+
+  await t.test("completing an already-done step is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("completing an unknown step is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/nope", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("trying to manually complete an auto-trigger step is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/wom_po_created", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
   });
 
   await t.test("a technician can't view WOM history", async () => {
@@ -411,20 +477,18 @@ test("task engine: WOM sync generates, updates, and completes workflow tasks wit
   });
 });
 
-test("PSE pipeline: recording the Toyota email/date sent, rescheduling a follow-up, and the cost summary", async (t) => {
+test("WOM lifecycle: recording the Toyota email/date sent, and the cost summary", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   await syncOneOpenWom(server, "40000002", 951);
 
-  await t.test("mark_pse_produced with no email/date still works, same as before", async () => {
-    const res = await server.call("POST", "/api/woms/40000002/pse/actions/mark_pse_produced", { userId: "ADMIN" });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.pseToyotaEmail, null);
+  await t.test("sent_to_toyota without an email is rejected -- it's required to complete this step", async () => {
+    const res = await server.call("POST", "/api/woms/40000002/lifecycle/sent_to_toyota", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
   });
 
-  await t.test("re-syncing to reset -- verify a fresh WOM records the Toyota email and sent date", async () => {
-    await syncOneOpenWom(server, "40000003", 952);
-    const res = await server.call("POST", "/api/woms/40000003/pse/actions/mark_pse_produced", {
+  await t.test("sent_to_toyota records the Toyota email and sent date", async () => {
+    const res = await server.call("POST", "/api/woms/40000002/lifecycle/sent_to_toyota", {
       userId: "ADMIN",
       body: { toyotaEmail: "toyota.contact@toyota.com", sentAt: "2026-03-01T09:00:00.000Z" },
     });
@@ -433,44 +497,13 @@ test("PSE pipeline: recording the Toyota email/date sent, rescheduling a follow-
     assert.equal(res.body.pseToyotaSentAt, "2026-03-01T09:00:00.000Z");
   });
 
-  await t.test("a custom followupAt overrides the action's default +14 days", async () => {
-    await syncOneOpenWom(server, "40000004", 953);
-    const res = await server.call("POST", "/api/woms/40000004/pse/actions/mark_pse_produced", {
-      userId: "ADMIN",
-      body: { followupAt: "2026-12-25T00:00:00.000Z" },
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.pseFollowupAt, "2026-12-25T00:00:00.000Z");
-  });
-
-  await t.test("the follow-up can be rescheduled directly, without re-taking the action", async () => {
-    const res = await server.call("PATCH", "/api/woms/40000004/pse/followup", {
-      userId: "ADMIN",
-      body: { followupAt: "2027-01-15T00:00:00.000Z" },
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.pseFollowupAt, "2027-01-15T00:00:00.000Z");
-  });
-
-  await t.test("the rescheduled date is reflected on the task board too", async () => {
-    const res = await server.call("GET", "/api/tasks?role=reviewer", { userId: "ADMIN" });
-    const task = res.body.find((t2) => t2.sourceKey === "WOM-40000004-TOYOTA-APPROVAL");
-    assert.ok(task);
-    assert.equal(task.dueAt, "2027-01-15T00:00:00.000Z");
-  });
-
-  await t.test("rescheduling a WOM that's not in the PSE pipeline fails", async () => {
-    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "90000001", description: "Not in pipeline" } });
-    const res = await server.call("PATCH", "/api/woms/90000001/pse/followup", { userId: "ADMIN", body: { followupAt: "2027-01-01" } });
-    assert.equal(res.status, 409);
-  });
-
-  await t.test("a technician can't reschedule a follow-up", async () => {
-    const res = await server.call("PATCH", "/api/woms/40000004/pse/followup", { userId: "T1001", body: { followupAt: "2027-01-01" } });
-    assert.equal(res.status, 403);
-  });
+  // Rescheduling when a step needs to be followed up later isn't a
+  // lifecycle-specific concept anymore -- it's just editing the one
+  // persistent task's own due date, the same as any other task (see the
+  // general PATCH /api/tasks/:id edit tests).
 
   await t.test("cost summary totals estimated/applied across every non-cancelled WOM", async () => {
+    await syncOneOpenWom(server, "40000003", 952);
     await server.call("PATCH", "/api/woms/40000002/pricing", { userId: "ADMIN", body: { estimatedPrice: 5000, appliedPrice: 3000 } });
     await server.call("PATCH", "/api/woms/40000003/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1500 } });
 

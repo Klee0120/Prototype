@@ -585,52 +585,50 @@ Demo logins:
   Refreshed on every sync, so existing already-synced rows pick up their
   line number/link automatically the next time a sync touches them, not
   just newly-created ones.
-- **PSE / PO pipeline ("PSE Tasks", under the Financials section)**: tracks
-  a WOM through the real-world PSE-to-invoice workflow -- create WOM
-  request (Smartsheet) &rarr; produce PSE &rarr; Toyota approval &rarr;
-  issue WOM/PO &rarr; schedule work &rarr; check expenses &rarr; Status 95
-  approval &rarr; invoice -- as a `pse_stage` field on the WOM, kept
-  entirely separate from the existing `status` column (which still only
-  ever gates whether a WOM can be allocated to; a WOM stays "open" for its
-  entire time in this pipeline). A WOM auto-enters the pipeline at
-  **Review & produce PSE** the moment it first syncs in from Smartsheet
-  (never re-entered on a later sync, so progress already made is never
-  reset). Two roles split the work, matching how this is actually done:
-  - **Reviewer** (exactly one admin at a time, designated via a **"Set as
-    reviewer"** toggle in Manage admin accounts on the Roster tab) --
-    produces the PSE, liaises with Toyota, and approves Status 95.
-  - **Financial** (any other active admin) -- generates the WOM/PO,
-    monitors charges, and invoices.
+- **WOM lifecycle checklist ("PSE Tasks", under the Financials section)**:
+  a single persistent task per WOM that tracks the real-world PSE-to-invoice
+  workflow as a fixed 7-step checklist, not a stage machine -- there's no
+  "current stage" a WOM can be in; instead each step is either done or not,
+  and the task itself only ever completes once every step is checked off.
+  This is kept entirely separate from the WOM's own `status` column (which
+  still only ever gates whether a WOM can be allocated to; a WOM stays
+  "open" for its entire time on the checklist, then flips to `invoiced`
+  when the last step -- Invoice -- is checked). A WOM auto-enters the
+  checklist the moment it first syncs in from Smartsheet, and the same one
+  task sticks with it the whole way through
+  (`WOM_LIFECYCLE_STEPS`/`refreshWomLifecycleTask` in `server/data/db.js`):
 
-  If nobody's been designated reviewer yet, every admin can act on every
-  step, so the feature isn't locked up before that one-time setup. The full
-  stage/action state machine (`PSE_STAGES`/`PSE_ACTIONS` in
-  `server/data/db.js`, `PUT /api/woms/:code/pse/actions/:action`):
+  | # | Step | Role | How it completes |
+  |---|---|---|---|
+  | 1 | Send PSE to Toyota | Reviewer | Manual -- "PSE produced -- send to Toyota" button, captures the Toyota email + date sent |
+  | 2 | Create WOM & PO | Financial | Auto -- completes itself once a Maximo/PO # is on file for the WOM |
+  | 3 | Schedule vendor | Tech | Auto -- completes itself once any hours are allocated against the WOM on the calendar |
+  | 4 | Work complete | Tech | Auto -- completes itself once the WOM is marked complete (timecards) |
+  | 5 | Post applied cost | Financial | Auto -- completes itself once an applied cost is on file for the WOM |
+  | 6 | Review charges | *(shared -- RFM & Admin together)* | Manual -- a single "Mark reviewed" click, no role gate |
+  | 7 | Invoice | Financial | Manual -- a small form for batch # and invoice #; also flips the WOM's own `status` to `invoiced` |
 
-  | Stage | Owner | Action(s) that leave it |
-  |---|---|---|
-  | Review & produce PSE | Reviewer | PSE produced &rarr; sent to Toyota |
-  | Awaiting Toyota approval | Reviewer | Approved &rarr; Generate WOM/PO; or snooze the follow-up |
-  | Generate WOM / PO | Financial | Generated with PO in hand &rarr; Ready to schedule (or Blocked, see below); or generated but still missing the PO &rarr; back to Reviewer |
-  | Awaiting Toyota PO # | Reviewer | PO received &rarr; Ready to schedule (or Blocked); or snooze the follow-up |
-  | Blocked from scheduling (PO pending) | Reviewer | Clear the block &rarr; Ready to schedule |
-  | Ready to schedule | *(technician, via Schedule/Tech Allocation)* | Marking the WOM complete auto-advances it |
-  | Check expenses & invoicing | Financial | Sent for Status 95 approval (can be put **on hold** meanwhile -- see below) |
-  | Sent for Status 95 approval | Reviewer | Approved &rarr; ready to invoice; or rejected ("not sufficient") &rarr; back to Check expenses |
-  | Approved -- ready to invoice | Financial | Marked invoiced &rarr; **closed**, and the underlying WOM's own `status` flips to `invoiced` |
-
-  A **"don't schedule until Toyota PO"** flag (settable at any stage before
-  scheduling) routes a WOM to the reviewer's "Blocked" list instead of
-  "Ready to schedule" once the WOM/PO is generated, for a job that
-  shouldn't start until the real PO is confirmed. **Follow-up reminders**:
-  entering "Awaiting Toyota approval" or "Awaiting Toyota PO #" sets a
-  follow-up date 14 days out; a **"Still waiting"** button snoozes it
-  another 30 days each time, so an approval that drags on keeps resurfacing
-  rather than silently sitting untouched. **Hold reasons** (only while
-  "Check expenses & invoicing"): vendor invoice pending, labor allocations
-  pending, or a free-text "other" -- purely an annotation, doesn't change
-  the stage, just flags the task as blocked rather than actionable right
-  now. Every transition is audit-logged (`PSE_STAGE_ADVANCED`).
+  Two roles still split the manual work, matching how this is actually
+  done -- **Reviewer** (exactly one admin at a time, designated via a
+  **"Set as reviewer"** toggle in Manage admin accounts on the Roster tab)
+  sends the PSE to Toyota; **Financial** (any other active admin) creates
+  the WOM/PO, posts cost, and invoices. If nobody's been designated
+  reviewer yet, every admin can act on every step, so the feature isn't
+  locked up before that one-time setup. "Review charges" has no role at
+  all -- it's a shared step either an RFM or an Admin can check off, since
+  reviewing charges together is a joint action rather than one person's
+  job. Every step still carries a role field even where it's auto-completed
+  (used for queue-visibility -- e.g. "Schedule vendor" and "Work complete"
+  are tagged Tech even though nothing here gives a technician a button to
+  click, since a calendar entry or a timecard is what completes them).
+  Completing a manual step is always audit-logged (`WOM_LIFECYCLE_STEP_COMPLETED`).
+  - **Steps can complete out of order.** The checklist doesn't enforce a
+    strict sequence -- e.g. a Maximo/PO # can land before the PSE is
+    formally logged as sent to Toyota, and that's fine; each step just
+    reflects whether its own underlying condition is true. The task's
+    "next up" label always shows whichever step is *first* in the list
+    that isn't yet done, even if a later step already is, since that's
+    still the next thing genuinely missing from the record.
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from
@@ -642,34 +640,35 @@ Demo logins:
     and on the matching task in Priorities &rarr; My Work, since they're
     the same underlying WOM. Available from either surface
     (`openPseSentToToyotaModal` in `adminReview.js` and its mirror in
-    `tasks.js`); the other PSE actions are unaffected and still fire
-    directly.
-  - **A follow-up date can be rescheduled directly, independent of the
-    "Still waiting" 30-day snooze** -- a **Reschedule** link next to any
-    "Follow Up" badge opens a single-date modal (`PATCH
-    /api/woms/:code/pse/followup`, admin-only, audit-logged as
-    `PSE_FOLLOWUP_RESCHEDULED`) that sets that exact date without moving
-    the WOM's stage or touching anything else it's carrying (Toyota email/
-    date included). This is how a follow-up gets pulled in or pushed out
-    on its own, separate from actually advancing or snoozing the stage.
-  - **Where does a PSE task actually go?** It never just disappears.
-    Completing a stage's task and creating the next stage's task
-    (`syncPseStageTask`) happens on *every* stage transition, identically
-    whether a person clicked the action button or an overnight Smartsheet
-    sync moved it (`ensurePseStage`/`applyPseAction` both call the same
-    function) -- so a WOM always has exactly one open task representing
-    wherever it currently sits, and that task shows up in both places at
-    once: the dedicated Financials &rarr; PSE Tasks list (grouped by
-    stage) and the general Priorities &rarr; My Work / Unassigned board
-    (as a `category: "pse"` task). There's no separate filter or hidden
-    holding pen -- if a WOM isn't showing up, it's either been completed
-    all the way to `closed` (see the stage table above) or the search/
-    filter on the current view is hiding it.
+    `tasks.js`).
+  - **No automatic follow-up reminders and no "don't schedule until Toyota
+    PO" hold** -- both existed in an earlier version of this feature and
+    were deliberately dropped. Scheduling is calendar-only now (whatever a
+    tech puts on the calendar is what completes "Schedule vendor," full
+    stop, with no gate in front of it), and nothing sets or snoozes a
+    follow-up date on its own. The existing general task-edit feature (see
+    below) can still hand-adjust a lifecycle task's own due date if one is
+    ever needed, but nothing does so automatically.
+  - **Where does a lifecycle task actually go, and what happens once it's
+    fully checked off?** It never just disappears. The same one task
+    (`lifecycleTaskSourceKey`, upserted by `refreshWomLifecycleTask` after
+    every relevant change -- a sync, a manual step, or a lazy catch-up on
+    every task-list read) shows up in both places at once: the dedicated
+    Financials &rarr; PSE Tasks list and the general Priorities &rarr; My
+    Work / Unassigned board (as a `category: "wom_workflow"` task). Once
+    every step is checked, the task completes for good -- `reopenIfClosed`
+    is off, so it never reopens even if a later sync touches that WOM
+    again -- and it moves to the Completed filter, carrying its full
+    history of when each step happened and who did it (`wom_lifecycle_steps`
+    table) as a permanent record attached to that WOM, effectively the
+    WOM's own paper trail. Photos/attachments for the job can already be
+    attached directly to this task the same way any task supports
+    attachments, so they travel with it.
 - **Cost Analysis (under the Financials section, next to PSE Tasks)**: a
   portfolio-wide estimated-vs-applied view across **every** WOM on file
   (`GET /api/woms/cost-summary`, admin-only) -- not just the ones
-  currently in the PSE pipeline, so a WOM that was never routed through
-  PSE (or has already been invoiced and closed) still counts. Five stat
+  currently on the lifecycle checklist, so a WOM that never went through
+  it (or has already been invoiced and closed) still counts. Five stat
   tiles up top: Total Estimated, Total Applied, Estimated minus Applied,
   and two clickable counts that jump straight to their own list below --
   **Overquoted on Labor** (WOMs where the estimated price came in higher
@@ -805,51 +804,51 @@ Demo logins:
     itself a kind of work the way Type is. Switching modes re-renders
     against the already-fetched task list -- no extra round trip.
   - **A WOM-workflow task's detail panel takes the real action, not a
-    generic "mark complete."** Opening a task like "Produce PSE for X"
-    fetches that WOM's live `pse_stage` and, if it has one, renders the
-    actual PSE action buttons (mirroring `PSE_STAGE_ACTIONS` in
-    `adminReview.js`'s own PSE Tasks tab, including hold reasons at
-    Check expenses and the schedule-block toggle) -- clicking one calls
-    the same `POST /api/woms/:code/pse/actions/:action` the dedicated
-    Financials &rarr; PSE Tasks page uses, so it genuinely advances the
-    WOM (which in turn completes the old task and creates the next one,
-    per `syncPseStageTask`) instead of just closing the task card with
-    nothing behind it. Falls back to the generic Start/Waiting/Complete/
-    Cancel buttons for a stage with no PSE action of its own (e.g. a
-    technician's "Schedule work" task at `ready_to_schedule`).
+    generic "mark complete."** Opening a task like "WOM lifecycle:
+    LC-1234" fetches that WOM's live `lifecycleSteps` and renders the
+    same 7-step checklist described above (mirroring
+    `WOM_LIFECYCLE_STEP_HINTS`/the checklist markup in `adminReview.js`'s
+    own PSE Tasks tab), with whichever manual step is next rendered as a
+    real button/form -- clicking it calls the same
+    `POST /api/woms/:code/lifecycle/:stepKey` the dedicated Financials
+    &rarr; PSE Tasks page uses, so it genuinely checks off that step on the
+    one shared task (there's nothing to "advance" to -- it's the same task
+    the whole way through) instead of just closing the task card with
+    nothing behind it. An auto-trigger step (e.g. "Create WOM & PO") shows
+    plain hint text instead of a button, since nothing here completes it --
+    only the underlying WOM data changing does.
   - **No duplicate tasks, ever, no matter how many times a sync or action
     re-fires**: every automated task gets a deterministic `source_key`
-    (e.g. `WOM-20528831-REVIEW-EXPENSES`) and is written through
+    (e.g. `WOM-20528831-LIFECYCLE`) and is written through
     `upsertTaskBySourceKey` -- if that key already exists, its fields are
-    refreshed in place (and it's reopened if it had been completed/
-    cancelled, since the rule firing again means the work is genuinely
-    back) rather than a second row ever being inserted. Recurring tasks
-    pass `reopenIfClosed: false` instead, since re-upserting this week's
-    already-completed task on the next page load must not silently
-    un-complete it.
-  - **WOM workflow rules, tied to the PSE pipeline's own stage changes**
-    (`PSE_STAGE_TASKS`/`syncPseStageTask` in `server/data/db.js`, reusing
-    the exact same `pse_stage` machine described above -- no separate
-    "WOM missing a task" logic to keep in sync): entering **Review &
-    produce PSE** creates the reviewer's produce-PSE task; **Generate WOM /
-    PO** creates financial's create-WOM/PO task; **Ready to schedule**
-    creates an unassigned `tech`-role "Schedule work" task any technician
-    can pick up; marking work complete auto-completes that scheduling task
-    and creates "Review expenses" (flagged as a **workflow exception**
-    automatically while the WOM has an active hold reason -- re-evaluated
-    live if a hold is set/cleared afterward, not just at task creation);
-    **Approve for billing (Status 95)** and **Generate batch and bill
-    Toyota** follow the same pattern through to invoicing, at which point
-    every remaining task for that WOM is swept closed as a safety net.
+    refreshed in place rather than a second row ever being inserted. A WOM
+    lifecycle task passes `reopenIfClosed: false` once fully checked off
+    (like recurring tasks do), since re-upserting an already-completed
+    checklist on the next sync or page load must not silently un-complete
+    it.
+  - **WOM workflow rules, tied to the checklist's own auto-trigger steps**
+    (`checkWomLifecycleAutoSteps`/`refreshWomLifecycleTask` in
+    `server/data/db.js`, called after every write that could satisfy a
+    step -- a Smartsheet sync, `PATCH /:code/details`, `PATCH
+    /:code/pricing`, `POST /:code/complete` -- plus a lazy catch-up
+    (`refreshAllOpenWomLifecycles`) run on every task-list read, needed
+    for "Schedule vendor" since there's no single write path that covers
+    every way an allocation can be created): a WOM entering the checklist
+    for the first time creates its one lifecycle task, assigned to
+    whichever role owns the first incomplete step; every step completing
+    (auto or manual) just re-evaluates and re-upserts that same task with
+    its role and "next up" label moved forward, until the last step
+    (Invoice) closes it for good and flips the WOM's own `status` to
+    `invoiced`.
   - **WOM status history** (`wom_status_history` table,
-    `GET /api/woms/:code/history`, admin-only): every meaningful
-    status/`pse_stage` change, recorded separately from the tasks
-    themselves -- keeps both the real event time (`changed_at`, known for
-    in-app actions) and when this app actually noticed it
-    (`detected_at`, always known, since a Smartsheet sync is a manual,
-    point-in-time pull) -- the raw material for later "how long does a
-    project spend in each step" analytics without needing to reconstruct
-    it from the tasks table.
+    `GET /api/woms/:code/history`, admin-only): every meaningful `status`
+    change, recorded separately from the tasks themselves -- keeps both
+    the real event time (`changed_at`, known for in-app actions) and when
+    this app actually noticed it (`detected_at`, always known, since a
+    Smartsheet sync is a manual, point-in-time pull). The lifecycle
+    checklist's own step-by-step history (`wom_lifecycle_steps` table)
+    covers the finer-grained "when did each step happen and who did it"
+    record that sits alongside this.
   - **Recurring admin tasks**, not tied to any WOM (`ensureRecurringTasks`
     in `server/data/db.js`, called lazily whenever the task list loads --
     there's no cron/scheduler anywhere in this app): technician time
@@ -934,7 +933,7 @@ Demo logins:
     comment on a task they can see. Every automated action is logged to
     the Audit Trail (`TASK_CREATED`, `TASK_COMPLETED`, `TASK_STATUS_CHANGED`,
     `TASK_REASSIGNED`, on top of the existing `WOM_STATUS_CHANGED`/
-    `PSE_STAGE_ADVANCED`).
+    `WOM_LIFECYCLE_STEP_COMPLETED`).
   - Deliberately **not yet built** (Phase 1 stops here by design, before
     the larger financial/vendor analytics pieces): vendor-triggered tasks,
     financial-module tasks/alerts, vendor profile analytics, the
@@ -1004,8 +1003,8 @@ Demo logins:
   header text on screen at the moment of the rename itself doesn't
   live-refresh (it's only drawn once per page load). The same panel also
   has a **"Set as reviewer" / "Reviewer -- remove"** toggle per admin,
-  designating who plays the "reviewer" role in the PSE pipeline (see PSE
-  Tasks below) -- only one at a time, enforced server-side
+  designating who plays the "reviewer" role in the WOM lifecycle checklist
+  (see PSE Tasks below) -- only one at a time, enforced server-side
   (`PATCH /api/admin/admins/:id/pse-reviewer`).
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
@@ -1283,10 +1282,13 @@ a missing code is obvious rather than silently blank.
 **Task engine tables.** `tasks` (one row per task, every field the Priorities
 board reads/filters on -- see the task-engine feature bullet above for the
 full field list), `task_comments` (threaded notes on a task), `wom_status_history`
-(every meaningful WOM `status`/`pse_stage` change, kept separately from the
+(every meaningful WOM `status` change, kept separately from the
 tasks it drives so it survives independently of whatever task currently
-exists for that state), and `wom_sync_log` (one row per Smartsheet sync,
-backing the sync panel's persisted "Last sync" summary). None of this
+exists for that state), `wom_lifecycle_steps` (one row per completed
+checklist step per WOM -- `completed_at`/`completed_by`, the permanent
+paper trail behind the WOM lifecycle checklist), and `wom_sync_log` (one
+row per Smartsheet sync, backing the sync panel's persisted "Last sync"
+summary). None of this
 replaces or restructures any existing table -- `tasks.related_wom_code` etc.
 just reference the existing `woms`/`vendors`/`locations`/`technicians` rows
 by their existing keys.
@@ -1674,22 +1676,20 @@ server/
                               :code/pricing (hand-entered estimated/applied $, overwritten by a
                               later Smartsheet sync), GET :code/lookup (WOM Lookup: all-time total
                               hours + a per-technician breakdown, open to any logged-in user),
-                              POST :code/complete (tech-facing, also advances the PSE pipeline if
-                              the WOM was ready_to_schedule -- see advancePseOnComplete),
-                              GET pse/tasks (admin-only, role-filtered PSE pipeline task list),
-                              POST :code/pse/actions/:action (admin-only, the state machine's own
-                              stage transitions -- accepts toyotaEmail/sentAt on mark_pse_produced
-                              to record who a PSE was sent to and when), POST :code/pse/hold
-                              (vendor_invoice/labor_allocations/other, admin-only), POST
-                              :code/pse/schedule-block ("don't schedule until Toyota PO" flag,
-                              admin-only), PATCH :code/pse/followup (admin-only, reschedules the
-                              follow-up date on its own without touching stage/hold/Toyota fields,
-                              audit-logged as PSE_FOLLOWUP_RESCHEDULED), GET cost-summary
+                              POST :code/complete (tech-facing, also re-checks the WOM lifecycle
+                              checklist's auto-trigger steps -- see checkWomLifecycleAutoSteps),
+                              GET lifecycle/tasks (admin-only, role-filtered list of WOMs with an
+                              open lifecycle checklist task), POST :code/lifecycle/:stepKey
+                              (admin-only, completes one manual checklist step -- accepts
+                              toyotaEmail/sentAt on sent_to_toyota to record who a PSE was sent to
+                              and when, batchNumber/invoiceNumber on invoiced, which also flips the
+                              WOM's own status to invoiced -- audit-logged as
+                              WOM_LIFECYCLE_STEP_COMPLETED), GET cost-summary
                               (admin-only, estimated-vs-applied totals plus the overquoted-on-labor
                               and applied-no-PO lists behind the Cost Analysis tab),
                               GET :code/history (admin-only, the wom_status_history rows behind
-                              the task engine's WOM-triggered tasks -- every status/pse_stage
-                              change with both real event time and detected-by-this-app time),
+                              the task engine's WOM-triggered tasks -- every status change with
+                              both real event time and detected-by-this-app time),
                               DELETE :code (admin-only, blocked if hours are already allocated
                               against it unless force is passed)
     admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
@@ -1819,20 +1819,8 @@ tests/
                                         from the row kept verbatim as smartsheetData, admin-only,
                                         hand-entered pricing survives until a
                                         real sync, a synced row's line number/Smartsheet link come
-                                        through and it auto-enters the PSE pipeline at pse_review
-  pse.test.js                Full PSE pipeline state machine: a synced WOM enters at pse_review;
-                                 before a reviewer is designated any admin can act, once one is set a
-                                 non-reviewer is blocked from reviewer-only actions (and vice versa); a
-                                 technician can't call any PSE endpoint; wrong-stage and unknown-action
-                                 requests are rejected; snoozing a follow-up changes the date without
-                                 changing stage; the full happy path from PSE production through Toyota
-                                 approval, WOM/PO generation (including the "still missing the PO" branch
-                                 back to the reviewer), marking a WOM complete auto-advancing it to
-                                 check_expenses, hold reasons (fixed + free-text "other", and clearing
-                                 one), a Status 95 rejection looping back before approval, invoicing
-                                 closing the pipeline and flipping the WOM's own status, a closed WOM
-                                 never appearing on anyone's task list, and the schedule-block flag
-                                 routing a generated WOM/PO to "blocked" instead of "ready to schedule"
+                                        through and it enters the WOM lifecycle checklist with every
+                                        step still open
   tasks.test.js               Task engine: manual creation (technician force-assigned to self,
                                  only an admin can assign to someone else), status transitions
                                  (start/complete timestamps), comments (own task only, empty
@@ -1840,25 +1828,34 @@ tests/
                                  urgency, recurring tasks staying idempotent across repeated loads
                                  within the same period (and not un-completing themselves), WOM-sync-
                                  triggered workflow tasks getting a stable source key (re-syncing
-                                 never duplicates), a PSE stage advance completing the old stage's
-                                 task and creating the new one, a hold flagging check_expenses as a
-                                 workflow exception live (not just at task creation), wom_status_history
-                                 recording both status and pse_stage transitions (admin-only to read),
-                                 and the Smartsheet sync route's task/exception counters + persisted
-                                 wom_sync_log last-sync summary; user-defined recurring task templates
-                                 (creation validation, today-vs-non-today occurrence generation, no
-                                 duplication across repeated reads, completion persisting, dueTime
-                                 validation, dueAt+dueTime combining); PSE Toyota email/date capture on
-                                 mark_pse_produced (with/without an email, a custom followupAt
-                                 override), the standalone pse/followup reschedule endpoint (reflected
-                                 on the matching task, rejected for a WOM not in the pipeline,
-                                 technician forbidden), and the cost-summary endpoint's totals plus its
-                                 overquoted-on-labor and applied-no-PO lists (technician forbidden); editing a
-                                 hand-added task (title/type/priority/due date/related WOM/vendor/employee all
-                                 changing, fields left out keeping their prior value, an unknown WOM or bad
-                                 priority rejected, clearing the title rejected, a technician editing their own
-                                 task but forbidden from someone else's or from an automated WOM-workflow task,
-                                 and editing an unknown task 404ing)
+                                 never duplicates), and the Smartsheet sync route's task/exception
+                                 counters + persisted wom_sync_log last-sync summary; user-defined
+                                 recurring task templates (creation validation, today-vs-non-today
+                                 occurrence generation, no duplication across repeated reads,
+                                 completion persisting, dueTime validation, dueAt+dueTime combining);
+                                 editing a hand-added task (title/type/priority/due date/related
+                                 WOM/vendor/employee all changing, fields left out keeping their
+                                 prior value, an unknown WOM or bad priority rejected, clearing the
+                                 title rejected, a technician editing their own task but forbidden
+                                 from someone else's or from an automated WOM-workflow task, and
+                                 editing an unknown task 404ing). **WOM lifecycle checklist**: a
+                                 synced WOM gets exactly one persistent task assigned to whichever
+                                 role owns its first incomplete step; a hand-entered Maximo/PO #
+                                 auto-completes "Create WOM & PO" and moves the task's role forward
+                                 to the next step's owner; a technician putting the WOM on their
+                                 calendar auto-completes "Schedule vendor" (via the lazy catch-up on
+                                 the next task-list read, since there's no single write path for
+                                 every way an allocation gets created); invoicing (with batch #/
+                                 invoice # required) completes the last step, flips the WOM's own
+                                 status to invoiced, and completes the underlying task for good
+                                 (`reopenIfClosed: false`, so a later sync never reopens it); a
+                                 technician can't view WOM history or complete a lifecycle step.
+                                 **WOM lifecycle: Toyota email/date + cost summary**: the
+                                 sent_to_toyota step records who a PSE was sent to and when (visible
+                                 on the matching task), the cost-summary endpoint's totals across
+                                 every non-cancelled WOM plus its overquoted-on-labor and
+                                 applied-no-PO lists (technician forbidden), and a sync entering a
+                                 new WOM into the checklist reporting one task created.
 public/
   index.html
   css/styles.css

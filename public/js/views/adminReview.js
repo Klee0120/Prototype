@@ -95,38 +95,15 @@ function sectionForTab(tab) {
 
 const WOM_STATUS_BADGE_CLASS = { open: "approved", requested: "submitted", invoiced: "submitted", cancelled: "rejected", closed: "rejected" };
 
-// Which action buttons a task card shows at each PSE stage -- mirrors
-// PSE_ACTIONS/PSE_STAGES in server/data/db.js, which is what actually
-// enforces legality; this only decides what to show, filtered further by
-// whether the viewer holds the "reviewer" or "financial" role for the
-// button in question.
-const PSE_STAGE_ACTIONS = {
-  pse_review: [{ action: "mark_pse_produced", label: "PSE produced -- send to Toyota", role: "reviewer" }],
-  awaiting_toyota_approval: [
-    { action: "toyota_approved", label: "Toyota approved", role: "reviewer" },
-    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
-  ],
-  generate_wom_po: [
-    { action: "generated_with_po", label: "Generated -- PO in hand", role: "financial" },
-    { action: "generated_missing_po", label: "Generated -- still missing Toyota PO", role: "financial" },
-  ],
-  awaiting_toyota_po: [
-    { action: "po_received", label: "PO received", role: "reviewer" },
-    { action: "snooze_followup", label: "Still waiting -- follow up later", role: "reviewer" },
-  ],
-  schedule_blocked: [{ action: "clear_schedule_block", label: "Clear block -- ready to schedule", role: "reviewer" }],
-  check_expenses: [{ action: "send_status95", label: "Send for Status 95 approval", role: "financial" }],
-  pending_status95_approval: [
-    { action: "approve_status95", label: "Approve", role: "reviewer" },
-    { action: "reject_status95", label: "Not sufficient -- back to Admin", role: "reviewer" },
-  ],
-  ready_to_invoice: [{ action: "mark_invoiced", label: "Mark invoiced", role: "financial" }],
+// What to say under an auto-trigger lifecycle step that's still open --
+// mirrors WOM_LIFECYCLE_STEPS in server/data/db.js (duplicated rather than
+// shared, same pattern as this app's other per-view lookup tables).
+const WOM_LIFECYCLE_STEP_HINTS = {
+  wom_po_created: "Completes automatically once a Maximo/PO # is on file for this WOM.",
+  vendor_scheduled: "Completes automatically once this WOM is put on a technician's calendar.",
+  work_complete: "Completes automatically once the WOM is marked complete from Timekeeping.",
+  cost_applied: "Completes automatically once an applied cost is on file for this WOM.",
 };
-
-const PSE_HOLD_LABELS = { vendor_invoice: "vendor invoice", labor_allocations: "labor allocations to post", other: "other" };
-// The schedule-block flag only means anything before a WOM's actually
-// scheduled -- offered at whichever stages still precede that decision.
-const PSE_SCHEDULE_BLOCK_STAGES = ["generate_wom_po", "awaiting_toyota_po", "schedule_blocked"];
 function womStatusBadgeClass(status) {
   return WOM_STATUS_BADGE_CLASS[status] || "draft";
 }
@@ -3060,22 +3037,22 @@ export async function renderAdminReview(container) {
     return el;
   }
 
-  // "PSE Tasks": every WOM currently waiting on an admin action somewhere
-  // in the PSE-to-invoice pipeline (see PSE_STAGES/PSE_ACTIONS in
-  // server/data/db.js), split by role -- the designated reviewer (produces
-  // the PSE, liaises with Toyota, approves Status 95) sees their own
-  // stages; every other admin sees the "financial" ones (issue the WOM/PO,
-  // monitor charges, invoice). If nobody's been designated as reviewer
-  // yet, everyone sees everything, so the feature isn't unusable before
-  // that one-time setup step (Manage admin accounts, on the Roster tab).
+// "PSE Tasks": every WOM whose lifecycle checklist isn't finished yet
+  // (see WOM_LIFECYCLE_STEPS in server/data/db.js), split by role -- the
+  // designated reviewer (sends PSE to Toyota) sees WOMs whose next step is
+  // theirs; every other admin sees the "financial" ones (create the WOM/PO,
+  // post cost, invoice). "Review charges" has no single owner -- either
+  // role sees it. If nobody's been designated as reviewer yet, everyone
+  // sees everything, so the feature isn't unusable before that one-time
+  // setup step (Manage admin accounts, on the Roster tab).
   async function drawPseTasks(content) {
-    const data = await api.get("/api/woms/pse/tasks");
+    const data = await api.get("/api/woms/lifecycle/tasks");
     const isReviewer = !data.reviewerAdminId || data.reviewerAdminId === state.user.id;
     const isFinancial = !data.reviewerAdminId || data.reviewerAdminId !== state.user.id;
 
     content.innerHTML = `
       <p class="review-checklist-hint">
-        Every WOM currently waiting on an admin somewhere between PSE creation and invoicing.
+        Every WOM currently mid-checklist between PSE creation and invoicing.
         ${
           data.reviewerAdminId
             ? ""
@@ -3085,24 +3062,20 @@ export async function renderAdminReview(container) {
       <div class="pse-task-list">
         ${
           data.tasks.length === 0
-            ? `<p class="empty-note">No open PSE tasks right now.</p>`
+            ? `<p class="empty-note">No open WOM lifecycle tasks right now.</p>`
             : data.tasks.map((w) => renderPseTaskCard(w, isReviewer, isFinancial)).join("")
         }
       </div>
     `;
 
-    content.querySelectorAll(".pse-task-action").forEach((btn) => {
+    content.querySelectorAll(".pse-lifecycle-toyota-btn").forEach((btn) => {
+      btn.addEventListener("click", () => openPseSentToToyotaModal(btn.dataset.code, content));
+    });
+    content.querySelectorAll(".pse-lifecycle-reviewed-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        // "PSE produced -- send to Toyota" is the one action worth a real
-        // record of who at Toyota received it and when, for a later
-        // follow-up -- everything else can just fire immediately.
-        if (btn.dataset.action === "mark_pse_produced") {
-          openPseSentToToyotaModal(btn.dataset.code, content);
-          return;
-        }
         btn.disabled = true;
         try {
-          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/actions/${btn.dataset.action}`, {});
+          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/lifecycle/charges_reviewed`, {});
           await drawPseTasks(content);
         } catch (err) {
           window.alert(err.message);
@@ -3110,86 +3083,69 @@ export async function renderAdminReview(container) {
         }
       });
     });
-
-    content.querySelectorAll(".pse-reschedule-btn").forEach((btn) => {
-      btn.addEventListener("click", () => openPseRescheduleModal(btn.dataset.code, btn.dataset.current, content));
-    });
-
-    content.querySelectorAll(".pse-hold-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const reason = btn.dataset.reason;
-        let note;
-        if (reason === "other") {
-          note = window.prompt("What's this WOM waiting on?");
-          if (note == null) return;
-        }
+    content.querySelectorAll(".pse-lifecycle-invoice-form").forEach((form) => {
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const msg = form.querySelector(".save-message");
         try {
-          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/hold`, { holdReason: reason, holdNote: note });
+          await api.post(`/api/woms/${encodeURIComponent(form.dataset.code)}/lifecycle/invoiced`, {
+            batchNumber: form.batchNumber.value.trim(),
+            invoiceNumber: form.invoiceNumber.value.trim(),
+          });
           await drawPseTasks(content);
         } catch (err) {
-          window.alert(err.message);
-        }
-      });
-    });
-    content.querySelectorAll(".pse-hold-clear-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/pse/hold`, {});
-          await drawPseTasks(content);
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
-    });
-    content.querySelectorAll(".pse-schedule-block-toggle").forEach((cb) => {
-      cb.addEventListener("change", async (e) => {
-        const checked = e.target.checked;
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(cb.dataset.code)}/pse/schedule-block`, { blocked: checked });
-          await drawPseTasks(content);
-        } catch (err) {
-          window.alert(err.message);
-          e.target.checked = !checked;
+          msg.textContent = err.message;
         }
       });
     });
   }
 
+  // Every step of one WOM's lifecycle checklist, in order -- a checkmark
+  // and when/how it completed for the ones already done, and for whichever
+  // step is next: a plain explanation for an auto-trigger step (nothing to
+  // click), or the real action for a manual one the viewer's role can take.
   function renderPseTaskCard(w, isReviewer, isFinancial) {
-    const buttons = (PSE_STAGE_ACTIONS[w.pseStage] || [])
-      .filter((a) => (a.role === "reviewer" ? isReviewer : isFinancial))
-      .map(
-        (a) =>
-          `<button type="button" class="btn btn-secondary pse-task-action" data-code="${escapeHtml(w.code)}" data-action="${a.action}">${escapeHtml(a.label)}</button>`
-      )
+    const roleAllowed = (role) => role === null || (role === "reviewer" ? isReviewer : isFinancial);
+    const nextStep = w.lifecycleSteps.find((s) => !s.completedAt);
+
+    const stepRows = w.lifecycleSteps
+      .map((s) => {
+        const done = Boolean(s.completedAt);
+        const meta = done ? `${s.completedBy === "sync" ? "auto-completed" : "completed"} ${new Date(s.completedAt).toLocaleString()}` : "";
+        return `
+        <div class="wom-lifecycle-step${done ? " wom-lifecycle-step-done" : ""}">
+          <span class="wom-lifecycle-step-icon">${done ? "\u2713" : "\u25CB"}</span>
+          <span class="wom-lifecycle-step-label">${escapeHtml(s.label)}</span>
+          <span class="wom-lifecycle-step-meta">${escapeHtml(meta)}</span>
+        </div>`;
+      })
       .join("");
 
-    const overdue = w.pseFollowupAt && new Date(w.pseFollowupAt) <= new Date();
-    const followupBadge = w.pseFollowupAt
-      ? `<span class="badge badge-${overdue ? "rejected" : "draft"}">Follow up ${new Date(w.pseFollowupAt).toLocaleDateString()}</span>
-         <button type="button" class="btn btn-link pse-reschedule-btn" data-code="${escapeHtml(w.code)}" data-current="${escapeHtml(w.pseFollowupAt)}">Reschedule</button>`
-      : "";
+    let action = "";
+    if (nextStep && nextStep.trigger === "auto") {
+      if (WOM_LIFECYCLE_STEP_HINTS[nextStep.key]) {
+        action = `<p class="review-checklist-hint">${escapeHtml(WOM_LIFECYCLE_STEP_HINTS[nextStep.key])}</p>`;
+      }
+    } else if (nextStep && roleAllowed(nextStep.role)) {
+      if (nextStep.key === "sent_to_toyota") {
+        action = `<div class="pse-task-actions"><button type="button" class="btn btn-secondary pse-lifecycle-toyota-btn" data-code="${escapeHtml(w.code)}">PSE produced -- send to Toyota</button></div>`;
+      } else if (nextStep.key === "charges_reviewed") {
+        action = `<div class="pse-task-actions"><button type="button" class="btn btn-secondary pse-lifecycle-reviewed-btn" data-code="${escapeHtml(w.code)}">Mark reviewed</button></div>`;
+      } else if (nextStep.key === "invoiced") {
+        action = `
+          <form class="modal-form pse-lifecycle-invoice-form" data-code="${escapeHtml(w.code)}">
+            <div class="vendor-edit-grid">
+              <label class="profile-field"><span>Batch #</span><input name="batchNumber" type="text" required /></label>
+              <label class="profile-field"><span>Invoice #</span><input name="invoiceNumber" type="text" required /></label>
+            </div>
+            <button type="submit" class="btn btn-secondary">Invoice</button>
+            <span class="save-message"></span>
+          </form>`;
+      }
+    }
+
     const sentToToyotaLine = w.pseToyotaEmail
       ? `<div class="wom-desc">Sent to Toyota: ${escapeHtml(w.pseToyotaEmail)}${w.pseToyotaSentAt ? ` on ${new Date(w.pseToyotaSentAt).toLocaleDateString()}` : ""}</div>`
-      : "";
-    const holdBadge = w.pseHoldReason
-      ? `<span class="badge badge-rejected">On hold: ${escapeHtml(w.pseHoldReason === "other" ? w.pseHoldNote || "other" : PSE_HOLD_LABELS[w.pseHoldReason])}</span>`
-      : "";
-
-    const holdControls =
-      w.pseStage === "check_expenses"
-        ? w.pseHoldReason
-          ? `<button type="button" class="btn btn-link pse-hold-clear-btn" data-code="${escapeHtml(w.code)}">Clear hold</button>`
-          : `<button type="button" class="btn btn-link pse-hold-btn" data-code="${escapeHtml(w.code)}" data-reason="vendor_invoice">Hold: vendor invoice</button>
-             <button type="button" class="btn btn-link pse-hold-btn" data-code="${escapeHtml(w.code)}" data-reason="labor_allocations">Hold: labor allocations</button>
-             <button type="button" class="btn btn-link pse-hold-btn" data-code="${escapeHtml(w.code)}" data-reason="other">Hold: other…</button>`
-        : "";
-
-    const scheduleBlockToggle = PSE_SCHEDULE_BLOCK_STAGES.includes(w.pseStage)
-      ? `<label class="pse-schedule-block-label">
-          <input type="checkbox" class="pse-schedule-block-toggle" data-code="${escapeHtml(w.code)}" ${w.pseScheduleBlock ? "checked" : ""} />
-          Don't schedule until Toyota PO
-        </label>`
       : "";
 
     return `
@@ -3198,9 +3154,6 @@ export async function renderAdminReview(container) {
           <strong>${escapeHtml(w.description || w.code)}</strong>
           <span class="wom-code">${escapeHtml(w.code)}</span>
           ${w.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(w.smartsheetLineNumber))}</span>` : ""}
-          <span class="badge badge-submitted">${escapeHtml(w.pseStageLabel || w.pseStage)}</span>
-          ${followupBadge}
-          ${holdBadge}
         </div>
         <div class="wom-desc">
           ${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}${
@@ -3208,7 +3161,8 @@ export async function renderAdminReview(container) {
     }
         </div>
         ${sentToToyotaLine}
-        <div class="pse-task-actions">${buttons}${holdControls}${scheduleBlockToggle}</div>
+        <div class="wom-lifecycle-checklist">${stepRows}</div>
+        ${action}
       </div>
     `;
   }
@@ -3239,7 +3193,7 @@ export async function renderAdminReview(container) {
       e.preventDefault();
       const msg = form.querySelector(".save-message");
       try {
-        await api.post(`/api/woms/${encodeURIComponent(code)}/pse/actions/mark_pse_produced`, {
+        await api.post(`/api/woms/${encodeURIComponent(code)}/lifecycle/sent_to_toyota`, {
           toyotaEmail: form.toyotaEmail.value.trim(),
           sentAt: new Date(form.sentAt.value).toISOString(),
         });
@@ -3252,39 +3206,8 @@ export async function renderAdminReview(container) {
     });
   }
 
-  // Decoupled from taking a stage-advancing action -- moving a follow-up
-  // date shouldn't require re-triggering (or undoing) whatever action set
-  // it, so this is its own small modal off a "Reschedule" link.
-  function openPseRescheduleModal(code, currentIso, content) {
-    const { body, close } = openModal({
-      title: `Reschedule follow-up -- ${code}`,
-      bodyHtml: `
-        <form class="modal-form pse-reschedule-form">
-          <label class="profile-field"><span>Follow up on</span><input type="date" name="followupAt" value="${escapeHtml((currentIso || "").slice(0, 10))}" required /></label>
-          <div class="modal-form-actions">
-            <button type="submit" class="btn btn-primary">Save</button>
-          </div>
-          <span class="save-message"></span>
-        </form>
-      `,
-    });
-    const form = body.querySelector(".pse-reschedule-form");
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = form.querySelector(".save-message");
-      try {
-        await api.patch(`/api/woms/${encodeURIComponent(code)}/pse/followup`, {
-          followupAt: new Date(form.followupAt.value).toISOString(),
-        });
-        close();
-        await drawPseTasks(content);
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    });
-  }
-
   // Financials-wide estimated-vs-applied picture -- every non-cancelled
+
   // WOM, not just the ones currently sitting in the PSE pipeline. Two
   // concrete follow-up lists rather than just totals: WOMs quoted higher
   // than what actually got applied (money quoted on labor that was never

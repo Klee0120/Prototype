@@ -42,18 +42,14 @@ function presentWom(w) {
     // in on the next sync that touches it).
     smartsheetLineNumber: w.smartsheet_row_number,
     smartsheetLink: smartsheet.rowLink(w.smartsheet_row_id),
-    // Where this WOM sits in the PSE-to-invoice pipeline (see PSE_STAGES in
-    // server/data/db.js) -- null if it was never entered into the pipeline
-    // (created by hand rather than synced from Smartsheet).
-    pseStage: w.pse_stage,
-    pseStageLabel: w.pse_stage ? (db.PSE_STAGES[w.pse_stage] || {}).label || w.pse_stage : null,
-    pseHoldReason: w.pse_hold_reason,
-    pseHoldNote: w.pse_hold_note,
-    pseScheduleBlock: Boolean(w.pse_schedule_block),
-    pseFollowupAt: w.pse_followup_at,
-    pseStageUpdatedAt: w.pse_stage_updated_at,
     pseToyotaEmail: w.pse_toyota_email,
     pseToyotaSentAt: w.pse_toyota_sent_at,
+    batchNumber: w.batch_number,
+    invoiceNumber: w.invoice_number,
+    // The WOM lifecycle checklist -- every step, in order, with its
+    // completion state. Empty until the WOM has actually entered the
+    // checklist (see db.checkWomLifecycleAutoSteps, called on every sync).
+    lifecycleSteps: db.getWomLifecycleSteps(w.code),
   };
 }
 
@@ -146,8 +142,11 @@ router.patch("/:code/details", requireAuth, requireAdmin, (req, res) => {
     subsidiaryCode: subsidiaryCode || null,
     maximoNumber: maximoNumber || null,
   });
+  // A hand-entered Maximo/PO # completes the checklist's "Create WOM & PO"
+  // step the same as one arriving via sync.
+  db.checkWomLifecycleAutoSteps(wom.code);
   db.addAudit(req.user.id, "WOM_UPDATED", `${req.user.name} updated WOM ${wom.code}`);
-  res.json(presentWom(wom));
+  res.json(presentWom(db.findWom(wom.code)));
 });
 
 // Hand-entering pricing for a WOM without a Smartsheet match yet -- a later
@@ -156,9 +155,12 @@ router.patch("/:code/pricing", requireAuth, requireAdmin, (req, res) => {
   const { estimatedPrice, appliedPrice } = req.body || {};
   const wom = db.setWomPricing(req.params.code, { estimatedPrice, appliedPrice });
   if (!wom) return res.status(404).json({ error: "WOM not found" });
+  // A hand-entered applied cost completes the checklist's "Post applied
+  // cost" step the same as one arriving via sync.
+  db.checkWomLifecycleAutoSteps(wom.code);
 
   db.addAudit(req.user.id, "WOM_PRICING_UPDATED", `${req.user.name} updated pricing for WOM ${wom.code}`);
-  res.json(presentWom(wom));
+  res.json(presentWom(db.findWom(wom.code)));
 });
 
 // Lets a technician mark a job done from their own allocation screen
@@ -167,101 +169,45 @@ router.patch("/:code/pricing", requireAuth, requireAdmin, (req, res) => {
 router.post("/:code/complete", requireAuth, (req, res) => {
   const wom = db.setWomStatus(req.params.code, "closed", { changedBy: req.user.id, source: "tech_complete" });
   if (!wom) return res.status(404).json({ error: "WOM not found" });
-  // Only actually moves anything if this WOM was in the PSE pipeline and
-  // waiting to be worked -- a no-op otherwise (see advancePseOnComplete).
-  db.advancePseOnComplete(wom.code);
+  // Re-checks every lifecycle step, not just "work complete" -- a no-op for
+  // a WOM outside the checklist entirely.
+  db.checkWomLifecycleAutoSteps(wom.code);
 
   db.addAudit(req.user.id, "WOM_MARKED_COMPLETE", `${req.user.name} marked ${wom.code} complete`);
   res.json(presentWom(db.findWom(wom.code)));
 });
 
-// PSE pipeline: everything an admin can do to move a WOM through it. See
-// PSE_STAGES/PSE_ACTIONS in server/data/db.js for the full state machine.
-router.get("/pse/tasks", requireAuth, requireAdmin, (req, res) => {
+// The WOM lifecycle checklist: the Financials-wide list of WOMs still
+// mid-checklist, split by role the same way the task board's Unassigned
+// queue is, plus the two manual steps a person actually clicks through.
+router.get("/lifecycle/tasks", requireAuth, requireAdmin, (req, res) => {
   res.json({
     reviewerAdminId: db.getPseReviewerId(),
-    stages: db.PSE_STAGES,
-    tasks: db.listPseTasks(req.user).map(presentWom),
+    steps: db.WOM_LIFECYCLE_STEPS,
+    tasks: db.listWomLifecycleTasks(req.user).map(presentWom),
   });
 });
 
-router.post("/:code/pse/actions/:action", requireAuth, requireAdmin, (req, res) => {
-  const { toyotaEmail, sentAt, followupAt } = req.body || {};
-  const result = db.applyPseAction(req.params.code, req.params.action, req.user, { toyotaEmail, sentAt, followupAt });
+router.post("/:code/lifecycle/:stepKey", requireAuth, requireAdmin, (req, res) => {
+  const { toyotaEmail, sentAt, batchNumber, invoiceNumber } = req.body || {};
+  const result = db.completeWomLifecycleStep(req.params.code, req.params.stepKey, req.user, { toyotaEmail, sentAt, batchNumber, invoiceNumber });
   if (result.error === "not_found") return res.status(404).json({ error: "WOM not found" });
-  if (result.error === "unknown_action") return res.status(400).json({ error: `Unknown action: ${req.params.action}` });
-  if (result.error === "wrong_stage") {
-    const stageLabel = result.currentStage ? (db.PSE_STAGES[result.currentStage] || {}).label || result.currentStage : "not in the PSE pipeline";
-    return res.status(409).json({ error: `That step doesn't apply here -- ${req.params.code} is currently at: ${stageLabel}` });
-  }
+  if (result.error === "unknown_step") return res.status(400).json({ error: `Unknown step: ${req.params.stepKey}` });
+  if (result.error === "not_manual") return res.status(400).json({ error: "That step completes on its own once its data syncs in -- it's not a button to click" });
+  if (result.error === "already_done") return res.status(409).json({ error: `${req.params.stepKey} is already done` });
   if (result.error === "wrong_role") return res.status(403).json({ error: "This step isn't yours to take" });
+  if (result.error === "email_required") return res.status(400).json({ error: "toyotaEmail is required" });
+  if (result.error === "batch_and_invoice_required") return res.status(400).json({ error: "batchNumber and invoiceNumber are both required" });
 
-  db.addAudit(
-    req.user.id,
-    "PSE_STAGE_ADVANCED",
-    `${req.user.name} advanced ${req.params.code} (${req.params.action}) to: ${(db.PSE_STAGES[result.wom.pse_stage] || {}).label || result.wom.pse_stage}`
-  );
-  res.json(presentWom(result.wom));
-});
-
-// Standalone reschedule -- changing a follow-up date shouldn't require
-// re-taking (or undoing) whatever action set it originally.
-router.patch("/:code/pse/followup", requireAuth, requireAdmin, (req, res) => {
-  const { followupAt } = req.body || {};
-  const result = db.setPseFollowup(req.params.code, followupAt || null);
-  if (!result) return res.status(404).json({ error: "WOM not found" });
-  if (result.error === "not_in_pipeline") return res.status(409).json({ error: `${req.params.code} isn't in the PSE pipeline` });
-
-  db.addAudit(
-    req.user.id,
-    "PSE_FOLLOWUP_RESCHEDULED",
-    `${req.user.name} rescheduled the follow-up for ${req.params.code} to ${followupAt ? new Date(followupAt).toLocaleDateString() : "none"}`
-  );
+  const step = db.WOM_LIFECYCLE_STEPS.find((s) => s.key === req.params.stepKey);
+  db.addAudit(req.user.id, "WOM_LIFECYCLE_STEP_COMPLETED", `${req.user.name} completed "${step.label}" for ${req.params.code}`);
   res.json(presentWom(result.wom));
 });
 
 // Financials-wide estimated-vs-applied summary -- every non-cancelled WOM,
-// not just the ones currently sitting in the PSE pipeline.
+// not just the ones currently mid-checklist.
 router.get("/cost-summary", requireAuth, requireAdmin, (req, res) => {
   res.json(db.getWomCostSummary());
-});
-
-// The two "holding" states (waiting on the vendor invoice, waiting on
-// labor allocations to post) plus an "other" free-text reason -- just an
-// annotation, doesn't change pse_stage, so the task stays on the same
-// list, visibly flagged as blocked rather than actionable right now.
-router.post("/:code/pse/hold", requireAuth, requireAdmin, (req, res) => {
-  const { holdReason, holdNote } = req.body || {};
-  const result = db.setPseHold(req.params.code, { holdReason: holdReason || null, holdNote });
-  if (!result) return res.status(404).json({ error: "WOM not found" });
-  if (result.error === "invalid_reason") {
-    return res.status(400).json({ error: `holdReason must be one of: ${db.PSE_HOLD_REASONS.join(", ")}` });
-  }
-
-  db.addAudit(
-    req.user.id,
-    "PSE_HOLD_SET",
-    holdReason
-      ? `${req.user.name} put ${req.params.code} on hold (${holdReason})`
-      : `${req.user.name} cleared the hold on ${req.params.code}`
-  );
-  res.json(presentWom(result.wom));
-});
-
-// The "don't schedule until Toyota PO" flag -- while set, generating the
-// WOM/PO routes back to the reviewer instead of prompting a technician to
-// schedule work against a PO that isn't confirmed yet.
-router.post("/:code/pse/schedule-block", requireAuth, requireAdmin, (req, res) => {
-  const blocked = Boolean((req.body || {}).blocked);
-  const wom = db.setPseScheduleBlock(req.params.code, blocked);
-  if (!wom) return res.status(404).json({ error: "WOM not found" });
-
-  db.addAudit(
-    req.user.id,
-    "PSE_SCHEDULE_BLOCK_SET",
-    `${req.user.name} ${blocked ? "blocked" : "cleared the block on"} scheduling for ${req.params.code} pending Toyota PO`
-  );
-  res.json(presentWom(wom));
 });
 
 // A WOM closed here doesn't close it on the external Smartsheet tracker --
