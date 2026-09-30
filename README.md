@@ -726,12 +726,23 @@ Demo logins:
     offers a **Type** picker (Compliance/Onboarding/IT Request/Financial/
     General -- `MANUAL_CATEGORY_OPTIONS`, one-time tasks only, since a
     recurring occurrence always lands in Recurring regardless of what's
-    picked) and a **Related Vendor** search field (type a name, pick from
-    the live-filtered matches) so a task like "Update COI" can point
-    straight at that vendor's own profile the same way it already could
-    point at a WOM. Both are purely additive to what the backend already
-    accepted (`relatedVendorId` on `POST /api/tasks` was already there,
-    just not exposed in this form yet) -- no new endpoints.
+    picked). **Related WOM and Related Vendor are both collapsed behind
+    their own "Related to a ..." checkbox** rather than always-visible
+    fields, so the Related section reads as empty until there's actually
+    something to relate -- checking "Related to a WOM" reveals a Location
+    dropdown (real locations, defaulting to "All locations") that narrows a
+    second dropdown of real open-text WOM codes/descriptions at that
+    location, replacing what used to be a free-text WOM # field a person
+    had to already know by heart; checking "Related to a Vendor" reveals
+    the same type-a-name/pick-from-matches search described above. A task
+    like "Update COI" can point straight at that vendor's own profile the
+    same way it already could point at a WOM. All three are purely
+    additive to what the backend already accepted (`relatedVendorId` on
+    `POST /api/tasks` was already there, just not exposed in this form
+    yet) -- no new endpoints. The WOM link stays available even on a
+    recurring task (its template does carry `relatedWomCode` through to
+    every occurrence); Type and Related Vendor don't, so both are hidden
+    while "Repeats on specific days" is checked.
   - **A WOM-workflow task's detail panel takes the real action, not a
     generic "mark complete."** Opening a task like "Produce PSE for X"
     fetches that WOM's live `pse_stage` and, if it has one, renders the

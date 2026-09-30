@@ -269,6 +269,12 @@ export async function renderTaskBoard(container) {
   async function openNewTaskModal() {
     const staff = isAdmin ? await loadStaff() : null;
     const people = staff ? [...staff.technicians, ...staff.admins] : [];
+    // Both open to any logged-in user (same as the Schedule tab's own
+    // location/WOM pickers), independent of the heavier admin-only staff
+    // data above, so a technician linking their own task to a WOM isn't
+    // blocked on admin access.
+    const [allWoms, allLocations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
+    const locationNameByCode = Object.fromEntries(allLocations.map((l) => [l.code, l.name]));
     const { body, close } = openModal({
       title: "New Task",
       size: "large",
@@ -343,18 +349,37 @@ export async function renderTaskBoard(container) {
           }
 
           <h4>Related</h4>
-          <label class="profile-field"><span>Related WOM # (optional)</span><input class="task-new-wom" type="text" /></label>
+          <label class="task-new-relate-toggle">
+            <input type="checkbox" class="task-new-wom-toggle" /> Related to a WOM
+          </label>
+          <div class="task-new-wom-field" hidden>
+            <div class="vendor-edit-grid">
+              <label class="profile-field"><span>Location</span>
+                <select class="task-new-wom-location">
+                  <option value="">All locations</option>
+                  ${allLocations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("")}
+                </select>
+              </label>
+              <label class="profile-field"><span>WOM</span>
+                <select class="task-new-wom-select"></select>
+              </label>
+            </div>
+          </div>
           ${
             isAdmin
               ? `
-            <div class="task-new-vendor-field">
-              <span class="profile-field-label">Related Vendor (optional)</span>
-              <div class="task-new-vendor-picked" hidden>
-                <span class="task-new-vendor-picked-name"></span>
-                <button type="button" class="btn btn-link task-new-vendor-clear">Change</button>
+            <div class="task-new-vendor-section">
+              <label class="task-new-relate-toggle">
+                <input type="checkbox" class="task-new-vendor-toggle" /> Related to a Vendor
+              </label>
+              <div class="task-new-vendor-field" hidden>
+                <div class="task-new-vendor-picked" hidden>
+                  <span class="task-new-vendor-picked-name"></span>
+                  <button type="button" class="btn btn-link task-new-vendor-clear">Change</button>
+                </div>
+                <input class="task-new-vendor-search" type="text" placeholder="Search vendor name to link this task to their profile..." />
+                <div class="task-new-vendor-results"></div>
               </div>
-              <input class="task-new-vendor-search" type="text" placeholder="Search vendor name to link this task to their profile..." />
-              <div class="task-new-vendor-results"></div>
             </div>
           `
               : ""
@@ -390,7 +415,7 @@ export async function renderTaskBoard(container) {
     const recurringFields = body.querySelector(".task-new-recurring-fields");
     const attachmentSection = body.querySelector(".task-new-attachment-section");
     const categoryField = body.querySelector(".task-new-category-field");
-    const vendorField = body.querySelector(".task-new-vendor-field");
+    const vendorSection = body.querySelector(".task-new-vendor-section");
     repeatsToggle.addEventListener("change", () => {
       onceFields.hidden = repeatsToggle.checked;
       recurringFields.hidden = !repeatsToggle.checked;
@@ -400,18 +425,59 @@ export async function renderTaskBoard(container) {
       // template that isn't itself a real, addressable task. Same reasoning
       // for type/vendor: a recurring occurrence always lands in its own
       // Recurring section regardless of what's picked here, so hide fields
-      // that a recurring task wouldn't actually use.
+      // that a recurring task wouldn't actually use. (Related WOM stays
+      // visible either way -- a recurring template does carry it through.)
       attachmentSection.hidden = repeatsToggle.checked;
       categoryField.hidden = repeatsToggle.checked;
-      if (vendorField) vendorField.hidden = repeatsToggle.checked;
+      if (vendorSection) vendorSection.hidden = repeatsToggle.checked;
+    });
+
+    const womToggle = body.querySelector(".task-new-wom-toggle");
+    const womField = body.querySelector(".task-new-wom-field");
+    const womLocationSelect = body.querySelector(".task-new-wom-location");
+    const womSelect = body.querySelector(".task-new-wom-select");
+    function refreshWomOptions() {
+      const loc = womLocationSelect.value;
+      const options = loc ? allWoms.filter((w) => w.locationCode === loc) : allWoms;
+      womSelect.innerHTML =
+        `<option value="">Select a WOM...</option>` +
+        options
+          .map((w) => {
+            const locName = w.locationCode ? locationNameByCode[w.locationCode] || w.locationCode : "no location";
+            return `<option value="${escapeHtml(w.code)}">${escapeHtml(w.code)} -- ${escapeHtml(w.description || "")} (${escapeHtml(locName)})</option>`;
+          })
+          .join("");
+    }
+    refreshWomOptions();
+    womLocationSelect.addEventListener("change", refreshWomOptions);
+    womToggle.addEventListener("change", () => {
+      womField.hidden = !womToggle.checked;
+      if (!womToggle.checked) {
+        womLocationSelect.value = "";
+        womSelect.value = "";
+        refreshWomOptions();
+      }
     });
 
     let selectedVendorId = null;
-    if (isAdmin && vendorField) {
+    if (isAdmin && vendorSection) {
+      const vendorToggle = vendorSection.querySelector(".task-new-vendor-toggle");
+      const vendorField = vendorSection.querySelector(".task-new-vendor-field");
       const vendorSearch = vendorField.querySelector(".task-new-vendor-search");
       const vendorResults = vendorField.querySelector(".task-new-vendor-results");
       const vendorPicked = vendorField.querySelector(".task-new-vendor-picked");
       const vendorPickedName = vendorField.querySelector(".task-new-vendor-picked-name");
+      const clearVendorSelection = () => {
+        selectedVendorId = null;
+        vendorPicked.hidden = true;
+        vendorSearch.hidden = false;
+        vendorSearch.value = "";
+        vendorResults.innerHTML = "";
+      };
+      vendorToggle.addEventListener("change", () => {
+        vendorField.hidden = !vendorToggle.checked;
+        if (!vendorToggle.checked) clearVendorSelection();
+      });
       vendorSearch.addEventListener("input", () => {
         const q = vendorSearch.value.trim().toLowerCase();
         if (!q) {
@@ -434,13 +500,7 @@ export async function renderTaskBoard(container) {
           });
         });
       });
-      vendorField.querySelector(".task-new-vendor-clear").addEventListener("click", () => {
-        selectedVendorId = null;
-        vendorPicked.hidden = true;
-        vendorSearch.hidden = false;
-        vendorSearch.value = "";
-        vendorResults.innerHTML = "";
-      });
+      vendorField.querySelector(".task-new-vendor-clear").addEventListener("click", clearVendorSelection);
     }
 
     const form = body.querySelector(".task-new-form");
@@ -458,7 +518,7 @@ export async function renderTaskBoard(container) {
         title,
         description: body.querySelector(".task-new-desc").value.trim(),
         category: body.querySelector(".task-new-category").value,
-        relatedWomCode: body.querySelector(".task-new-wom").value.trim() || null,
+        relatedWomCode: womToggle.checked ? body.querySelector(".task-new-wom-select").value || null : null,
         relatedVendorId: selectedVendorId,
       };
       if (isAdmin) {
