@@ -362,6 +362,10 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     assert.equal(task.source, "wom_workflow");
     assert.equal(task.category, "wom_workflow");
     assert.equal(task.assignedRole, "reviewer");
+    // Nothing's been sent to Toyota yet -- this should read as High so it
+    // doesn't get buried behind Normal-priority tasks with an earlier due
+    // date.
+    assert.equal(task.priority, "high");
   });
 
   await t.test("re-syncing the same row doesn't duplicate the task", async () => {
@@ -383,6 +387,9 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     const task = res.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
     assert.ok(task, "expected the same task to now show under the financial role");
     assert.equal(task.status, "open");
+    // Sent to Toyota now, no change order, no PO-less contracted spend yet
+    // -- back down to Normal.
+    assert.equal(task.priority, "normal");
   });
 
   await t.test("a hand-entered Maximo/PO # auto-completes 'Create WOM & PO' and advances the task to the tech role", async () => {
@@ -475,6 +482,35 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
     const res = await server.call("GET", "/api/woms/40000001/history", { userId: "T1001" });
     assert.equal(res.status, 403);
   });
+
+  await t.test("a cost overage after 'Post applied cost' flags the task as a Toyota change order, High priority", async () => {
+    await syncOneOpenWom(server, "40000004", 960);
+    await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
+    let tasks = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    let task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
+    assert.equal(task.priority, "high", "still pending sent_to_toyota, no overage yet");
+    assert.ok(!task.title.includes("change order"));
+
+    // The applied cost comes in higher than what was originally estimated
+    // -- Toyota needs to sign off on the difference.
+    const res = await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1400 } });
+    assert.equal(res.status, 200);
+
+    tasks = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
+    assert.equal(task.priority, "high");
+    assert.ok(task.title.includes("Toyota change order"));
+    assert.equal(task.isException, true);
+
+    // Correcting the applied price back in line clears the flag -- it's
+    // re-derived live every time, not stamped once and stuck.
+    const corrected = await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
+    assert.equal(corrected.status, 200);
+    tasks = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
+    assert.ok(!task.title.includes("change order"));
+    assert.equal(task.isException, false);
+  });
 });
 
 test("WOM lifecycle: recording the Toyota email/date sent, and the cost summary", async (t) => {
@@ -530,6 +566,166 @@ test("WOM lifecycle: recording the Toyota email/date sent, and the cost summary"
   await t.test("a technician can't view the cost summary", async () => {
     const res = await server.call("GET", "/api/woms/cost-summary", { userId: "T1001" });
     assert.equal(res.status, 403);
+  });
+});
+
+test("WOM lifecycle: labor/contracted-services breakdown and vendor cost analysis", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const ITEMIZED_COLUMNS = [
+    { id: 1, title: "WOM #" },
+    { id: 4, title: "Project Name" },
+    { id: 8, title: "Maximo #" },
+    { id: 9, title: "Estimate Labor $" },
+    { id: 10, title: "Estimate PO $ - Contracted Services" },
+    { id: 11, title: "Applied Labor $" },
+    { id: 12, title: "Applied PO $ - Contracted Services" },
+    { id: 13, title: "Vendor(s) Name/#/Phone" },
+  ];
+  function itemizedSheet(rows) {
+    return { name: "Midwest PSE Request Tracker", columns: ITEMIZED_COLUMNS, rows };
+  }
+  async function syncItemizedRow(rowId, fields) {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        itemizedSheet([
+          {
+            id: rowId,
+            cells: [
+              { columnId: 1, value: fields.code, displayValue: fields.code },
+              { columnId: 4, value: fields.description || "Test job", displayValue: fields.description || "Test job" },
+              ...(fields.maximoNumber ? [{ columnId: 8, value: fields.maximoNumber, displayValue: fields.maximoNumber }] : []),
+              ...(fields.estimatedLabor != null ? [{ columnId: 9, value: fields.estimatedLabor, displayValue: String(fields.estimatedLabor) }] : []),
+              ...(fields.estimatedContracted != null
+                ? [{ columnId: 10, value: fields.estimatedContracted, displayValue: String(fields.estimatedContracted) }]
+                : []),
+              ...(fields.appliedLabor != null ? [{ columnId: 11, value: fields.appliedLabor, displayValue: String(fields.appliedLabor) }] : []),
+              ...(fields.appliedContracted != null
+                ? [{ columnId: 12, value: fields.appliedContracted, displayValue: String(fields.appliedContracted) }]
+                : []),
+              ...(fields.vendorText ? [{ columnId: 13, value: fields.vendorText, displayValue: fields.vendorText }] : []),
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      return res.body;
+    } finally {
+      restore();
+    }
+  }
+
+  let vendorId;
+  await t.test("setup: create the vendor these WOMs will match by name", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Acme Mechanical" } });
+    assert.equal(res.status, 201);
+    vendorId = res.body.id;
+  });
+
+  await t.test("applied labor over estimated labor shows up in laborOvercharged", async () => {
+    await syncItemizedRow(800, { code: "60000001", estimatedLabor: 1000, appliedLabor: 1600 });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.laborOvercharged.find((o) => o.code === "60000001");
+    assert.ok(entry, "expected 60000001 in laborOvercharged");
+    assert.equal(entry.overage, 600);
+  });
+
+  await t.test("applied contracted-services over estimate shows up in contractedIncreased, with the matched vendor", async () => {
+    await syncItemizedRow(801, {
+      code: "60000002",
+      estimatedContracted: 500,
+      appliedContracted: 900,
+      vendorText: "Acme Mechanical - 5551234",
+    });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.contractedIncreased.find((o) => o.code === "60000002");
+    assert.ok(entry, "expected 60000002 in contractedIncreased");
+    assert.equal(entry.overage, 400);
+    assert.equal(entry.vendorId, vendorId);
+    assert.equal(entry.vendorName, "Acme Mechanical");
+  });
+
+  await t.test("a WOM with contracted spend applied but no Toyota PO on file is High priority, even once sent to Toyota", async () => {
+    // Complete sent_to_toyota first, so the assertion below is actually
+    // testing the contracted-no-PO condition and not just riding along on
+    // "hasn't been sent to Toyota yet" also being High.
+    const sent = await server.call("POST", "/api/woms/60000002/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota@example.com" },
+    });
+    assert.equal(sent.status, 200);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-60000002-LIFECYCLE");
+    assert.ok(task, "expected a lifecycle task for 60000002");
+    assert.equal(task.priority, "high");
+  });
+
+  await t.test("a second WOM over quote with the same vendor makes them show up in vendorsOverchargingRepeatedly", async () => {
+    await syncItemizedRow(802, {
+      code: "60000003",
+      estimatedContracted: 200,
+      appliedContracted: 300,
+      vendorText: "Acme Mechanical - 5551234",
+    });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.vendorsOverchargingRepeatedly.find((v) => v.vendorId === vendorId);
+    assert.ok(entry, "expected Acme Mechanical to show up as a repeat overcharger");
+    assert.equal(entry.count, 2);
+    assert.equal(entry.totalOverage, 500);
+  });
+
+  await t.test("vendorContractedSpend totals every WOM's applied contracted cost for that vendor, overage or not", async () => {
+    // A third WOM for the same vendor that did NOT run over its estimate --
+    // still counts toward total business done with them.
+    await syncItemizedRow(803, {
+      code: "60000004",
+      estimatedContracted: 1000,
+      appliedContracted: 1000,
+      vendorText: "Acme Mechanical - 5551234",
+    });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const spend = res.body.vendorContractedSpend.find((v) => v.vendorId === vendorId);
+    assert.ok(spend);
+    assert.equal(spend.womCount, 3);
+    assert.equal(spend.totalAppliedContracted, 900 + 300 + 1000);
+  });
+
+  await t.test("the vendor's own profile shows the same contracted spend total and no last-invoiced date yet", async () => {
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.totalContractedApplied, 900 + 300 + 1000);
+    assert.equal(vendor.contractedWomCount, 3);
+    assert.equal(vendor.lastInvoicedAt, null);
+  });
+
+  await t.test("invoicing one of the vendor's WOMs sets the vendor's lastInvoicedAt", async () => {
+    await syncItemizedRow(801, { code: "60000002", maximoNumber: "PO-1", estimatedContracted: 500, appliedContracted: 900 });
+    const complete = await server.call("POST", "/api/woms/60000002/complete", { userId: "T1001" });
+    assert.equal(complete.status, 200);
+    await server.call("POST", "/api/woms/60000002/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    const invoiced = await server.call("POST", "/api/woms/60000002/lifecycle/invoiced", {
+      userId: "ADMIN",
+      body: { batchNumber: "B2", invoiceNumber: "INV-2" },
+    });
+    assert.equal(invoiced.status, 200);
+
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.ok(vendor.lastInvoicedAt, "expected a last-invoiced date now that one of this vendor's WOMs is invoiced");
+  });
+
+  await t.test("a WOM with no vendor match at all doesn't appear in any vendor rollup", async () => {
+    await syncItemizedRow(804, { code: "60000005", estimatedContracted: 100, appliedContracted: 200, vendorText: "Totally Unknown Co - 9999" });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.contractedIncreased.find((o) => o.code === "60000005");
+    assert.ok(entry);
+    assert.equal(entry.vendorId, null);
+    assert.equal(entry.vendorName, null);
   });
 });
 
@@ -644,5 +840,42 @@ test("tasks: user-defined recurring tasks", async (t) => {
     });
     assert.equal(res.status, 201);
     assert.equal(res.body.dueAt, "2026-05-01T14:30");
+  });
+});
+
+test("tasks: sorted by priority tier first, then due date", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a High-priority task with a later due date still sorts above a Normal one due sooner", async () => {
+    const normalSooner = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Normal, due soon", assignedTo: "T1003", priority: "normal", dueAt: "2026-01-01" },
+    });
+    assert.equal(normalSooner.status, 201);
+
+    const highLater = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "High, due later", assignedTo: "T1003", priority: "high", dueAt: "2026-12-01" },
+    });
+    assert.equal(highLater.status, 201);
+
+    const res = await server.call("GET", "/api/tasks?view=team&assignedTo=T1003", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.indexOf(highLater.body.id) < ids.indexOf(normalSooner.body.id), "expected the High task to sort before the Normal one");
+  });
+
+  await t.test("Emergency still sorts above High regardless of due date", async () => {
+    const high = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "High, due soon", assignedTo: "T1002", priority: "high", dueAt: "2026-01-01" },
+    });
+    const emergency = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Emergency, due later", assignedTo: "T1002", priority: "emergency", dueAt: "2026-12-01" },
+    });
+    const res = await server.call("GET", "/api/tasks?view=team&assignedTo=T1002", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.indexOf(emergency.body.id) < ids.indexOf(high.body.id));
   });
 });

@@ -629,6 +629,22 @@ Demo logins:
     "next up" label always shows whichever step is *first* in the list
     that isn't yet done, even if a later step already is, since that's
     still the next thing genuinely missing from the record.
+  - **The task's priority is computed live, not manually set**
+    (`refreshWomLifecycleTask` in `server/data/db.js`), and reads High
+    whenever any of three things is true: the PSE hasn't been sent to
+    Toyota yet (step 1 still open -- the very first gate, so it shouldn't
+    get buried behind Normal-priority tasks with an earlier due date);
+    there's a **Toyota change order** -- the applied cost, once posted, came
+    in higher than the original estimate on the project as a whole (title
+    gets a "-- Toyota change order" suffix and the task also counts as a
+    workflow exception, both re-evaluated live so a correction to the
+    numbers clears the flag automatically rather than it staying stuck);
+    or there's contracted-services cost already applied to a vendor with no
+    Toyota PO on file yet (see Cost Analysis below). Otherwise it's Normal.
+    The task list itself now sorts by full priority tier first (Emergency
+    down to Low), then due date -- previously only Emergency got special
+    treatment, so a High-priority task with no due date could sink below an
+    old Normal one.
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from
@@ -668,17 +684,50 @@ Demo logins:
   portfolio-wide estimated-vs-applied view across **every** WOM on file
   (`GET /api/woms/cost-summary`, admin-only) -- not just the ones
   currently on the lifecycle checklist, so a WOM that never went through
-  it (or has already been invoiced and closed) still counts. Five stat
-  tiles up top: Total Estimated, Total Applied, Estimated minus Applied,
-  and two clickable counts that jump straight to their own list below --
-  **Overquoted on Labor** (WOMs where the estimated price came in higher
-  than what was actually applied, sorted by the largest overage first) and
-  **Applied, No Toyota PO Yet** (WOMs with an applied cost but no
-  `maximo_number` on file yet, sorted by the largest applied amount
-  first). Cancelled WOMs are excluded throughout. This is meant to answer
-  exactly the two questions that don't have a good answer anywhere else:
-  how much quoted labor is going unused, and how much money is on the
-  books without a real PO backing it yet.
+  it (or has already been invoiced and closed) still counts. Cancelled
+  WOMs are excluded throughout, and every list is sorted with the largest
+  dollar figure first. Seven stat tiles up top, each of the last four
+  jumping straight to its own list below: Total Estimated, Total Applied,
+  Estimated minus Applied, **Excess Labor Budget**, **Applied, No Toyota PO
+  Yet**, **Labor Overcharged**, and **Contracted Services Increased**.
+  - **Excess Labor Budget vs. Labor Overcharged -- opposite things, never
+    conflated.** Estimated coming in *higher* than applied on the project
+    total (`overquoted` in the API) is unused budget -- money quoted but
+    never spent, a good thing, shown with a green "unused" badge. Applied
+    *labor* coming in higher than estimated *labor* specifically
+    (`laborOvercharged`, comparing the tracker's own itemized Estimate
+    Labor $/Applied Labor $ columns, not the project-total columns) is the
+    actual overspend, shown with a red "over" badge. The first says nothing
+    about the second -- a WOM can show excess on its total while still
+    being overcharged on labor if some other line item (materials, tax)
+    swung the other way.
+  - **Contracted Services Increased**: the same idea as Labor Overcharged,
+    but for the itemized Estimate PO $ - Contracted Services / Applied PO
+    $ - Contracted Services columns -- applied contracted-services cost
+    coming in over what was quoted. Each row names the **vendor** whose
+    charge went over (matched from the tracker's own "Vendor(s)
+    Name/#/Phone" column by name, tolerant of the sheet's "Name -
+    Phone#" format, left unmatched rather than guessed at if no vendor by
+    that name exists yet -- see `matchVendorIdByName` in
+    `server/data/db.js`, the same approach as location matching).
+  - **Vendors reoccuringly over quote** (only shown when at least one
+    exists): vendors who show up in Contracted Services Increased on more
+    than one WOM, with their total overage -- the answer to "who keeps
+    coming in over their own quote."
+  - **Vendor cost analysis**: total contracted-services $ actually applied
+    per vendor, across **every** WOM linked to them (overage or not) -- how
+    much business is actually done with each vendor, independent of
+    whether any single job ran over. The same total (plus a "last
+    invoiced" date, pulled from that vendor's most recent WOM to reach the
+    lifecycle checklist's own "Invoice" step) also shows at the top of that
+    vendor's own edit modal on the Vendors tab, so it's visible without a
+    trip to Cost Analysis.
+  - A WOM with contracted-services cost already applied but still no
+    Maximo/PO # on file is automatically **High priority** on its own
+    lifecycle task (Priorities board and PSE Tasks alike) -- money's gone
+    out the door to a vendor with no paperwork backing it yet, which
+    deserves the same urgency as a PSE that hasn't been sent to Toyota,
+    independent of whatever step the rest of the checklist is on.
 - **Task / workflow engine (Phase 1) -- "Priorities &rarr; My Work"**: a
   general-purpose task system built around one rule: **states create
   tasks, tasks create timestamps, timestamps create analytics.** Not a
@@ -1557,17 +1606,27 @@ by their existing keys.
   "Subsidary Code" (missing the second "i"); "subsid" matches both the
   correct and the misspelled version, so a later fix to the sheet's spelling
   wouldn't break the match either way (a real column on the tracker in its
-  own right — pulled in as-is, not derived from anything). **Location is the one
-  exception**: the sheet only has a plain site name ("Site Location"), no
-  notion of this app's own location codes, so it's matched by name against
-  `db.listLocations()` — an exact case-insensitive match first, then
+  own right — pulled in as-is, not derived from anything). The same
+  keyword approach pulls in the itemized breakdown behind Cost Analysis:
+  "estimate"/"labor"/"$", "estimate"/"contracted"/"$",
+  "applied"/"labor"/"$", "applied"/"contracted"/"$" — refreshed on every
+  sync same as the project-total estimate/applied columns, and left unset
+  (not zero) if the connected sheet doesn't have a given column. **Location
+  and vendor are the two exceptions**: the sheet only has a plain site name
+  ("Site Location") and a free-text "Vendor(s) Name/#/Phone" cell (e.g.
+  "Automated Solutions Group - 5883201"), neither with any notion of this
+  app's own location codes or vendor records, so both are matched by name
+  instead — location against `db.listLocations()`, vendor (name portion
+  only, before the first " - ") against `db.listVendors()`
+  (`matchVendorIdByName`) — an exact case-insensitive match first, then
   tolerant of a shortened form either direction (the sheet often drops a
-  suffix, e.g. "NAPCK" for "NAPCK Georgetown"). No match means the site
-  likely doesn't exist here yet, so it's left null rather than guessed at —
-  and once a location is matched once, a later sync never overwrites it (in
-  case that guess needs a manual correction). This location match matters
-  for billing, not just display: a WOM's own accounting code is its
-  location's **WOM Job Number** + that WOM's own subsidiary code — a
+  suffix, e.g. "NAPCK" for "NAPCK Georgetown"). No match means the site or
+  vendor likely doesn't exist here yet, so it's left null rather than
+  guessed at — and once either is matched once, a later sync never
+  overwrites it (in case that guess needs a manual correction). This
+  location match matters for billing, not just display: a WOM's own
+  accounting code is its location's **WOM Job Number** + that WOM's own
+  subsidiary code — a
   completely different code from the same location's E&F Job Number, since
   WOM work is Toyota-billed and E&F is this contract's own yearly budget
   (see `accountingCode` in `adminReview.js`). If no column matches

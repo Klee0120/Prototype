@@ -46,6 +46,17 @@ function presentWom(w) {
     pseToyotaSentAt: w.pse_toyota_sent_at,
     batchNumber: w.batch_number,
     invoiceNumber: w.invoice_number,
+    // The estimate/applied breakdown by category, and the vendor the
+    // tracker's own "Vendor(s) Name/#/Phone" column matched to (see
+    // db.matchVendorIdByName) -- null for either until a sync with those
+    // columns has touched this WOM, or if this app has no vendor record by
+    // that name yet.
+    estimatedLabor: w.estimated_labor,
+    estimatedContracted: w.estimated_contracted,
+    appliedLabor: w.applied_labor,
+    appliedContracted: w.applied_contracted,
+    vendorId: w.vendor_id,
+    vendorName: w.vendor_id ? (db.findVendor(w.vendor_id) || {}).name || null : null,
     // The WOM lifecycle checklist -- every step, in order, with its
     // completion state. Empty until the WOM has actually entered the
     // checklist (see db.checkWomLifecycleAutoSteps, called on every sync).

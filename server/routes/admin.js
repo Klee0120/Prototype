@@ -563,6 +563,18 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       // is misspelled "Subsidary Code" (missing the second "i"), and this
       // shorter root matches both the correct and the misspelled version.
       subsidiary: smartsheet.findColumn(sheet.columns, ["subsid", "code"]),
+      // The itemized estimate/applied breakdown, mirroring the aggregate
+      // estimate/applied columns above but per category -- lets Cost
+      // Analysis tell "labor overcharged" apart from "contracted services
+      // increased" instead of only knowing the project total moved. Any of
+      // these can be null if the connected sheet doesn't have that column
+      // (an older sheet, or one that's never itemized this way); the fields
+      // they'd feed just stay unset rather than the sync failing.
+      estimatedLabor: smartsheet.findColumn(sheet.columns, ["estimate", "labor", "$"]),
+      estimatedContracted: smartsheet.findColumn(sheet.columns, ["estimate", "contracted", "$"]),
+      appliedLabor: smartsheet.findColumn(sheet.columns, ["applied", "labor", "$"]),
+      appliedContracted: smartsheet.findColumn(sheet.columns, ["applied", "contracted", "$"]),
+      vendor: smartsheet.findColumn(sheet.columns, ["vendor"]),
     };
     // Snapshot every task's status before the sync so the diff afterward
     // can say how many of the resulting task-engine writes were this sync's
@@ -610,6 +622,11 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       maximoColumn: columns.maximo,
       locationColumn: columns.location,
       subsidiaryColumn: columns.subsidiary,
+      estimatedLaborColumn: columns.estimatedLabor,
+      estimatedContractedColumn: columns.estimatedContracted,
+      appliedLaborColumn: columns.appliedLabor,
+      appliedContractedColumn: columns.appliedContracted,
+      vendorColumn: columns.vendor,
     });
   } catch (err) {
     res.status(502).json({ error: err.message });

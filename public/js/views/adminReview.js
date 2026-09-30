@@ -1210,6 +1210,14 @@ export async function renderAdminReview(container) {
       .join("");
 
     return `
+      <h4>Cost history</h4>
+      <p class="review-checklist-hint">
+        $${formatMoney(v.totalContractedApplied || 0)} in contracted services applied across
+        ${v.contractedWomCount || 0} WOM${v.contractedWomCount === 1 ? "" : "s"} on file with this vendor.
+        Last invoiced: ${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "never yet"}.
+        See Financials &rarr; Cost Analysis for the full vendor cost breakdown.
+      </p>
+
       <h4>Onboarding cases</h4>
       <div class="vendor-cases-section"></div>
 
@@ -2608,7 +2616,12 @@ export async function renderAdminReview(container) {
             ${escapeHtml(result.locationColumn || "no Site Location column found")} (matched by name against your own
             locations -- add a location here if one doesn't match), subsidiary code from
             ${escapeHtml(result.subsidiaryColumn || "no Subsidiary Code column found")}, Maximo # from
-            ${escapeHtml(result.maximoColumn || "no Maximo column found")}.
+            ${escapeHtml(result.maximoColumn || "no Maximo column found")}, labor/contracted-services
+            breakdown from ${escapeHtml(result.estimatedLaborColumn || "no Estimate Labor column found")} /
+            ${escapeHtml(result.estimatedContractedColumn || "no Estimate Contracted Services column found")} /
+            ${escapeHtml(result.appliedLaborColumn || "no Applied Labor column found")} /
+            ${escapeHtml(result.appliedContractedColumn || "no Applied Contracted Services column found")}, vendor from
+            ${escapeHtml(result.vendorColumn || "no Vendor column found")} (matched by name against your own vendors).
           </p>
         `;
         // The WOM Projects list below needs to show the freshly-synced
@@ -3218,20 +3231,22 @@ export async function renderAdminReview(container) {
     content.innerHTML = `
       <p class="review-checklist-hint">
         Estimated vs. applied across every WOM on file (cancelled ones excluded), not just what's
-        currently in the PSE pipeline.
+        currently on the WOM lifecycle checklist.
       </p>
       <div class="task-tiles">
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalEstimated)}</div><div class="task-tile-label">Total Estimated (${summary.estimatedCount} WOMs)</div></div>
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalApplied)}</div><div class="task-tile-label">Total Applied (${summary.appliedCount} WOMs)</div></div>
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalDelta)}</div><div class="task-tile-label">Estimated &minus; Applied</div></div>
-        <div class="task-tile task-tile-clickable" data-target="cost-overquoted-list"><div class="task-tile-count">${summary.overquotedCount}</div><div class="task-tile-label">Overquoted on Labor</div></div>
+        <div class="task-tile task-tile-clickable" data-target="cost-overquoted-list"><div class="task-tile-count">${summary.overquotedCount}</div><div class="task-tile-label">Excess Labor Budget</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-applied-no-po-list"><div class="task-tile-count">${summary.appliedNoPoCount}</div><div class="task-tile-label">Applied, No Toyota PO Yet</div></div>
+        <div class="task-tile task-tile-clickable" data-target="cost-labor-overcharged-list"><div class="task-tile-count">${summary.laborOverchargedCount}</div><div class="task-tile-label">Labor Overcharged</div></div>
+        <div class="task-tile task-tile-clickable" data-target="cost-contracted-increased-list"><div class="task-tile-count">${summary.contractedIncreasedCount}</div><div class="task-tile-label">Contracted Services Increased</div></div>
       </div>
 
-      <h3>Overquoted on labor (${summary.overquotedCount})</h3>
+      <h3>Excess labor budget (${summary.overquotedCount})</h3>
       <p class="review-checklist-hint">
         Estimated price came in higher than what was actually applied -- $${formatMoney(summary.overquotedTotal)} in labor quoted
-        that was never used, across these WOMs.
+        that was never used, across these WOMs. This is unused budget, not an overcharge.
       </p>
       <div class="review-list" id="cost-overquoted-list"></div>
 
@@ -3241,17 +3256,52 @@ export async function renderAdminReview(container) {
         applied and not yet tied to a real PO.
       </p>
       <div class="review-list" id="cost-applied-no-po-list"></div>
+
+      <h3>Labor overcharged (${summary.laborOverchargedCount})</h3>
+      <p class="review-checklist-hint">
+        Applied labor cost came in higher than what was estimated -- $${formatMoney(summary.laborOverchargedTotal)} over quote,
+        across these WOMs.
+      </p>
+      <div class="review-list" id="cost-labor-overcharged-list"></div>
+
+      <h3>Contracted services increased (${summary.contractedIncreasedCount})</h3>
+      <p class="review-checklist-hint">
+        Applied contracted-services cost came in higher than what was estimated -- $${formatMoney(summary.contractedIncreasedTotal)}
+        over quote, across these WOMs. Each row names the vendor whose charge came in over their own quote.
+      </p>
+      <div class="review-list" id="cost-contracted-increased-list"></div>
+
+      ${
+        summary.vendorsOverchargingRepeatedly.length > 0
+          ? `
+      <h3>Vendors reoccuringly over quote</h3>
+      <p class="review-checklist-hint">
+        Vendors who've come in over their own contracted-services quote on more than one WOM -- worth a
+        conversation about why their estimates keep running short.
+      </p>
+      <div class="review-list" id="cost-vendor-repeat-list"></div>
+      `
+          : ""
+      }
+
+      <h3>Vendor cost analysis</h3>
+      <p class="review-checklist-hint">
+        Total contracted-services $ applied per vendor, across every WOM on file -- how much business we
+        actually do with each one.
+      </p>
+      <div class="review-list" id="cost-vendor-spend-list"></div>
     `;
 
     content.querySelectorAll(".task-tile-clickable").forEach((tile) => {
       tile.addEventListener("click", () => {
-        content.querySelector(`#${tile.dataset.target}`).scrollIntoView({ behavior: "smooth", block: "start" });
+        const target = content.querySelector(`#${tile.dataset.target}`);
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     });
 
     const overquotedList = content.querySelector("#cost-overquoted-list");
     if (summary.overquoted.length === 0) {
-      overquotedList.innerHTML = `<p class="empty-note">No WOMs are overquoted on labor right now.</p>`;
+      overquotedList.innerHTML = `<p class="empty-note">No WOMs have excess labor budget right now.</p>`;
     } else {
       summary.overquoted.forEach((w) => {
         const row = document.createElement("div");
@@ -3262,7 +3312,7 @@ export async function renderAdminReview(container) {
             <span class="wom-code">${escapeHtml(w.code)}</span>
             <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
             <span class="wom-desc">Est $${formatMoney(w.estimatedPrice)} &middot; Applied $${formatMoney(w.appliedPrice)}</span>
-            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
+            <span class="badge badge-approved">$${formatMoney(w.overage)} unused</span>
           </div>
         `;
         overquotedList.appendChild(row);
@@ -3286,6 +3336,80 @@ export async function renderAdminReview(container) {
           </div>
         `;
         appliedNoPoList.appendChild(row);
+      });
+    }
+
+    const laborOverList = content.querySelector("#cost-labor-overcharged-list");
+    if (summary.laborOvercharged.length === 0) {
+      laborOverList.innerHTML = `<p class="empty-note">No WOMs are overcharged on labor right now.</p>`;
+    } else {
+      summary.laborOvercharged.forEach((w) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
+            <span class="wom-code">${escapeHtml(w.code)}</span>
+            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
+            <span class="wom-desc">Est $${formatMoney(w.estimatedLabor)} &middot; Applied $${formatMoney(w.appliedLabor)}</span>
+            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
+          </div>
+        `;
+        laborOverList.appendChild(row);
+      });
+    }
+
+    const contractedIncList = content.querySelector("#cost-contracted-increased-list");
+    if (summary.contractedIncreased.length === 0) {
+      contractedIncList.innerHTML = `<p class="empty-note">No WOMs have a contracted-services increase right now.</p>`;
+    } else {
+      summary.contractedIncreased.forEach((w) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
+            <span class="wom-code">${escapeHtml(w.code)}</span>
+            <span class="wom-desc">${w.vendorName ? escapeHtml(w.vendorName) : "No vendor matched"}</span>
+            <span class="wom-desc">Est $${formatMoney(w.estimatedContracted)} &middot; Applied $${formatMoney(w.appliedContracted)}</span>
+            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
+          </div>
+        `;
+        contractedIncList.appendChild(row);
+      });
+    }
+
+    const vendorRepeatList = content.querySelector("#cost-vendor-repeat-list");
+    if (vendorRepeatList) {
+      summary.vendorsOverchargingRepeatedly.forEach((v) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(v.vendorName || "Unknown vendor")}</span>
+            <span class="wom-desc">${v.count} WOMs over quote</span>
+            <span class="badge badge-rejected">$${formatMoney(v.totalOverage)} total over</span>
+          </div>
+        `;
+        vendorRepeatList.appendChild(row);
+      });
+    }
+
+    const vendorSpendList = content.querySelector("#cost-vendor-spend-list");
+    if (summary.vendorContractedSpend.length === 0) {
+      vendorSpendList.innerHTML = `<p class="empty-note">No WOM has both a vendor match and an applied contracted-services cost yet.</p>`;
+    } else {
+      summary.vendorContractedSpend.forEach((v) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(v.vendorName || "Unknown vendor")}</span>
+            <span class="wom-desc">${v.womCount} WOM${v.womCount === 1 ? "" : "s"}</span>
+            <span class="badge badge-submitted">$${formatMoney(v.totalAppliedContracted)} applied</span>
+          </div>
+        `;
+        vendorSpendList.appendChild(row);
       });
     }
   }

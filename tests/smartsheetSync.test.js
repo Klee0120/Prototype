@@ -35,6 +35,11 @@ const COLUMNS = [
   // "i") -- findColumn's keyword for this field has to tolerate that.
   { id: 7, title: "Subsidary Code" },
   { id: 8, title: "Maximo #" },
+  { id: 9, title: "Estimate Labor $" },
+  { id: 10, title: "Estimate PO $ - Contracted Services" },
+  { id: 11, title: "Applied Labor $" },
+  { id: 12, title: "Applied PO $ - Contracted Services" },
+  { id: 13, title: "Vendor(s) Name/#/Phone" },
 ];
 
 function sheetWith(rows) {
@@ -179,6 +184,65 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
 
       const unmatched = list.body.find((w) => w.code === "20777778");
       assert.equal(unmatched.locationCode, null);
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("the itemized labor/contracted-services breakdown syncs in, and the vendor column matches by name", async () => {
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Automated Solutions Group" } });
+    assert.equal(vendorRes.status, 201);
+
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        sheetWith([
+          {
+            id: 700,
+            cells: [
+              { columnId: 1, value: "20674512", displayValue: "20674512" },
+              { columnId: 4, value: "Install of BAS software support", displayValue: "Install of BAS software support" },
+              { columnId: 9, value: 2720, displayValue: "$2,720.00" },
+              { columnId: 10, value: 100, displayValue: "$100.00" },
+              { columnId: 11, value: 2720, displayValue: "$2,720.00" },
+              { columnId: 12, value: 350, displayValue: "$350.00" },
+              // Sheet's own "Name/#/Phone" format -- only the name portion
+              // (before " - ") should be matched against this app's vendors.
+              { columnId: 13, value: "Automated Solutions Group - 5883201", displayValue: "Automated Solutions Group - 5883201" },
+            ],
+          },
+          {
+            id: 701,
+            cells: [
+              { columnId: 1, value: "20674513", displayValue: "20674513" },
+              { columnId: 4, value: "No vendor match", displayValue: "No vendor match" },
+              { columnId: 13, value: "Some Unknown Vendor - 1234567", displayValue: "Some Unknown Vendor - 1234567" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.estimatedLaborColumn, "Estimate Labor $");
+      assert.equal(res.body.estimatedContractedColumn, "Estimate PO $ - Contracted Services");
+      assert.equal(res.body.appliedLaborColumn, "Applied Labor $");
+      assert.equal(res.body.appliedContractedColumn, "Applied PO $ - Contracted Services");
+      assert.equal(res.body.vendorColumn, "Vendor(s) Name/#/Phone");
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const matched = list.body.find((w) => w.code === "20674512");
+      assert.equal(matched.estimatedLabor, 2720);
+      assert.equal(matched.estimatedContracted, 100);
+      assert.equal(matched.appliedLabor, 2720);
+      assert.equal(matched.appliedContracted, 350);
+      assert.equal(matched.vendorId, vendorRes.body.id);
+      assert.equal(matched.vendorName, "Automated Solutions Group");
+
+      // No vendor in this app is named anything close to "Some Unknown
+      // Vendor" -- left null rather than guessed at.
+      const unmatched = list.body.find((w) => w.code === "20674513");
+      assert.equal(unmatched.vendorId, null);
     } finally {
       restore();
     }

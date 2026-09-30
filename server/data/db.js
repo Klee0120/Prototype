@@ -537,6 +537,24 @@ if (!hasColumn("woms", "batch_number")) {
   db.exec("ALTER TABLE woms ADD COLUMN batch_number TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN invoice_number TEXT");
 }
+// The estimate/applied breakdown by category -- labor (this app's own
+// technicians' time, billed to Toyota) vs. contracted services (money paid
+// out to an external vendor) -- pulled out of the ~75-column raw-data blob
+// into their own columns for the same reason estimated_price/applied_price
+// already are: Cost Analysis needs to compare and sort on them directly,
+// and the aggregate project-total fields alone can't say *which* category
+// drove an overage. vendor_id links a WOM to the vendor named in the
+// tracker's own "Vendor(s) Name/#/Phone" column (matched by name, same
+// tolerant approach as matchLocationCodeByName -- see
+// matchVendorIdByName), so an increase can be attributed to a specific
+// vendor rather than just the WOM.
+if (!hasColumn("woms", "estimated_labor")) {
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_labor REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_contracted REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN applied_labor REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN applied_contracted REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN vendor_id INTEGER");
+}
 // Which admin plays the "reviewer" role in the PSE pipeline (produces the
 // PSE, liaises with Toyota, approves Status 95) -- distinct from the
 // "financial" role (generates the WOM/PO, monitors charges, invoices),
@@ -1001,6 +1019,32 @@ const VENDOR_FORM_CHECK_FIELDS = [
 
 const W9_INVOICE_MAX_AGE_YEARS = 2;
 
+// How much contracted-services $ this vendor has actually been paid across
+// every WOM linked to them, and when they were last invoiced -- pulled from
+// the WOM lifecycle checklist's own "invoiced" step timestamp (see
+// wom_lifecycle_steps), since that's the one point in the checklist that
+// means "this job, and this vendor's charge on it, is done and billed."
+// null lastInvoicedAt just means none of this vendor's WOMs have reached
+// that step yet.
+function getVendorContractedSummary(vendorId) {
+  const spend = db
+    .prepare(
+      "SELECT COALESCE(SUM(applied_contracted), 0) as total, COUNT(*) as womCount FROM woms WHERE vendor_id = ? AND applied_contracted IS NOT NULL AND status != 'cancelled'"
+    )
+    .get(vendorId);
+  const lastInvoiced = db
+    .prepare(
+      `SELECT MAX(wls.completed_at) as lastInvoicedAt FROM wom_lifecycle_steps wls
+       JOIN woms w ON w.code = wls.wom_code WHERE w.vendor_id = ? AND wls.step_key = 'invoiced'`
+    )
+    .get(vendorId);
+  return {
+    totalContractedApplied: spend.total || 0,
+    contractedWomCount: spend.womCount || 0,
+    lastInvoicedAt: lastInvoiced ? lastInvoiced.lastInvoicedAt : null,
+  };
+}
+
 function presentVendorRow(v) {
   const coiLimits = {};
   for (const [key, col] of VENDOR_COI_FIELDS) coiLimits[key] = v[col] || "";
@@ -1047,6 +1091,7 @@ function presentVendorRow(v) {
     deniedReason: v.denied_reason || "",
     createdAt: v.created_at,
     updatedAt: v.updated_at,
+    ...getVendorContractedSummary(v.id),
   };
 }
 
@@ -1579,14 +1624,30 @@ function refreshWomLifecycleTask(code) {
   if (!wom) return;
   const steps = getWomLifecycleSteps(code);
   const nextStep = steps.find((s) => !s.completedAt);
+  const sentToToyotaPending = !steps.find((s) => s.key === "sent_to_toyota").completedAt;
+  // A change order: the real applied cost is in (so it's not just an
+  // in-progress estimate) and it came in higher than what Toyota approved
+  // in the original PSE -- Toyota needs to sign off on the difference, so
+  // this needs eyes on it same as an unsent PSE does. Purely derived from
+  // the WOM's current numbers every time this runs, so it clears itself
+  // automatically if a correction brings the applied price back in line.
+  const costAppliedDone = Boolean(steps.find((s) => s.key === "cost_applied").completedAt);
+  const changeOrder =
+    costAppliedDone && wom.applied_price != null && wom.estimated_price != null && wom.applied_price > wom.estimated_price;
+  // Money's already gone out to a vendor for contracted services, but there's
+  // still no real Toyota PO on file -- a billing gap that needs closing
+  // before it gets any older, so it's worth the same urgency as an unsent
+  // PSE even if every checklist step otherwise looks fine.
+  const contractedNoPo = !wom.maximo_number && wom.applied_contracted != null && wom.applied_contracted > 0;
   upsertTaskBySourceKey(
     lifecycleTaskSourceKey(code),
     {
-      title: `WOM lifecycle: ${code}`,
+      title: changeOrder ? `WOM lifecycle: ${code} -- Toyota change order` : `WOM lifecycle: ${code}`,
       description: wom.description,
       category: "wom_workflow",
       assignedRole: nextStep ? nextStep.role : null,
-      priority: "normal",
+      priority: changeOrder || sentToToyotaPending || contractedNoPo ? "high" : "normal",
+      isException: changeOrder,
       relatedWomCode: code,
       relatedLocationCode: wom.location_code,
       source: "wom_workflow",
@@ -1712,6 +1773,21 @@ function getWomCostSummary() {
   let appliedCount = 0;
   const overquoted = [];
   const appliedNoPo = [];
+  const laborOvercharged = [];
+  const contractedIncreased = [];
+  // How much contracted-services $ has actually gone out to each vendor,
+  // across every WOM on file (not just the overage ones) -- "who do we do
+  // business with, and how much" independent of whether any single job ran
+  // over its own estimate.
+  const vendorSpendById = new Map();
+  const vendorNameCache = new Map();
+  const vendorName = (id) => {
+    if (!vendorNameCache.has(id)) {
+      const v = findVendor(id);
+      vendorNameCache.set(id, v ? v.name : null);
+    }
+    return vendorNameCache.get(id);
+  };
 
   for (const w of rows) {
     if (w.estimated_price != null) {
@@ -1722,6 +1798,10 @@ function getWomCostSummary() {
       totalApplied += w.applied_price;
       appliedCount++;
     }
+    // Estimated came in higher than applied on the project as a whole --
+    // budget that was quoted but never used, not an overcharge. See
+    // laborOvercharged/contractedIncreased below for the actual "we paid
+    // more than quoted" cases, broken out by category.
     if (w.estimated_price != null && w.applied_price != null && w.estimated_price > w.applied_price) {
       overquoted.push({
         code: w.code,
@@ -1741,10 +1821,61 @@ function getWomCostSummary() {
         status: w.status,
       });
     }
+    if (w.estimated_labor != null && w.applied_labor != null && w.applied_labor > w.estimated_labor) {
+      laborOvercharged.push({
+        code: w.code,
+        description: w.description,
+        locationCode: w.location_code,
+        estimatedLabor: w.estimated_labor,
+        appliedLabor: w.applied_labor,
+        overage: w.applied_labor - w.estimated_labor,
+      });
+    }
+    if (w.estimated_contracted != null && w.applied_contracted != null && w.applied_contracted > w.estimated_contracted) {
+      contractedIncreased.push({
+        code: w.code,
+        description: w.description,
+        locationCode: w.location_code,
+        vendorId: w.vendor_id,
+        vendorName: w.vendor_id ? vendorName(w.vendor_id) : null,
+        estimatedContracted: w.estimated_contracted,
+        appliedContracted: w.applied_contracted,
+        overage: w.applied_contracted - w.estimated_contracted,
+      });
+    }
+    if (w.vendor_id && w.applied_contracted != null) {
+      const cur = vendorSpendById.get(w.vendor_id) || {
+        vendorId: w.vendor_id,
+        vendorName: vendorName(w.vendor_id),
+        totalAppliedContracted: 0,
+        womCount: 0,
+      };
+      cur.totalAppliedContracted += w.applied_contracted;
+      cur.womCount++;
+      vendorSpendById.set(w.vendor_id, cur);
+    }
   }
 
   overquoted.sort((a, b) => b.overage - a.overage);
   appliedNoPo.sort((a, b) => b.appliedPrice - a.appliedPrice);
+  laborOvercharged.sort((a, b) => b.overage - a.overage);
+  contractedIncreased.sort((a, b) => b.overage - a.overage);
+
+  // Which vendors show up more than once in contractedIncreased -- the
+  // "reoccuringly charging on top of their quotes" list, not just a single
+  // one-off overage.
+  const vendorOverageById = new Map();
+  for (const c of contractedIncreased) {
+    if (!c.vendorId) continue;
+    const cur = vendorOverageById.get(c.vendorId) || { vendorId: c.vendorId, vendorName: c.vendorName, count: 0, totalOverage: 0 };
+    cur.count++;
+    cur.totalOverage += c.overage;
+    vendorOverageById.set(c.vendorId, cur);
+  }
+  const vendorsOverchargingRepeatedly = [...vendorOverageById.values()]
+    .filter((v) => v.count > 1)
+    .sort((a, b) => b.count - a.count || b.totalOverage - a.totalOverage);
+  const vendorContractedSpend = [...vendorSpendById.values()].sort((a, b) => b.totalAppliedContracted - a.totalAppliedContracted);
 
   return {
     totalWoms: rows.length,
@@ -1759,6 +1890,14 @@ function getWomCostSummary() {
     appliedNoPoCount: appliedNoPo.length,
     appliedNoPoTotal: appliedNoPo.reduce((sum, o) => sum + o.appliedPrice, 0),
     appliedNoPo,
+    laborOverchargedCount: laborOvercharged.length,
+    laborOverchargedTotal: laborOvercharged.reduce((sum, o) => sum + o.overage, 0),
+    laborOvercharged,
+    contractedIncreasedCount: contractedIncreased.length,
+    contractedIncreasedTotal: contractedIncreased.reduce((sum, o) => sum + o.overage, 0),
+    contractedIncreased,
+    vendorsOverchargingRepeatedly,
+    vendorContractedSpend,
   };
 }
 
@@ -1857,7 +1996,7 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true } = {}
     fields.relatedTechId !== undefined ? fields.relatedTechId || null : existing.related_tech_id,
     fields.relatedPo !== undefined ? fields.relatedPo || null : existing.related_po,
     fields.workflowRule ?? existing.workflow_rule,
-    fields.isException ? 1 : existing.is_exception,
+    fields.isException !== undefined ? (fields.isException ? 1 : 0) : existing.is_exception,
     now,
     existing.id
   );
@@ -2023,11 +2162,23 @@ function listTasks(filters = {}) {
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  // Emergency floats to the very top regardless of due date -- otherwise
-  // one with no due date yet would sink to the bottom of the list, which
-  // defeats the point of flagging it as the strongest tier.
+  // Sorted by priority tier first (Emergency down to Low), then due date --
+  // otherwise a High-priority task with no due date yet, or a later due
+  // date than some Normal task, would sink below it, which defeats the
+  // point of the tier existing at all.
   return db
-    .prepare(`SELECT * FROM tasks ${where} ORDER BY priority = 'emergency' DESC, due_at IS NULL, due_at, id DESC`)
+    .prepare(
+      `SELECT * FROM tasks ${where} ORDER BY
+        CASE priority
+          WHEN 'emergency' THEN 0
+          WHEN 'urgent' THEN 1
+          WHEN 'high' THEN 2
+          WHEN 'normal' THEN 3
+          WHEN 'low' THEN 4
+          ELSE 5
+        END,
+        due_at IS NULL, due_at, id DESC`
+    )
     .all(...params);
 }
 
@@ -2328,6 +2479,24 @@ function matchLocationCodeByName(rawName) {
   return partial ? partial.code : null;
 }
 
+// Same tolerant name-matching approach as matchLocationCodeByName, applied
+// to the tracker's "Vendor(s) Name/#/Phone" column -- e.g. "Automated
+// Solutions Group - 5883201". Only the name portion (before the first
+// " - ") is matched; never guessed at if nothing lines up, so a WOM just
+// goes without a vendor link rather than getting attached to the wrong one.
+function matchVendorIdByName(rawVendorText) {
+  const clean = rawVendorText != null ? String(rawVendorText).trim() : "";
+  if (!clean || clean === "-") return null;
+  const namePart = clean.split(/\s+-\s+/)[0].trim();
+  if (!namePart) return null;
+  const lower = namePart.toLowerCase();
+  const vendors = listVendors();
+  const exact = vendors.find((v) => v.name.toLowerCase() === lower);
+  if (exact) return exact.id;
+  const partial = vendors.find((v) => v.name.toLowerCase().includes(lower) || lower.includes(v.name.toLowerCase()));
+  return partial ? partial.id : null;
+}
+
 // `columns` names each Smartsheet column to pull from, as found by
 // findColumn in server/utils/smartsheet.js: { wom, estimate, applied,
 // description, dateRequested, maximo, location, subsidiary }. Any of them
@@ -2352,12 +2521,26 @@ function diffFields(existing, next) {
   if (next.maximoNumber && valuesDiffer(existing.maximo_number, next.maximoNumber)) fields.push("Maximo #");
   if (next.subsidiaryCode && valuesDiffer(existing.subsidiary_code, next.subsidiaryCode)) fields.push("subsidiary code");
   if (next.matchedLocationCode && !existing.location_code) fields.push("location");
+  if (next.estimatedLabor != null && valuesDiffer(existing.estimated_labor, next.estimatedLabor)) fields.push("estimated labor");
+  if (next.estimatedContracted != null && valuesDiffer(existing.estimated_contracted, next.estimatedContracted))
+    fields.push("estimated contracted services");
+  if (next.appliedLabor != null && valuesDiffer(existing.applied_labor, next.appliedLabor)) fields.push("applied labor");
+  if (next.appliedContracted != null && valuesDiffer(existing.applied_contracted, next.appliedContracted))
+    fields.push("applied contracted services");
+  if (next.matchedVendorId && !existing.vendor_id) fields.push("vendor");
   return fields;
 }
 
 function syncWomsFromSheetRows(rows, columns) {
   const { wom: womColumn, estimate: estimateColumn, applied: appliedColumn, description: descriptionColumn } = columns;
   const { dateRequested: dateRequestedColumn, maximo: maximoColumn, location: locationColumn, subsidiary: subsidiaryColumn } = columns;
+  const {
+    estimatedLabor: estimatedLaborColumn,
+    estimatedContracted: estimatedContractedColumn,
+    appliedLabor: appliedLaborColumn,
+    appliedContracted: appliedContractedColumn,
+    vendor: vendorColumn,
+  } = columns;
   let created = 0;
   let promoted = 0;
   let updated = 0;
@@ -2388,7 +2571,13 @@ function syncWomsFromSheetRows(rows, columns) {
     const maximoNumber = (maximoColumn && row[maximoColumn] && String(row[maximoColumn]).trim()) || null;
     const subsidiaryCode = (subsidiaryColumn && row[subsidiaryColumn] && String(row[subsidiaryColumn]).trim()) || null;
     const matchedLocationCode = locationColumn ? matchLocationCodeByName(row[locationColumn]) : null;
+    const estimatedLabor = estimatedLaborColumn ? parseDollarAmount(row[estimatedLaborColumn]) : null;
+    const estimatedContracted = estimatedContractedColumn ? parseDollarAmount(row[estimatedContractedColumn]) : null;
+    const appliedLabor = appliedLaborColumn ? parseDollarAmount(row[appliedLaborColumn]) : null;
+    const appliedContracted = appliedContractedColumn ? parseDollarAmount(row[appliedContractedColumn]) : null;
+    const matchedVendorId = vendorColumn ? matchVendorIdByName(row[vendorColumn]) : null;
     const rawData = JSON.stringify(row);
+    const breakdown = { estimatedLabor, estimatedContracted, appliedLabor, appliedContracted, matchedVendorId };
 
     const existing = findWomBySmartsheetRowId(rowId);
 
@@ -2417,12 +2606,30 @@ function syncWomsFromSheetRows(rows, columns) {
       // adopt it rather than erroring on a duplicate code.
       const collision = findWom(code);
       if (collision) {
-        const fields = diffFields(collision, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode });
+        const fields = diffFields(collision, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, ...breakdown });
         db.prepare(
           `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-           location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+           location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
+           applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+           smartsheet_raw_data = ?, smartsheet_synced_at = ?,
            smartsheet_row_number = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
-        ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, rowId, code);
+        ).run(
+          estimatedPrice,
+          appliedPrice,
+          maximoNumber,
+          subsidiaryCode,
+          matchedLocationCode,
+          estimatedLabor,
+          estimatedContracted,
+          appliedLabor,
+          appliedContracted,
+          matchedVendorId,
+          rawData,
+          stamp,
+          rowNumber,
+          rowId,
+          code
+        );
         if (fields.length > 0) {
           updated++;
           changedWoms.push({ code, description: collision.description, fields });
@@ -2433,8 +2640,28 @@ function syncWomsFromSheetRows(rows, columns) {
       const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
-         location_code, smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(code, description, status, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, String(rowId), rowNumber, stamp);
+         location_code, estimated_labor, estimated_contracted, applied_labor, applied_contracted, vendor_id,
+         smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        code,
+        description,
+        status,
+        estimatedPrice,
+        appliedPrice,
+        maximoNumber,
+        subsidiaryCode,
+        matchedLocationCode,
+        estimatedLabor,
+        estimatedContracted,
+        appliedLabor,
+        appliedContracted,
+        matchedVendorId,
+        rawData,
+        String(rowId),
+        rowNumber,
+        stamp
+      );
       created++;
       checkWomLifecycleAutoSteps(code);
       continue;
@@ -2443,9 +2670,27 @@ function syncWomsFromSheetRows(rows, columns) {
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
       db.prepare(
         `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
+         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+         smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
-      ).run(realCode, estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
+      ).run(
+        realCode,
+        estimatedPrice,
+        appliedPrice,
+        maximoNumber,
+        subsidiaryCode,
+        matchedLocationCode,
+        estimatedLabor,
+        estimatedContracted,
+        appliedLabor,
+        appliedContracted,
+        matchedVendorId,
+        rawData,
+        stamp,
+        rowNumber,
+        existing.code
+      );
       promoted++;
       changedWoms.push({ code: realCode, description: existing.description, fields: ["status: now open (real WOM # arrived)"] });
       recordWomStatusChange(realCode, "status", existing.status, "open", { source: "smartsheet_sync" });
@@ -2456,9 +2701,26 @@ function syncWomsFromSheetRows(rows, columns) {
     if (existing.status === "pending" && requested) {
       db.prepare(
         `UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
+         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+         smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
-      ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
+      ).run(
+        estimatedPrice,
+        appliedPrice,
+        maximoNumber,
+        subsidiaryCode,
+        matchedLocationCode,
+        estimatedLabor,
+        estimatedContracted,
+        appliedLabor,
+        appliedContracted,
+        matchedVendorId,
+        rawData,
+        stamp,
+        rowNumber,
+        existing.code
+      );
       updated++;
       changedWoms.push({ code: existing.code, description: existing.description, fields: ["status: now requested"] });
       recordWomStatusChange(existing.code, "status", "pending", "requested", { source: "smartsheet_sync" });
@@ -2467,12 +2729,29 @@ function syncWomsFromSheetRows(rows, columns) {
     }
 
     {
-      const fields = diffFields(existing, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode });
+      const fields = diffFields(existing, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, ...breakdown });
       db.prepare(
         `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-         location_code = COALESCE(location_code, ?), smartsheet_raw_data = ?, smartsheet_synced_at = ?,
+         location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
+         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?),
+         smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
-      ).run(estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, rawData, stamp, rowNumber, existing.code);
+      ).run(
+        estimatedPrice,
+        appliedPrice,
+        maximoNumber,
+        subsidiaryCode,
+        matchedLocationCode,
+        estimatedLabor,
+        estimatedContracted,
+        appliedLabor,
+        appliedContracted,
+        matchedVendorId,
+        rawData,
+        stamp,
+        rowNumber,
+        existing.code
+      );
       if (fields.length > 0) {
         updated++;
         changedWoms.push({ code: existing.code, description: existing.description, fields });
