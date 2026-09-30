@@ -142,6 +142,81 @@ export async function renderTaskBoard(container) {
     return staffCache;
   }
 
+  // WOMs/locations are open to any logged-in user (same as the Schedule
+  // tab's own pickers) -- cached once per board render so New Task and the
+  // task edit form don't each re-fetch the full list.
+  let womLocationCache = null;
+  async function loadWomLocationData() {
+    if (womLocationCache) return womLocationCache;
+    const [woms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
+    womLocationCache = { woms, locations, locationNameByCode: Object.fromEntries(locations.map((l) => [l.code, l.name])) };
+    return womLocationCache;
+  }
+
+  // Shared by "Related to a Vendor"/"Related to an Employee" in both New
+  // Task and the edit form -- same collapsed-behind-a-checkbox,
+  // type-to-search, pick-one-result shape. `initial` pre-fills an existing
+  // selection (editing a task that already has one) so the checkbox opens
+  // already showing what's picked instead of an empty search box.
+  function wireRelatedPicker(section, items, prefix, noun, initial) {
+    const toggle = section.querySelector(`.task-new-${prefix}-toggle`);
+    const field = section.querySelector(`.task-new-${prefix}-field`);
+    const search = field.querySelector(`.task-new-${prefix}-search`);
+    const results = field.querySelector(`.task-new-${prefix}-results`);
+    const picked = field.querySelector(`.task-new-${prefix}-picked`);
+    const pickedName = field.querySelector(`.task-new-${prefix}-picked-name`);
+    let selectedId = null;
+    const clear = () => {
+      selectedId = null;
+      picked.hidden = true;
+      search.hidden = false;
+      search.value = "";
+      results.innerHTML = "";
+    };
+    toggle.addEventListener("change", () => {
+      field.hidden = !toggle.checked;
+      if (!toggle.checked) clear();
+    });
+    search.addEventListener("input", () => {
+      const q = search.value.trim().toLowerCase();
+      if (!q) {
+        results.innerHTML = "";
+        return;
+      }
+      const matches = items.filter((i) => i.name.toLowerCase().includes(q)).slice(0, 8);
+      results.innerHTML = matches.length
+        ? matches.map((i) => `<button type="button" class="task-new-${prefix}-result" data-id="${escapeHtml(i.id)}">${escapeHtml(i.name)}</button>`).join("")
+        : `<p class="empty-note">No ${noun} matches "${escapeHtml(search.value.trim())}".</p>`;
+      results.querySelectorAll(`.task-new-${prefix}-result`).forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedId = btn.dataset.id;
+          pickedName.textContent = btn.textContent;
+          picked.hidden = false;
+          search.hidden = true;
+          results.innerHTML = "";
+        });
+      });
+    });
+    field.querySelector(`.task-new-${prefix}-clear`).addEventListener("click", clear);
+    if (initial && initial.id) {
+      selectedId = String(initial.id);
+      toggle.checked = true;
+      field.hidden = false;
+      pickedName.textContent = initial.name;
+      picked.hidden = false;
+      search.hidden = true;
+    }
+    return {
+      checkAndOpen: () => {
+        if (!toggle.checked) {
+          toggle.checked = true;
+          toggle.dispatchEvent(new Event("change"));
+        }
+      },
+      getId: () => selectedId,
+    };
+  }
+
   function queryString() {
     const params = new URLSearchParams();
     params.set("view", view);
@@ -273,8 +348,7 @@ export async function renderTaskBoard(container) {
     // location/WOM pickers), independent of the heavier admin-only staff
     // data above, so a technician linking their own task to a WOM isn't
     // blocked on admin access.
-    const [allWoms, allLocations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
-    const locationNameByCode = Object.fromEntries(allLocations.map((l) => [l.code, l.name]));
+    const { woms: allWoms, locations: allLocations, locationNameByCode } = await loadWomLocationData();
     const { body, close } = openModal({
       title: "New Task",
       size: "large",
@@ -289,6 +363,20 @@ export async function renderTaskBoard(container) {
                 ${MANUAL_CATEGORY_OPTIONS.map((k) => `<option value="${k}" ${k === "manual" ? "selected" : ""}>${escapeHtml(CATEGORY_LABELS[k])}</option>`).join("")}
               </select>
             </label>
+            ${
+              isAdmin
+                ? `
+              <label class="profile-field task-new-onboarding-for-field" hidden>
+                <span>Onboarding for</span>
+                <select class="task-new-onboarding-for">
+                  <option value="">Choose one...</option>
+                  <option value="vendor">Vendor</option>
+                  <option value="employee">New Employee</option>
+                </select>
+              </label>
+            `
+                : ""
+            }
           </div>
 
           <h4>When</h4>
@@ -372,13 +460,26 @@ export async function renderTaskBoard(container) {
               <label class="task-new-relate-toggle">
                 <input type="checkbox" class="task-new-vendor-toggle" /> Related to a Vendor
               </label>
-              <div class="task-new-vendor-field" hidden>
-                <div class="task-new-vendor-picked" hidden>
+              <div class="task-new-vendor-field task-new-related-field" hidden>
+                <div class="task-new-vendor-picked task-new-related-picked" hidden>
                   <span class="task-new-vendor-picked-name"></span>
                   <button type="button" class="btn btn-link task-new-vendor-clear">Change</button>
                 </div>
                 <input class="task-new-vendor-search" type="text" placeholder="Search vendor name to link this task to their profile..." />
                 <div class="task-new-vendor-results"></div>
+              </div>
+            </div>
+            <div class="task-new-employee-section">
+              <label class="task-new-relate-toggle">
+                <input type="checkbox" class="task-new-employee-toggle" /> Related to an Employee
+              </label>
+              <div class="task-new-employee-field task-new-related-field" hidden>
+                <div class="task-new-employee-picked task-new-related-picked" hidden>
+                  <span class="task-new-employee-picked-name"></span>
+                  <button type="button" class="btn btn-link task-new-employee-clear">Change</button>
+                </div>
+                <input class="task-new-employee-search" type="text" placeholder="Search employee name to link this task to their profile..." />
+                <div class="task-new-employee-results"></div>
               </div>
             </div>
           `
@@ -429,7 +530,10 @@ export async function renderTaskBoard(container) {
       // visible either way -- a recurring template does carry it through.)
       attachmentSection.hidden = repeatsToggle.checked;
       categoryField.hidden = repeatsToggle.checked;
-      if (vendorSection) vendorSection.hidden = repeatsToggle.checked;
+      if (vendorSection) {
+        vendorSection.hidden = repeatsToggle.checked;
+        body.querySelector(".task-new-employee-section").hidden = repeatsToggle.checked;
+      }
     });
 
     const womToggle = body.querySelector(".task-new-wom-toggle");
@@ -459,48 +563,26 @@ export async function renderTaskBoard(container) {
       }
     });
 
-    let selectedVendorId = null;
+    let vendorPicker = null;
+    let employeePicker = null;
     if (isAdmin && vendorSection) {
-      const vendorToggle = vendorSection.querySelector(".task-new-vendor-toggle");
-      const vendorField = vendorSection.querySelector(".task-new-vendor-field");
-      const vendorSearch = vendorField.querySelector(".task-new-vendor-search");
-      const vendorResults = vendorField.querySelector(".task-new-vendor-results");
-      const vendorPicked = vendorField.querySelector(".task-new-vendor-picked");
-      const vendorPickedName = vendorField.querySelector(".task-new-vendor-picked-name");
-      const clearVendorSelection = () => {
-        selectedVendorId = null;
-        vendorPicked.hidden = true;
-        vendorSearch.hidden = false;
-        vendorSearch.value = "";
-        vendorResults.innerHTML = "";
-      };
-      vendorToggle.addEventListener("change", () => {
-        vendorField.hidden = !vendorToggle.checked;
-        if (!vendorToggle.checked) clearVendorSelection();
+      vendorPicker = wireRelatedPicker(vendorSection, staff.vendors, "vendor", "vendor");
+      const employeeSection = body.querySelector(".task-new-employee-section");
+      employeePicker = wireRelatedPicker(employeeSection, staff.technicians, "employee", "employee");
+
+      // "Onboarding" covers both a new vendor and a new hire -- this sub-
+      // pick just saves the extra click of finding and checking the right
+      // Related toggle yourself once you've already said what Type this is.
+      const categorySelect = body.querySelector(".task-new-category");
+      const onboardingForField = body.querySelector(".task-new-onboarding-for-field");
+      const onboardingForSelect = body.querySelector(".task-new-onboarding-for");
+      categorySelect.addEventListener("change", () => {
+        onboardingForField.hidden = categorySelect.value !== "onboarding";
       });
-      vendorSearch.addEventListener("input", () => {
-        const q = vendorSearch.value.trim().toLowerCase();
-        if (!q) {
-          vendorResults.innerHTML = "";
-          return;
-        }
-        const matches = staff.vendors.filter((v) => v.name.toLowerCase().includes(q)).slice(0, 8);
-        vendorResults.innerHTML = matches.length
-          ? matches
-              .map((v) => `<button type="button" class="task-new-vendor-result" data-id="${escapeHtml(v.id)}">${escapeHtml(v.name)}</button>`)
-              .join("")
-          : `<p class="empty-note">No vendor matches "${escapeHtml(vendorSearch.value.trim())}".</p>`;
-        vendorResults.querySelectorAll(".task-new-vendor-result").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            selectedVendorId = btn.dataset.id;
-            vendorPickedName.textContent = btn.textContent;
-            vendorPicked.hidden = false;
-            vendorSearch.hidden = true;
-            vendorResults.innerHTML = "";
-          });
-        });
+      onboardingForSelect.addEventListener("change", () => {
+        if (onboardingForSelect.value === "vendor") vendorPicker.checkAndOpen();
+        else if (onboardingForSelect.value === "employee") employeePicker.checkAndOpen();
       });
-      vendorField.querySelector(".task-new-vendor-clear").addEventListener("click", clearVendorSelection);
     }
 
     const form = body.querySelector(".task-new-form");
@@ -519,7 +601,8 @@ export async function renderTaskBoard(container) {
         description: body.querySelector(".task-new-desc").value.trim(),
         category: body.querySelector(".task-new-category").value,
         relatedWomCode: womToggle.checked ? body.querySelector(".task-new-wom-select").value || null : null,
-        relatedVendorId: selectedVendorId,
+        relatedVendorId: vendorPicker ? vendorPicker.getId() : null,
+        relatedTechId: employeePicker ? employeePicker.getId() : null,
       };
       if (isAdmin) {
         base.assignedTo = body.querySelector(".task-new-assignee").value || null;
@@ -592,6 +675,7 @@ export async function renderTaskBoard(container) {
     const contextBits = [];
     if (t.relatedWomCode) contextBits.push(`WOM ${escapeHtml(t.relatedWomCode)}${t.relatedWomDescription ? ` — ${escapeHtml(t.relatedWomDescription)}` : ""}`);
     if (t.relatedVendorName) contextBits.push(escapeHtml(t.relatedVendorName));
+    if (t.relatedTechName) contextBits.push(escapeHtml(t.relatedTechName));
     if (t.relatedLocationName) contextBits.push(escapeHtml(t.relatedLocationName));
     const assignee = t.assignedToName || (t.assignedRole ? `Unclaimed — ${ROLE_LABELS[t.assignedRole] || t.assignedRole}` : "Unassigned");
     const badgeLabel = t.urgency === "done" ? STATUS_LABELS[t.status] : PRIORITY_LABELS[t.priority];
@@ -649,16 +733,45 @@ export async function renderTaskBoard(container) {
     ]
       .filter(Boolean)
       .join(", ");
+    // Editing is for a task someone actually typed in by hand -- an
+    // automated WOM-workflow task's fields are that workflow's own source
+    // of truth and would just get overwritten by the next sync/action, so
+    // only its real action (below) and status apply to it, never a title
+    // edit. An admin can edit anyone's hand-added task; a non-admin only
+    // their own.
+    const canEdit = t.source === "manual" && (isAdmin || t.createdBy === state.user.id);
 
     host.innerHTML = `
       ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
-      <p class="review-checklist-hint">${why} (${escapeHtml(timeline)}.)</p>
+      <p class="review-checklist-hint">
+        ${why} (${escapeHtml(timeline)}.)
+        ${canEdit ? `<button class="btn btn-link task-edit-toggle" type="button">Edit</button>` : ""}
+      </p>
+      ${canEdit ? `<div class="task-edit-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
       <div class="review-actions task-status-actions"></div>
       ${isAdmin ? `<div class="task-attachments"></div>` : ""}
       <div class="task-comments"></div>
       <div class="task-comment-form"></div>
     `;
+
+    if (canEdit) {
+      const editToggle = host.querySelector(".task-edit-toggle");
+      const editHost = host.querySelector(".task-edit-host");
+      let editLoaded = false;
+      editToggle.addEventListener("click", async () => {
+        const opening = editHost.hidden;
+        editHost.hidden = !opening;
+        editToggle.textContent = opening ? "Cancel" : "Edit";
+        if (opening && !editLoaded) {
+          editLoaded = true;
+          await renderTaskEditForm(editHost, t, () => {
+            editHost.hidden = true;
+            editToggle.textContent = "Edit";
+          });
+        }
+      });
+    }
 
     const tookOverStatus = wom && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
     if (!tookOverStatus) renderStatusActions(host.querySelector(".task-status-actions"), t);
@@ -674,6 +787,162 @@ export async function renderTaskBoard(container) {
     }
     renderComments(host.querySelector(".task-comments"), t.comments);
     renderCommentForm(host.querySelector(".task-comment-form"), t.id, host);
+  }
+
+  // The edit form for a hand-added task -- same What/Related shape as New
+  // Task (Type, priority, due date, WOM, and for an admin, Vendor/Employee),
+  // minus recurring and attachment (a task already has both, once created).
+  // PATCHes /api/tasks/:id and re-draws the whole board on save, since a
+  // title change needs to show up on the outer card too, not just here.
+  async function renderTaskEditForm(host, t, onCancel) {
+    const { woms: allWoms, locations: allLocations, locationNameByCode } = await loadWomLocationData();
+    const dueDateVal = t.dueAt ? t.dueAt.slice(0, 10) : "";
+    const dueTimeVal = t.dueAt && t.dueAt.length > 10 ? t.dueAt.slice(11, 16) : "";
+    const initialWomLocation = t.relatedWomCode ? (allWoms.find((w) => w.code === t.relatedWomCode) || {}).locationCode || "" : "";
+
+    host.innerHTML = `
+      <form class="modal-form task-edit-form">
+        <label class="profile-field"><span>Title</span><input class="task-edit-title" type="text" value="${escapeHtml(t.title)}" required /></label>
+        <label class="profile-field"><span>Description</span><textarea class="task-edit-desc" rows="2">${escapeHtml(t.description || "")}</textarea></label>
+        <div class="vendor-edit-grid">
+          <label class="profile-field"><span>Type</span>
+            <select class="task-edit-category">
+              ${MANUAL_CATEGORY_OPTIONS.map((k) => `<option value="${k}" ${k === t.category ? "selected" : ""}>${escapeHtml(CATEGORY_LABELS[k])}</option>`).join("")}
+            </select>
+          </label>
+          <label class="profile-field"><span>Priority</span>
+            <select class="task-edit-priority">
+              ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}" ${k === t.priority ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+          </label>
+          <label class="profile-field"><span>Due date</span><input class="task-edit-due" type="date" value="${dueDateVal}" /></label>
+          <label class="profile-field"><span>Due time</span><input class="task-edit-due-time" type="time" value="${dueTimeVal}" /></label>
+        </div>
+
+        <label class="task-new-relate-toggle">
+          <input type="checkbox" class="task-new-wom-toggle" ${t.relatedWomCode ? "checked" : ""} /> Related to a WOM
+        </label>
+        <div class="task-new-wom-field" ${t.relatedWomCode ? "" : "hidden"}>
+          <div class="vendor-edit-grid">
+            <label class="profile-field"><span>Location</span>
+              <select class="task-new-wom-location">
+                <option value="">All locations</option>
+                ${allLocations.map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === initialWomLocation ? "selected" : ""}>${escapeHtml(l.name)}</option>`).join("")}
+              </select>
+            </label>
+            <label class="profile-field"><span>WOM</span><select class="task-new-wom-select"></select></label>
+          </div>
+        </div>
+        ${
+          isAdmin
+            ? `
+          <div class="task-new-vendor-section">
+            <label class="task-new-relate-toggle"><input type="checkbox" class="task-new-vendor-toggle" /> Related to a Vendor</label>
+            <div class="task-new-vendor-field task-new-related-field" hidden>
+              <div class="task-new-vendor-picked task-new-related-picked" hidden>
+                <span class="task-new-vendor-picked-name"></span>
+                <button type="button" class="btn btn-link task-new-vendor-clear">Change</button>
+              </div>
+              <input class="task-new-vendor-search" type="text" placeholder="Search vendor name..." />
+              <div class="task-new-vendor-results"></div>
+            </div>
+          </div>
+          <div class="task-new-employee-section">
+            <label class="task-new-relate-toggle"><input type="checkbox" class="task-new-employee-toggle" /> Related to an Employee</label>
+            <div class="task-new-employee-field task-new-related-field" hidden>
+              <div class="task-new-employee-picked task-new-related-picked" hidden>
+                <span class="task-new-employee-picked-name"></span>
+                <button type="button" class="btn btn-link task-new-employee-clear">Change</button>
+              </div>
+              <input class="task-new-employee-search" type="text" placeholder="Search employee name..." />
+              <div class="task-new-employee-results"></div>
+            </div>
+          </div>
+        `
+            : ""
+        }
+
+        <div class="modal-form-actions">
+          <button class="btn btn-primary" type="submit">Save changes</button>
+          <button class="btn btn-link task-edit-cancel" type="button">Cancel</button>
+        </div>
+        <div class="task-edit-error"></div>
+      </form>
+    `;
+
+    const womToggle = host.querySelector(".task-new-wom-toggle");
+    const womField = host.querySelector(".task-new-wom-field");
+    const womLocationSelect = host.querySelector(".task-new-wom-location");
+    const womSelect = host.querySelector(".task-new-wom-select");
+    function refreshWomOptions() {
+      const loc = womLocationSelect.value;
+      const options = loc ? allWoms.filter((w) => w.locationCode === loc) : allWoms;
+      womSelect.innerHTML =
+        `<option value="">Select a WOM...</option>` +
+        options
+          .map((w) => {
+            const locName = w.locationCode ? locationNameByCode[w.locationCode] || w.locationCode : "no location";
+            return `<option value="${escapeHtml(w.code)}" ${w.code === t.relatedWomCode ? "selected" : ""}>${escapeHtml(w.code)} -- ${escapeHtml(w.description || "")} (${escapeHtml(locName)})</option>`;
+          })
+          .join("");
+    }
+    refreshWomOptions();
+    womLocationSelect.addEventListener("change", refreshWomOptions);
+    womToggle.addEventListener("change", () => {
+      womField.hidden = !womToggle.checked;
+      if (!womToggle.checked) {
+        womLocationSelect.value = "";
+        refreshWomOptions();
+      }
+    });
+
+    let vendorPicker = null;
+    let employeePicker = null;
+    if (isAdmin) {
+      const staff = await loadStaff();
+      vendorPicker = wireRelatedPicker(
+        host.querySelector(".task-new-vendor-section"),
+        staff.vendors,
+        "vendor",
+        "vendor",
+        t.relatedVendorId ? { id: t.relatedVendorId, name: t.relatedVendorName } : null
+      );
+      employeePicker = wireRelatedPicker(
+        host.querySelector(".task-new-employee-section"),
+        staff.technicians,
+        "employee",
+        "employee",
+        t.relatedTechId ? { id: t.relatedTechId, name: t.relatedTechName } : null
+      );
+    }
+
+    host.querySelector(".task-edit-cancel").addEventListener("click", onCancel);
+    host.querySelector(".task-edit-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errorEl = host.querySelector(".task-edit-error");
+      errorEl.innerHTML = "";
+      const title = host.querySelector(".task-edit-title").value.trim();
+      if (!title) {
+        errorEl.innerHTML = `<p class="attachments-error">Title is required.</p>`;
+        return;
+      }
+      try {
+        await api.patch(`/api/tasks/${t.id}`, {
+          title,
+          description: host.querySelector(".task-edit-desc").value.trim(),
+          category: host.querySelector(".task-edit-category").value,
+          priority: host.querySelector(".task-edit-priority").value,
+          dueAt: host.querySelector(".task-edit-due").value || null,
+          dueTime: host.querySelector(".task-edit-due-time").value || null,
+          relatedWomCode: womToggle.checked ? womSelect.value || null : null,
+          relatedVendorId: vendorPicker ? vendorPicker.getId() : null,
+          relatedTechId: employeePicker ? employeePicker.getId() : null,
+        });
+        await draw();
+      } catch (err) {
+        errorEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
   }
 
   // Mirrors adminReview.js's own PSE Tasks tab -- "PSE produced -- send to

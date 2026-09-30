@@ -1853,6 +1853,32 @@ function setTaskStatus(id, status) {
   return findTask(id);
 }
 
+// A person editing what/why a hand-added task is about, after the fact --
+// title, description, type, priority, due date, and what it's related to.
+// Deliberately separate from assignTask (who) and setTaskStatus (state).
+// Same partial-update shape as upsertTaskBySourceKey: a field left
+// undefined keeps its current value, so the route only has to pass what
+// the edit form actually changed.
+function updateTask(id, fields) {
+  const existing = findTask(id);
+  if (!existing) return null;
+  db.prepare(
+    `UPDATE tasks SET title = ?, description = ?, category = ?, priority = ?, due_at = ?,
+     related_wom_code = ?, related_vendor_id = ?, related_tech_id = ? WHERE id = ?`
+  ).run(
+    fields.title ?? existing.title,
+    fields.description ?? existing.description,
+    fields.category ?? existing.category,
+    fields.priority ?? existing.priority,
+    fields.dueAt !== undefined ? fields.dueAt : existing.due_at,
+    fields.relatedWomCode !== undefined ? fields.relatedWomCode : existing.related_wom_code,
+    fields.relatedVendorId !== undefined ? fields.relatedVendorId : existing.related_vendor_id,
+    fields.relatedTechId !== undefined ? fields.relatedTechId : existing.related_tech_id,
+    id
+  );
+  return findTask(id);
+}
+
 function assignTask(id, { assignedTo, assignedRole }) {
   if (!findTask(id)) return null;
   db.prepare("UPDATE tasks SET assigned_to = ?, assigned_role = ?, assigned_at = ? WHERE id = ?").run(
@@ -3064,6 +3090,7 @@ module.exports = {
   upsertTaskBySourceKey,
   completeTaskBySourceKey,
   setTaskStatus,
+  updateTask,
   assignTask,
   addTaskComment,
   listTaskComments,

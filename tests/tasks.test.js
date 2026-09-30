@@ -187,6 +187,114 @@ test("task engine: manual tasks, statuses, comments, and role scoping", async (t
   });
 });
 
+test("task engine: editing a hand-added task (title/type/priority/due date/related WOM, vendor, employee)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let taskId;
+  let vendorId;
+
+  await t.test("set up: a manual task and a vendor to relate it to", async () => {
+    const taskRes = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Update COI", description: "old desc" } });
+    assert.equal(taskRes.status, 201);
+    taskId = taskRes.body.id;
+
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Acme Fire & Safety" } });
+    assert.equal(vendorRes.status, 201);
+    vendorId = vendorRes.body.id;
+  });
+
+  await t.test("admin edits title, type, priority, due date, and links a vendor", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, {
+      userId: "ADMIN",
+      body: {
+        title: "Update COI -- renewal",
+        description: "new desc",
+        category: "vendor_compliance",
+        priority: "high",
+        dueAt: "2026-11-01",
+        dueTime: "09:00",
+        relatedVendorId: vendorId,
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.title, "Update COI -- renewal");
+    assert.equal(res.body.description, "new desc");
+    assert.equal(res.body.category, "vendor_compliance");
+    assert.equal(res.body.priority, "high");
+    assert.equal(res.body.dueAt, "2026-11-01T09:00");
+    assert.equal(res.body.relatedVendorId, vendorId);
+    assert.equal(res.body.relatedVendorName, "Acme Fire & Safety");
+  });
+
+  await t.test("fields left out of the request keep their current value", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { priority: "urgent" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.priority, "urgent");
+    assert.equal(res.body.title, "Update COI -- renewal", "title should be unchanged");
+    assert.equal(res.body.relatedVendorId, vendorId, "vendor link should be unchanged");
+  });
+
+  await t.test("linking an employee instead, and clearing the vendor", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, {
+      userId: "ADMIN",
+      body: { relatedVendorId: null, relatedTechId: "T1001" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedVendorId, null);
+    assert.equal(res.body.relatedTechId, "T1001");
+    assert.ok(res.body.relatedTechName, "expected the related employee's name to be resolved");
+  });
+
+  await t.test("linking to a real WOM", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "WOM-EDIT-1", description: "Edit-link test" } });
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { relatedWomCode: "WOM-EDIT-1" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedWomCode, "WOM-EDIT-1");
+  });
+
+  await t.test("an unknown WOM code is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { relatedWomCode: "NOPE-1" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("an invalid priority is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { priority: "bogus" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("clearing the title is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { title: "" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can edit their own hand-added task", async () => {
+    const own = await server.call("POST", "/api/tasks", { userId: "T1001", body: { title: "My own follow-up" } });
+    assert.equal(own.status, 201);
+    const res = await server.call("PATCH", `/api/tasks/${own.body.id}`, { userId: "T1001", body: { title: "My own follow-up (updated)" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.title, "My own follow-up (updated)");
+  });
+
+  await t.test("a technician can't edit someone else's hand-added task", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "T1002", body: { title: "hijacked" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician can't edit an automated WOM-workflow task", async () => {
+    await syncOneOpenWom(server, "20500001", 9001);
+    const list = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const autoTask = list.body.find((x) => x.relatedWomCode === "20500001");
+    assert.ok(autoTask, "expected the WOM sync to have created a workflow task");
+    const res = await server.call("PATCH", `/api/tasks/${autoTask.id}`, { userId: "T1001", body: { title: "hijacked" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("editing an unknown task 404s", async () => {
+    const res = await server.call("PATCH", "/api/tasks/999999", { userId: "ADMIN", body: { title: "x" } });
+    assert.equal(res.status, 404);
+  });
+});
+
 test("task engine: overdue, waiting, and exception views", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

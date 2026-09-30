@@ -42,6 +42,7 @@ function presentTask(t) {
   const vendor = t.related_vendor_id ? db.findVendor(t.related_vendor_id) : null;
   const location = t.related_location_code ? db.findLocation(t.related_location_code) : null;
   const wom = t.related_wom_code ? db.findWom(t.related_wom_code) : null;
+  const relatedTech = t.related_tech_id ? db.findTechnician(t.related_tech_id) : null;
   const now = Date.now();
   const ageMs = now - new Date(t.created_at).getTime();
 
@@ -64,6 +65,7 @@ function presentTask(t) {
     relatedLocationCode: t.related_location_code,
     relatedLocationName: location ? location.name : null,
     relatedTechId: t.related_tech_id,
+    relatedTechName: relatedTech ? relatedTech.name : null,
     relatedPo: t.related_po,
     source: t.source,
     sourceRecordId: t.source_record_id,
@@ -287,6 +289,41 @@ router.post("/", requireAuth, (req, res) => {
 
   db.addAudit(req.user.id, "TASK_CREATED", `${req.user.name} created task: ${task.title}`);
   res.status(201).json(presentTask(task));
+});
+
+// Editing what/why/related -- deliberately separate from /assign (who) and
+// /status (state), which are their own routes with their own audit verbs.
+// An admin can edit anything visible; a non-admin only their own hand-added
+// task (never an automated one -- its fields are the workflow's own source
+// of truth and would just get overwritten by the next sync/action anyway).
+router.patch("/:id", requireAuth, (req, res) => {
+  const task = db.findTask(Number(req.params.id));
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  if (!canSeeTask(req.user, task)) return res.status(403).json({ error: "Not your task" });
+  if (req.user.role !== "admin" && (task.created_by !== req.user.id || task.source !== "manual")) {
+    return res.status(403).json({ error: "You can only edit a task you added by hand" });
+  }
+
+  const { title, description, category, priority, dueAt, dueTime, relatedWomCode, relatedVendorId, relatedTechId } = req.body || {};
+  if (title !== undefined && !title) return res.status(400).json({ error: "title is required" });
+  if (priority !== undefined && priority && !db.TASK_PRIORITIES.includes(priority)) {
+    return res.status(400).json({ error: `priority must be one of: ${db.TASK_PRIORITIES.join(", ")}` });
+  }
+  if (relatedWomCode && !db.findWom(relatedWomCode)) return res.status(400).json({ error: `Unknown WOM: ${relatedWomCode}` });
+  if (dueTime && !TIME_RE.test(dueTime)) return res.status(400).json({ error: "dueTime must be HH:MM (24-hour)" });
+
+  const updated = db.updateTask(task.id, {
+    title,
+    description,
+    category,
+    priority,
+    dueAt: dueAt !== undefined ? (dueAt && dueTime ? `${dueAt}T${dueTime}` : dueAt || null) : undefined,
+    relatedWomCode: relatedWomCode !== undefined ? relatedWomCode || null : undefined,
+    relatedVendorId: relatedVendorId !== undefined ? relatedVendorId || null : undefined,
+    relatedTechId: relatedTechId !== undefined ? relatedTechId || null : undefined,
+  });
+  db.addAudit(req.user.id, "TASK_EDITED", `${req.user.name} edited task "${updated.title}"`);
+  res.json(presentTask(updated));
 });
 
 router.patch("/:id/status", requireAuth, (req, res) => {

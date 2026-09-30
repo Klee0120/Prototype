@@ -743,6 +743,29 @@ Demo logins:
     recurring task (its template does carry `relatedWomCode` through to
     every occurrence); Type and Related Vendor don't, so both are hidden
     while "Repeats on specific days" is checked.
+  - **A "Related to an Employee" picker sits next to Related Vendor**,
+    same type-a-name/pick-from-matches shape, searching active technicians
+    instead of vendors (`relatedTechId`, already accepted by the backend
+    the same way `relatedVendorId` was). Both pickers share one
+    `wireRelatedPicker` helper now rather than two near-identical copies.
+    Choosing **Onboarding** as the Type reveals a one-off **"Onboarding
+    for"** sub-select (Vendor / New Employee) purely as a shortcut --
+    picking one auto-checks and opens the matching Related picker instead
+    of making you find and check it yourself, since "Onboarding" always
+    means either a new vendor or a new hire.
+  - **A hand-added task can be edited after the fact** (`PATCH
+    /api/tasks/:id`, `db.updateTask`) -- title, description, Type,
+    priority, due date/time, and all three Related pickers (WOM/Vendor/
+    Employee), via an **Edit** link next to a task's own "Added by hand"
+    line in its detail panel. Deliberately separate from `/assign` (who)
+    and `/status` (state), which keep their own routes and audit verbs.
+    Only ever available for a task with `source: "manual"` -- an automated
+    WOM-workflow task's fields are that workflow's own source of truth and
+    would just get overwritten by the next sync/action, so only its real
+    action and status apply to it, never a title edit. An admin can edit
+    any hand-added task; a non-admin only their own. Saving re-draws the
+    whole board (a title change needs to show up on the outer card too,
+    not just the open detail panel), audited as `TASK_EDITED`.
   - **A WOM-workflow task's detail panel takes the real action, not a
     generic "mark complete."** Opening a task like "Produce PSE for X"
     fetches that WOM's live `pse_stage` and, if it has one, renders the
@@ -1669,7 +1692,10 @@ server/
                                        filters -- server resolves the viewer's own role/identity scope, see
                                        rolesForViewer), GET /summary (dashboard tile counts), GET /:id (with
                                        comments), POST / (manual creation -- a technician is force-assigned to
-                                       themselves), PATCH /:id/status, PATCH /:id/assign (admin-only),
+                                       themselves), PATCH /:id (editing what/why a hand-added task is --
+                                       title/description/category/priority/due date/related WOM-vendor-employee;
+                                       an admin can edit any hand-added task, a non-admin only their own, never
+                                       an automated one), PATCH /:id/status, PATCH /:id/assign (admin-only),
                                        POST /:id/comments -- see server/data/db.js's task-engine section
                                        (createTask/upsertTaskBySourceKey/listTasks/etc.) for the actual writes
   utils/
@@ -1789,7 +1815,12 @@ tests/
                                  override), the standalone pse/followup reschedule endpoint (reflected
                                  on the matching task, rejected for a WOM not in the pipeline,
                                  technician forbidden), and the cost-summary endpoint's totals plus its
-                                 overquoted-on-labor and applied-no-PO lists (technician forbidden)
+                                 overquoted-on-labor and applied-no-PO lists (technician forbidden); editing a
+                                 hand-added task (title/type/priority/due date/related WOM/vendor/employee all
+                                 changing, fields left out keeping their prior value, an unknown WOM or bad
+                                 priority rejected, clearing the title rejected, a technician editing their own
+                                 task but forbidden from someone else's or from an automated WOM-workflow task,
+                                 and editing an unknown task 404ing)
 public/
   index.html
   css/styles.css
