@@ -900,7 +900,8 @@ export async function renderTaskBoard(container) {
 
   function renderTaskCard(t, sectionColorClass) {
     const row = document.createElement("div");
-    row.className = `review-row task-card ${sectionColorClass || ""}${t.urgency === "emergency" ? " task-card-emergency" : ""}`;
+    const rowGapClass = t.isChangeOrder ? " task-card-change-order" : t.isException ? " task-card-po-gap" : "";
+    row.className = `review-row task-card ${sectionColorClass || ""}${rowGapClass}${t.urgency === "emergency" ? " task-card-emergency" : ""}`;
     const contextBits = [];
     if (t.relatedWomCode) contextBits.push(`WOM ${escapeHtml(t.relatedWomCode)}${t.relatedWomDescription ? ` — ${escapeHtml(t.relatedWomDescription)}` : ""}`);
     if (t.relatedVendorName) contextBits.push(escapeHtml(t.relatedVendorName));

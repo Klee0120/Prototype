@@ -683,12 +683,16 @@ Demo logins:
     change order** (the applied cost, once posted, came in higher than the
     original estimate). Otherwise priority is Normal.
     - **The two paperwork-gap cases are deliberately never the same
-      color.** A missing PO with no cost overage gets a "-- Needs Toyota
-      PO" title suffix and an **orange** badge (`urgency: "warn"`,
-      `.badge-warn` in `styles.css`) -- a paperwork-catch-up problem, still
-      needs chasing, but not (yet) a money problem. A real cost overage
-      gets a "-- Needs Toyota PO change order" title suffix, the same
-      **red** badge as Urgent/Emergency (`urgency: "urgent"`), and a 🚩
+      color, and the color is the whole row, not just the badge.** A
+      colored pill alone was too easy to miss scanning down a long list --
+      a missing PO with no cost overage gets a "-- Needs Toyota PO" title
+      suffix and reads **orange** end to end (badge, and the row's own
+      left border plus background tint, `.task-card-po-gap` in
+      `styles.css`, the same whole-row treatment `.task-card-emergency`
+      already used) -- a paperwork-catch-up problem, still needs chasing,
+      but not (yet) a money problem. A real cost overage gets a "-- Needs
+      Toyota PO change order" title suffix, reads **red** end to end
+      (`.task-card-change-order`, same red as Urgent/Emergency), and a 🚩
       flag right on its row -- Toyota has to sign off on an actual dollar
       difference, one notch more urgent than a plain missing PO, and the
       flag exists specifically to call out that stronger case rather than

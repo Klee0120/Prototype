@@ -1244,11 +1244,25 @@ h1, h2, h3, h4 {
 .task-card.task-section-recurring { border-left-color: var(--muted); }
 .task-card.task-section-general { border-left-color: var(--border); }
 
-/* Emergency priority reads as the whole card, not just its badge -- same
-   red-border-plus-tint treatment .review-row-pending already uses elsewhere
-   for "needs eyes right now," so it's a familiar signal, not a new one.
-   Declared after the section colors above so a genuine emergency always
-   wins over its category's tint. */
+/* Whole-row color treatment, not just the badge -- a colored pill alone was
+   too easy to miss scanning down a long list; the whole row isn't. Same
+   red-border-plus-tint idea .review-row-pending already uses elsewhere for
+   "needs eyes right now," just extended to two more cases. Declared after
+   the section colors above so any of these three always win over a task's
+   plain category tint. Ordered weakest-to-strongest so the strongest
+   applicable one wins on a task that could technically match more than
+   one: a plain missing PO (orange) is a paperwork-catch-up problem; a real
+   Toyota change order (red) is an actual dollar problem needing Toyota's
+   sign-off, one notch more urgent; Emergency is a deliberate, manual
+   "drop everything" call and always wins outright if it's ever also set. */
+.task-card-po-gap {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.task-card-change-order {
+  border-left-color: var(--danger);
+  background: var(--danger-bg);
+}
 .task-card-emergency {
   border-left-color: var(--danger);
   background: var(--danger-bg);
