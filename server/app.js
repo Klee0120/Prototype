@@ -35,7 +35,20 @@ function createApp() {
   app.use("/api/schedule", scheduleRoutes);
   app.use("/api/tasks", taskRoutes);
 
-  app.use(express.static(path.join(__dirname, "..", "public")));
+  // Every redeploy restarts this process (see scripts/redeploy.sh), but a
+  // browser tab left open from before -- or one that just hits a normal
+  // reload -- can still serve a visual/behavioral change from stale cached
+  // JS/CSS well after the server itself is running the new code (Express's
+  // static defaults allow caching, just with revalidation, which isn't
+  // reliable across every browser/network path). These are small internal
+  // tooling files, not public assets at any real scale, so the safest
+  // default is "never cache" rather than debugging a stale badge color or
+  // stale button behavior after every deploy.
+  app.use(
+    express.static(path.join(__dirname, "..", "public"), {
+      setHeaders: (res) => res.setHeader("Cache-Control", "no-store"),
+    })
+  );
 
   // Keep API errors as JSON (bad request bodies, oversized uploads) instead
   // of falling through to Express's default HTML error page.

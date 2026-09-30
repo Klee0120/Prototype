@@ -1503,6 +1503,16 @@ by their existing keys.
   ```
   curl -fsSL https://raw.githubusercontent.com/Klee0120/Prototype/claude/labor-allocation-prototype-b0y12v/scripts/redeploy.sh | bash
   ```
+  Static JS/CSS are served with `Cache-Control: no-store` (`server/app.js`)
+  specifically so a redeploy is guaranteed to show up on the next reload --
+  a small internal tool like this one isn't worth trading that guarantee for
+  the marginal bandwidth savings of letting browsers cache these files, and
+  a stale cached file after a deploy is a confusing, hard-to-diagnose "why
+  doesn't this look right yet" from the other end. Note this only covers
+  *files already fetched fresh on reload* -- a browser TAB left open from
+  before a redeploy keeps running whatever JS was already loaded into that
+  page's memory until it's actually reloaded (closing and reopening the tab,
+  or a plain refresh, both do it).
 - **Auth is real but the transport isn't encrypted yet.** Login issues a
   genuine random session token (`server/data/db.js`'s `sessions` table); PINs
   are hashed with scrypt, never stored or compared in plain text
