@@ -918,6 +918,24 @@ Demo logins:
     edit route for priority) rather than a new bulk backend route, since
     the volume here doesn't call for one; the whole board re-draws once
     all of them finish.
+    - **Mark complete/Cancel skip any selected WOM lifecycle task.** A
+      lifecycle task's status is derived entirely from its own checklist
+      (`refreshWomLifecycleTask`, `reopenIfClosed: false`) -- the
+      single-task detail panel already enforces this by never showing the
+      generic Start/Waiting/Mark complete/Cancel buttons for one
+      (`renderPseActions` always takes over instead), but the bulk
+      toolbar called the same generic `PATCH /:id/status` route directly
+      and had no such guard, so checking one and clicking "Mark complete"
+      would force it closed with real steps (e.g. Review charges, Invoice)
+      still unchecked -- and since the lazy per-read refresh only touches
+      non-completed lifecycle tasks, there was no path back except by
+      hand. `PATCH /:id/status` now rejects `completed`/`cancelled` for a
+      `category: "wom_workflow"` task (400, server-side, so this holds
+      regardless of caller); the bulk toolbar's Mark complete/Cancel
+      filter any selected lifecycle tasks out before running (so the rest
+      of a mixed selection still goes through) and alert once naming how
+      many were skipped and why. A lifecycle task only ever completes by
+      finishing its checklist, and only ever pauses via Reschedule.
   - **One unified activity feed per task, not a separate "opened/started/
     completed" sentence plus a disconnected comments list below it**
     (`buildActivityEvents`/`renderActivityFeed`) -- built client-side from

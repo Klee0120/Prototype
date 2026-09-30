@@ -363,6 +363,19 @@ router.patch("/:id/status", requireAuth, (req, res) => {
   if (!db.TASK_STATUSES.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${db.TASK_STATUSES.join(", ")}` });
   }
+  // A WOM lifecycle task only ever completes when its own checklist does
+  // (refreshWomLifecycleTask, reopenIfClosed: false) -- forcing it to
+  // "completed"/"cancelled" here would freeze it with real steps (Review
+  // charges, Invoice) still unchecked and, since the lazy refresh only
+  // touches non-completed lifecycle tasks, no path back except by hand.
+  // Reschedule/snooze (POST /:id/reschedule) is the supported way to defer
+  // one of these; its own checklist actions are the supported way to
+  // advance it.
+  if (["completed", "cancelled"].includes(status) && task.category === "wom_workflow") {
+    return res.status(400).json({
+      error: "A WOM lifecycle task can only be completed by finishing its checklist. Use Reschedule to defer it instead.",
+    });
+  }
 
   const updated = db.setTaskStatus(task.id, status);
   db.addAudit(

@@ -1225,3 +1225,33 @@ test("tasks: reschedule/snooze a task into the Upcoming tab", async (t) => {
     assert.equal(snoozed.isException, true, "snoozing must not change the underlying exception computation");
   });
 });
+
+test("tasks: a WOM lifecycle task can't be force-completed or force-cancelled through the generic status route", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "NOFORCE-1", description: "Do not force-close" } });
+  await server.call("PATCH", "/api/woms/NOFORCE-1/details", { userId: "ADMIN", body: { description: "Do not force-close", locationCode: "PRINCETON" } });
+  const list = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+  const task = list.body.find((t2) => t2.sourceKey === "WOM-NOFORCE-1-LIFECYCLE");
+  assert.ok(task, "expected the lifecycle task to exist");
+
+  await t.test("PATCH .../status with completed is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${task.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    assert.equal(res.status, 400);
+    const after = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.notEqual(after.body.status, "completed", "the task must not have actually closed");
+  });
+
+  await t.test("PATCH .../status with cancelled is also rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${task.id}/status`, { userId: "ADMIN", body: { status: "cancelled" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a plain manual task is unaffected by the guard", async () => {
+    const manual = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Ordinary task" } });
+    const res = await server.call("PATCH", `/api/tasks/${manual.body.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "completed");
+  });
+});

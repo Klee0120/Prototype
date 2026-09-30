@@ -848,13 +848,35 @@ export async function renderTaskBoard(container) {
       if (sel) sel.innerHTML = `<option value="">Reassign to...</option>` + people.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
     });
 
-    async function runBulk(fn) {
-      const ids = [...selectedTaskIds];
+    async function runBulk(fn, ids = [...selectedTaskIds]) {
       await Promise.all(ids.map(fn));
       await draw();
     }
-    toolbarEl.querySelector(".task-bulk-complete").addEventListener("click", () => runBulk((id) => api.patch(`/api/tasks/${id}/status`, { status: "completed" })));
-    toolbarEl.querySelector(".task-bulk-cancel").addEventListener("click", () => runBulk((id) => api.patch(`/api/tasks/${id}/status`, { status: "cancelled" })));
+    // A WOM lifecycle task's status is derived from its own checklist, not
+    // settable by hand (see the server-side guard on PATCH /:id/status) --
+    // force-completing or cancelling one here would freeze it with real
+    // steps (Review charges, Invoice) still unchecked and no way back.
+    // Skip any selected before running, so the rest of the batch still goes
+    // through instead of the whole click failing on the first rejected one.
+    function splitOutLifecycleTasks() {
+      const ids = [...selectedTaskIds];
+      const lifecycleIds = ids.filter((id) => (lastTasks.find((t) => t.id === id) || {}).category === "wom_workflow");
+      const rest = ids.filter((id) => !lifecycleIds.includes(id));
+      if (lifecycleIds.length) {
+        window.alert(
+          `${lifecycleIds.length} WOM lifecycle task(s) were skipped -- these only complete by finishing their own checklist. Use Reschedule on the task itself to defer one instead.`
+        );
+      }
+      return rest;
+    }
+    toolbarEl.querySelector(".task-bulk-complete").addEventListener("click", () => {
+      const ids = splitOutLifecycleTasks();
+      if (ids.length) runBulk((id) => api.patch(`/api/tasks/${id}/status`, { status: "completed" }), ids);
+    });
+    toolbarEl.querySelector(".task-bulk-cancel").addEventListener("click", () => {
+      const ids = splitOutLifecycleTasks();
+      if (ids.length) runBulk((id) => api.patch(`/api/tasks/${id}/status`, { status: "cancelled" }), ids);
+    });
     toolbarEl.querySelector(".task-bulk-priority-apply").addEventListener("click", () => {
       const priority = toolbarEl.querySelector(".task-bulk-priority").value;
       if (!priority) return;
