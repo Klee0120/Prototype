@@ -43,6 +43,7 @@ function presentTask(t) {
   const location = t.related_location_code ? db.findLocation(t.related_location_code) : null;
   const wom = t.related_wom_code ? db.findWom(t.related_wom_code) : null;
   const relatedTech = t.related_tech_id ? db.findTechnician(t.related_tech_id) : null;
+  const creator = t.created_by ? db.findTechnician(t.created_by) : null;
   const now = Date.now();
   const ageMs = now - new Date(t.created_at).getTime();
 
@@ -72,6 +73,7 @@ function presentTask(t) {
     workflowRule: t.workflow_rule,
     isException: Boolean(t.is_exception),
     createdBy: t.created_by,
+    createdByName: creator ? creator.name : null,
     createdAt: t.created_at,
     assignedAt: t.assigned_at,
     startedAt: t.started_at,

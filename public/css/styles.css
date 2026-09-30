@@ -1191,6 +1191,17 @@ h1, h2, h3, h4 {
   color: var(--muted);
   white-space: nowrap;
 }
+.task-due-overdue {
+  color: var(--danger);
+  font-weight: 600;
+}
+.task-due-today {
+  color: var(--warn);
+  font-weight: 600;
+}
+.task-due-soon {
+  color: var(--warn);
+}
 
 /* Color-coded sections group the task board into the handful of work types
    asked for (Compliance, Onboarding, IT, Financial/WOM, Recurring, General)
@@ -1241,6 +1252,65 @@ h1, h2, h3, h4 {
 .task-comment {
   font-size: 13px;
   margin: 6px 0;
+}
+
+.task-activity-heading {
+  margin: 14px 0 4px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.task-activity-item {
+  font-size: 13px;
+  margin: 6px 0;
+  color: var(--muted);
+}
+
+.task-group-by-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-left: 10px;
+}
+.task-group-by-label select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.task-select-checkbox {
+  margin-right: 4px;
+}
+
+.task-bulk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.task-bulk-toolbar:empty {
+  display: none;
+}
+.task-bulk-toolbar:not(:empty) {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.task-bulk-count {
+  font-weight: 600;
+  font-size: 13px;
+  margin-right: 4px;
+}
+.task-bulk-toolbar select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 .task-comment-time {

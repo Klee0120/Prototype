@@ -766,6 +766,44 @@ Demo logins:
     any hand-added task; a non-admin only their own. Saving re-draws the
     whole board (a title change needs to show up on the outer card too,
     not just the open detail panel), audited as `TASK_EDITED`.
+  - **Due dates read relative and color-coded, not as a raw date**
+    (`formatRelativeDue` in `tasks.js`) -- "3 days overdue" in red, "due
+    today"/"due tomorrow"/"due in N days" in orange, and only a date past
+    a week out falls back to the plain `M/D/YYYY` format. Compares
+    calendar days, not raw hours, so a task due at 11pm today still reads
+    "due today" right up until midnight, not "overdue" the moment the
+    clock passes its due *time*. A closed (completed/cancelled) task shows
+    its due date plainly ("was due M/D/YYYY") instead -- a countdown on
+    something already finished isn't meaningful.
+  - **Bulk actions**: an admin-only checkbox per card and a bar that
+    appears above the list the moment at least one is checked -- mark
+    complete, cancel, set priority, or reassign, all applied to every
+    checked task at once. Each one loops the same single-task endpoints
+    the rest of the UI already uses (`/status`, `/assign`, the general
+    edit route for priority) rather than a new bulk backend route, since
+    the volume here doesn't call for one; the whole board re-draws once
+    all of them finish.
+  - **One unified activity feed per task, not a separate "opened/started/
+    completed" sentence plus a disconnected comments list below it**
+    (`buildActivityEvents`/`renderActivityFeed`) -- built client-side from
+    timestamps the task already carries (created, assigned, started,
+    completed, or its last status change for waiting/cancelled) merged
+    with its comments and sorted chronologically, so a note someone left
+    reads in the actual order it happened relative to the task's real
+    state changes, no new backend query needed. Posting a new comment
+    re-renders this same merged feed rather than a comments-only list.
+  - **The board can be grouped four other ways besides Type** (`groupBy`
+    state + `groupTasks` in `tasks.js`, picked from a "Group by" dropdown
+    next to "+ New Task"): **Assignee** (alphabetical, including an
+    "Unclaimed — role" bucket for queue tasks), **Priority** (Emergency
+    down to Low), **Due Date** (Overdue / Due Today / Due This Week /
+    Later / No Due Date -- reuses the same `formatRelativeDue` buckets as
+    the colored due-date text above), and **None** (one flat list, no
+    headers at all). Only Type keeps the semantic Compliance/Onboarding/
+    IT/Financial colors; the other modes use one neutral heading color
+    (Overdue still gets a warning tint) since "who it's assigned to" isn't
+    itself a kind of work the way Type is. Switching modes re-renders
+    against the already-fetched task list -- no extra round trip.
   - **A WOM-workflow task's detail panel takes the real action, not a
     generic "mark complete."** Opening a task like "Produce PSE for X"
     fetches that WOM's live `pse_stage` and, if it has one, renders the

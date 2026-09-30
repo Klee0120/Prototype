@@ -69,6 +69,56 @@ const SECTION_BY_CATEGORY = Object.fromEntries(TASK_SECTIONS.flatMap((s) => s.ca
 function sectionFor(category) {
   return SECTION_BY_CATEGORY[category] || TASK_SECTIONS[TASK_SECTIONS.length - 1];
 }
+// The other ways the same list can be grouped -- flat, neutral-colored
+// buckets rather than the Type split's semantic colors, since "who's it
+// assigned to" or "how urgent" isn't itself a category of work.
+const GROUP_BY_LABELS = { type: "Type", assignee: "Assignee", priority: "Priority", dueDate: "Due Date", none: "None (flat list)" };
+const PRIORITY_ORDER = ["emergency", "urgent", "high", "normal", "low"];
+const DUE_BUCKET_ORDER = ["overdue", "today", "week", "later", "none"];
+const DUE_BUCKET_LABELS = { overdue: "Overdue", today: "Due Today", week: "Due This Week", later: "Later", none: "No Due Date" };
+function dueBucketFor(t) {
+  if (!t.dueAt || ["completed", "cancelled"].includes(t.status)) return t.dueAt ? "later" : "none";
+  const { cls } = formatRelativeDue(t.dueAt);
+  if (cls === "task-due-overdue") return "overdue";
+  if (cls === "task-due-today") return "today";
+  if (cls === "task-due-soon") return "week";
+  return "later";
+}
+// Builds the ordered list of {key, label, colorClass, items} groups for
+// whichever grouping mode is active -- renderTaskList just renders
+// whatever comes back, so it doesn't need to know the grouping logic itself.
+function groupTasks(tasks, mode) {
+  if (mode === "none") return [{ key: "all", label: null, colorClass: "", items: tasks }];
+  if (mode === "assignee") {
+    const byName = new Map();
+    for (const t of tasks) {
+      const name = t.assignedToName || (t.assignedRole ? `Unclaimed — ${ROLE_LABELS[t.assignedRole] || t.assignedRole}` : "Unassigned");
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name).push(t);
+    }
+    return [...byName.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, items]) => ({ key: name, label: name, colorClass: "task-section-general", items }));
+  }
+  if (mode === "priority") {
+    return PRIORITY_ORDER.map((p) => ({ key: p, label: PRIORITY_LABELS[p], colorClass: "task-section-general", items: tasks.filter((t) => t.priority === p) })).filter(
+      (g) => g.items.length > 0
+    );
+  }
+  if (mode === "dueDate") {
+    return DUE_BUCKET_ORDER.map((b) => ({
+      key: b,
+      label: DUE_BUCKET_LABELS[b],
+      colorClass: b === "overdue" ? "task-section-compliance" : "task-section-general",
+      items: tasks.filter((t) => dueBucketFor(t) === b),
+    })).filter((g) => g.items.length > 0);
+  }
+  // "type" -- the original color-coded Compliance/Onboarding/IT/Financial/
+  // Recurring/General split.
+  return TASK_SECTIONS.map((s) => ({ key: s.key, label: s.label, colorClass: s.colorClass, items: tasks.filter((t) => sectionFor(t.category) === s) })).filter(
+    (g) => g.items.length > 0
+  );
+}
 const ROLE_LABELS = { admin: "Admin", reviewer: "Reviewer", financial: "Financial", tech: "Technician" };
 // Reuses the same badge color classes the rest of the app already uses for
 // status pills, rather than inventing a second palette just for urgency.
@@ -115,11 +165,40 @@ function formatDateTime(iso) {
   return new Date(iso).toLocaleString();
 }
 
+// "Due 10/2/2026" takes a beat to parse against today; "Due tomorrow"/
+// "3 days overdue" doesn't. Compares calendar days (midnight to midnight),
+// not raw hours, so a task due at 11pm today still reads "Due today," not
+// "overdue" the moment the clock ticks past its due *time*.
+function formatRelativeDue(iso) {
+  if (!iso) return { text: "no due date", cls: "" };
+  const due = new Date(iso);
+  const dueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate());
+  const today = new Date();
+  const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const diffDays = Math.round((dueDay - todayDay) / 86400000);
+  if (diffDays < 0) return { text: `${-diffDays} day${-diffDays === 1 ? "" : "s"} overdue`, cls: "task-due-overdue" };
+  if (diffDays === 0) return { text: "due today", cls: "task-due-today" };
+  if (diffDays === 1) return { text: "due tomorrow", cls: "task-due-soon" };
+  if (diffDays <= 6) return { text: `due in ${diffDays} days`, cls: "task-due-soon" };
+  return { text: `due ${formatDate(iso)}`, cls: "" };
+}
+
 export async function renderTaskBoard(container) {
   const isAdmin = state.user.role === "admin";
   let view = "my";
   let filters = { assignedTo: "", role: "", location: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
   let staffCache = null;
+  // Bulk selection (admin only) -- cleared on every full redraw, since a
+  // filter/view change means the selected rows may not even be on screen
+  // anymore.
+  const selectedTaskIds = new Set();
+  // How the same task list is grouped into sections -- Type is the
+  // color-coded Compliance/Onboarding/IT/Financial/Recurring/General split;
+  // the others are flat, neutral-colored groupings of the same underlying
+  // list. Changing this just re-renders against the already-fetched list,
+  // no re-fetch needed.
+  let groupBy = "type";
+  let lastTasks = [];
 
   await draw();
 
@@ -236,8 +315,10 @@ export async function renderTaskBoard(container) {
   async function draw() {
     const views = isAdmin ? ADMIN_VIEWS : TECH_VIEWS;
     if (!views.includes(view)) view = "my";
+    selectedTaskIds.clear();
 
     const [summary, tasks] = await Promise.all([api.get("/api/tasks/summary"), api.get(`/api/tasks?${queryString()}`)]);
+    lastTasks = tasks;
 
     container.innerHTML = `
       <p class="review-checklist-hint">
@@ -257,7 +338,13 @@ export async function renderTaskBoard(container) {
       ${isAdmin ? `<div id="task-filters"></div>` : ""}
       <div class="review-actions">
         <button class="btn btn-secondary task-new-btn" type="button">+ New Task</button>
+        <label class="task-group-by-label">Group by
+          <select class="task-group-by">
+            ${Object.entries(GROUP_BY_LABELS).map(([k, l]) => `<option value="${k}" ${k === groupBy ? "selected" : ""}>${l}</option>`).join("")}
+          </select>
+        </label>
       </div>
+      <div class="task-bulk-toolbar" id="task-bulk-toolbar"></div>
       <div class="review-list" id="task-list"></div>
     `;
 
@@ -274,6 +361,10 @@ export async function renderTaskBoard(container) {
       });
     });
     container.querySelector(".task-new-btn").addEventListener("click", openNewTaskModal);
+    container.querySelector(".task-group-by").addEventListener("change", (e) => {
+      groupBy = e.target.value;
+      renderTaskList(container.querySelector("#task-list"), lastTasks);
+    });
 
     if (isAdmin) await renderFilters(container.querySelector("#task-filters"));
     renderTaskList(container.querySelector("#task-list"), tasks);
@@ -654,19 +745,74 @@ export async function renderTaskBoard(container) {
       return;
     }
     host.innerHTML = "";
-    // Grouped into the same color-coded sections every time (not just
-    // whichever categories happen to appear in this particular view), so a
-    // section's position and color stay predictable to scan for -- an empty
-    // section is simply skipped rather than reordering the rest.
-    for (const section of TASK_SECTIONS) {
-      const inSection = tasks.filter((t) => sectionFor(t.category) === section);
-      if (inSection.length === 0) continue;
-      const heading = document.createElement("div");
-      heading.className = `task-section-heading ${section.colorClass}`;
-      heading.innerHTML = `<span>${escapeHtml(section.label)}</span><span class="task-section-count">${inSection.length}</span>`;
-      host.appendChild(heading);
-      inSection.forEach((t) => host.appendChild(renderTaskCard(t, section.colorClass)));
+    // Grouped into the same order/colors every time a given mode is active
+    // (not just whichever groups happen to appear in this particular view),
+    // so a group's position stays predictable to scan for -- an empty group
+    // is simply skipped rather than reordering the rest. See groupTasks for
+    // what each mode (Type/Assignee/Priority/Due Date/None) actually does.
+    for (const group of groupTasks(tasks, groupBy)) {
+      if (group.label) {
+        const heading = document.createElement("div");
+        heading.className = `task-section-heading ${group.colorClass}`;
+        heading.innerHTML = `<span>${escapeHtml(group.label)}</span><span class="task-section-count">${group.items.length}</span>`;
+        host.appendChild(heading);
+      }
+      group.items.forEach((t) => host.appendChild(renderTaskCard(t, group.colorClass)));
     }
+    renderBulkToolbar(container.querySelector("#task-bulk-toolbar"));
+  }
+
+  // The bulk-action bar above the list -- only ever shown once at least one
+  // row is checked. Every action loops the same per-task endpoints the
+  // single-task UI already uses (no new bulk backend route), then redraws.
+  function renderBulkToolbar(toolbarEl) {
+    if (!toolbarEl) return;
+    if (selectedTaskIds.size === 0) {
+      toolbarEl.innerHTML = "";
+      return;
+    }
+    toolbarEl.innerHTML = `
+      <span class="task-bulk-count">${selectedTaskIds.size} selected</span>
+      <button class="btn btn-secondary task-bulk-complete" type="button">Mark complete</button>
+      <button class="btn btn-secondary task-bulk-cancel" type="button">Cancel</button>
+      <select class="task-bulk-priority">
+        <option value="">Set priority...</option>
+        ${Object.entries(PRIORITY_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}
+      </select>
+      <button class="btn btn-secondary task-bulk-priority-apply" type="button">Apply</button>
+      <select class="task-bulk-assignee"><option value="">Reassign to...</option></select>
+      <button class="btn btn-secondary task-bulk-assignee-apply" type="button">Apply</button>
+      <button class="btn btn-link task-bulk-clear" type="button">Clear selection</button>
+    `;
+    loadStaff().then((staff) => {
+      if (!staff) return;
+      const people = [...staff.technicians, ...staff.admins];
+      const sel = toolbarEl.querySelector(".task-bulk-assignee");
+      if (sel) sel.innerHTML = `<option value="">Reassign to...</option>` + people.map((p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join("");
+    });
+
+    async function runBulk(fn) {
+      const ids = [...selectedTaskIds];
+      await Promise.all(ids.map(fn));
+      await draw();
+    }
+    toolbarEl.querySelector(".task-bulk-complete").addEventListener("click", () => runBulk((id) => api.patch(`/api/tasks/${id}/status`, { status: "completed" })));
+    toolbarEl.querySelector(".task-bulk-cancel").addEventListener("click", () => runBulk((id) => api.patch(`/api/tasks/${id}/status`, { status: "cancelled" })));
+    toolbarEl.querySelector(".task-bulk-priority-apply").addEventListener("click", () => {
+      const priority = toolbarEl.querySelector(".task-bulk-priority").value;
+      if (!priority) return;
+      runBulk((id) => api.patch(`/api/tasks/${id}`, { priority }));
+    });
+    toolbarEl.querySelector(".task-bulk-assignee-apply").addEventListener("click", () => {
+      const assignedTo = toolbarEl.querySelector(".task-bulk-assignee").value;
+      if (!assignedTo) return;
+      runBulk((id) => api.patch(`/api/tasks/${id}/assign`, { assignedTo }));
+    });
+    toolbarEl.querySelector(".task-bulk-clear").addEventListener("click", () => {
+      selectedTaskIds.clear();
+      container.querySelectorAll(".task-select-checkbox").forEach((cb) => (cb.checked = false));
+      renderBulkToolbar(toolbarEl);
+    });
   }
 
   function renderTaskCard(t, sectionColorClass) {
@@ -679,16 +825,21 @@ export async function renderTaskBoard(container) {
     if (t.relatedLocationName) contextBits.push(escapeHtml(t.relatedLocationName));
     const assignee = t.assignedToName || (t.assignedRole ? `Unclaimed — ${ROLE_LABELS[t.assignedRole] || t.assignedRole}` : "Unassigned");
     const badgeLabel = t.urgency === "done" ? STATUS_LABELS[t.status] : PRIORITY_LABELS[t.priority];
-    const dueLabel = t.dueAt ? `due ${formatDate(t.dueAt)}` : "no due date";
+    // A closed task's due date is just history, not a live countdown -- no
+    // "3 days overdue" red text on something already done.
+    const dueInfo = ["completed", "cancelled"].includes(t.status)
+      ? { text: t.dueAt ? `was due ${formatDate(t.dueAt)}` : "no due date", cls: "" }
+      : formatRelativeDue(t.dueAt);
     const ageLabel = t.ageDays <= 0 ? "opened today" : `opened ${t.ageDays}d ago`;
 
     row.innerHTML = `
       <div class="review-row-summary">
+        ${isAdmin ? `<input type="checkbox" class="task-select-checkbox" data-id="${t.id}" />` : ""}
         <span class="review-row-name">
           ${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
-        <span class="task-card-meta">${escapeHtml(assignee)} &middot; ${dueLabel} &middot; ${ageLabel}</span>
+        <span class="task-card-meta">${escapeHtml(assignee)} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}</span>
         <button class="btn btn-link task-detail-toggle" type="button">Details</button>
       </div>
       <div class="review-row-detail task-card-detail" hidden></div>
@@ -700,6 +851,15 @@ export async function renderTaskBoard(container) {
       toggleBtn.textContent = detail.hidden ? "Details" : "Hide";
       if (!detail.hidden) await renderDetail(detail, t.id);
     });
+    const checkbox = row.querySelector(".task-select-checkbox");
+    if (checkbox) {
+      checkbox.checked = selectedTaskIds.has(t.id);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) selectedTaskIds.add(t.id);
+        else selectedTaskIds.delete(t.id);
+        renderBulkToolbar(container.querySelector("#task-bulk-toolbar"));
+      });
+    }
     return row;
   }
 
@@ -721,18 +881,12 @@ export async function renderTaskBoard(container) {
       }
     }
 
-    const why = wom
-      ? `Part of the WOM workflow -- ${escapeHtml(t.relatedWomCode)} is currently at "${escapeHtml(wom.pseStageLabel || wom.pseStage)}."`
-      : t.workflowRule
-        ? `Generated automatically (${escapeHtml(t.source.replace(/_/g, " "))}).`
-        : `Added by hand.`;
-    const timeline = [
-      `opened ${formatDateTime(t.createdAt)}`,
-      t.startedAt ? `started ${formatDateTime(t.startedAt)}` : null,
-      t.completedAt ? `completed ${formatDateTime(t.completedAt)}` : null,
-    ]
-      .filter(Boolean)
-      .join(", ");
+    // A live-state explanation for a WOM-workflow task (which pipeline
+    // stage it's currently at) -- not itself a timestamped event, so it
+    // stays a separate hint above the activity feed rather than an entry
+    // in it. A manual/other-generated task has nothing extra to explain
+    // here; the feed's own first entry ("X added this task") covers it.
+    const why = wom ? `Part of the WOM workflow -- ${escapeHtml(t.relatedWomCode)} is currently at "${escapeHtml(wom.pseStageLabel || wom.pseStage)}."` : null;
     // Editing is for a task someone actually typed in by hand -- an
     // automated WOM-workflow task's fields are that workflow's own source
     // of truth and would just get overwritten by the next sync/action, so
@@ -744,14 +898,14 @@ export async function renderTaskBoard(container) {
     host.innerHTML = `
       ${t.description ? `<p>${escapeHtml(t.description)}</p>` : ""}
       <p class="review-checklist-hint">
-        ${why} (${escapeHtml(timeline)}.)
-        ${canEdit ? `<button class="btn btn-link task-edit-toggle" type="button">Edit</button>` : ""}
+        ${why ? `${why} ` : ""}${canEdit ? `<button class="btn btn-link task-edit-toggle" type="button">Edit</button>` : ""}
       </p>
       ${canEdit ? `<div class="task-edit-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
       <div class="review-actions task-status-actions"></div>
       ${isAdmin ? `<div class="task-attachments"></div>` : ""}
-      <div class="task-comments"></div>
+      <h5 class="task-activity-heading">Activity</h5>
+      <div class="task-activity"></div>
       <div class="task-comment-form"></div>
     `;
 
@@ -785,7 +939,7 @@ export async function renderTaskBoard(container) {
         emptyText: "No documents attached to this task yet.",
       });
     }
-    renderComments(host.querySelector(".task-comments"), t.comments);
+    renderActivityFeed(host.querySelector(".task-activity"), t);
     renderCommentForm(host.querySelector(".task-comment-form"), t.id, host);
   }
 
@@ -1125,15 +1279,31 @@ export async function renderTaskBoard(container) {
     });
   }
 
-  function renderComments(host, comments) {
-    if (!comments || comments.length === 0) {
-      host.innerHTML = `<p class="empty-note">No comments yet.</p>`;
-      return;
-    }
-    host.innerHTML = comments
-      .map(
-        (c) =>
-          `<p class="task-comment"><strong>${escapeHtml(c.authorName)}:</strong> ${escapeHtml(c.body)} <span class="task-comment-time">${formatDateTime(c.createdAt)}</span></p>`
+  // One chronological feed instead of a separate "opened/started/completed"
+  // sentence plus a disconnected comments list below it -- comments and the
+  // real state changes they're about now read in the order they actually
+  // happened. Built from timestamps the task already carries (no new
+  // backend query); a comment carries authorName/body, an event just text.
+  function buildActivityEvents(t) {
+    const events = [
+      { at: t.createdAt, text: `${escapeHtml(t.createdByName || "Someone")} added this task${t.workflowRule ? " (generated automatically)" : ""}.` },
+    ];
+    if (t.assignedAt) events.push({ at: t.assignedAt, text: `Assigned to ${escapeHtml(t.assignedToName || ROLE_LABELS[t.assignedRole] || t.assignedRole || "someone")}.` });
+    if (t.startedAt) events.push({ at: t.startedAt, text: "Started." });
+    if (t.completedAt) events.push({ at: t.completedAt, text: "Marked complete." });
+    else if (t.status === "waiting") events.push({ at: t.lastStatusChangeAt, text: "Marked waiting on someone else." });
+    else if (t.status === "cancelled") events.push({ at: t.lastStatusChangeAt, text: "Cancelled." });
+    for (const c of t.comments || []) events.push({ at: c.createdAt, isComment: true, authorName: c.authorName, body: c.body });
+    return events.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }
+
+  function renderActivityFeed(host, t) {
+    const events = buildActivityEvents(t);
+    host.innerHTML = events
+      .map((e) =>
+        e.isComment
+          ? `<p class="task-comment"><strong>${escapeHtml(e.authorName)}:</strong> ${escapeHtml(e.body)} <span class="task-comment-time">${formatDateTime(e.at)}</span></p>`
+          : `<p class="task-activity-item">${e.text} <span class="task-comment-time">${formatDateTime(e.at)}</span></p>`
       )
       .join("");
   }
@@ -1151,7 +1321,7 @@ export async function renderTaskBoard(container) {
       if (!body) return;
       await api.post(`/api/tasks/${taskId}/comments`, { body });
       const t = await api.get(`/api/tasks/${taskId}`);
-      renderComments(detailHost.querySelector(".task-comments"), t.comments);
+      renderActivityFeed(detailHost.querySelector(".task-activity"), t);
       input.value = "";
     });
   }
