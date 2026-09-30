@@ -13,6 +13,10 @@
   --warn-bg: #fdf1e4;
   --danger: #c0392b;
   --danger-bg: #fbe9e7;
+  --violet: #6b3fa0;
+  --violet-bg: #f1e9f8;
+  --teal: #0f7a72;
+  --teal-bg: #e3f5f3;
   --radius: 12px;
   --radius-sm: 8px;
   --shadow-sm: 0 1px 2px rgba(20, 25, 45, 0.06);
@@ -1188,9 +1192,47 @@ h1, h2, h3, h4 {
   white-space: nowrap;
 }
 
+/* Color-coded sections group the task board into the handful of work types
+   asked for (Compliance, Onboarding, IT, Financial/WOM, Recurring, General)
+   -- see TASK_SECTIONS in tasks.js. A heading banner per section plus a
+   matching left-border tint on its cards, so which kind of work something
+   is reads at a glance without opening it. */
+.task-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  margin: 18px 0 8px;
+}
+.task-section-heading:first-child {
+  margin-top: 0;
+}
+.task-section-count {
+  font-weight: 400;
+  opacity: 0.75;
+}
+.task-section-compliance { background: var(--warn-bg); color: var(--warn); }
+.task-section-onboarding { background: var(--violet-bg); color: var(--violet); }
+.task-section-it { background: var(--teal-bg); color: var(--teal); }
+.task-section-financial { background: var(--accent-bg); color: var(--accent-dark); }
+.task-section-recurring { background: #eceff5; color: var(--muted); }
+.task-section-general { background: #eceff5; color: var(--muted); }
+
+.task-card.task-section-compliance { border-left-color: var(--warn); }
+.task-card.task-section-onboarding { border-left-color: var(--violet); }
+.task-card.task-section-it { border-left-color: var(--teal); }
+.task-card.task-section-financial { border-left-color: var(--accent); }
+.task-card.task-section-recurring { border-left-color: var(--muted); }
+.task-card.task-section-general { border-left-color: var(--border); }
+
 /* Emergency priority reads as the whole card, not just its badge -- same
    red-border-plus-tint treatment .review-row-pending already uses elsewhere
-   for "needs eyes right now," so it's a familiar signal, not a new one. */
+   for "needs eyes right now," so it's a familiar signal, not a new one.
+   Declared after the section colors above so a genuine emergency always
+   wins over its category's tint. */
 .task-card-emergency {
   border-left-color: var(--danger);
   background: var(--danger-bg);
@@ -1346,6 +1388,57 @@ h1, h2, h3, h4 {
 }
 .task-new-attachment-section {
   margin-top: 12px;
+}
+.task-new-category-field {
+  max-width: 320px;
+  margin-top: 8px;
+}
+.task-new-vendor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.task-new-vendor-field[hidden] {
+  display: none;
+}
+.task-new-vendor-field .profile-field-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.task-new-vendor-field input {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  max-width: 420px;
+}
+.task-new-vendor-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 420px;
+}
+.task-new-vendor-result {
+  text-align: left;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  cursor: pointer;
+  font-size: 13px;
+}
+.task-new-vendor-result:hover {
+  background: var(--accent-bg);
+}
+.task-new-vendor-picked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.task-new-vendor-picked[hidden] {
+  display: none;
 }
 
 .onboarding-case-form {

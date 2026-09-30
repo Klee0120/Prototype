@@ -717,6 +717,21 @@ Demo logins:
     red-border-plus-tint treatment `.review-row-pending` already uses
     elsewhere) rather than just a colored badge, and always sorts to the
     top of every list regardless of due date.
+  - **The board groups into color-coded sections instead of one flat list or
+    another tab** (`TASK_SECTIONS` in `public/js/views/tasks.js`) --
+    Compliance Items, Onboarding, IT Requests, Financial & PO/WOM,
+    Recurring, and General, each with its own heading color and a matching
+    left-border tint on its cards (`renderTaskList`). This reuses the same
+    `category` field every task already had; the New Task modal now also
+    offers a **Type** picker (Compliance/Onboarding/IT Request/Financial/
+    General -- `MANUAL_CATEGORY_OPTIONS`, one-time tasks only, since a
+    recurring occurrence always lands in Recurring regardless of what's
+    picked) and a **Related Vendor** search field (type a name, pick from
+    the live-filtered matches) so a task like "Update COI" can point
+    straight at that vendor's own profile the same way it already could
+    point at a WOM. Both are purely additive to what the backend already
+    accepted (`relatedVendorId` on `POST /api/tasks` was already there,
+    just not exposed in this form yet) -- no new endpoints.
   - **A WOM-workflow task's detail panel takes the real action, not a
     generic "mark complete."** Opening a task like "Produce PSE for X"
     fetches that WOM's live `pse_stage` and, if it has one, renders the

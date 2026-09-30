@@ -39,7 +39,36 @@ const TECH_VIEWS = ["my", "team", "waiting", "overdue", "completed"];
 
 const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent", emergency: "Emergency" };
 const STATUS_LABELS = { open: "Open", in_progress: "In Progress", waiting: "Waiting", completed: "Completed", cancelled: "Cancelled" };
-const CATEGORY_LABELS = { manual: "Manual", wom_workflow: "WOM Workflow", financial: "Financial", recurring: "Recurring" };
+const CATEGORY_LABELS = {
+  manual: "General",
+  vendor_compliance: "Compliance",
+  onboarding: "Onboarding",
+  it_request: "IT Request",
+  financial: "Financial",
+  wom_workflow: "WOM Workflow",
+  recurring: "Recurring",
+};
+// Which of the above a person can actually pick when creating a task by
+// hand -- wom_workflow/recurring are reserved for what the PSE pipeline and
+// the recurring-task engine generate on their own, so offering them here
+// would just create a same-named but disconnected impostor category.
+const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboarding", "it_request", "financial"];
+// Groups the flat category list into the handful of visually distinct,
+// color-coded sections asked for -- "visually easy to understand" without
+// turning into yet another tab to click through. Order here is the order
+// sections render in; a category not listed anywhere falls into "general".
+const TASK_SECTIONS = [
+  { key: "compliance", label: "Compliance Items", colorClass: "task-section-compliance", categories: ["vendor_compliance"] },
+  { key: "onboarding", label: "Onboarding", colorClass: "task-section-onboarding", categories: ["onboarding"] },
+  { key: "it", label: "IT Requests", colorClass: "task-section-it", categories: ["it_request"] },
+  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow"] },
+  { key: "recurring", label: "Recurring", colorClass: "task-section-recurring", categories: ["recurring"] },
+  { key: "general", label: "General", colorClass: "task-section-general", categories: ["manual"] },
+];
+const SECTION_BY_CATEGORY = Object.fromEntries(TASK_SECTIONS.flatMap((s) => s.categories.map((c) => [c, s])));
+function sectionFor(category) {
+  return SECTION_BY_CATEGORY[category] || TASK_SECTIONS[TASK_SECTIONS.length - 1];
+}
 const ROLE_LABELS = { admin: "Admin", reviewer: "Reviewer", financial: "Financial", tech: "Technician" };
 // Reuses the same badge color classes the rest of the app already uses for
 // status pills, rather than inventing a second palette just for urgency.
@@ -248,6 +277,13 @@ export async function renderTaskBoard(container) {
           <h4>What</h4>
           <label class="profile-field"><span>Title</span><input class="task-new-title" type="text" required /></label>
           <label class="profile-field"><span>Description</span><textarea class="task-new-desc" rows="2"></textarea></label>
+          <div class="task-new-category-field">
+            <label class="profile-field"><span>Type</span>
+              <select class="task-new-category">
+                ${MANUAL_CATEGORY_OPTIONS.map((k) => `<option value="${k}" ${k === "manual" ? "selected" : ""}>${escapeHtml(CATEGORY_LABELS[k])}</option>`).join("")}
+              </select>
+            </label>
+          </div>
 
           <h4>When</h4>
           <label class="task-new-repeats-label">
@@ -308,6 +344,21 @@ export async function renderTaskBoard(container) {
 
           <h4>Related</h4>
           <label class="profile-field"><span>Related WOM # (optional)</span><input class="task-new-wom" type="text" /></label>
+          ${
+            isAdmin
+              ? `
+            <div class="task-new-vendor-field">
+              <span class="profile-field-label">Related Vendor (optional)</span>
+              <div class="task-new-vendor-picked" hidden>
+                <span class="task-new-vendor-picked-name"></span>
+                <button type="button" class="btn btn-link task-new-vendor-clear">Change</button>
+              </div>
+              <input class="task-new-vendor-search" type="text" placeholder="Search vendor name to link this task to their profile..." />
+              <div class="task-new-vendor-results"></div>
+            </div>
+          `
+              : ""
+          }
 
           <div class="task-new-attachment-section">
             <h4>Attachment</h4>
@@ -338,15 +389,59 @@ export async function renderTaskBoard(container) {
     const onceFields = body.querySelector(".task-new-once-fields");
     const recurringFields = body.querySelector(".task-new-recurring-fields");
     const attachmentSection = body.querySelector(".task-new-attachment-section");
+    const categoryField = body.querySelector(".task-new-category-field");
+    const vendorField = body.querySelector(".task-new-vendor-field");
     repeatsToggle.addEventListener("change", () => {
       onceFields.hidden = repeatsToggle.checked;
       recurringFields.hidden = !repeatsToggle.checked;
       // A recurring task is a template, not a single task row, until its
       // first occurrence exists -- keeping attachment out of that gap
       // avoids either silently dropping the file or attaching it to a
-      // template that isn't itself a real, addressable task.
+      // template that isn't itself a real, addressable task. Same reasoning
+      // for type/vendor: a recurring occurrence always lands in its own
+      // Recurring section regardless of what's picked here, so hide fields
+      // that a recurring task wouldn't actually use.
       attachmentSection.hidden = repeatsToggle.checked;
+      categoryField.hidden = repeatsToggle.checked;
+      if (vendorField) vendorField.hidden = repeatsToggle.checked;
     });
+
+    let selectedVendorId = null;
+    if (isAdmin && vendorField) {
+      const vendorSearch = vendorField.querySelector(".task-new-vendor-search");
+      const vendorResults = vendorField.querySelector(".task-new-vendor-results");
+      const vendorPicked = vendorField.querySelector(".task-new-vendor-picked");
+      const vendorPickedName = vendorField.querySelector(".task-new-vendor-picked-name");
+      vendorSearch.addEventListener("input", () => {
+        const q = vendorSearch.value.trim().toLowerCase();
+        if (!q) {
+          vendorResults.innerHTML = "";
+          return;
+        }
+        const matches = staff.vendors.filter((v) => v.name.toLowerCase().includes(q)).slice(0, 8);
+        vendorResults.innerHTML = matches.length
+          ? matches
+              .map((v) => `<button type="button" class="task-new-vendor-result" data-id="${escapeHtml(v.id)}">${escapeHtml(v.name)}</button>`)
+              .join("")
+          : `<p class="empty-note">No vendor matches "${escapeHtml(vendorSearch.value.trim())}".</p>`;
+        vendorResults.querySelectorAll(".task-new-vendor-result").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            selectedVendorId = btn.dataset.id;
+            vendorPickedName.textContent = btn.textContent;
+            vendorPicked.hidden = false;
+            vendorSearch.hidden = true;
+            vendorResults.innerHTML = "";
+          });
+        });
+      });
+      vendorField.querySelector(".task-new-vendor-clear").addEventListener("click", () => {
+        selectedVendorId = null;
+        vendorPicked.hidden = true;
+        vendorSearch.hidden = false;
+        vendorSearch.value = "";
+        vendorResults.innerHTML = "";
+      });
+    }
 
     const form = body.querySelector(".task-new-form");
     form.addEventListener("submit", async (e) => {
@@ -362,7 +457,9 @@ export async function renderTaskBoard(container) {
       const base = {
         title,
         description: body.querySelector(".task-new-desc").value.trim(),
+        category: body.querySelector(".task-new-category").value,
         relatedWomCode: body.querySelector(".task-new-wom").value.trim() || null,
+        relatedVendorId: selectedVendorId,
       };
       if (isAdmin) {
         base.assignedTo = body.querySelector(".task-new-assignee").value || null;
@@ -414,12 +511,24 @@ export async function renderTaskBoard(container) {
       return;
     }
     host.innerHTML = "";
-    tasks.forEach((t) => host.appendChild(renderTaskCard(t)));
+    // Grouped into the same color-coded sections every time (not just
+    // whichever categories happen to appear in this particular view), so a
+    // section's position and color stay predictable to scan for -- an empty
+    // section is simply skipped rather than reordering the rest.
+    for (const section of TASK_SECTIONS) {
+      const inSection = tasks.filter((t) => sectionFor(t.category) === section);
+      if (inSection.length === 0) continue;
+      const heading = document.createElement("div");
+      heading.className = `task-section-heading ${section.colorClass}`;
+      heading.innerHTML = `<span>${escapeHtml(section.label)}</span><span class="task-section-count">${inSection.length}</span>`;
+      host.appendChild(heading);
+      inSection.forEach((t) => host.appendChild(renderTaskCard(t, section.colorClass)));
+    }
   }
 
-  function renderTaskCard(t) {
+  function renderTaskCard(t, sectionColorClass) {
     const row = document.createElement("div");
-    row.className = `review-row task-card${t.urgency === "emergency" ? " task-card-emergency" : ""}`;
+    row.className = `review-row task-card ${sectionColorClass || ""}${t.urgency === "emergency" ? " task-card-emergency" : ""}`;
     const contextBits = [];
     if (t.relatedWomCode) contextBits.push(`WOM ${escapeHtml(t.relatedWomCode)}${t.relatedWomDescription ? ` — ${escapeHtml(t.relatedWomDescription)}` : ""}`);
     if (t.relatedVendorName) contextBits.push(escapeHtml(t.relatedVendorName));
