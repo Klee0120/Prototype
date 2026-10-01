@@ -1601,6 +1601,31 @@ Locations section above the WOM list (add/edit a location's name, E&F Job
 Number, WOM Job Number, and Region) and lets the WOM add form and each WOM
 row's Edit button set/change the subsidiary code.
 
+**Territory.** Every location also carries a Territory (Midwest, HQ, East,
+or West — `db.TERRITORIES`, `GET /api/locations/territories`), a label for
+now with no access-control scoping, laying groundwork for the whole roster
+being Midwest today to expand into other territories later without a big
+rewrite. It lives on `locations`, not on technicians/WOMs/tasks directly:
+a technician's territory comes from their home location, a WOM's from its
+own `locationCode`, and a task's from its `relatedLocationCode` — so
+tagging one location scopes everything already pointing at it, with
+nothing to backfill and nothing that can drift out of sync the way a
+separately-tagged copy could. Every location that existed before this
+feature backfills to Midwest. Three places read it:
+- **Roster** (`technicianProfile.js`) shows a Territory column (derived
+  from `homeLocationCode`) on both the main roster table and the Admin
+  Accounts table, plus a Territory filter dropdown next to the existing
+  Location filter.
+- **WOM Projects** (`adminReview.js` → `drawWoms`) shows a Territory badge
+  on each location row, and a Territory filter above the WOM list — hidden
+  entirely while only one territory is in use, so a single-territory shop
+  sees no new UI at all.
+- **Tasks** (`tasks.js`) adds a `related_location_code IN (SELECT code
+  FROM locations WHERE territory = ?)` clause to `listTasks` when a
+  `territory` filter is passed (`GET /api/tasks?territory=...`, admin-only
+  like the other cross-employee filters), with its own filter dropdown
+  that likewise only renders once more than one territory exists.
+
 A day's actual accounting code (Job Number + subsidiary code, e.g.
 `100110042963.20920000` for E&F or `100110007530.20520001` for a WOM) is
 computed and shown per allocation row when a technician's week is expanded

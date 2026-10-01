@@ -3,6 +3,7 @@ import { state, escapeHtml, setUser, refreshHeader } from "../app.js";
 import { renderAttachments } from "./attachments.js";
 import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
 import { openModal } from "../modal.js";
+import { TERRITORIES } from "../constants.js";
 
 const PROFILE_TABS = [
   { key: "basic", label: "Basic Info" },
@@ -44,7 +45,7 @@ export function renderTechniciansTab(content, openTo) {
   let showAdminAccounts = false;
   const adminRenaming = new Set(); // admin ids currently showing their rename field
   const revealedAdminPins = new Map(); // admin id -> freshly reset PIN, shown once until dismissed
-  const filters = { location: "", status: "active" };
+  const filters = { location: "", territory: "", status: "active" };
 
   draw();
 
@@ -59,11 +60,18 @@ export function renderTechniciansTab(content, openTo) {
 
     const filtered = techs.filter((t) => {
       if (filters.location && t.homeLocationCode !== filters.location) return false;
+      if (filters.territory) {
+        const loc = locationByCode[t.homeLocationCode];
+        if (!loc || (loc.territory || "Midwest") !== filters.territory) return false;
+      }
       if (filters.status !== "all" && t.employmentStatus !== filters.status) return false;
       return true;
     });
 
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
+    const territoryFilterOptions = TERRITORIES.map(
+      (t) => `<option value="${t}" ${filters.territory === t ? "selected" : ""}>${t}</option>`
+    ).join("");
     const statusFilterOptions = STATUS_OPTIONS.map(
       (o) => `<option value="${o.value}" ${filters.status === o.value ? "selected" : ""}>${o.label}</option>`
     ).join("");
@@ -80,6 +88,13 @@ export function renderTechniciansTab(content, openTo) {
           <select class="roster-location-filter">
             <option value="">All</option>
             ${locationOptions}
+          </select>
+        </label>
+        <label class="roster-filter-field">
+          <span>Territory</span>
+          <select class="roster-territory-filter">
+            <option value="">All</option>
+            ${territoryFilterOptions}
           </select>
         </label>
         <label class="roster-filter-field">
@@ -101,7 +116,7 @@ export function renderTechniciansTab(content, openTo) {
       <div id="admin-accounts-host"></div>
       <div class="roster-table-wrap">
         <table class="detail-table roster-table">
-          <thead><tr><th>Name</th><th>UKG ID</th><th>Position</th><th>Location</th><th>Status</th></tr></thead>
+          <thead><tr><th>Name</th><th>UKG ID</th><th>Position</th><th>Location</th><th>Territory</th><th>Status</th></tr></thead>
           <tbody>
             ${filtered
               .map(
@@ -111,6 +126,7 @@ export function renderTechniciansTab(content, openTo) {
                 <td>${escapeHtml(t.ukgId || "—")}</td>
                 <td>${escapeHtml(t.position || "—")}</td>
                 <td>${escapeHtml((locationByCode[t.homeLocationCode] && locationByCode[t.homeLocationCode].name) || "—")}</td>
+                <td>${escapeHtml((locationByCode[t.homeLocationCode] && locationByCode[t.homeLocationCode].territory) || "—")}</td>
                 <td>${statusBadge(t.employmentStatus)}</td>
               </tr>`
               )
@@ -123,6 +139,10 @@ export function renderTechniciansTab(content, openTo) {
 
     content.querySelector(".roster-location-filter").addEventListener("change", (e) => {
       filters.location = e.target.value;
+      draw();
+    });
+    content.querySelector(".roster-territory-filter").addEventListener("change", (e) => {
+      filters.territory = e.target.value;
       draw();
     });
     content.querySelector(".roster-status-filter").addEventListener("change", (e) => {
@@ -206,13 +226,13 @@ export function renderTechniciansTab(content, openTo) {
           admin can hold it at a time.
         </p>
         <table class="detail-table admin-accounts-table">
-          <thead><tr><th>Name</th><th>ID</th><th>Location</th><th>UKG ID</th><th>Hire date</th><th>Status</th><th>RFM</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>ID</th><th>Location</th><th>Territory</th><th>UKG ID</th><th>Hire date</th><th>Status</th><th>RFM</th><th></th></tr></thead>
           <tbody>
             ${admins
               .map((a) =>
                 adminRenaming.has(a.id)
                   ? `<tr>
-                      <td colspan="8">
+                      <td colspan="9">
                         <form class="admin-edit-form" data-id="${escapeHtml(a.id)}">
                           <div class="add-tech-grid">
                             <input name="name" placeholder="Full name" value="${escapeHtml(a.name)}" required />
@@ -236,6 +256,7 @@ export function renderTechniciansTab(content, openTo) {
                       </td>
                       <td>${escapeHtml(a.id)}</td>
                       <td>${escapeHtml((locationByCode[a.homeLocationCode] && locationByCode[a.homeLocationCode].name) || "—")}</td>
+                      <td>${escapeHtml((locationByCode[a.homeLocationCode] && locationByCode[a.homeLocationCode].territory) || "—")}</td>
                       <td>${escapeHtml(a.ukgId || "—")}</td>
                       <td>${a.hireDate ? escapeHtml(usFromIso(a.hireDate)) : "—"}</td>
                       <td>${statusBadge(a.employmentStatus)}</td>

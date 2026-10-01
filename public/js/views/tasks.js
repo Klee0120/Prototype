@@ -238,7 +238,7 @@ function formatRelativeDue(iso) {
 export async function renderTaskBoard(container) {
   const isAdmin = state.user.role === "admin";
   let view = "my";
-  let filters = { assignedTo: "", role: "", location: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
+  let filters = { assignedTo: "", role: "", location: "", territory: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
   let staffCache = null;
   // Bulk selection (admin only) -- cleared on every full redraw, since a
   // filter/view change means the selected rows may not even be on screen
@@ -361,6 +361,7 @@ export async function renderTaskBoard(container) {
       if (filters.assignedTo) params.set("assignedTo", filters.assignedTo);
       if (filters.role) params.set("role", filters.role);
       if (filters.location) params.set("location", filters.location);
+      if (filters.territory) params.set("territory", filters.territory);
       if (filters.wom) params.set("wom", filters.wom);
       if (filters.vendor) params.set("vendor", filters.vendor);
       if (filters.category) params.set("category", filters.category);
@@ -501,6 +502,7 @@ export async function renderTaskBoard(container) {
   async function renderFilters(host) {
     const staff = await loadStaff();
     const people = [...staff.technicians, ...staff.admins];
+    const territoriesInUse = [...new Set(staff.locations.map((l) => l.territory || "Midwest"))];
     host.innerHTML = `
       <div class="add-wom-form task-filters-form">
         <select class="task-filter-assignee">
@@ -511,6 +513,14 @@ export async function renderTaskBoard(container) {
           <option value="">Any role</option>
           ${ROLE_FILTER_OPTIONS.map(([value, label]) => `<option value="${value}" ${filters.role === value ? "selected" : ""}>${label}</option>`).join("")}
         </select>
+        ${
+          territoriesInUse.length > 1
+            ? `<select class="task-filter-territory">
+                <option value="">Any territory</option>
+                ${territoriesInUse.map((t) => `<option value="${escapeHtml(t)}" ${filters.territory === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
+              </select>`
+            : ""
+        }
         <select class="task-filter-location">
           <option value="">Any location</option>
           ${staff.locations.map((l) => `<option value="${escapeHtml(l.code)}" ${filters.location === l.code ? "selected" : ""}>${escapeHtml(l.name)}</option>`).join("")}
@@ -532,13 +542,17 @@ export async function renderTaskBoard(container) {
         <button class="btn btn-link task-filter-clear" type="button">Clear filters</button>
       </div>
     `;
-    const bind = (selector, key) =>
-      host.querySelector(selector).addEventListener("change", (e) => {
+    const bind = (selector, key) => {
+      const el = host.querySelector(selector);
+      if (!el) return;
+      el.addEventListener("change", (e) => {
         filters[key] = e.target.value.trim ? e.target.value.trim() : e.target.value;
         draw();
       });
+    };
     bind(".task-filter-assignee", "assignedTo");
     bind(".task-filter-role", "role");
+    bind(".task-filter-territory", "territory");
     bind(".task-filter-location", "location");
     bind(".task-filter-wom", "wom");
     bind(".task-filter-vendor", "vendor");
@@ -546,7 +560,7 @@ export async function renderTaskBoard(container) {
     bind(".task-filter-due", "dueDate");
     bind(".task-filter-status", "status");
     host.querySelector(".task-filter-clear").addEventListener("click", () => {
-      filters = { assignedTo: "", role: "", location: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
+      filters = { assignedTo: "", role: "", location: "", territory: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
       draw();
     });
   }

@@ -456,6 +456,16 @@ if (!hasColumn("locations", "ef_job_number")) {
 if (!hasColumn("locations", "region")) {
   db.exec("ALTER TABLE locations ADD COLUMN region TEXT");
 }
+// Territory (Midwest/HQ/East/West) -- a label for now, no access-control
+// scoping yet, but every WOM/task/allocation/technician that keys off a
+// location_code inherits it for free the moment that location is tagged,
+// rather than needing its own territory column that could drift out of
+// sync with where it's actually located. Everything predates territories,
+// so every existing location backfills to Midwest.
+const TERRITORIES = ["Midwest", "HQ", "East", "West"];
+if (!hasColumn("locations", "territory")) {
+  db.exec("ALTER TABLE locations ADD COLUMN territory TEXT NOT NULL DEFAULT 'Midwest'");
+}
 // A location's E1 WOM Job Number (from the same JDE lookup table as the E&F
 // Contract Job Number) -- the base job number WOM work at that location
 // posts to; combined with a WOM's own subsidiary code to form its full
@@ -1516,26 +1526,18 @@ function findLocation(code) {
   return db.prepare("SELECT * FROM locations WHERE code = ?").get(code);
 }
 
-function createLocation(code, name, efJobNumber, region, womJobNumber) {
-  db.prepare("INSERT INTO locations (code, name, ef_job_number, region, wom_job_number) VALUES (?, ?, ?, ?, ?)").run(
-    code,
-    name,
-    efJobNumber || null,
-    region || null,
-    womJobNumber || null
-  );
+function createLocation(code, name, efJobNumber, region, womJobNumber, territory) {
+  db.prepare(
+    "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest");
   return findLocation(code);
 }
 
-function setLocationDetails(code, { name, efJobNumber, region, womJobNumber } = {}) {
+function setLocationDetails(code, { name, efJobNumber, region, womJobNumber, territory } = {}) {
   if (!findLocation(code)) return null;
-  db.prepare("UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ? WHERE code = ?").run(
-    name,
-    efJobNumber || null,
-    region || null,
-    womJobNumber || null,
-    code
-  );
+  db.prepare(
+    "UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ?, territory = ? WHERE code = ?"
+  ).run(name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest", code);
   return findLocation(code);
 }
 
@@ -2405,6 +2407,14 @@ function listTasks(filters = {}) {
   if (filters.relatedLocationCode) {
     clauses.push("related_location_code = ?");
     params.push(filters.relatedLocationCode);
+  }
+  if (filters.territory) {
+    // A task inherits its territory from related_location_code rather than
+    // carrying its own territory column, same reasoning as WOMs -- one
+    // location tagged with a territory scopes every task already pointing
+    // at it, with nothing to backfill or let drift out of sync.
+    clauses.push("related_location_code IN (SELECT code FROM locations WHERE territory = ?)");
+    params.push(filters.territory);
   }
   if (filters.relatedWomCode) {
     clauses.push("related_wom_code = ?");
@@ -3591,6 +3601,7 @@ module.exports = {
   deleteLocation,
   deleteTechnician,
   setLocationDetails,
+  TERRITORIES,
   listWoms,
   findWom,
   createWom,

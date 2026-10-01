@@ -183,6 +183,7 @@ router.get("/", requireAuth, (req, res) => {
     if (req.query.assignedTo) filters.assignedTo = req.query.assignedTo;
     if (req.query.role) filters.assignedRole = String(req.query.role).split(",");
     if (req.query.location) filters.relatedLocationCode = req.query.location;
+    if (req.query.territory) filters.territory = req.query.territory;
     if (req.query.wom) filters.relatedWomCode = req.query.wom;
     if (req.query.vendor) filters.relatedVendorId = req.query.vendor;
     if (req.query.category) filters.category = req.query.category;

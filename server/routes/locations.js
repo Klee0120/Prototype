@@ -17,6 +17,7 @@ function presentLocation(l) {
     efJobNumber: l.ef_job_number,
     womJobNumber: l.wom_job_number,
     region: l.region,
+    territory: l.territory,
     efSubsidiaryCode: EF_SUBSIDIARY_CODE,
   };
 }
@@ -25,23 +26,29 @@ router.get("/", requireAuth, (req, res) => {
   res.json(db.listLocations().map(presentLocation));
 });
 
+router.get("/territories", requireAuth, (req, res) => {
+  res.json(db.TERRITORIES);
+});
+
 router.post("/", requireAuth, requireAdmin, (req, res) => {
-  const { code, name, efJobNumber, region, womJobNumber } = req.body || {};
+  const { code, name, efJobNumber, region, womJobNumber, territory } = req.body || {};
   if (!code || !name) return res.status(400).json({ error: "code and name are required" });
   if (db.findLocation(code)) return res.status(409).json({ error: "Location code already exists" });
+  if (territory && !db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null);
+  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || null);
   db.addAudit(req.user.id, "LOCATION_CREATED", `${req.user.name} created location ${code}: ${name}`);
   res.status(201).json({ ok: true });
 });
 
 router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
-  const { name, efJobNumber, region, womJobNumber } = req.body || {};
+  const { name, efJobNumber, region, womJobNumber, territory } = req.body || {};
   const existing = db.findLocation(req.params.code);
   if (!existing) return res.status(404).json({ error: "Location not found" });
   if (!name) return res.status(400).json({ error: "name is required" });
+  if (territory && !db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  const location = db.setLocationDetails(req.params.code, { name, efJobNumber, region, womJobNumber });
+  const location = db.setLocationDetails(req.params.code, { name, efJobNumber, region, womJobNumber, territory });
   db.addAudit(req.user.id, "LOCATION_UPDATED", `${req.user.name} updated location ${location.code}`);
   res.json(presentLocation(location));
 });

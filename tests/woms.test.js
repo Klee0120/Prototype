@@ -264,6 +264,17 @@ test("locations: E&F job number and region tracking", async (t) => {
     assert.equal(res.body[0].efSubsidiaryCode, "20920000");
   });
 
+  await t.test("every existing location backfills to Midwest territory", async () => {
+    const res = await server.call("GET", "/api/locations", { userId: "T1001" });
+    assert.ok(res.body.every((l) => l.territory === "Midwest"));
+  });
+
+  await t.test("any logged-in user can list the available territories", async () => {
+    const res = await server.call("GET", "/api/locations/territories", { userId: "T1001" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, ["Midwest", "HQ", "East", "West"]);
+  });
+
   await t.test("a technician cannot create a location", async () => {
     const res = await server.call("POST", "/api/locations", {
       userId: "T1001",
@@ -290,6 +301,26 @@ test("locations: E&F job number and region tracking", async (t) => {
     assert.equal(created.efJobNumber, "100110042963");
     assert.equal(created.womJobNumber, "100110007530");
     assert.equal(created.region, "Southeast");
+    assert.equal(created.territory, "Midwest");
+  });
+
+  await t.test("admin can create a location tagged with a different territory", async () => {
+    const create = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "LOC-EAST", name: "East Site", territory: "East" },
+    });
+    assert.equal(create.status, 201);
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.equal(list.body.find((l) => l.code === "LOC-EAST").territory, "East");
+  });
+
+  await t.test("creating a location with an unknown territory is rejected", async () => {
+    const res = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "LOC-BAD", name: "Bad", territory: "Narnia" },
+    });
+    assert.equal(res.status, 400);
   });
 
   await t.test("cannot create a duplicate location code", async () => {
@@ -300,16 +331,31 @@ test("locations: E&F job number and region tracking", async (t) => {
     assert.equal(res.status, 409);
   });
 
-  await t.test("admin can edit a location's name/job number/region", async () => {
+  await t.test("admin can edit a location's name/job number/region/territory", async () => {
     const res = await server.call("PATCH", "/api/locations/LOC-GTOWN", {
       userId: "ADMIN",
-      body: { name: "TLS Georgetown Updated", efJobNumber: "100110043044", womJobNumber: "100110041403", region: "Region 1" },
+      body: {
+        name: "TLS Georgetown Updated",
+        efJobNumber: "100110043044",
+        womJobNumber: "100110041403",
+        region: "Region 1",
+        territory: "HQ",
+      },
     });
     assert.equal(res.status, 200);
     assert.equal(res.body.name, "TLS Georgetown Updated");
     assert.equal(res.body.efJobNumber, "100110043044");
     assert.equal(res.body.womJobNumber, "100110041403");
     assert.equal(res.body.region, "Region 1");
+    assert.equal(res.body.territory, "HQ");
+  });
+
+  await t.test("editing a location with an unknown territory is rejected", async () => {
+    const res = await server.call("PATCH", "/api/locations/LOC-GTOWN", {
+      userId: "ADMIN",
+      body: { name: "TLS Georgetown Updated", territory: "Narnia" },
+    });
+    assert.equal(res.status, 400);
   });
 
   await t.test("a technician cannot edit a location", async () => {

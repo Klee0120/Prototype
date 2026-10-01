@@ -8,7 +8,7 @@ import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { openModal } from "../modal.js";
-import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
+import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -156,6 +156,7 @@ export async function renderAdminReview(container) {
   const womsExpanded = new Set();
   const womEditing = new Set();
   const locationEditing = new Set();
+  let womTerritoryFilter = ""; // "" = all territories, so a single-territory shop sees no filter UI noise by default
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   let laborReportMonth = currentMonthISO();
   let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
@@ -2730,10 +2731,13 @@ export async function renderAdminReview(container) {
   }
 
   async function drawWoms(content) {
-    const [woms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
+    const [allWoms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
     const efSubsidiary = locations[0] ? locations[0].efSubsidiaryCode : "20920000";
+    const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
+    const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
+    const woms = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
 
     content.innerHTML = `
       <h3>Smartsheet Connection</h3>
@@ -2757,6 +2761,7 @@ export async function renderAdminReview(container) {
         <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" />
         <input name="womJobNumber" placeholder="WOM Job Number" />
         <input name="region" placeholder="Region (e.g. Southeast)" />
+        <select name="territory">${renderTerritorySelect("Midwest")}</select>
         <button type="submit" class="btn btn-primary">Add location</button>
         <span class="save-message" id="location-message"></span>
       </form>
@@ -2765,6 +2770,17 @@ export async function renderAdminReview(container) {
       <div class="review-actions">
         <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
         <a class="btn btn-secondary" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a C&amp;W PO ↗</a>
+        ${
+          territoriesInUse.length > 1
+            ? `<label class="roster-filter-field">
+                <span>Territory</span>
+                <select class="wom-territory-filter">
+                  <option value="">All</option>
+                  ${territoriesInUse.map((t) => `<option value="${escapeHtml(t)}" ${womTerritoryFilter === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
+                </select>
+              </label>`
+            : ""
+        }
       </div>
       <p class="review-checklist-hint">
         Same Smartsheet request forms technicians use -- a quick way to request a new WOM or a
@@ -2821,6 +2837,14 @@ export async function renderAdminReview(container) {
     }
     if (cancelledWoms.length === 0) cancelledList.innerHTML = `<p class="empty-note">No cancelled WOM projects.</p>`;
 
+    const womTerritorySelect = content.querySelector(".wom-territory-filter");
+    if (womTerritorySelect) {
+      womTerritorySelect.addEventListener("change", (e) => {
+        womTerritoryFilter = e.target.value;
+        drawWoms(content);
+      });
+    }
+
     content.querySelector("#add-location-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.target;
@@ -2832,6 +2856,7 @@ export async function renderAdminReview(container) {
           efJobNumber: form.efJobNumber.value.trim() || null,
           womJobNumber: form.womJobNumber.value.trim() || null,
           region: form.region.value.trim() || null,
+          territory: form.territory.value,
         });
         await drawWoms(content);
       } catch (err) {
@@ -2859,6 +2884,10 @@ export async function renderAdminReview(container) {
     });
   }
 
+  function renderTerritorySelect(currentValue) {
+    return TERRITORIES.map((t) => `<option value="${t}" ${t === (currentValue || "Midwest") ? "selected" : ""}>${t}</option>`).join("");
+  }
+
   function renderLocationRow(l, content) {
     const el = document.createElement("div");
     el.className = "review-row";
@@ -2870,6 +2899,7 @@ export async function renderAdminReview(container) {
           <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" value="${escapeHtml(l.efJobNumber || "")}" />
           <input name="womJobNumber" placeholder="WOM Job Number" value="${escapeHtml(l.womJobNumber || "")}" />
           <input name="region" placeholder="Region" value="${escapeHtml(l.region || "")}" />
+          <select name="territory">${renderTerritorySelect(l.territory)}</select>
           <button type="submit" class="btn btn-primary">Save</button>
           <button type="button" class="btn btn-link cancel-edit">Cancel</button>
           <span class="save-message"></span>
@@ -2889,6 +2919,7 @@ export async function renderAdminReview(container) {
             efJobNumber: form.efJobNumber.value.trim() || null,
             womJobNumber: form.womJobNumber.value.trim() || null,
             region: form.region.value.trim() || null,
+            territory: form.territory.value,
           });
           locationEditing.delete(l.code);
           await drawWoms(content);
@@ -2902,9 +2933,10 @@ export async function renderAdminReview(container) {
     const jobLabel = l.efJobNumber ? `E&amp;F Job # ${escapeHtml(l.efJobNumber)}` : "No E&amp;F Job # on file";
     const womJobLabel = l.womJobNumber ? ` &middot; WOM Job # ${escapeHtml(l.womJobNumber)}` : " &middot; No WOM Job # on file";
     const regionLabel = l.region ? ` &middot; ${escapeHtml(l.region)}` : "";
+    const territoryLabel = ` &middot; <span class="badge badge-draft">${escapeHtml(l.territory || "Midwest")}</span>`;
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${regionLabel}</span></div>
+        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${regionLabel}</span>${territoryLabel}</div>
         <button class="btn btn-link edit-location-btn" type="button">Edit</button>
         <button class="btn btn-link delete-location-btn" type="button">Delete</button>
       </div>

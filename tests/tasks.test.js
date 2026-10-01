@@ -1341,3 +1341,39 @@ test("tasks: a WOM lifecycle task can't be force-completed or force-cancelled th
     assert.equal(res.body.status, "completed");
   });
 });
+
+test("tasks: filtering by territory inherits it from the related location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "LOC-WEST-1", name: "West Site", territory: "West" } });
+  const midwestTask = await server.call("POST", "/api/tasks", {
+    userId: "ADMIN",
+    body: { title: "Midwest task", relatedLocationCode: "PRINCETON" },
+  });
+  const westTask = await server.call("POST", "/api/tasks", {
+    userId: "ADMIN",
+    body: { title: "West task", relatedLocationCode: "LOC-WEST-1" },
+  });
+  const noLocationTask = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "No location task" } });
+
+  await t.test("filtering by territory=West returns only the West task", async () => {
+    const res = await server.call("GET", "/api/tasks?view=team&territory=West", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.includes(westTask.body.id));
+    assert.ok(!ids.includes(midwestTask.body.id));
+    assert.ok(!ids.includes(noLocationTask.body.id));
+  });
+
+  await t.test("filtering by territory=Midwest returns the Midwest task but not the West one", async () => {
+    const res = await server.call("GET", "/api/tasks?view=team&territory=Midwest", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.includes(midwestTask.body.id));
+    assert.ok(!ids.includes(westTask.body.id));
+  });
+
+  await t.test("a technician's own territory filter is ignored -- cross-employee filtering is admin-only", async () => {
+    const res = await server.call("GET", "/api/tasks?view=my&territory=West", { userId: "T1001" });
+    assert.equal(res.status, 200);
+  });
+});
