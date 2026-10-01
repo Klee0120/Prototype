@@ -1070,13 +1070,13 @@ export async function renderAdminReview(container) {
     documentsPanel.after(assignHost);
     renderAssignTaskDocumentControl(assignHost, v, refreshDocumentsPanel);
     // Two independent forms, two independent saves -- the document
-    // checklist pairs with Documents above it (where the files it verifies
-    // actually get uploaded) rather than being buried at the bottom of the
-    // general vendor-info form. Both PATCH through vendorFullPayload so
-    // saving one never blanks fields only the other form edits; `v` is
-    // kept current after each save so a second save in the same modal
-    // session carries forward what the first one just changed, not what
-    // was on screen when the modal first opened.
+    // checklist sits at the top of the modal (it's what Krista checks first
+    // on a vendor) rather than being buried at the bottom of the general
+    // vendor-info form. Both PATCH through vendorFullPayload so saving one
+    // never blanks fields only the other form edits; `v` is kept current
+    // after each save so a second save in the same modal session carries
+    // forward what the first one just changed, not what was on screen when
+    // the modal first opened.
     const docChecksForm = body.querySelector(".vendor-doc-checks-form");
     docChecksForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -1269,33 +1269,13 @@ export async function renderAdminReview(container) {
       .join("");
 
     return `
-      <h4>Cost history</h4>
-      <p class="review-checklist-hint">
-        $${formatMoney(v.totalContractedApplied || 0)} in contracted services applied across
-        ${v.contractedWomCount || 0} WOM${v.contractedWomCount === 1 ? "" : "s"} on file with this vendor.
-        Last invoiced: ${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "never yet"}.
-        See Financials &rarr; Cost Analysis for the full vendor cost breakdown.
-      </p>
-
-      <h4>Onboarding cases</h4>
-      <div class="vendor-cases-section"></div>
-
-      <h4>Documents</h4>
-      <div class="vendor-documents-panel"></div>
-      <p class="review-checklist-hint">
-        These are the vendor's actual documents on file -- separate from onboarding
-        <strong>case status</strong> above (has ServiceEdge approved the COI/W-9/Payment case). The
-        checklist right below is how received documents get verified against requirements, so it
-        lives right next to where they're uploaded rather than further down the page.
-      </p>
-
       <form class="vendor-doc-checks-form">
         <h4>COI (Certificate of Insurance) requirements</h4>
         <p class="review-checklist-hint">
           Picking a Service on the vendor info form below fills these with the limits Toyota
           requires for that service type (from the insurance matrix) -- still editable if this
           vendor has a negotiated exception. Check the boxes once the vendor's actual COI (uploaded
-          above) has been reviewed against them.
+          in Documents below) has been reviewed against them.
         </p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="coiMeetsRequiredLimits" ${v.coiMeetsRequiredLimits ? "checked" : ""} /> Meets required limits</label>
@@ -1304,14 +1284,14 @@ export async function renderAdminReview(container) {
         <div class="vendor-edit-grid">${coiLimitInputs}</div>
 
         <h4>COI document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual COI document uploaded above.</p>
+        <p class="review-checklist-hint">Verified against the actual COI document uploaded in Documents below.</p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="coiIsAcord25_2016_03" ${v.formChecks.coiIsAcord25_2016_03 ? "checked" : ""} /> Issued on ACORD 25 form (2016/03 version)</label>
           <label><input type="checkbox" name="coiMatchesW9" ${v.formChecks.coiMatchesW9 ? "checked" : ""} /> Matches W-9 name &amp; address</label>
         </div>
 
         <h4>W-9 document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual W-9 document uploaded above.</p>
+        <p class="review-checklist-hint">Verified against the actual W-9 document uploaded in Documents below.</p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="w9SignedDated" ${v.formChecks.w9SignedDated ? "checked" : ""} /> Signed and dated</label>
           <label><input type="checkbox" name="w9CorrectVersion" ${v.formChecks.w9CorrectVersion ? "checked" : ""} /> October 2018 or March 2024 version</label>
@@ -1325,7 +1305,7 @@ export async function renderAdminReview(container) {
         </label>
 
         <h4>ACH document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual ACH/bank letter uploaded above.</p>
+        <p class="review-checklist-hint">Verified against the actual ACH/bank letter uploaded in Documents below.</p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="achBankLetterhead" ${v.formChecks.achBankLetterhead ? "checked" : ""} /> On bank letterhead</label>
           <label><input type="checkbox" name="achHasW9Name" ${v.formChecks.achHasW9Name ? "checked" : ""} /> Has W-9 name</label>
@@ -1341,6 +1321,26 @@ export async function renderAdminReview(container) {
           <span class="save-message doc-checks-save-message"></span>
         </div>
       </form>
+
+      <h4>Cost history</h4>
+      <p class="review-checklist-hint">
+        $${formatMoney(v.totalContractedApplied || 0)} in contracted services applied across
+        ${v.contractedWomCount || 0} WOM${v.contractedWomCount === 1 ? "" : "s"} on file with this vendor.
+        Last invoiced: ${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "never yet"}.
+        See Financials &rarr; Cost Analysis for the full vendor cost breakdown.
+      </p>
+
+      <h4>Onboarding cases</h4>
+      <div class="vendor-cases-section"></div>
+
+      <h4>Documents</h4>
+      <div class="vendor-documents-panel"></div>
+      <p class="review-checklist-hint">
+        These are the vendor's actual documents on file -- separate from onboarding
+        <strong>case status</strong> above (has ServiceEdge approved the COI/W-9/Payment case) and
+        from the document checks at the top of this page (whether an uploaded document actually
+        meets requirements).
+      </p>
 
       <h4>Vendor Info</h4>
       <form class="vendor-edit-form">

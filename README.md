@@ -416,7 +416,12 @@ Demo logins:
 - **Vendor edit modal is a profile, not just a form** -- mirroring how
   ServiceEdge itself organizes a vendor (its own screenshot: Cases,
   Payment Details, and Files each their own related list off one company
-  record). Opening a vendor now shows, above the editable fields:
+  record). Opening a vendor shows, in order:
+  - **Document Verification** (COI/W-9/ACH document checks) sits at the
+    very top of the modal, before Cost history, Onboarding cases, and even
+    Documents -- it's the first thing checked on a vendor record, not
+    something to scroll past to find. See below for details on this
+    section.
   - **Onboarding cases** -- the same welcome-email line + 3 case pills the
     Onboarding board shows (shared rendering, `renderCasePillHtml`/
     `wireCasePill`), so logging or reviewing this vendor's case status
@@ -446,23 +451,25 @@ Demo logins:
   it silently breaks: an HTML parser drops a `<form>` nested inside
   another `<form>` when set via `innerHTML`, which strips the upload
   button's submit handler along with it.
-  - **Document Verification is its own form, paired with Documents above
-    it** -- the COI/W-9/ACH document-checklist section (does the uploaded
-    document itself meet requirements) used to sit at the bottom of the
-    general vendor-info form, so it read as unrelated to the Documents
-    panel it actually verifies even though both are onboarding-document
-    work. It's now `<form class="vendor-doc-checks-form">`, its own
-    section directly below Documents with its own "Save document checks"
-    button, entirely separate from `<form class="vendor-edit-form">`
-    (Vendor Info: name, statuses, contact fields) further down. Both PATCH
-    through `vendorFullPayload(v, overrides)` so saving one never blanks
-    fields only the other edits, and `v` (the closure variable both
-    handlers read) is updated from each save's response so a second save
-    in the same modal session carries the first one's changes forward
-    instead of the stale snapshot from when the modal opened. The
-    Services-driven COI-limit autofill now writes across form boundaries
-    (`docChecksForm[...]` from the Vendor Info form's own `change`
-    listener) since the two fields it connects no longer share a form.
+  - **Document Verification is its own form, at the top of the modal** --
+    the COI/W-9/ACH document-checklist section (does the uploaded document
+    itself meet requirements) used to sit at the bottom of the general
+    vendor-info form, so it read as unrelated to the Documents panel it
+    actually verifies even though both are onboarding-document work, and it
+    took the most scrolling to reach despite being the thing checked first.
+    It's `<form class="vendor-doc-checks-form">`, its own section at the
+    very top of the modal (above Cost history/Onboarding cases/Documents)
+    with its own "Save document checks" button, entirely separate from
+    `<form class="vendor-edit-form">` (Vendor Info: name, statuses, contact
+    fields) further down. Both PATCH through `vendorFullPayload(v,
+    overrides)` so saving one never blanks fields only the other edits, and
+    `v` (the closure variable both handlers read) is updated from each
+    save's response so a second save in the same modal session carries the
+    first one's changes forward instead of the stale snapshot from when the
+    modal opened. The Services-driven COI-limit autofill still writes
+    across form boundaries (`docChecksForm[...]` from the Vendor Info
+    form's own `change` listener) since the two fields it connects don't
+    share a form, and now also don't sit near each other in the modal.
 - **Schedule tab**: a month calendar of **WOM project work only** — no E&F
   time and no time off, since the point is seeing what's already scheduled
   project-wise, not a general timesheet view (Tech Allocation and Weekly
