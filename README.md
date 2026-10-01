@@ -1302,7 +1302,16 @@ Demo logins:
   screen) -- only one at a time, enforced server-side
   (`PATCH /api/admin/admins/:id/pse-reviewer`; setting a new one always
   clears whoever held it before, so this one toggle is also how RFM gets
-  transferred to someone else, not just designated the first time).
+  transferred to someone else, not just designated the first time). Each
+  admin row also has **Reset PIN** (`POST /api/admin/admins/:id/reset-pin`,
+  audit-logged as `ADMIN_PIN_RESET`) -- the same reset technician accounts
+  already had, now extended to admin accounts, which had no way to recover
+  a forgotten PIN at all before this. A PIN is hashed one-way on purpose
+  (same as any real password), so there's no "look the old one back up" --
+  this issues a brand-new random one instead, shown once inline under the
+  admin's name ("New PIN: 1234 (give this to \<name\> now -- it won't be
+  shown again)") until dismissed, same pattern the technician profile's own
+  Reset PIN already uses.
   **+ Add Admin / + Add RFM** on the main Roster page (next to +
   Add technician) surface this same admin-creation capability up front,
   for the common case of onboarding a brand-new admin or RFM without

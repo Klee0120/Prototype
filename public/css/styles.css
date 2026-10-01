@@ -2702,6 +2702,18 @@ h1, h2, h3, h4 {
   padding: 2px 8px;
 }
 
+.admin-pin-reveal {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.admin-pin-reveal strong {
+  font-family: monospace;
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
 .profile-tabs {
   display: flex;
   gap: 4px;

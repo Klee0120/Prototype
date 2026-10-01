@@ -43,6 +43,7 @@ export function renderTechniciansTab(content, openTo) {
   let bulkAddResult = null;
   let showAdminAccounts = false;
   const adminRenaming = new Set(); // admin ids currently showing their rename field
+  const revealedAdminPins = new Map(); // admin id -> freshly reset PIN, shown once until dismissed
   const filters = { location: "", status: "active" };
 
   draw();
@@ -227,6 +228,11 @@ export function renderTechniciansTab(content, openTo) {
                   : `<tr>
                       <td>${escapeHtml(a.name)}${a.id === state.user.id ? " (you)" : ""}
                         <button class="btn btn-link admin-rename-btn" data-id="${escapeHtml(a.id)}" type="button">Edit</button>
+                        ${
+                          revealedAdminPins.has(a.id)
+                            ? `<div class="admin-pin-reveal">New PIN: <strong>${escapeHtml(revealedAdminPins.get(a.id))}</strong> (give this to ${escapeHtml(a.name)} now -- it won't be shown again) <button type="button" class="btn btn-link admin-pin-dismiss" data-id="${escapeHtml(a.id)}">Dismiss</button></div>`
+                            : ""
+                        }
                       </td>
                       <td>${escapeHtml(a.id)}</td>
                       <td>${escapeHtml((locationByCode[a.homeLocationCode] && locationByCode[a.homeLocationCode].name) || "—")}</td>
@@ -241,6 +247,7 @@ export function renderTechniciansTab(content, openTo) {
                         }
                       </td>
                       <td>
+                        <button class="btn btn-link admin-reset-pin-btn" data-id="${escapeHtml(a.id)}" type="button">Reset PIN</button>
                         ${
                           a.employmentStatus === "active"
                             ? `<button class="btn btn-link danger-link admin-deactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Deactivate</button>`
@@ -263,6 +270,29 @@ export function renderTechniciansTab(content, openTo) {
         </form>
       </div>
     `;
+
+    host.querySelectorAll(".admin-reset-pin-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const admin = admins.find((a) => a.id === id);
+        if (!window.confirm(`Reset ${admin.name}'s PIN? Their current PIN will stop working immediately.`)) return;
+        btn.disabled = true;
+        try {
+          const { pin } = await api.post(`/api/admin/admins/${encodeURIComponent(id)}/reset-pin`, {});
+          revealedAdminPins.set(id, pin);
+          await renderAdminAccountsPanel(toggleBtn, contentEl);
+        } catch (err) {
+          btn.disabled = false;
+          window.alert(err.message);
+        }
+      });
+    });
+    host.querySelectorAll(".admin-pin-dismiss").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        revealedAdminPins.delete(btn.dataset.id);
+        renderAdminAccountsPanel(toggleBtn, contentEl);
+      });
+    });
 
     host.querySelectorAll(".admin-deactivate-btn, .admin-reactivate-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {

@@ -817,6 +817,36 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(res.status, 404, "T1001 is a technician, not an admin account, even though it's the same underlying table");
   });
 
+  await t.test("admin can reset an admin account's PIN, and it's logged to the audit trail", async () => {
+    const res = await server.call("POST", "/api/admin/admins/ADMIN2/reset-pin", { userId: "ADMIN", body: {} });
+    assert.equal(res.status, 200);
+    assert.match(res.body.pin, /^\d{4}$/);
+
+    const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "4321" } });
+    assert.equal(oldLogin.status, 401);
+    const newLogin = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: res.body.pin } });
+    assert.equal(newLogin.status, 200);
+
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = audit.body.find((a) => a.action === "ADMIN_PIN_RESET" && a.details.includes("ADMIN2"));
+    assert.ok(entry, "expected an ADMIN_PIN_RESET audit entry");
+  });
+
+  await t.test("a technician cannot reset an admin account's PIN", async () => {
+    const res = await server.call("POST", "/api/admin/admins/ADMIN2/reset-pin", { userId: "T1001", body: {} });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("resetting an unknown admin account's PIN 404s", async () => {
+    const res = await server.call("POST", "/api/admin/admins/NOPE/reset-pin", { userId: "ADMIN", body: {} });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("resetting a technician's PIN through the admin-account route 404s -- scoped to role = 'admin'", async () => {
+    const res = await server.call("POST", "/api/admin/admins/T1001/reset-pin", { userId: "ADMIN", body: {} });
+    assert.equal(res.status, 404);
+  });
+
   await t.test("an admin cannot deactivate their own account", async () => {
     const res = await server.call("PATCH", "/api/admin/admins/ADMIN/employment-status", {
       userId: "ADMIN",

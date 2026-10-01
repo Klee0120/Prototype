@@ -788,6 +788,20 @@ router.post("/admins", (req, res) => {
   res.status(201).json(presentAdmin(admin));
 });
 
+// Same "there's no looking the old one back up, it's hashed one-way" reset
+// technician accounts already have -- an admin forgetting their own PIN,
+// or an incoming admin needing a fresh one, shouldn't require touching the
+// database by hand.
+router.post("/admins/:id/reset-pin", (req, res) => {
+  const admin = db.findTechnician(req.params.id);
+  if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
+
+  const pin = randomPin();
+  db.setTechnicianPin(admin.id, pin);
+  db.addAudit(req.user.id, "ADMIN_PIN_RESET", `${req.user.name} reset the PIN for admin account ${admin.name} (${admin.id})`);
+  res.json({ pin });
+});
+
 router.patch("/admins/:id/employment-status", (req, res) => {
   const admin = db.findTechnician(req.params.id);
   if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
