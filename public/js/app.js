@@ -26,6 +26,18 @@ export function setUser(user) {
   }
 }
 
+// The header is built once per render() call and never reactive on its
+// own -- renaming yourself (Roster -> Manage admin accounts -> Edit) used
+// to update state.user/localStorage via setUser above but leave the
+// header's own DOM showing the old name until the next full page load,
+// which read as "the rename didn't actually work." Call this right after
+// setUser whenever the change could affect what the header displays (your
+// own name).
+export function refreshHeader() {
+  const existing = document.querySelector(".app-header");
+  if (existing) existing.replaceWith(renderHeader());
+}
+
 export async function logout() {
   try {
     await api.post("/api/auth/logout");

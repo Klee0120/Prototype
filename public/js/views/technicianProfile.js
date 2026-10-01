@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { state, escapeHtml, setUser } from "../app.js";
+import { state, escapeHtml, setUser, refreshHeader } from "../app.js";
 import { renderAttachments } from "./attachments.js";
 import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
 import { openModal } from "../modal.js";
@@ -184,7 +184,11 @@ export function renderTechniciansTab(content, openTo) {
       return;
     }
 
-    const admins = await api.get("/api/admin/admins");
+    const [admins, locations] = await Promise.all([api.get("/api/admin/admins"), api.get("/api/locations")]);
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const locationOptionsFor = (selected) =>
+      `<option value="">No location</option>` +
+      locations.map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === selected ? "selected" : ""}>${escapeHtml(l.name)}</option>`).join("");
     host.innerHTML = `
       <div class="admin-accounts-panel">
         <div class="admin-accounts-title">Admin Accounts</div>
@@ -201,41 +205,49 @@ export function renderTechniciansTab(content, openTo) {
           admin can hold it at a time.
         </p>
         <table class="detail-table admin-accounts-table">
-          <thead><tr><th>Name</th><th>ID</th><th>Status</th><th>RFM</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>ID</th><th>Location</th><th>UKG ID</th><th>Hire date</th><th>Status</th><th>RFM</th><th></th></tr></thead>
           <tbody>
             ${admins
-              .map(
-                (a) => `
-              <tr>
-                <td>
-                  ${
-                    adminRenaming.has(a.id)
-                      ? `<form class="admin-rename-form" data-id="${escapeHtml(a.id)}">
-                          <input name="name" value="${escapeHtml(a.name)}" required />
+              .map((a) =>
+                adminRenaming.has(a.id)
+                  ? `<tr>
+                      <td colspan="8">
+                        <form class="admin-edit-form" data-id="${escapeHtml(a.id)}">
+                          <div class="add-tech-grid">
+                            <input name="name" placeholder="Full name" value="${escapeHtml(a.name)}" required />
+                            <select name="homeLocationCode">${locationOptionsFor(a.homeLocationCode)}</select>
+                            <input name="ukgId" placeholder="UKG ID" value="${escapeHtml(a.ukgId || "")}" />
+                            <input name="hireDate" type="text" inputmode="numeric" placeholder="Hire date MM/DD/YYYY" maxlength="10" value="${escapeHtml(usFromIso(a.hireDate))}" />
+                          </div>
                           <button type="submit" class="btn btn-link">Save</button>
                           <button type="button" class="btn btn-link admin-rename-cancel" data-id="${escapeHtml(a.id)}">Cancel</button>
-                        </form>`
-                      : `${escapeHtml(a.name)}${a.id === state.user.id ? " (you)" : ""}
-                          <button class="btn btn-link admin-rename-btn" data-id="${escapeHtml(a.id)}" type="button">Rename</button>`
-                  }
-                </td>
-                <td>${escapeHtml(a.id)}</td>
-                <td>${statusBadge(a.employmentStatus)}</td>
-                <td>
-                  ${
-                    a.isPseReviewer
-                      ? `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="false" type="button">RFM -- remove</button>`
-                      : `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="true" type="button">Set as RFM</button>`
-                  }
-                </td>
-                <td>
-                  ${
-                    a.employmentStatus === "active"
-                      ? `<button class="btn btn-link danger-link admin-deactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Deactivate</button>`
-                      : `<button class="btn btn-link admin-reactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Reactivate</button>`
-                  }
-                </td>
-              </tr>`
+                        </form>
+                      </td>
+                    </tr>`
+                  : `<tr>
+                      <td>${escapeHtml(a.name)}${a.id === state.user.id ? " (you)" : ""}
+                        <button class="btn btn-link admin-rename-btn" data-id="${escapeHtml(a.id)}" type="button">Edit</button>
+                      </td>
+                      <td>${escapeHtml(a.id)}</td>
+                      <td>${escapeHtml((locationByCode[a.homeLocationCode] && locationByCode[a.homeLocationCode].name) || "—")}</td>
+                      <td>${escapeHtml(a.ukgId || "—")}</td>
+                      <td>${a.hireDate ? escapeHtml(usFromIso(a.hireDate)) : "—"}</td>
+                      <td>${statusBadge(a.employmentStatus)}</td>
+                      <td>
+                        ${
+                          a.isPseReviewer
+                            ? `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="false" type="button">RFM -- remove</button>`
+                            : `<button class="btn btn-link admin-pse-reviewer-btn" data-id="${escapeHtml(a.id)}" data-make="true" type="button">Set as RFM</button>`
+                        }
+                      </td>
+                      <td>
+                        ${
+                          a.employmentStatus === "active"
+                            ? `<button class="btn btn-link danger-link admin-deactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Deactivate</button>`
+                            : `<button class="btn btn-link admin-reactivate-btn" data-id="${escapeHtml(a.id)}" type="button">Reactivate</button>`
+                        }
+                      </td>
+                    </tr>`
               )
               .join("")}
           </tbody>
@@ -292,15 +304,31 @@ export function renderTechniciansTab(content, openTo) {
         renderAdminAccountsPanel(toggleBtn, contentEl);
       });
     });
-    host.querySelectorAll(".admin-rename-form").forEach((form) => {
+    host.querySelectorAll(".admin-edit-form").forEach((form) => {
+      wireDateMaskInput(form.hireDate);
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const id = form.dataset.id;
+        const hireDateValue = form.hireDate.value.trim();
+        if (hireDateValue && isoFromUs(hireDateValue) == null) {
+          window.alert("Hire date must be a valid MM/DD/YYYY date.");
+          return;
+        }
         try {
-          const updated = await api.patch(`/api/admin/admins/${encodeURIComponent(id)}/name`, { name: form.name.value.trim() });
+          const [updated] = await Promise.all([
+            api.patch(`/api/admin/admins/${encodeURIComponent(id)}/name`, { name: form.name.value.trim() }),
+            api.patch(`/api/admin/admins/${encodeURIComponent(id)}/basic-info`, {
+              homeLocationCode: form.homeLocationCode.value || null,
+              ukgId: form.ukgId.value.trim(),
+              hireDate: hireDateValue ? isoFromUs(hireDateValue) : null,
+            }),
+          ]);
           // Renaming yourself should show up in the header immediately,
           // not just after logging back in.
-          if (id === state.user.id) setUser({ ...state.user, name: updated.name });
+          if (id === state.user.id) {
+            setUser({ ...state.user, name: updated.name });
+            refreshHeader();
+          }
           adminRenaming.delete(id);
           await renderAdminAccountsPanel(toggleBtn, contentEl);
         } catch (err) {

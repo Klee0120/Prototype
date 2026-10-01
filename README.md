@@ -1249,9 +1249,23 @@ Demo logins:
   audit-logged as `ADMIN_RENAMED`) -- a legal name change, a typo at
   creation, or a seeded demo name that never got updated to whoever's
   actually using the account. Renaming yourself updates the stored session
-  (`setUser` in `app.js`) so it's correct on the next reload/login; the
-  header text on screen at the moment of the rename itself doesn't
-  live-refresh (it's only drawn once per page load). The same panel also
+  (`setUser` in `app.js`) **and now live-refreshes the header on screen
+  immediately** (`refreshHeader`, which swaps the header's DOM in place --
+  it's otherwise only drawn once per page load) -- previously the rename
+  saved correctly but the header kept showing the old name until the next
+  reload, which read as "the rename didn't work" even though it had. The
+  same Edit form also sets an admin account's **home location, UKG ID, and
+  hire date** (`PATCH /api/admin/admins/:id/basic-info`, audit-logged as
+  `ADMIN_BASIC_INFO_UPDATED`) -- real columns a technician row already has
+  (admins live in the same table), but nothing ever exposed them for an
+  admin account before, even though there's no reason an admin's own
+  profile shouldn't carry the same real details a technician's does. Purely
+  record-keeping -- none of this feeds any admin-side logic the way it
+  does for a technician's allocations/scheduling, and it's a dedicated,
+  narrowly-scoped update (only those 3 columns) rather than reusing the
+  technician basic-info function, which overwrites every field it knows
+  about at once and would otherwise risk blanking out something later if
+  an admin account ever gains its own email/phone/etc. The same panel also
   has a **"Set as RFM" / "RFM -- remove"** toggle per admin, designating
   who plays the `reviewer` role in the WOM lifecycle checklist (see PSE
   Tasks below, and the role-label note there on why this reads "RFM" on

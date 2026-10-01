@@ -765,6 +765,58 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(res.status, 403);
   });
 
+  await t.test("admin can set an admin account's home location/UKG ID/hire date, logged to the audit trail", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
+      userId: "ADMIN",
+      body: { homeLocationCode: "GEORGETOWN", ukgId: "6145793", hireDate: "2026-01-12" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.homeLocationCode, "GEORGETOWN");
+    assert.equal(res.body.ukgId, "6145793");
+    assert.equal(res.body.hireDate, "2026-01-12");
+
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    // Renamed in the test just above -- the audit message cites the
+    // account's current name, not its id.
+    const entry = audit.body.find((a) => a.action === "ADMIN_BASIC_INFO_UPDATED" && a.details.includes("Jordan Smith-Rivera"));
+    assert.ok(entry, "expected an ADMIN_BASIC_INFO_UPDATED audit entry");
+
+    const list = await server.call("GET", "/api/admin/admins", { userId: "ADMIN" });
+    const admin2 = list.body.find((a) => a.id === "ADMIN2");
+    assert.equal(admin2.homeLocationCode, "GEORGETOWN", "it should show up in the admins list too, not just the PATCH response");
+  });
+
+  await t.test("setting an admin's basic info rejects an unknown location", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
+      userId: "ADMIN",
+      body: { homeLocationCode: "NOWHERE" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("setting an admin's basic info rejects a malformed hire date", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
+      userId: "ADMIN",
+      body: { hireDate: "01/12/2026" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("setting basic info on an unknown admin account 404s", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/NOPE/basic-info", { userId: "ADMIN", body: { ukgId: "1234" } });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("a technician cannot set an admin account's basic info", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", { userId: "T1001", body: { ukgId: "1234" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("setting an admin's basic info never touches a technician's own fields -- scoped to role = 'admin'", async () => {
+    const res = await server.call("PATCH", "/api/admin/admins/T1001/basic-info", { userId: "ADMIN", body: { ukgId: "9999999" } });
+    assert.equal(res.status, 404, "T1001 is a technician, not an admin account, even though it's the same underlying table");
+  });
+
   await t.test("an admin cannot deactivate their own account", async () => {
     const res = await server.call("PATCH", "/api/admin/admins/ADMIN/employment-status", {
       userId: "ADMIN",

@@ -763,7 +763,15 @@ router.get("/missing-ukg", (req, res) => {
 // has the acting admin's name baked into its details text at write time.
 
 function presentAdmin(a) {
-  return { id: a.id, name: a.name, employmentStatus: a.employment_status, isPseReviewer: Boolean(a.is_pse_reviewer) };
+  return {
+    id: a.id,
+    name: a.name,
+    employmentStatus: a.employment_status,
+    isPseReviewer: Boolean(a.is_pse_reviewer),
+    homeLocationCode: a.home_location_code,
+    ukgId: a.ukg_id,
+    hireDate: a.hire_date,
+  };
 }
 
 router.get("/admins", (req, res) => {
@@ -814,6 +822,25 @@ router.patch("/admins/:id/name", (req, res) => {
   const oldName = admin.name;
   const updated = db.renameAdmin(admin.id, String(name).trim());
   db.addAudit(req.user.id, "ADMIN_RENAMED", `${req.user.name} renamed admin account ${admin.id} from ${oldName} to ${updated.name}`);
+  res.json(presentAdmin(updated));
+});
+
+// Record-keeping only -- an admin's home location/UKG ID/hire date don't
+// drive any admin-side logic the way they do for a technician's own
+// allocations/scheduling, but there's no reason an admin's own profile
+// shouldn't carry the same real details a technician's does.
+router.patch("/admins/:id/basic-info", (req, res) => {
+  const admin = db.findTechnician(req.params.id);
+  if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
+
+  const { ukgId, hireDate, homeLocationCode } = req.body || {};
+  if (hireDate && !DATE_RE.test(hireDate)) return res.status(400).json({ error: "hireDate must be YYYY-MM-DD" });
+  if (homeLocationCode && !db.findLocation(homeLocationCode)) {
+    return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });
+  }
+
+  const updated = db.setAdminBasicInfo(admin.id, { ukgId, hireDate, homeLocationCode });
+  db.addAudit(req.user.id, "ADMIN_BASIC_INFO_UPDATED", `${req.user.name} updated ${admin.name}'s basic info`);
   res.json(presentAdmin(updated));
 });
 
