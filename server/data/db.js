@@ -760,6 +760,19 @@ if (!hasColumn("vendor_requests", "note")) {
   db.exec("ALTER TABLE vendor_requests ADD COLUMN note TEXT DEFAULT ''");
 }
 
+// The date a case's status is actually true as of -- e.g. "Missing E&O" was
+// found on the COI as of the date someone actually reviewed the document,
+// which may not be today, the day it's finally getting logged. Separate
+// from updated_at (when this row was last touched, used for sorting/"has
+// anyone touched this vendor recently") since the two can legitimately
+// differ and conflating them would make a backdated entry sort out of
+// order against other cases. Defaults to the log date for history logged
+// before this existed.
+if (!hasColumn("vendor_requests", "as_of")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN as_of TEXT");
+  db.exec("UPDATE vendor_requests SET as_of = date(requested_at) WHERE as_of IS NULL");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -1361,7 +1374,7 @@ const ONBOARDING_CASE_TYPE_BY_KEY = Object.fromEntries(ONBOARDING_CASE_TYPES.map
 function listVendorRequests(vendorId) {
   return db
     .prepare(
-      `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status, note,
+      `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status, note, as_of AS asOf,
               requested_at AS requestedAt, updated_at AS updatedAt
        FROM vendor_requests WHERE vendor_id = ? ORDER BY id DESC`
     )
@@ -1411,7 +1424,7 @@ function listOnboardingCaseSummaries() {
   const rows = db
     .prepare(
       `SELECT vendor_id AS vendorId, request_type AS requestType, reference_number AS referenceNumber,
-              status, note, updated_at AS updatedAt
+              status, note, as_of AS asOf, updated_at AS updatedAt
        FROM vendor_requests ORDER BY updated_at ASC, id ASC`
     )
     .all();
@@ -1421,25 +1434,26 @@ function listOnboardingCaseSummaries() {
     const key = typeToKey[r.requestType];
     if (!key) continue;
     if (!summaries[r.vendorId]) summaries[r.vendorId] = {};
-    summaries[r.vendorId][key] = { referenceNumber: r.referenceNumber, status: r.status, note: r.note, updatedAt: r.updatedAt };
+    summaries[r.vendorId][key] = { referenceNumber: r.referenceNumber, status: r.status, note: r.note, asOf: r.asOf, updatedAt: r.updatedAt };
   }
   return summaries;
 }
 
-function addVendorRequest(vendorId, requestType, referenceNumber, status, note) {
+function addVendorRequest(vendorId, requestType, referenceNumber, status, note, asOf) {
   const now = new Date().toISOString();
   db.prepare(
-    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, note, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(vendorId, requestType, referenceNumber || "", status || "", note || "", now, now);
+    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, note, as_of, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(vendorId, requestType, referenceNumber || "", status || "", note || "", asOf || now.slice(0, 10), now, now);
   touchVendorActivity(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
 
-function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status, note }) {
+function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status, note, asOf }) {
+  const now = new Date().toISOString();
   db.prepare(
-    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, note = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
-  ).run(requestType, referenceNumber || "", status || "", note || "", new Date().toISOString(), requestId, vendorId);
+    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
+  ).run(requestType, referenceNumber || "", status || "", note || "", asOf || now.slice(0, 10), now, requestId, vendorId);
   touchVendorActivity(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);

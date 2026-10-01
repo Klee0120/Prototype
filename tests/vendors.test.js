@@ -394,3 +394,49 @@ test("vendors: a case can carry a note without corrupting stage derivation", asy
     assert.equal(res.body[0].note, "");
   });
 });
+
+test("vendors: a case's 'as of' date is a record-keeping field, separate from when it was logged, and editable", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "As Of Co" } });
+  const vendorId = create.body.id;
+
+  await t.test("an explicit asOf is stored as given, independent of when the entry was actually logged", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Needs Adjustment", note: "Missing E&O", asOf: "2026-09-15" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body[0].asOf, "2026-09-15");
+  });
+
+  await t.test("omitting asOf defaults to today, not null", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - W8/W9", status: "New" },
+    });
+    const today = new Date().toISOString().slice(0, 10);
+    assert.equal(res.body[0].asOf, today);
+  });
+
+  await t.test("editing an entry in place (PATCH) can correct its asOf date without creating a new log row", async () => {
+    const before = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" });
+    const coiEntry = before.body.find((e) => e.requestType === "Onboarding - COI");
+    const countBefore = before.body.length;
+
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${coiEntry.id}`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Needs Adjustment", note: "Missing E&O", asOf: "2026-09-20" },
+    });
+    assert.equal(res.status, 200);
+    const updated = res.body.find((e) => e.id === coiEntry.id);
+    assert.equal(updated.asOf, "2026-09-20", "the corrected date should be stored, not the original or today's date");
+    assert.equal(res.body.length, countBefore, "editing in place must not add a new row");
+  });
+
+  await t.test("the bulk case-summary endpoint (the Onboarding board's data source) also carries asOf", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/onboarding/case-summary", { userId: "ADMIN" });
+    assert.equal(res.body.summaries[vendorId].coi.asOf, "2026-09-20");
+  });
+});

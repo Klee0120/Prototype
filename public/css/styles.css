@@ -1455,11 +1455,20 @@ h1, h2, h3, h4 {
   border-radius: 8px;
 }
 
+.onboarding-cases-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-top: 12px;
+}
+
 .onboarding-cases {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 .onboarding-case {
@@ -1497,6 +1506,20 @@ h1, h2, h3, h4 {
   color: var(--text-muted, #666);
   margin-top: 4px;
   font-style: italic;
+}
+.onboarding-case-asof {
+  font-style: normal;
+}
+
+.onboarding-case-asof-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.onboarding-case-asof-label input {
+  flex: none;
 }
 
 .onboarding-welcome-line {

@@ -334,7 +334,32 @@ Demo logins:
   a case marked Needs Adjustment) -- kept separate from `status` itself
   since `deriveOnboardingStage()` matches `status` against
   "approved"/"denied" exactly, and appending a reason onto it would break
-  that match. The **welcome email is deliberately not a case** -- there's
+  that match. The COI/W-9/Payment cases are the three sub-items of one
+  parent **Toyota Onboarding** case per vendor (a `.onboarding-cases-heading`
+  label above the three pills says so) -- each still independently
+  approved/denied/noted, since that's the real granularity ServiceEdge
+  tracks, just grouped under the name they actually share.
+  - **Each case entry also carries an editable `asOf` date** -- the date a
+    case's status is actually *true as of*, separate from `updated_at`
+    (when the row was last touched, still what sorting/"latest case"/
+    staleness all key off). The two legitimately differ: a COI reviewed on
+    the document itself as of the 15th might not get logged in this app
+    until a few days later. Shown right on the pill next to the note (e.g.
+    "Missing E&O (as of 9/29/2026)") rather than buried in Full case
+    history, since it's exactly the kind of thing worth a glance without
+    opening anything. Defaults to today when logging a new case, but is a
+    plain editable date input, not a stamp. An **Edit** button next to Log
+    update (only shown once a case has at least one entry) opens the same
+    form pre-filled from the latest entry and **PATCHes it in place**
+    (`PATCH /api/admin/vendors/:id/requests/:requestId`, already existed
+    server-side for the vendor edit modal's device-request-style editing but
+    wasn't wired up here) rather than appending a new log row -- for
+    correcting a typo'd note or a wrong date, which isn't a new case the way
+    "Log update" always is (ServiceEdge's own convention: re-submitting
+    after a denial opens a new case rather than editing the old one, which
+    "Log update" still does). Existing history logged before this existed
+    backfills its `asOf` to its log date via an additive migration.
+  The **welcome email is deliberately not a case** -- there's
   no New/Approved/Denied to assign to "did I send an email," so it's
   logged as a fourth `Onboarding - Request` request-type row for history's
   sake but rendered as a plain "Welcome email sent <date>" line with a

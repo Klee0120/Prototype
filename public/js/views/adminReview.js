@@ -466,10 +466,11 @@ export async function renderAdminReview(container) {
     content.innerHTML = `
       <p class="review-checklist-hint">
         Onboarding is tracked as ServiceEdge tracks it -- a COI case, a W-9 case, and a Payment
-        Details case per vendor, each independently approved or denied. All three approved moves a
-        vendor to Onboarded; any one denied moves it to Denied. A vendor with no case update in
-        ${ONBOARDING_STALE_DAYS}+ days is flagged so nothing quietly sits untouched. This board shows
-        case status only, never a vendor's actual documents.
+        Details case per vendor, all three under the one parent Toyota Onboarding case, each
+        independently approved or denied. All three approved moves a vendor to Onboarded; any one
+        denied moves it to Denied. A vendor with no case update in ${ONBOARDING_STALE_DAYS}+ days is
+        flagged so nothing quietly sits untouched. This board shows case status only, never a
+        vendor's actual documents.
       </p>
       <h3>Start Onboarding</h3>
       <p class="review-checklist-hint">
@@ -590,6 +591,7 @@ export async function renderAdminReview(container) {
         <button class="btn btn-link onboarding-log-toggle" type="button">Full case history</button>
       </div>
       ${renderWelcomeEmailLine(caseSummary.request)}
+      <div class="onboarding-cases-heading">Toyota Onboarding</div>
       <div class="onboarding-cases">
         ${caseTypes.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
       </div>
@@ -625,7 +627,7 @@ export async function renderAdminReview(container) {
 
     caseTypes.forEach((ct) => {
       const caseEl = el.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
-      wireCasePill(caseEl, v, ct, () => drawVendorOnboarding(content));
+      wireCasePill(caseEl, v, ct, () => drawVendorOnboarding(content), caseSummary[ct.key]);
     });
 
     const logToggle = el.querySelector(".onboarding-log-toggle");
@@ -643,8 +645,24 @@ export async function renderAdminReview(container) {
     return el;
   }
 
+  // "As of" is a plain YYYY-MM-DD (an <input type="date">'s own value, and
+  // what's stored in as_of) -- reformatted directly as text, never through
+  // `new Date(...)`, which would parse it as UTC midnight and can print the
+  // wrong calendar day in a timezone behind UTC.
+  function formatCaseDate(dateStr) {
+    if (!dateStr) return null;
+    const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+    if (!y || !m || !d) return null;
+    return `${m}/${d}/${y}`;
+  }
+  function todayDateInputValue() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
   function renderCasePillHtml(v, ct, latest) {
     const coiRef = ct.key === "coi" ? coiRequirementLine(v) : "";
+    const asOfLabel = latest ? formatCaseDate(latest.asOf) : null;
     return `
       <div class="onboarding-case" data-case-key="${ct.key}">
         <div class="onboarding-case-summary">
@@ -652,16 +670,23 @@ export async function renderAdminReview(container) {
           <span class="badge badge-${caseStatusBadgeClass(latest && latest.status)}">${latest ? escapeHtml(latest.status || "No status") : "Not started"}</span>
           ${latest && latest.referenceNumber ? `<span class="onboarding-case-ref">#${escapeHtml(latest.referenceNumber)}</span>` : ""}
           <button type="button" class="btn btn-link onboarding-case-log-new">Log update</button>
+          ${latest ? `<button type="button" class="btn btn-link onboarding-case-edit">Edit</button>` : ""}
         </div>
         ${coiRef ? `<div class="onboarding-case-coi-ref">${escapeHtml(coiRef)}</div>` : ""}
-        ${latest && latest.note ? `<div class="onboarding-case-note">${escapeHtml(latest.note)}</div>` : ""}
+        ${
+          latest && (latest.note || asOfLabel)
+            ? `<div class="onboarding-case-note">${latest.note ? escapeHtml(latest.note) : ""}${asOfLabel ? ` <span class="onboarding-case-asof">(as of ${asOfLabel})</span>` : ""}</div>`
+            : ""
+        }
         <div class="onboarding-case-form" hidden>
           <select class="onboarding-case-status-select">
             ${CASE_STATUS_OPTIONS.map((s) => `<option value="${s}">${s}</option>`).join("")}
           </select>
           <input type="text" class="onboarding-case-ref-input" placeholder="Case # (optional)" />
           <input type="text" class="onboarding-case-note-input" placeholder="Note (optional, e.g. what's missing)" />
+          <label class="onboarding-case-asof-label">As of <input type="date" class="onboarding-case-asof-input" /></label>
           <button type="button" class="btn btn-primary onboarding-case-save">Save</button>
+          <button type="button" class="btn btn-link onboarding-case-cancel">Cancel</button>
         </div>
       </div>
     `;
@@ -673,18 +698,48 @@ export async function renderAdminReview(container) {
   // form, save it, then re-render" behavior. The note is stored in its own
   // column, never appended to `status` itself, since deriveOnboardingStage
   // (db.js) matches `status` against "approved"/"denied" exactly.
-  function wireCasePill(caseEl, v, ct, onLogged) {
+  //
+  // "Log update" always starts a blank form and POSTs a brand new case
+  // entry (ServiceEdge's own convention -- re-submitting after a denial
+  // opens a new case rather than editing the old one). "Edit" instead
+  // pre-fills the form from the latest entry and PATCHes it in place --
+  // for correcting a typo'd note or an as-of date logged wrong, not a real
+  // new case, so it shouldn't leave a confusing near-duplicate behind in
+  // the history.
+  function wireCasePill(caseEl, v, ct, onLogged, latest) {
     const toggleBtn = caseEl.querySelector(".onboarding-case-log-new");
+    const editBtn = caseEl.querySelector(".onboarding-case-edit");
     const form = caseEl.querySelector(".onboarding-case-form");
-    toggleBtn.addEventListener("click", () => {
-      form.hidden = !form.hidden;
+    const statusSelect = caseEl.querySelector(".onboarding-case-status-select");
+    const refInput = caseEl.querySelector(".onboarding-case-ref-input");
+    const noteInput = caseEl.querySelector(".onboarding-case-note-input");
+    const asOfInput = caseEl.querySelector(".onboarding-case-asof-input");
+    let editingId = null;
+
+    function openForm(prefillFrom) {
+      editingId = prefillFrom ? prefillFrom.id : null;
+      statusSelect.value = prefillFrom ? prefillFrom.status || CASE_STATUS_OPTIONS[0] : CASE_STATUS_OPTIONS[0];
+      refInput.value = prefillFrom ? prefillFrom.referenceNumber || "" : "";
+      noteInput.value = prefillFrom ? prefillFrom.note || "" : "";
+      asOfInput.value = (prefillFrom && prefillFrom.asOf && prefillFrom.asOf.slice(0, 10)) || todayDateInputValue();
+      form.hidden = false;
+    }
+    toggleBtn.addEventListener("click", () => (form.hidden ? openForm(null) : (form.hidden = true)));
+    if (editBtn) editBtn.addEventListener("click", () => (form.hidden ? openForm(latest) : (form.hidden = true)));
+    caseEl.querySelector(".onboarding-case-cancel").addEventListener("click", () => {
+      form.hidden = true;
     });
     caseEl.querySelector(".onboarding-case-save").addEventListener("click", async () => {
-      const status = caseEl.querySelector(".onboarding-case-status-select").value;
-      const referenceNumber = caseEl.querySelector(".onboarding-case-ref-input").value.trim();
-      const note = caseEl.querySelector(".onboarding-case-note-input").value.trim();
+      const status = statusSelect.value;
+      const referenceNumber = refInput.value.trim();
+      const note = noteInput.value.trim();
+      const asOf = asOfInput.value || null;
       try {
-        await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: ct.type, status, referenceNumber, note });
+        if (editingId) {
+          await api.patch(`/api/admin/vendors/${v.id}/requests/${editingId}`, { requestType: ct.type, status, referenceNumber, note, asOf });
+        } else {
+          await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: ct.type, status, referenceNumber, note, asOf });
+        }
         vendorsCache = null;
         await onLogged();
       } catch (err) {
@@ -704,6 +759,7 @@ export async function renderAdminReview(container) {
     const entries = await api.get(`/api/admin/vendors/${v.id}/requests`);
     host.innerHTML = `
       ${renderWelcomeEmailLine(latestCaseOfType(entries, WELCOME_EMAIL_REQUEST_TYPE))}
+      <div class="onboarding-cases-heading">Toyota Onboarding</div>
       <div class="onboarding-cases">
         ${ONBOARDING_CASE_TYPES.map((ct) => renderCasePillHtml(v, ct, latestCaseOfType(entries, ct.type))).join("")}
       </div>
@@ -713,7 +769,7 @@ export async function renderAdminReview(container) {
     wireWelcomeEmailLine(host, v, () => renderVendorCasesSection(host, v));
     ONBOARDING_CASE_TYPES.forEach((ct) => {
       const caseEl = host.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
-      wireCasePill(caseEl, v, ct, () => renderVendorCasesSection(host, v));
+      wireCasePill(caseEl, v, ct, () => renderVendorCasesSection(host, v), latestCaseOfType(entries, ct.type));
     });
     const historyToggle = host.querySelector(".vendor-case-history-toggle");
     const historyHost = host.querySelector(".onboarding-case-log");
@@ -742,7 +798,9 @@ export async function renderAdminReview(container) {
               <p class="onboarding-case-entry">
                 <strong>${escapeHtml(e.requestType)}</strong>${e.referenceNumber ? ` #${escapeHtml(e.referenceNumber)}` : ""}
                 — <span class="badge badge-${caseStatusBadgeClass(e.status)}">${escapeHtml(e.status || "no status")}</span>
-                <span class="task-comment-time">${new Date(e.updatedAt || e.requestedAt).toLocaleString()}</span>
+                <span class="task-comment-time">logged ${new Date(e.updatedAt || e.requestedAt).toLocaleString()}${
+                    formatCaseDate(e.asOf) ? ` · as of ${formatCaseDate(e.asOf)}` : ""
+                  }</span>
                 ${e.note ? `<br /><span class="onboarding-case-note">${escapeHtml(e.note)}</span>` : ""}
               </p>
             `
