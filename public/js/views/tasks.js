@@ -980,6 +980,13 @@ export async function renderTaskBoard(container) {
     if (t.relatedTechName) contextBits.push(escapeHtml(t.relatedTechName));
     if (t.relatedLocationName) contextBits.push(escapeHtml(t.relatedLocationName));
     const assignee = t.assignedToName || (t.assignedRole ? `Unclaimed — ${ROLE_LABELS[t.assignedRole] || t.assignedRole}` : "Unassigned");
+    // "Unclaimed" used to be a dead end -- it explained the state but gave
+    // no way to change it short of the bulk-select toolbar (check a box,
+    // open the toolbar, pick a name, Apply), which nobody's going to do for
+    // a single task. Any admin can claim any admin-bucket task (admin can
+    // already act on all of them regardless of role -- see canSeeTask), a
+    // tech can only claim their own tech-bucket one.
+    const canClaim = !t.assignedToName && t.assignedRole && (isAdmin ? t.assignedRole !== "tech" : t.assignedRole === "tech");
     const badgeLabel = t.urgency === "done" ? STATUS_LABELS[t.status] : PRIORITY_LABELS[t.priority];
     // A closed task's due date is just history, not a live countdown -- no
     // "3 days overdue" red text on something already done.
@@ -995,7 +1002,7 @@ export async function renderTaskBoard(container) {
           ${t.isChangeOrder ? `<span class="task-exception-flag" title="A real cost overage -- Toyota needs to sign off on a change order">🚩</span>` : ""}${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
-        <span class="task-card-meta">${escapeHtml(assignee)} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}${t.snoozedUntil ? ` &middot; <span class="task-due-soon">snoozed until ${escapeHtml(formatDate(t.snoozedUntil))}</span>` : ""}</span>
+        <span class="task-card-meta">${escapeHtml(assignee)}${canClaim ? ` <button class="btn btn-link task-claim-btn" type="button" data-id="${t.id}">Claim</button>` : ""} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}${t.snoozedUntil ? ` &middot; <span class="task-due-soon">snoozed until ${escapeHtml(formatDate(t.snoozedUntil))}</span>` : ""}</span>
         <button class="btn btn-link task-detail-toggle" type="button">Details</button>
       </div>
       <div class="review-row-detail task-card-detail" hidden></div>
@@ -1014,6 +1021,20 @@ export async function renderTaskBoard(container) {
         if (checkbox.checked) selectedTaskIds.add(t.id);
         else selectedTaskIds.delete(t.id);
         renderBulkToolbar(container.querySelector("#task-bulk-toolbar"));
+      });
+    }
+    const claimBtn = row.querySelector(".task-claim-btn");
+    if (claimBtn) {
+      claimBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        claimBtn.disabled = true;
+        try {
+          await api.patch(`/api/tasks/${t.id}/assign`, { assignedTo: state.user.id });
+          await draw();
+        } catch (err) {
+          claimBtn.disabled = false;
+          window.alert(err.message);
+        }
       });
     }
     return row;
@@ -1070,6 +1091,8 @@ export async function renderTaskBoard(container) {
           : ""
       }
       ${isAdmin ? `<div class="task-reschedule-host" hidden></div>` : ""}
+      ${isAdmin ? `<p class="review-checklist-hint"><button class="btn btn-link task-assign-toggle" type="button">Assign</button></p>` : ""}
+      ${isAdmin ? `<div class="task-assign-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
       <div class="review-actions task-status-actions"></div>
       ${isAdmin ? `<div class="task-attachments"></div>` : ""}
@@ -1156,6 +1179,20 @@ export async function renderTaskBoard(container) {
           } catch (err) {
             unsnoozeBtn.disabled = false;
             window.alert(err.message);
+          }
+        });
+      }
+      const assignToggle = host.querySelector(".task-assign-toggle");
+      const assignHost = host.querySelector(".task-assign-host");
+      if (assignToggle && assignHost) {
+        let assignLoaded = false;
+        assignToggle.addEventListener("click", async () => {
+          const opening = assignHost.hidden;
+          assignHost.hidden = !opening;
+          assignToggle.textContent = opening ? "Cancel" : "Assign";
+          if (opening && !assignLoaded) {
+            assignLoaded = true;
+            await renderAssignForm(assignHost, t, () => draw());
           }
         });
       }
@@ -1339,6 +1376,67 @@ export async function renderTaskBoard(container) {
   // picks a follow-up date. The task is fully hidden from every other view
   // until that date, and resurfaces automatically in the admin-only Upcoming
   // tab -- or immediately, via "Bring back now" on the task itself.
+  // Assigning used to mean checking a box and going through the bulk-select
+  // toolbar even for a single task -- this is that same PATCH
+  // (/api/tasks/:id/assign), reachable directly from the task someone's
+  // actually looking at. Assigning to a person always wins over whatever
+  // role queue it was sitting in; "Back to role queue" clears the person
+  // without guessing which role to put it back in, since the server already
+  // knows (assignedRole is untouched -- only assignedTo is cleared).
+  async function renderAssignForm(host, t, onDone) {
+    const staff = await loadStaff();
+    const people = [...staff.technicians, ...staff.admins];
+    host.innerHTML = `
+      <form class="modal-form task-assign-form">
+        <label class="profile-field">
+          <span>Assign to</span>
+          <select class="task-assign-select">
+            <option value="">-- Select a person --</option>
+            ${people.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === t.assignedTo ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+          </select>
+        </label>
+        <div class="modal-form-actions">
+          <button class="btn btn-primary" type="submit">Assign</button>
+          ${t.assignedTo ? `<button class="btn btn-link task-assign-clear" type="button">Back to role queue</button>` : ""}
+          <button class="btn btn-link task-assign-cancel" type="button">Cancel</button>
+        </div>
+        <div class="task-assign-error"></div>
+      </form>
+    `;
+    host.querySelector(".task-assign-cancel").addEventListener("click", () => {
+      host.hidden = true;
+      const toggle = host.parentElement.querySelector(".task-assign-toggle");
+      if (toggle) toggle.textContent = "Assign";
+    });
+    const clearBtn = host.querySelector(".task-assign-clear");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", async () => {
+        try {
+          await api.patch(`/api/tasks/${t.id}/assign`, { assignedTo: null });
+          await onDone();
+        } catch (err) {
+          host.querySelector(".task-assign-error").innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        }
+      });
+    }
+    host.querySelector(".task-assign-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const errorEl = host.querySelector(".task-assign-error");
+      errorEl.innerHTML = "";
+      const assignedTo = host.querySelector(".task-assign-select").value;
+      if (!assignedTo) {
+        errorEl.innerHTML = `<p class="attachments-error">Pick a person to assign to.</p>`;
+        return;
+      }
+      try {
+        await api.patch(`/api/tasks/${t.id}/assign`, { assignedTo });
+        await onDone();
+      } catch (err) {
+        errorEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+  }
+
   function renderRescheduleForm(host, t, onDone) {
     const defaultDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     host.innerHTML = `

@@ -113,6 +113,7 @@ function presentTask(t) {
 function catchUpTasks() {
   db.ensureRecurringTasks();
   db.refreshAllOpenWomLifecycles();
+  db.refreshAllVendorComplianceTasks();
 }
 
 router.get("/", requireAuth, (req, res) => {
@@ -408,11 +409,19 @@ router.patch("/:id/status", requireAuth, (req, res) => {
   res.json(presentTask(updated));
 });
 
-router.patch("/:id/assign", requireAuth, requireAdmin, (req, res) => {
+// Reassigning between people (or back to a role queue) is an admin action
+// -- except claiming an unclaimed task for *yourself*, which a tech can
+// already effectively do by starting work on it (canSeeTask already lets
+// them act on their own role-queue tasks); this just lets that be a single
+// click instead of silently remaining "Unclaimed" forever.
+router.patch("/:id/assign", requireAuth, (req, res) => {
   const task = db.findTask(Number(req.params.id));
   if (!task) return res.status(404).json({ error: "Task not found" });
 
   const { assignedTo, assignedRole } = req.body || {};
+  const isAdmin = req.user.role === "admin";
+  const isSelfClaim = assignedTo === req.user.id && assignedRole === undefined && !task.assigned_to && task.assigned_role;
+  if (!isAdmin && !isSelfClaim) return res.status(403).json({ error: "Admin access required" });
   if (assignedTo && !db.findTechnician(assignedTo)) return res.status(400).json({ error: `Unknown employee: ${assignedTo}` });
 
   const updated = db.assignTask(task.id, { assignedTo, assignedRole });

@@ -569,12 +569,11 @@ export async function renderAdminReview(container) {
         ${v.formsStatus === "outdated" ? `<span class="badge badge-rejected">Forms Outdated</span>` : ""}
         ${!v.formChecksComplete ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
         ${v.w9InvoiceStale ? `<span class="badge badge-rejected">W-9 invoice stale</span>` : ""}
-        <button class="btn btn-secondary onboarding-open-vendor-btn" type="button">Open vendor</button>
+        <button class="btn btn-secondary onboarding-review-compliance-btn" type="button">Review Compliance</button>
       </div>
     `;
-    el.querySelector(".onboarding-open-vendor-btn").addEventListener("click", () => {
-      vendorExpanded.add(v.id);
-      goTo("vendors");
+    el.querySelector(".onboarding-review-compliance-btn").addEventListener("click", () => {
+      openVendorOnboardingComplianceModal(v, content);
     });
     return el;
   }
@@ -1054,7 +1053,6 @@ export async function renderAdminReview(container) {
       size: "large",
       bodyHtml: renderVendorEditForm(v),
     });
-    renderVendorCasesSection(body.querySelector(".vendor-cases-section"), v);
     const documentsPanel = body.querySelector(".vendor-documents-panel");
     const refreshDocumentsPanel = () =>
       renderAttachments(documentsPanel, {
@@ -1064,6 +1062,7 @@ export async function renderAdminReview(container) {
         categories: VENDOR_DOC_CATEGORIES,
         canUpload: true,
         groupByCategory: true,
+        trackExpiration: true,
         emptyText: "No documents on file yet.",
       });
     refreshDocumentsPanel();
@@ -1071,37 +1070,8 @@ export async function renderAdminReview(container) {
     assignHost.className = "vendor-assign-task-doc-host";
     documentsPanel.after(assignHost);
     renderAssignTaskDocumentControl(assignHost, v, refreshDocumentsPanel);
-    // Two independent forms, two independent saves -- the document
-    // checklist sits at the top of the modal (it's what Krista checks first
-    // on a vendor) rather than being buried at the bottom of the general
-    // vendor-info form. Both PATCH through vendorFullPayload so saving one
-    // never blanks fields only the other form edits; `v` is kept current
-    // after each save so a second save in the same modal session carries
-    // forward what the first one just changed, not what was on screen when
-    // the modal first opened.
-    const docChecksForm = body.querySelector(".vendor-doc-checks-form");
-    docChecksForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = docChecksForm.querySelector(".save-message");
-      try {
-        const updated = await api.patch(
-          `/api/admin/vendors/${v.id}`,
-          vendorFullPayload(v, {
-            coiMeetsRequiredLimits: docChecksForm.coiMeetsRequiredLimits.checked,
-            coiMeetsLanguageRequirements: docChecksForm.coiMeetsLanguageRequirements.checked,
-            coiLimits: Object.fromEntries(
-              Object.keys(COI_LIMIT_LABELS).map((key) => [key, docChecksForm[`coi_${key}`].value.trim()])
-            ),
-            formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, docChecksForm[key].checked])),
-            w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null,
-          })
-        );
-        Object.assign(v, updated);
-        vendorsCache = null;
-        msg.textContent = "Saved.";
-      } catch (err) {
-        msg.textContent = err.message;
-      }
+    body.querySelector(".vendor-open-onboarding-btn").addEventListener("click", () => {
+      openVendorOnboardingComplianceModal(v, content);
     });
 
     const form = body.querySelector(".vendor-edit-form");
@@ -1137,13 +1107,6 @@ export async function renderAdminReview(container) {
         await drawVendors(content);
       } catch (err) {
         msg.textContent = err.message;
-      }
-    });
-    form.querySelector('select[name="services"]').addEventListener("change", (e) => {
-      const matrixEntry = COI_MATRIX_BY_LABEL[e.target.value];
-      if (!matrixEntry) return;
-      for (const [coiKey, matrixKey] of Object.entries(COI_LIMIT_TO_MATRIX_KEY)) {
-        docChecksForm[`coi_${coiKey}`].value = matrixEntry.requirements[matrixKey] || "";
       }
     });
     body.querySelector(".cancel-vendor-edit").addEventListener("click", () => close());
@@ -1253,31 +1216,28 @@ export async function renderAdminReview(container) {
     </select>`;
   }
 
-  function renderVendorEditForm(v) {
-    const cwSelect = ["unknown", "active", "inactive"]
-      .map((s) => `<option value="${s}" ${v.cwStatus === s ? "selected" : ""}>${escapeHtml(CW_STATUS_LABELS[s])}</option>`)
-      .join("");
-    const toyotaSelect = ["unknown", "approved", "not_approved"]
-      .map((s) => `<option value="${s}" ${v.toyotaStatus === s ? "selected" : ""}>${escapeHtml(TOYOTA_STATUS_LABELS[s])}</option>`)
-      .join("");
-    const formsSelect = ["unknown", "current", "outdated"]
-      .map((s) => `<option value="${s}" ${v.formsStatus === s ? "selected" : ""}>${escapeHtml(FORMS_STATUS_LABELS[s])}</option>`)
-      .join("");
+  // The document-compliance checklist (does the vendor's actual uploaded
+  // COI/W-9/ACH meet requirements) -- its own standalone form, shared by
+  // the Onboarding & Compliance modal and (for the services-driven COI
+  // autofill) nowhere else now that it no longer shares a page with the
+  // Services select. Previously lived inline in the vendor edit modal;
+  // moved out so onboarding case status and document compliance live
+  // together in one place, separate from the vendor's general profile.
+  function renderVendorDocChecksForm(v) {
     const coiLimitInputs = Object.entries(COI_LIMIT_LABELS)
       .map(
         ([key, label]) =>
           `<label class="profile-field"><span>${label}</span><input name="coi_${key}" placeholder="e.g. $1M or -" value="${escapeHtml((v.coiLimits && v.coiLimits[key]) || "")}" /></label>`
       )
       .join("");
-
     return `
       <form class="vendor-doc-checks-form">
         <h4>COI (Certificate of Insurance) requirements</h4>
         <p class="review-checklist-hint">
-          Picking a Service on the vendor info form below fills these with the limits Toyota
-          requires for that service type (from the insurance matrix) -- still editable if this
-          vendor has a negotiated exception. Check the boxes once the vendor's actual COI (uploaded
-          in Documents below) has been reviewed against them.
+          The limits Toyota requires for this vendor's service type (from the insurance matrix) --
+          still editable if this vendor has a negotiated exception. Check the boxes once the
+          vendor's actual COI (uploaded on the vendor's own Documents panel) has been reviewed
+          against them.
         </p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="coiMeetsRequiredLimits" ${v.coiMeetsRequiredLimits ? "checked" : ""} /> Meets required limits</label>
@@ -1286,14 +1246,14 @@ export async function renderAdminReview(container) {
         <div class="vendor-edit-grid">${coiLimitInputs}</div>
 
         <h4>COI document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual COI document uploaded in Documents below.</p>
+        <p class="review-checklist-hint">Verified against the actual COI document uploaded on the vendor's Documents panel.</p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="coiIsAcord25_2016_03" ${v.formChecks.coiIsAcord25_2016_03 ? "checked" : ""} /> Issued on ACORD 25 form (2016/03 version)</label>
           <label><input type="checkbox" name="coiMatchesW9" ${v.formChecks.coiMatchesW9 ? "checked" : ""} /> Matches W-9 name &amp; address</label>
         </div>
 
         <h4>W-9 document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual W-9 document uploaded in Documents below.</p>
+        <p class="review-checklist-hint">Verified against the actual W-9 document uploaded on the vendor's Documents panel.</p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="w9SignedDated" ${v.formChecks.w9SignedDated ? "checked" : ""} /> Signed and dated</label>
           <label><input type="checkbox" name="w9CorrectVersion" ${v.formChecks.w9CorrectVersion ? "checked" : ""} /> October 2018 or March 2024 version</label>
@@ -1307,7 +1267,7 @@ export async function renderAdminReview(container) {
         </label>
 
         <h4>ACH document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual ACH/bank letter uploaded in Documents below.</p>
+        <p class="review-checklist-hint">Verified against the actual ACH/bank letter uploaded on the vendor's Documents panel.</p>
         <div class="vendor-coi-checks">
           <label><input type="checkbox" name="achBankLetterhead" ${v.formChecks.achBankLetterhead ? "checked" : ""} /> On bank letterhead</label>
           <label><input type="checkbox" name="achHasW9Name" ${v.formChecks.achHasW9Name ? "checked" : ""} /> Has W-9 name</label>
@@ -1323,6 +1283,138 @@ export async function renderAdminReview(container) {
           <span class="save-message doc-checks-save-message"></span>
         </div>
       </form>
+    `;
+  }
+
+  // Wires the doc-checks form's save -- shared so both the Onboarding &
+  // Compliance modal (its only caller now) gets the same save behavior
+  // without duplicating it. `onSaved(updatedVendor)` lets the caller decide
+  // what else needs refreshing (the vendors cache, a badge elsewhere).
+  function wireVendorDocChecksForm(docChecksForm, v, onSaved) {
+    docChecksForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = docChecksForm.querySelector(".save-message");
+      try {
+        const updated = await api.patch(
+          `/api/admin/vendors/${v.id}`,
+          vendorFullPayload(v, {
+            coiMeetsRequiredLimits: docChecksForm.coiMeetsRequiredLimits.checked,
+            coiMeetsLanguageRequirements: docChecksForm.coiMeetsLanguageRequirements.checked,
+            coiLimits: Object.fromEntries(
+              Object.keys(COI_LIMIT_LABELS).map((key) => [key, docChecksForm[`coi_${key}`].value.trim()])
+            ),
+            formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, docChecksForm[key].checked])),
+            w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null,
+          })
+        );
+        msg.textContent = "Saved.";
+        onSaved(updated);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // "Onboarding and compliance" as one combined view for a single vendor --
+  // case status (has ServiceEdge approved the COI/W-9/Payment case) and
+  // document compliance (does the uploaded document actually meet
+  // requirements) used to live in two different places (the Onboarding
+  // board vs. the vendor edit modal); now they're one modal, reachable for
+  // any vendor at any time regardless of where it stands on the board.
+  function openVendorOnboardingComplianceModal(v, content) {
+    const { body } = openModal({
+      title: `Onboarding & Compliance — ${v.name}`,
+      size: "large",
+      bodyHtml: `
+        <h4>Onboarding cases</h4>
+        <div class="vendor-cases-section"></div>
+        <h4>Document Compliance</h4>
+        <div class="vendor-doc-checks-host"></div>
+        <h4>Compliance Follow-up</h4>
+        <p class="review-checklist-hint">
+          A follow-up task is generated automatically whenever this vendor needs attention (an
+          unconfirmed document check, outdated forms, a stale W-9 invoice, or an expired COI/W-9/ACH
+          upload) -- work it, snooze it, or comment on it from Priorities like any other task. It
+          closes on its own once the actual gap is fixed; notes logged on it stay visible here even
+          after it's done.
+        </p>
+        <div class="vendor-compliance-tasks-host"></div>
+      `,
+    });
+    renderVendorCasesSection(body.querySelector(".vendor-cases-section"), v);
+    const docChecksHost = body.querySelector(".vendor-doc-checks-host");
+    function attachDocChecksForm() {
+      docChecksHost.innerHTML = renderVendorDocChecksForm(v);
+      wireVendorDocChecksForm(docChecksHost.querySelector(".vendor-doc-checks-form"), v, (updated) => {
+        Object.assign(v, updated);
+        vendorsCache = null;
+        attachDocChecksForm();
+      });
+    }
+    attachDocChecksForm();
+    renderVendorComplianceTasks(body.querySelector(".vendor-compliance-tasks-host"), v);
+  }
+
+  async function renderVendorComplianceTasks(host, v) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    try {
+      const tasks = await api.get(`/api/admin/vendors/${v.id}/compliance-tasks`);
+      if (tasks.length === 0) {
+        host.innerHTML = `<p class="empty-note">No compliance follow-up has ever been needed for this vendor.</p>`;
+        return;
+      }
+      host.innerHTML = tasks
+        .map((t) => {
+          const statusBadge =
+            t.status === "completed"
+              ? `<span class="badge badge-approved">Resolved ${new Date(t.completedAt).toLocaleDateString()}</span>`
+              : t.snoozedUntil
+                ? `<span class="badge badge-draft">Snoozed until ${new Date(t.snoozedUntil).toLocaleDateString()}</span>`
+                : `<span class="badge badge-rejected">Open</span>`;
+          const comments = t.comments
+            .map(
+              (c) =>
+                `<div class="task-comment"><strong>${escapeHtml(c.authorName)}</strong> &middot; ${new Date(c.createdAt).toLocaleString()}<br>${escapeHtml(c.body)}</div>`
+            )
+            .join("");
+          return `
+            <div class="review-row vendor-compliance-task-row">
+              <div class="review-row-summary">
+                <span class="review-row-name">${escapeHtml(t.title)}</span>
+                ${statusBadge}
+              </div>
+              <div class="wom-desc">${escapeHtml(t.description || "")}</div>
+              ${comments ? `<div class="task-comments-list">${comments}</div>` : ""}
+            </div>
+          `;
+        })
+        .join("");
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  function renderVendorEditForm(v) {
+    const cwSelect = ["unknown", "active", "inactive"]
+      .map((s) => `<option value="${s}" ${v.cwStatus === s ? "selected" : ""}>${escapeHtml(CW_STATUS_LABELS[s])}</option>`)
+      .join("");
+    const toyotaSelect = ["unknown", "approved", "not_approved"]
+      .map((s) => `<option value="${s}" ${v.toyotaStatus === s ? "selected" : ""}>${escapeHtml(TOYOTA_STATUS_LABELS[s])}</option>`)
+      .join("");
+    const formsSelect = ["unknown", "current", "outdated"]
+      .map((s) => `<option value="${s}" ${v.formsStatus === s ? "selected" : ""}>${escapeHtml(FORMS_STATUS_LABELS[s])}</option>`)
+      .join("");
+
+    return `
+      <div class="review-actions">
+        <button type="button" class="btn btn-secondary vendor-open-onboarding-btn">Onboarding &amp; Compliance &rarr;</button>
+      </div>
+      <p class="review-checklist-hint">
+        Onboarding case status (has ServiceEdge approved the COI/W-9/Payment case) and document
+        compliance checks (does the uploaded COI/W-9/ACH actually meet requirements) live together
+        there now, reachable for this vendor any time regardless of where it stands on the
+        Onboarding board.
+      </p>
 
       <h4>Cost history</h4>
       <p class="review-checklist-hint">
@@ -1332,16 +1424,11 @@ export async function renderAdminReview(container) {
         See Financials &rarr; Cost Analysis for the full vendor cost breakdown.
       </p>
 
-      <h4>Onboarding cases</h4>
-      <div class="vendor-cases-section"></div>
-
       <h4>Documents</h4>
       <div class="vendor-documents-panel"></div>
       <p class="review-checklist-hint">
-        These are the vendor's actual documents on file -- separate from onboarding
-        <strong>case status</strong> above (has ServiceEdge approved the COI/W-9/Payment case) and
-        from the document checks at the top of this page (whether an uploaded document actually
-        meets requirements).
+        These are the vendor's actual documents on file -- separate from onboarding case status and
+        document compliance checks (Onboarding &amp; Compliance, above).
       </p>
 
       <h4>Vendor Info</h4>

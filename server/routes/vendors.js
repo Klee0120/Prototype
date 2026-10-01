@@ -84,6 +84,16 @@ router.get("/:id/requests", (req, res) => {
   res.json(db.listVendorRequests(vendor.id));
 });
 
+// Every compliance follow-up task this vendor has ever had (open and
+// completed), each with its own comments -- surfaced in the Onboarding &
+// Compliance modal so the notes logged while following up live right next
+// to the case/document-check status they're about.
+router.get("/:id/compliance-tasks", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.listVendorComplianceTasks(vendor.id));
+});
+
 // addVendorRequest/updateVendorRequest/deleteVendorRequest each re-derive
 // the vendor's onboardingStage from the latest case of each required type
 // (see db.js) -- comparing before/after here lets a stage change that

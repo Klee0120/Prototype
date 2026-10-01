@@ -137,6 +137,31 @@ test("task engine: manual tasks, statuses, comments, and role scoping", async (t
     assert.equal(res.status, 403);
   });
 
+  await t.test("a technician cannot assign a task to someone else, even a different technician", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "T1002", body: { assignedTo: "T1003" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician CAN claim their own unclaimed tech-bucket task", async () => {
+    const roleQueued = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Clean the shop truck", assignedRole: "tech" } });
+    const res = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "T1001", body: { assignedTo: "T1001" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.assignedTo, "T1001");
+    assert.equal(res.body.assignedRole, "tech");
+  });
+
+  await t.test("a technician cannot use the self-claim carve-out to claim it for someone else", async () => {
+    const roleQueued = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Another unclaimed tech task", assignedRole: "tech" } });
+    const res = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "T1001", body: { assignedTo: "T1002" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician cannot claim a task that's already assigned to someone else", async () => {
+    const assignedAlready = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Already someone's", assignedTo: "T1002" } });
+    const res = await server.call("PATCH", `/api/tasks/${assignedAlready.body.id}/assign`, { userId: "T1001", body: { assignedTo: "T1001" } });
+    assert.equal(res.status, 403);
+  });
+
   await t.test("admin reassigns the task", async () => {
     const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "ADMIN", body: { assignedTo: "T1002" } });
     assert.equal(res.status, 200);
@@ -146,6 +171,19 @@ test("task engine: manual tasks, statuses, comments, and role scoping", async (t
   await t.test("assigning to an unknown employee is rejected", async () => {
     const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "ADMIN", body: { assignedTo: "NOBODY" } });
     assert.equal(res.status, 400);
+  });
+
+  await t.test("assigning a person to a role-queued task doesn't silently wipe its role", async () => {
+    const roleQueued = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Admin-bucket task", assignedRole: "admin" } });
+    const assigned = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "ADMIN", body: { assignedTo: "T1001" } });
+    assert.equal(assigned.body.assignedTo, "T1001");
+    assert.equal(assigned.body.assignedRole, "admin", "the role bucket must survive a plain {assignedTo} call");
+
+    // "Back to role queue" -- clearing the person must not also clear the
+    // role it would otherwise fall back into.
+    const cleared = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "ADMIN", body: { assignedTo: null } });
+    assert.equal(cleared.body.assignedTo, null);
+    assert.equal(cleared.body.assignedRole, "admin", "clearing the person must not also clear the role");
   });
 
   await t.test("a technician can't view the admin-only Unassigned queue", async () => {
@@ -1030,6 +1068,50 @@ test("tasks: user-defined recurring tasks", async (t) => {
     await server.call("GET", "/api/tasks", { userId: "ADMIN" });
     const res = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
     assert.equal(res.body.filter((t) => t.title === "Check the mail").length, 1);
+  });
+
+  let checkTheMailId;
+  await t.test("commenting on an open recurring task pushes its due date out, clearing overdue", async () => {
+    const list = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    const occurrence = list.body.find((t) => t.title === "Check the mail");
+    checkTheMailId = occurrence.id;
+    const dueBefore = new Date(occurrence.dueAt).getTime();
+
+    await server.call("POST", `/api/tasks/${checkTheMailId}/comments`, { userId: "ADMIN", body: { body: "Still chipping away at this." } });
+
+    const after = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    const dueAfter = new Date(after.body.dueAt).getTime();
+    assert.ok(dueAfter > dueBefore, "expected the comment to push the due date forward");
+    assert.ok(dueAfter >= Date.now() + 6 * 86400000, "expected roughly a week's push");
+  });
+
+  await t.test("re-reading the task list afterward doesn't undo the push (ensureRecurringTasks runs on every GET)", async () => {
+    const before = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    const after = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    assert.equal(after.body.dueAt, before.body.dueAt, "re-fetching the task list must not reset a comment-pushed due date back to the recurring spec's own computed value");
+  });
+
+  await t.test("a second comment never pulls an already-further-out due date back in", async () => {
+    const before = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    await server.call("POST", `/api/tasks/${checkTheMailId}/comments`, { userId: "ADMIN", body: { body: "Second note, same day." } });
+    const after = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    // A second same-day comment still computes "7 days from right now," a
+    // few milliseconds later than the first -- it's never going to be
+    // *less* than what's already there, which is the actual guarantee.
+    assert.ok(new Date(after.body.dueAt).getTime() >= new Date(before.body.dueAt).getTime(), "a second comment must never move the due date earlier");
+  });
+
+  await t.test("commenting on a plain (non-recurring) task never touches its due date", async () => {
+    const manual = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "One-time thing", dueAt: new Date().toISOString().slice(0, 10) },
+    });
+    const dueBefore = manual.body.dueAt;
+    await server.call("POST", `/api/tasks/${manual.body.id}/comments`, { userId: "ADMIN", body: { body: "Working on it." } });
+    const after = await server.call("GET", `/api/tasks/${manual.body.id}`, { userId: "ADMIN" });
+    assert.equal(after.body.dueAt, dueBefore, "a one-time task's real deadline must never move just because someone commented");
   });
 
   await t.test("completing today's occurrence doesn't get re-opened by the next fetch, same as other recurring tasks", async () => {

@@ -1945,6 +1945,94 @@ function refreshAllOpenWomLifecycles() {
   for (const code of codes) checkWomLifecycleAutoSteps(code);
 }
 
+function vendorComplianceTaskSourceKey(vendorId) {
+  return `VENDOR-${vendorId}-COMPLIANCE`;
+}
+
+// A vendor's COI/W-9/ACH upload itself (not the case-status tracking above
+// it) has passed its own expiration date -- a fact the vendor record
+// doesn't carry on its own, since expiration lives per-document on the
+// files table, not on the vendor row.
+function vendorHasExpiredComplianceDoc(vendorId) {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM files WHERE related_type = 'vendor' AND related_id = ? AND category IN ('coi', 'w9', 'ach')
+       AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 1`
+    )
+    .get(String(vendorId), new Date().toISOString().slice(0, 10));
+  return Boolean(row);
+}
+
+// Why a vendor currently needs a compliance follow-up -- shown on the task
+// itself so acting on it doesn't require a trip back to the vendor record
+// first to remember what was actually wrong.
+function vendorComplianceReasons(v, vendorId) {
+  const reasons = [];
+  if (!v.formChecksComplete) reasons.push("one or more document checks (COI/W-9/ACH) aren't confirmed yet");
+  if (v.formsStatus === "outdated") reasons.push("forms status is outdated");
+  if (v.w9InvoiceStale) reasons.push("the blank invoice on file is over 2 years old");
+  if (vendorHasExpiredComplianceDoc(vendorId)) reasons.push("a COI/W-9/ACH document on file has expired");
+  return reasons;
+}
+
+// Mirrors refreshWomLifecycleTask's own pattern: a task that tracks a live
+// condition rather than a one-off to-do. It reopens (default
+// reopenIfClosed) if someone marks it complete while the vendor is still
+// actually out of compliance -- deliberately, since "done" has to mean the
+// underlying gap is actually closed (a box checked, a current document
+// re-uploaded, forms status corrected), not just that someone said so. It
+// auto-completes the moment every one of those is true, same as a WOM
+// lifecycle task clearing itself once its own checklist is done. Snoozing
+// (generic to every task) is exactly how to say "I followed up, waiting on
+// the vendor" without it reading as abandoned or as falsely resolved.
+function refreshVendorComplianceTask(vendorId) {
+  const v = findVendor(vendorId);
+  if (!v) return;
+  const reasons = vendorComplianceReasons(v, vendorId);
+  const sourceKey = vendorComplianceTaskSourceKey(vendorId);
+  if (reasons.length > 0) {
+    upsertTaskBySourceKey(sourceKey, {
+      title: `Follow up with ${v.name} on compliance`,
+      description: `Needs attention: ${reasons.join("; ")}.`,
+      category: "vendor_compliance",
+      assignedRole: "financial",
+      priority: "normal",
+      relatedVendorId: vendorId,
+      source: "vendor_compliance",
+      sourceRecordId: String(vendorId),
+      workflowRule: "vendor_compliance",
+    });
+  } else {
+    completeTaskBySourceKey(sourceKey);
+  }
+}
+
+function refreshAllVendorComplianceTasks() {
+  for (const v of listVendors()) refreshVendorComplianceTask(v.id);
+}
+
+// Every compliance follow-up task ever generated for this vendor (open and
+// completed alike), newest first, each with its own comment log -- so
+// whatever got noted while following up (a call placed, a promised
+// re-send, why it was eventually marked resolved) lives right in the
+// vendor's own Onboarding & Compliance view instead of only being visible
+// by separately going to find the task on the board.
+function listVendorComplianceTasks(vendorId) {
+  const rows = db
+    .prepare("SELECT * FROM tasks WHERE category = 'vendor_compliance' AND related_vendor_id = ? ORDER BY id DESC")
+    .all(vendorId);
+  return rows.map((t) => ({
+    id: t.id,
+    title: t.title,
+    description: t.description,
+    status: t.status,
+    snoozedUntil: t.snoozed_until,
+    createdAt: t.created_at,
+    completedAt: t.completed_at,
+    comments: listTaskComments(t.id).map((c) => ({ id: c.id, authorName: c.author_name, body: c.body, createdAt: c.created_at })),
+  }));
+}
+
 // How many open WOM lifecycle tasks still haven't had "Send PSE to Toyota"
 // logged -- the at-a-glance count behind the Priorities board's own tile,
 // since "how many PSEs do I need to produce and send" is exactly the
@@ -2292,7 +2380,13 @@ function createTask(fields) {
 // that task's period, and completing it for the week/month shouldn't
 // un-complete itself on the next page view; it should just stay done
 // until the period rolls over to a new source key.
-function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true } = {}) {
+// preserveDueAtOnUpdate: for a recurring task, whose spec recomputes the
+// same due date fresh on every lazy regeneration -- without this, that
+// recompute would silently undo a comment-triggered push forward (see
+// pushRecurringTaskDueDate) the very next time anyone loads the task list,
+// since it happens on every GET. Only matters once the row already exists;
+// its first-ever creation still gets the freshly computed due date.
+function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true, preserveDueAtOnUpdate = false } = {}) {
   const existing = findTaskBySourceKey(sourceKey);
   if (!existing) return createTask({ ...fields, sourceKey });
   if (!reopenIfClosed && (existing.status === "completed" || existing.status === "cancelled")) return existing;
@@ -2313,7 +2407,7 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true } = {}
     fields.assignedRole !== undefined ? fields.assignedRole || null : existing.assigned_role,
     fields.category ?? existing.category,
     fields.priority ?? existing.priority,
-    fields.dueAt !== undefined ? fields.dueAt || null : existing.due_at,
+    preserveDueAtOnUpdate ? existing.due_at : fields.dueAt !== undefined ? fields.dueAt || null : existing.due_at,
     fields.relatedWomCode !== undefined ? fields.relatedWomCode || null : existing.related_wom_code,
     fields.relatedVendorId !== undefined ? fields.relatedVendorId || null : existing.related_vendor_id,
     fields.relatedLocationCode !== undefined ? fields.relatedLocationCode || null : existing.related_location_code,
@@ -2429,16 +2523,30 @@ function updateTask(id, fields) {
   return findTask(id);
 }
 
-function assignTask(id, { assignedTo, assignedRole }) {
-  if (!findTask(id)) return null;
+// assignedTo/assignedRole are independently optional -- passing just one
+// (e.g. the common "assign this to a person" case) must never silently wipe
+// the other back to null. Only a field actually present in the call
+// (including explicitly null, to clear it) overwrites; an omitted one keeps
+// its current value.
+function assignTask(id, { assignedTo, assignedRole } = {}) {
+  const existing = findTask(id);
+  if (!existing) return null;
   db.prepare("UPDATE tasks SET assigned_to = ?, assigned_role = ?, assigned_at = ? WHERE id = ?").run(
-    assignedTo || null,
-    assignedRole || null,
+    assignedTo !== undefined ? assignedTo || null : existing.assigned_to,
+    assignedRole !== undefined ? assignedRole || null : existing.assigned_role,
     new Date().toISOString(),
     id
   );
   return findTask(id);
 }
+
+// A flat week rather than deriving each recurring task's own exact cadence
+// (weekly/biweekly/monthly, which varies by spec and isn't always stored
+// anywhere a comment handler could easily look up) -- simple, and matches
+// "chipping away at an ongoing project" well enough: multiple comments
+// across a month keep a monthly task's due date pushed out the same as one
+// comment would for a weekly one.
+const RECURRING_TASK_COMMENT_PUSH_DAYS = 7;
 
 function addTaskComment(taskId, authorId, authorName, body) {
   db.prepare("INSERT INTO task_comments (task_id, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)").run(
@@ -2448,7 +2556,26 @@ function addTaskComment(taskId, authorId, authorName, body) {
     body,
     new Date().toISOString()
   );
+  pushRecurringTaskDueDate(taskId);
   return listTaskComments(taskId);
+}
+
+// Logging progress on an ongoing recurring task (vendor compliance
+// cleanup, timecard review, etc.) is itself evidence it's being worked --
+// a comment pushes its due date out, clearing "overdue" instead of it
+// reading overdue indefinitely just because the date it happened to
+// generate with has passed while work is still actively going into it.
+// Only ever pushes forward (never pulls a due date that's further out back
+// in), and only while the task is still open -- a completed/cancelled
+// task's due date is just history, not a live countdown.
+function pushRecurringTaskDueDate(taskId) {
+  const task = findTask(taskId);
+  if (!task || task.category !== "recurring" || !OPEN_TASK_STATUSES.includes(task.status)) return;
+  const pushedTo = new Date(Date.now() + RECURRING_TASK_COMMENT_PUSH_DAYS * 86400000).toISOString();
+  const currentDueMs = task.due_at ? new Date(task.due_at).getTime() : 0;
+  if (new Date(pushedTo).getTime() > currentDueMs) {
+    db.prepare("UPDATE tasks SET due_at = ? WHERE id = ?").run(pushedTo, taskId);
+  }
 }
 
 function listTaskComments(taskId) {
@@ -2662,7 +2789,7 @@ function ensureRecurringTasks() {
         source: "recurring",
         workflowRule: spec.key.replace(/[\d-]+$/, "").replace(/-$/, ""),
       },
-      { reopenIfClosed: false }
+      { reopenIfClosed: false, preserveDueAtOnUpdate: true }
     );
   }
 
@@ -2688,7 +2815,7 @@ function ensureRecurringTasks() {
         source: "recurring",
         workflowRule: `RECURRING-USER-${template.id}`,
       },
-      { reopenIfClosed: false }
+      { reopenIfClosed: false, preserveDueAtOnUpdate: true }
     );
   }
 }
@@ -3726,6 +3853,9 @@ module.exports = {
   getWomLifecycleSteps,
   checkWomLifecycleAutoSteps,
   refreshAllOpenWomLifecycles,
+  refreshVendorComplianceTask,
+  refreshAllVendorComplianceTasks,
+  listVendorComplianceTasks,
   countWomLifecyclePseNotSent,
   cleanupLegacyPseWorkflowTasks,
   completeWomLifecycleStep,

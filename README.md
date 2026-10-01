@@ -413,63 +413,56 @@ Demo logins:
   on its own to move the vendor to `in_progress` and onto the board below.
   A vendor added fresh through **+ Add vendor** still skips this step
   entirely and starts `in_progress` immediately, same as before.
-- **Vendor edit modal is a profile, not just a form** -- mirroring how
-  ServiceEdge itself organizes a vendor (its own screenshot: Cases,
-  Payment Details, and Files each their own related list off one company
-  record). Opening a vendor shows, in order:
-  - **Document Verification** (COI/W-9/ACH document checks) sits at the
-    very top of the modal, before Cost history, Onboarding cases, and even
-    Documents -- it's the first thing checked on a vendor record, not
-    something to scroll past to find. See below for details on this
-    section.
-  - **Onboarding cases** -- the same welcome-email line + 3 case pills the
-    Onboarding board shows (shared rendering, `renderCasePillHtml`/
-    `wireCasePill`), so logging or reviewing this vendor's case status
-    never requires leaving the vendor's own record to go find it on a
-    separate tab. A **Full case history** toggle underneath shows every
-    entry ever logged, including its note if any.
-  - **Documents** -- an upload/view/delete panel (`relatedType: "vendor"`,
-    reusing the same generic `renderAttachments` component as every other
-    file panel in the app) grouped into COI / W-9 / ACH / VPO Waiver /
-    Other Vendor Document sections, so the actual PDFs a vendor's COI/W-9/
-    ACH document checks (below) are verified against now have somewhere to
-    actually live -- this panel existed as a supported `relatedType` in
-    `server/routes/files.js` for a while with no screen ever calling it.
-    **Assign a pending task document** sits right below it: a COI (or
-    other document) that arrived before it was clear which vendor it
-    belonged to gets attached to a task instead (see the task engine's own
-    Documents panel below) rather than blocked on knowing the vendor first
-    -- once it's known, this control (populated from a new admin-only
-    `GET /api/files/task-documents`, every document still parked on any
-    task) lets it be assigned straight onto this vendor's record via
-    `PATCH /api/files/:id/relocate`, which re-files the existing upload (no
-    re-uploading, no copy -- same bytes on disk, just a different
-    `relatedType`/`relatedId`/`category`) and removes it from the task.
-  Both sections load into their own placeholder `<div>`s *outside* the
-  `<form class="vendor-edit-form">` that carries the actual save/submit,
-  specifically because nesting the Documents panel's own `<form>` inside
-  it silently breaks: an HTML parser drops a `<form>` nested inside
-  another `<form>` when set via `innerHTML`, which strips the upload
-  button's submit handler along with it.
-  - **Document Verification is its own form, at the top of the modal** --
-    the COI/W-9/ACH document-checklist section (does the uploaded document
-    itself meet requirements) used to sit at the bottom of the general
-    vendor-info form, so it read as unrelated to the Documents panel it
-    actually verifies even though both are onboarding-document work, and it
-    took the most scrolling to reach despite being the thing checked first.
-    It's `<form class="vendor-doc-checks-form">`, its own section at the
-    very top of the modal (above Cost history/Onboarding cases/Documents)
-    with its own "Save document checks" button, entirely separate from
-    `<form class="vendor-edit-form">` (Vendor Info: name, statuses, contact
-    fields) further down. Both PATCH through `vendorFullPayload(v,
-    overrides)` so saving one never blanks fields only the other edits, and
-    `v` (the closure variable both handlers read) is updated from each
-    save's response so a second save in the same modal session carries the
-    first one's changes forward instead of the stale snapshot from when the
-    modal opened. The Services-driven COI-limit autofill still writes
-    across form boundaries (`docChecksForm[...]` from the Vendor Info
-    form's own `change` listener) since the two fields it connects don't
-    share a form, and now also don't sit near each other in the modal.
+- **Vendor edit modal is the general profile; onboarding and compliance
+  live in their own separate modal.** These used to be two intermixed
+  concerns on the same scrolling page (case status, document-compliance
+  checks, and plain vendor info all stacked together) -- now split cleanly:
+  - **Vendor edit modal** (`openVendorEditModal`) keeps Cost history,
+    Documents (upload/view/delete, `relatedType: "vendor"`, grouped into
+    COI / W-9 / ACH / VPO Waiver / Other Vendor Document sections, with
+    `trackExpiration: true` so each upload can carry a Type + Expiration
+    date and shows an Expires/Expired badge -- renewing an expired one is
+    the same upload-a-new-one/delete-the-old-one flow as a technician's own
+    Forms on File, not an in-place edit), **Assign a pending task document**
+    (a COI that arrived before it was clear which vendor it belonged to,
+    relocated here via `PATCH /api/files/:id/relocate` -- same bytes on
+    disk, no re-upload), and Vendor Info (name, statuses, contact fields).
+    A single **"Onboarding & Compliance →"** button is the only link to the
+    rest.
+  - **Onboarding & Compliance modal** (`openVendorOnboardingComplianceModal`)
+    is reachable from that button for any vendor, any time, regardless of
+    where it stands on the Onboarding board -- not only the flagged ones.
+    It holds **Onboarding cases** (the same welcome-email line + 3 case
+    pills the Onboarding board shows, shared rendering with
+    `renderCasePillHtml`/`wireCasePill`, plus a **Full case history**
+    toggle), **Document Compliance** (the COI/W-9/ACH checklist --
+    `renderVendorDocChecksForm`/`wireVendorDocChecksForm`, PATCHing through
+    `vendorFullPayload` same as before), and **Compliance Follow-up** (the
+    automated task history -- see below). The Onboarding board's own
+    **Compliance Needed** rows open straight into this modal too (its
+    button is now "Review Compliance", not "Open vendor").
+  - **Compliance follow-up tasks generate automatically.**
+    `refreshVendorComplianceTask` (called from `catchUpTasks`, same lazy
+    pattern as WOM lifecycle tasks) checks four things per vendor -- an
+    unconfirmed COI/W-9/ACH document check, `formsStatus === "outdated"`,
+    a W-9 invoice over 2 years old, or an expired COI/W-9/ACH upload
+    (`vendorHasExpiredComplianceDoc`, checking the files table's own
+    `expires_at`, since that's not a fact the vendor row carries) -- and
+    keeps one task (category `vendor_compliance`, `workflowRule:
+    "vendor_compliance"`, a stable `VENDOR-<id>-COMPLIANCE` source key)
+    open for as long as any of them is true, auto-completing it the moment
+    none are. It's a completely ordinary task otherwise: snoozable, has
+    comments, shows up in Priorities like anything else -- the only special
+    behavior is that completing it while a gap still genuinely exists just
+    reopens it on the next check, since "done" has to mean the gap is
+    actually closed (a box checked, a document re-uploaded, forms status
+    corrected), not that someone said so. `GET
+    /api/admin/vendors/:id/compliance-tasks` (`listVendorComplianceTasks`)
+    returns every such task ever generated for that vendor, open and
+    completed, each with its full comment log -- that's what the
+    Compliance Follow-up section in the Onboarding & Compliance modal
+    renders, so whatever got noted while following up stays visible right
+    next to the case/document status it's about.
 - **Schedule tab**: a month calendar of **WOM project work only** — no E&F
   time and no time off, since the point is seeing what's already scheduled
   project-wise, not a general timesheet view (Tech Allocation and Weekly
@@ -889,12 +882,80 @@ Demo logins:
       stand. Covered by a regression test modeling exactly this sequence
       (claim, snooze with a note, then a sync-equivalent hand-edit) in
       `tests/tasks.test.js`.
+  - **Claiming and assigning a task.** "Unclaimed -- Role" used to be a dead
+    end: the legend explained what it meant, but changing it meant checking
+    a box and going through the bulk-select toolbar even for a single task
+    -- nobody's actually going to do that, so tasks just stayed Unclaimed
+    forever. Two fixes, both through `PATCH /api/tasks/:id/assign`
+    (`assignTask` in `server/data/db.js`):
+    - A **Claim** button sits right on the task card's summary line
+      whenever it's actually claimable for the person looking at it -- any
+      admin on an admin-bucket (`admin`/`financial`/`reviewer`) task (an
+      admin can already act on all of them regardless of role, same as
+      `canSeeTask`), a technician only on their own `tech`-bucket one. One
+      click, no bulk-select detour.
+    - The task detail panel also has a full **Assign** control (a dropdown
+      of every technician/admin, plus a **Back to role queue** button once
+      someone's assigned) for assigning to *anyone*, not just claiming for
+      yourself -- admin-only, same as the bulk toolbar it supplements
+      rather than replaces.
+    - `assignTask` itself only ever overwrites a field actually present in
+      the call (including explicitly `null`, to clear it) -- a plain
+      `{assignedTo}` call used to silently wipe `assignedRole` back to
+      `null` too (since the old code always wrote both), which meant
+      **Back to role queue** would have cleared the role it's supposed to
+      fall back into, and a plain reassignment (including the existing
+      bulk-assign toolbar) would have silently detached a task from its
+      role bucket every time. Fixed at the `assignTask` level so both
+      callers get it right.
+    - The server route itself stays admin-only for reassigning *between*
+      people, with one narrow carve-out: a non-admin claiming a task
+      already unclaimed with their own role (`assignedTo` is their own id,
+      `assignedRole` isn't being touched, and the task isn't already
+      assigned to someone else) is allowed -- claiming your own unclaimed
+      work isn't really a privileged action, it's just a faster version of
+      what `canSeeTask` already lets a tech act on.
+  - **A comment on a recurring task pushes its due date out, clearing
+    overdue.** An ongoing responsibility worked in pieces over time (vendor
+    compliance cleanup, say) used to read "N days overdue" indefinitely
+    once its generated due date passed, even while someone was actively
+    chipping away at it -- there was no way to tell the board "still being
+    worked" short of finishing it outright. `addTaskComment` now calls
+    `pushRecurringTaskDueDate` after logging the comment: for an open
+    `category: "recurring"` task, it pushes `due_at` out to (now + 7 days)
+    if that's later than what's already there -- never backward, never on
+    a closed task, and never on anything outside the `recurring` category
+    (a real one-time deadline must only ever mean "late," not something a
+    comment can quietly move). The push is a flat week rather than each
+    task's own exact cadence (weekly/biweekly/monthly, which isn't
+    uniformly stored anywhere a comment handler could cheaply look up) --
+    simple, and it still works fine for a monthly task: multiple comments
+    across the month just keep pushing it out the same way one comment
+    would for a weekly one.
+    - **This fought directly against the lazy regeneration every recurring
+      task already uses.** `ensureRecurringTasks` recomputes (and
+      previously re-wrote) the same spec's due date fresh on every
+      `GET /api/tasks` call -- without a fix, that recompute would silently
+      undo a comment's push the very next time anyone loaded the task list.
+      `upsertTaskBySourceKey` now takes a `preserveDueAtOnUpdate` option
+      (used by both the hardcoded specs and user-defined recurring
+      templates in `ensureRecurringTasks`): once a recurring occurrence
+      already exists, its `due_at` is left alone on every subsequent
+      upsert, no matter what the spec would otherwise recompute -- only its
+      very first creation still gets the freshly computed date.
+    - Note what this does *not* change: the handful of hardcoded monthly/
+      weekly specs (Vendor compliance cleanup, Final timecard review, etc.)
+      still generate a brand-new task row under a new, period-keyed source
+      key once the period rolls over, regardless of whether the prior
+      occurrence was ever touched or completed -- that's a separate,
+      pre-existing structural question (whether a "standing" recurring task
+      should instead stay as one single row forever) this change doesn't
+      attempt to solve.
   - **Where does a lifecycle task actually go, and what happens once it's
     fully checked off?** It never just disappears. The same one task
     (`lifecycleTaskSourceKey`, upserted by `refreshWomLifecycleTask` after
     every relevant change -- a sync, a manual step, or a lazy catch-up on
-    every task-list read) shows up in both places at once: the dedicated
-    Financials &rarr; PSE Tasks list and the general Priorities &rarr; My
+    every task-list read) shows up in the general Priorities &rarr; My
     Work / Unassigned board (as a `category: "wom_workflow"` task). Once
     every step is checked, the task completes for good -- `reopenIfClosed`
     is off, so it never reopens even if a later sync touches that WOM

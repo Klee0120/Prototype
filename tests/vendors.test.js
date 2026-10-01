@@ -440,3 +440,98 @@ test("vendors: a case's 'as of' date is a record-keeping field, separate from wh
     assert.equal(res.body.summaries[vendorId].coi.asOf, "2026-09-20");
   });
 });
+
+test("vendors: compliance follow-up task is generated/closed automatically", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Arbon Equipment" } });
+  const vendorId = create.body.id;
+
+  async function findComplianceTask() {
+    const tasks = await server.call("GET", "/api/tasks?view=team&role=financial&category=vendor_compliance", { userId: "ADMIN" });
+    return tasks.body.find((t2) => t2.relatedVendorId === vendorId);
+  }
+
+  await t.test("a freshly created vendor (incomplete doc checks by default) gets a compliance follow-up task", async () => {
+    // Reading the task board is what catches this up, same as WOM lifecycle tasks.
+    await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = await findComplianceTask();
+    assert.ok(task, "expected a vendor_compliance task for this new, not-yet-compliant vendor");
+    assert.equal(task.priority, "normal");
+    assert.ok(task.description.includes("document checks"));
+  });
+
+  await t.test("it can be snoozed like any other task", async () => {
+    const task = await findComplianceTask();
+    const tomorrow = new Date(Date.now() + 86400000).toISOString();
+    const res = await server.call("POST", `/api/tasks/${task.id}/reschedule`, {
+      userId: "ADMIN",
+      body: { snoozedUntil: tomorrow, note: "Waiting on vendor to send updated COI." },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.snoozedUntil);
+    // Un-snooze again so later assertions in this test aren't chasing a
+    // task that's filtered out of the default views by its own snooze.
+    await server.call("POST", `/api/tasks/${task.id}/unsnooze`, { userId: "ADMIN" });
+  });
+
+  await t.test("fixing every compliance gap auto-closes the task", async () => {
+    const allChecked = {
+      coiIsAcord25_2016_03: true,
+      coiMatchesW9: true,
+      w9SignedDated: true,
+      w9CorrectVersion: true,
+      w9HasPhone: true,
+      w9HasRemitToAddress: true,
+      w9HasName: true,
+      achBankLetterhead: true,
+      achHasW9Name: true,
+      achHasW9Address: true,
+    };
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Arbon Equipment", formChecks: allChecked, formsStatus: "current" },
+    });
+    await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const taskList = await server.call("GET", "/api/tasks?view=team&category=vendor_compliance&status=completed", { userId: "ADMIN" });
+    const task = taskList.body.find((t2) => t2.relatedVendorId === vendorId);
+    assert.ok(task, "expected the completed compliance task to show up under status=completed");
+    assert.equal(task.status, "completed", "expected the task to auto-complete once every gap is closed");
+  });
+
+  await t.test("an expired COI upload alone (even with checks/forms otherwise fine) reopens it", async () => {
+    await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(vendorId), category: "coi", expiresAt: "2020-01-01" },
+      fileName: "coi.pdf",
+    });
+    await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const taskList = await server.call("GET", "/api/tasks?view=team&category=vendor_compliance", { userId: "ADMIN" });
+    const task = taskList.body.find((t2) => t2.relatedVendorId === vendorId);
+    assert.equal(task.status, "open", "expected an expired COI document to reopen the compliance task");
+    assert.ok(task.description.includes("expired"));
+  });
+
+  await t.test("a comment logged on it is visible from the vendor's own compliance-tasks endpoint", async () => {
+    const taskList = await server.call("GET", "/api/tasks?view=team&category=vendor_compliance", { userId: "ADMIN" });
+    const task = taskList.body.find((t2) => t2.relatedVendorId === vendorId);
+    await server.call("POST", `/api/tasks/${task.id}/comments`, { userId: "ADMIN", body: { body: "Called vendor, new COI coming Friday." } });
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/compliance-tasks`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.length >= 1);
+    const found = res.body.find((t2) => t2.id === task.id);
+    assert.ok(found.comments.some((c) => c.body === "Called vendor, new COI coming Friday."));
+  });
+
+  await t.test("a technician cannot see a vendor's compliance tasks", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/compliance-tasks`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("compliance tasks for an unknown vendor 404", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/999999/compliance-tasks", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+});
