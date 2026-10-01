@@ -46,6 +46,23 @@ const VIEW_LABELS = {
 const ADMIN_VIEWS = ["my", "team", "unassigned", "overdue", "waiting", "exceptions", "recurring", "upcoming", "completed"];
 const TECH_VIEWS = ["my", "team", "waiting", "overdue", "completed"];
 
+// Plain-English explanations for the "What do these mean?" legend -- the
+// tab/tile labels above are necessarily short, and what each one actually
+// includes (especially the less obvious ones like Unassigned vs. My Work,
+// or what moves a task into Upcoming) isn't always obvious from the name
+// alone.
+const VIEW_EXPLANATIONS = {
+  my: "Tasks assigned to you by name, plus any unclaimed task for your role.",
+  team: "Every open task for your role, whoever it's assigned to -- the whole team's queue, not just yours.",
+  unassigned: "Open tasks nobody has claimed yet, across every role.",
+  overdue: "Open tasks past their due date.",
+  waiting: "Tasks marked “Waiting on someone else” -- not stuck on you, but not done either.",
+  exceptions: "WOMs with a Toyota paperwork gap -- see the Colors & flags section below for the orange/red split.",
+  recurring: "Scheduled tasks that come back on their own on a daily/weekly/monthly cadence.",
+  upcoming: "Tasks rescheduled (snoozed) forward with a status note -- hidden from every other list until the date you picked arrives. Admin only.",
+  completed: "Tasks that are done or cancelled.",
+};
+
 const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent", emergency: "Emergency" };
 const STATUS_LABELS = { open: "Open", in_progress: "In Progress", waiting: "Waiting", completed: "Completed", cancelled: "Cancelled" };
 const CATEGORY_LABELS = {
@@ -390,6 +407,7 @@ export async function renderTaskBoard(container) {
             ? `<button class="btn btn-link task-filters-toggle" type="button">${filtersOpen ? "Hide filters" : "Filters"}</button>`
             : ""
         }
+        <button class="btn btn-link task-legend-btn" type="button">What do these mean?</button>
         <label class="task-group-by-label">Group by
           <select class="task-group-by">
             ${Object.entries(GROUP_BY_LABELS).map(([k, l]) => `<option value="${k}" ${k === groupBy ? "selected" : ""}>${l}</option>`).join("")}
@@ -408,6 +426,7 @@ export async function renderTaskBoard(container) {
         e.currentTarget.textContent = filtersOpen ? "Hide filters" : "Filters";
       });
     }
+    container.querySelector(".task-legend-btn").addEventListener("click", openLegendModal);
 
     container.querySelectorAll(".task-tile[data-view]").forEach((el) => {
       el.addEventListener("click", () => {
@@ -438,6 +457,45 @@ export async function renderTaskBoard(container) {
         <div class="task-tile-label">${label}</div>
       </div>
     `;
+  }
+
+  // A one-stop explainer for the two things people kept asking about --
+  // what each tab/list actually includes, and what each badge color/the
+  // flag means -- rather than that living only in tribal knowledge or a
+  // README nobody using the app day to day would think to open.
+  function openLegendModal() {
+    const views = isAdmin ? ADMIN_VIEWS : TECH_VIEWS;
+    openModal({
+      title: "What do these mean?",
+      bodyHtml: `
+        <h4 class="legend-heading">Lists</h4>
+        <dl class="legend-list">
+          ${views.map((v) => `<dt>${escapeHtml(VIEW_LABELS[v])}</dt><dd>${escapeHtml(VIEW_EXPLANATIONS[v])}</dd>`).join("")}
+        </dl>
+        <h4 class="legend-heading">Colors &amp; flags</h4>
+        <dl class="legend-list">
+          <dt><span class="badge badge-draft">Low / Normal</span></dt>
+          <dd>Routine -- nothing time-sensitive about it.</dd>
+          <dt><span class="badge badge-rejected">High / Urgent / Emergency</span></dt>
+          <dd>Needs attention soon. Emergency also tints the whole row red -- a manual, deliberate "drop everything" call, not something auto-computed.</dd>
+          <dt><span class="task-legend-swatch task-legend-swatch-warn"></span> Orange row &amp; badge</dt>
+          <dd>"Needs Toyota PO" -- a cost has been applied but there's no Maximo/PO # on file yet. A paperwork-catch-up problem, not (yet) a money problem.</dd>
+          <dt><span class="task-legend-swatch task-legend-swatch-danger"></span> Red row &amp; badge, plus 🚩</dt>
+          <dd>"Needs Toyota PO change order" -- the applied cost actually came in higher than what Toyota approved. Toyota has to sign off on the difference, one notch more urgent than a plain missing PO. The 🚩 flag is reserved for exactly this case, so it means something rather than sitting on every exception.</dd>
+          <dt><span class="badge badge-approved">Completed</span></dt>
+          <dd>Done (or cancelled) -- shown in the Completed list only.</dd>
+        </dl>
+        <h4 class="legend-heading">Who it's for</h4>
+        <dl class="legend-list">
+          <dt>A person's name</dt>
+          <dd>Assigned to that specific person -- it's theirs to act on.</dd>
+          <dt>Unclaimed -- Admin / RFM / Tech</dt>
+          <dd>Not assigned to anyone by name yet, but it belongs to that role's shared queue -- anyone with that role can open it and act on it. Shows up in that role's My Work and in everyone's Team Work.</dd>
+          <dt>Unassigned</dt>
+          <dd>No person and no role yet -- nobody's queue includes it automatically. Admin-only list for catching one of these before it falls through the cracks.</dd>
+        </dl>
+      `,
+    });
   }
 
   async function renderFilters(host) {

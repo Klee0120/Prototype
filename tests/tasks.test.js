@@ -1246,6 +1246,59 @@ test("tasks: reschedule/snooze a task into the Upcoming tab", async (t) => {
     assert.equal(snoozed.priority, "high", "snoozing must not change the underlying priority computation");
     assert.equal(snoozed.isException, true, "snoozing must not change the underlying exception computation");
   });
+
+  // Directly answers "does a WOM update erase my snooze/claim/notes" -- the
+  // lifecycle task's computed fields (title/priority/role/exception) are
+  // meant to re-derive live off the WOM's current data on every touch
+  // (a sync, a hand-edit, even just loading the task list), but visibility
+  // (snoozed_until), who claimed it, its open/waiting status, and its
+  // reschedule-note history are a human's own record of where things stand
+  // and must survive that untouched -- upsertTaskBySourceKey (db.js) simply
+  // never includes those columns in its UPDATE.
+  await t.test("a later WOM update (sync/hand-edit) re-derives title/priority but never touches an existing snooze, claim, or note history", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "SNOOZE-WOM-2", description: "Vendor-only job 2" } });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-2/details", {
+      userId: "ADMIN",
+      body: { description: "Vendor-only job 2", locationCode: "PRINCETON" },
+    });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-2/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+
+    const before = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = before.body.find((t2) => t2.sourceKey === "WOM-SNOOZE-WOM-2-LIFECYCLE");
+    assert.ok(task.title.includes("Needs Toyota PO") && !task.title.includes("change order"));
+
+    // Claim it, then snooze it with a note -- both things a human did on
+    // purpose and would be upset to lose.
+    await server.call("PATCH", `/api/tasks/${task.id}/assign`, { userId: "ADMIN", body: { assignedTo: "T1001" } });
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${task.id}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "$500 applied, waiting on Toyota PO confirmation.", snoozedUntil: future },
+    });
+
+    // Now something changes on the WOM itself -- same thing a Smartsheet
+    // sync does when it re-syncs a WOM's numbers (PATCH .../pricing and
+    // .../details both funnel through checkWomLifecycleAutoSteps the same
+    // way a sync row does).
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-2/details", {
+      userId: "ADMIN",
+      body: { description: "Vendor-only job 2, updated scope", locationCode: "PRINCETON", maximoNumber: "PO-99999" },
+    });
+
+    const after = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    const updated = after.body.find((t2) => t2.id === task.id);
+    assert.ok(updated, "the task must still be snoozed/visible in Upcoming -- the sync must not have cleared the snooze");
+    assert.ok(updated.snoozedUntil, "snoozedUntil itself must survive untouched");
+    assert.equal(updated.assignedTo, "T1001", "the claim must survive untouched");
+    assert.ok(
+      !updated.title.includes("Needs Toyota PO"),
+      "the title SHOULD re-derive now that a real PO landed -- that's intentional live recomputation, not data loss"
+    );
+
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 1, "the reschedule note history must survive untouched");
+    assert.equal(detail.body.rescheduleNotes[0].note, "$500 applied, waiting on Toyota PO confirmation.");
+  });
 });
 
 test("tasks: a WOM lifecycle task can't be force-completed or force-cancelled through the generic status route", async (t) => {

@@ -1010,6 +1010,48 @@ h1, h2, h3, h4 {
   margin-top: 4px;
 }
 
+.legend-heading {
+  margin: 16px 0 6px;
+  font-size: 13px;
+}
+.legend-heading:first-child {
+  margin-top: 0;
+}
+.legend-list {
+  margin: 0;
+}
+.legend-list dt {
+  font-weight: 600;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend-list dt:first-child {
+  margin-top: 0;
+}
+.legend-list dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.task-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border-left: 3px solid;
+  vertical-align: middle;
+}
+.task-legend-swatch-warn {
+  background: var(--warn-bg);
+  border-left-color: var(--warn);
+}
+.task-legend-swatch-danger {
+  background: var(--danger-bg);
+  border-left-color: var(--danger);
+}
+
 @media (max-width: 640px) {
   .modal-box {
     padding: 16px;

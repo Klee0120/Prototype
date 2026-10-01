@@ -754,6 +754,17 @@ Demo logins:
       many PSEs do I need to produce and send" and "how many of these need
       chasing" are both a glance at the top of the board, not something to
       infer from a single "High Priority: N" total.
+    - **"What do these mean?" legend** (`openLegendModal` in `tasks.js`,
+      next to Filters) -- a plain-English key for exactly the two things
+      that aren't obvious from a short tab/badge label alone: what each
+      list (My Work/Team Work/Unassigned/Overdue/Waiting/Needs Change
+      Order/TOY PO/Recurring/Upcoming/Completed) actually includes, and
+      what each badge color and the 🚩 flag mean (reusing this same
+      red/orange split explanation). A third section spells out the
+      "Unclaimed -- Admin/RFM/Tech" vs. plain "Unassigned" vs. a named
+      person distinction on a task's assignee line, since the two
+      unassigned-looking states mean very different things (one's in a
+      role's shared queue already; the other is nobody's problem yet).
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from
@@ -813,6 +824,22 @@ Demo logins:
       now" button for pulling it into every other view immediately, e.g.
       to log a correction or act on it early once the missing paperwork
       actually shows up.
+    - **A later Smartsheet sync (or any hand-edit) never erases a snooze,
+      a claim, or the status-note history.** `upsertTaskBySourceKey`
+      (`server/data/db.js`, what every sync and every WOM hand-edit
+      ultimately runs through) only ever writes the computed fields --
+      title, priority, assignedRole, isException/isChangeOrder, description
+      -- its `UPDATE` statement doesn't include `snoozed_until` or
+      `assigned_to` at all, so whatever a sync re-derives from the WOM's
+      current numbers, a task that's been claimed by name or snoozed
+      forward stays exactly that way; `task_reschedules` is a wholly
+      separate table a sync never touches. What a sync genuinely *should*
+      change -- the title/color flipping once a real PO lands, say -- still
+      happens, since that's the point of recomputing live; it just never
+      costs you the parts that are a person's own record of where things
+      stand. Covered by a regression test modeling exactly this sequence
+      (claim, snooze with a note, then a sync-equivalent hand-edit) in
+      `tests/tasks.test.js`.
   - **Where does a lifecycle task actually go, and what happens once it's
     fully checked off?** It never just disappears. The same one task
     (`lifecycleTaskSourceKey`, upserted by `refreshWomLifecycleTask` after
