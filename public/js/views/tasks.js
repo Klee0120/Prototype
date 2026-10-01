@@ -404,15 +404,15 @@ export async function renderTaskBoard(container) {
         <button class="btn btn-secondary task-new-btn" type="button">+ New Task</button>
         ${
           isAdmin
-            ? `<button class="btn btn-link task-filters-toggle" type="button">${filtersOpen ? "Hide filters" : "Filters"}</button>`
+            ? `<button class="btn btn-secondary task-filters-toggle" type="button">${filtersOpen ? "Hide filters" : "Filters"}</button>`
             : ""
         }
-        <button class="btn btn-link task-legend-btn" type="button">What do these mean?</button>
         <label class="task-group-by-label">Group by
           <select class="task-group-by">
             ${Object.entries(GROUP_BY_LABELS).map(([k, l]) => `<option value="${k}" ${k === groupBy ? "selected" : ""}>${l}</option>`).join("")}
           </select>
         </label>
+        <button class="btn btn-link task-legend-btn" type="button">What do these mean?</button>
       </div>
       ${isAdmin ? `<div id="task-filters" class="${filtersOpen ? "" : "task-filters-collapsed"}"></div>` : ""}
       <div class="task-bulk-toolbar" id="task-bulk-toolbar"></div>

@@ -1014,20 +1014,26 @@ test("tasks: user-defined recurring tasks", async (t) => {
     assert.equal(res.body.todayTask, null);
   });
 
-  await t.test("the generated occurrence shows up on the unassigned admin-role board", async () => {
-    const res = await server.call("GET", "/api/tasks?view=unassigned&role=admin", { userId: "ADMIN" });
+  await t.test("the generated occurrence shows up on the admin-role board (Unclaimed -- Admin, not Unassigned)", async () => {
+    // Carries a role (admin), just no specific person -- that's Unclaimed,
+    // a different state from genuinely Unassigned (neither a person nor a
+    // role), which is covered separately below.
+    const res = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
     assert.ok(res.body.some((t) => t.title === "Check the mail"));
+
+    const unassigned = await server.call("GET", "/api/tasks?view=unassigned", { userId: "ADMIN" });
+    assert.ok(!unassigned.body.some((t) => t.title === "Check the mail"), "a role-queued task must not also show up as genuinely Unassigned");
   });
 
   await t.test("re-fetching the task list doesn't duplicate today's occurrence", async () => {
     await server.call("GET", "/api/tasks", { userId: "ADMIN" });
     await server.call("GET", "/api/tasks", { userId: "ADMIN" });
-    const res = await server.call("GET", "/api/tasks?view=unassigned&role=admin", { userId: "ADMIN" });
+    const res = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
     assert.equal(res.body.filter((t) => t.title === "Check the mail").length, 1);
   });
 
   await t.test("completing today's occurrence doesn't get re-opened by the next fetch, same as other recurring tasks", async () => {
-    const list = await server.call("GET", "/api/tasks?view=unassigned&role=admin", { userId: "ADMIN" });
+    const list = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
     const occurrence = list.body.find((t) => t.title === "Check the mail");
     await server.call("PATCH", `/api/tasks/${occurrence.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
     await server.call("GET", "/api/tasks", { userId: "ADMIN" });

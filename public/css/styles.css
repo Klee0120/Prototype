@@ -940,9 +940,18 @@ h1, h2, h3, h4 {
 
 .review-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   margin-top: 10px;
   flex-wrap: wrap;
+}
+
+/* Pushed to the far right of the action row, clearly separated from
+   New Task/Filters -- a help link, not something that should compete with
+   the actual actions for attention or crowd Filters out of being the
+   visible, clickable button it's meant to be. */
+.task-legend-btn {
+  margin-left: auto;
 }
 
 /* ---- Modal / dialog ---- */

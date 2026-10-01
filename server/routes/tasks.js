@@ -8,10 +8,23 @@ const router = express.Router();
 // come from -- mirrors db.pseRoleFor's reviewer/financial split, but a
 // viewer needs *all* roles they could ever be handed work under, not just
 // the one that gates PSE actions specifically.
+//
+// Deliberately does NOT broaden to include "reviewer" just because nobody's
+// been designated RFM yet -- that used to dump every unclaimed RFM task
+// into every admin's own My Work by default ("why do I see RFM tasks? If I
+// want to see RFM I'll go look at his list"). An admin's own queue is
+// "admin" + "financial" (both display as plain "Admin") regardless; the
+// *action* permission for an undesignated RFM step is a wholly separate,
+// already-permissive check (isReviewer/isFinancial in tasks.js/
+// adminReview.js, keyed directly off reviewerAdminId) that isn't touched
+// by this at all, so nobody loses the ability to act on an RFM step just
+// because it's not auto-added to their personal queue. Team Work (open to
+// every role for an admin, unscoped by rolesForViewer) and the role filter
+// dropdown are still exactly where to go looking for RFM's queue on
+// purpose, same as the quote above.
 function rolesForViewer(user) {
   if (user.role !== "admin") return ["tech"];
   const reviewerId = db.getPseReviewerId();
-  if (!reviewerId) return ["admin", "reviewer", "financial"];
   return user.id === reviewerId ? ["admin", "reviewer"] : ["admin", "financial"];
 }
 

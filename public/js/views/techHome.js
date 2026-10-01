@@ -4,16 +4,10 @@ import { renderTechWeek } from "./techWeek.js";
 import { renderAttachments } from "./attachments.js";
 import { renderSchedule } from "./schedule.js";
 import { renderTaskBoard } from "./tasks.js";
+import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
-
-// External Smartsheet intake forms -- a tech can't create a WOM or a C&W PO
-// (not the Toyota PO tracked on the WOM lifecycle checklist -- a separate,
-// internal C&W purchase order) directly in this app, so these just hand off
-// to the real request forms rather than duplicating them here.
-const WOM_REQUEST_FORM_URL = "https://app.smartsheet.com/b/form/93627e8bdd8740539499cf0141f1102c";
-const CW_PO_REQUEST_FORM_URL = "https://app.smartsheet.com/b/form/3794301abedd49c88adf271f96484776";
 
 function formatMoney(n) {
   if (n == null) return "—";

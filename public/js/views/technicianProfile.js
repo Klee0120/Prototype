@@ -132,10 +132,10 @@ export function renderTechniciansTab(content, openTo) {
       openAddModal(locations);
     });
     content.querySelector(".add-admin-toggle").addEventListener("click", () => {
-      openAddAdminModal({ makeRfm: false });
+      openAddAdminModal({ makeRfm: false, locations });
     });
     content.querySelector(".add-rfm-toggle").addEventListener("click", () => {
-      openAddAdminModal({ makeRfm: true });
+      openAddAdminModal({ makeRfm: true, locations });
     });
     content.querySelector(".terminate-technician-toggle").addEventListener("click", () => {
       openTerminateModal(techs);
@@ -416,7 +416,8 @@ export function renderTechniciansTab(content, openTo) {
   // one step (setPseReviewer already clears whoever held it before, so
   // this doubles as "transfer RFM to a brand-new account" too) -- no
   // separate trip to the admin accounts table required.
-  function openAddAdminModal({ makeRfm }) {
+  function openAddAdminModal({ makeRfm, locations }) {
+    const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
     const { body, close } = openModal({
       title: makeRfm ? "Add RFM" : "Add Admin",
       bodyHtml: `
@@ -425,6 +426,9 @@ export function renderTechniciansTab(content, openTo) {
             <input name="id" placeholder="ID (e.g. ADMIN2)" required />
             <input name="name" placeholder="Full name" required />
             <input name="pin" placeholder="PIN" required inputmode="numeric" />
+            <select name="homeLocationCode"><option value="">No location</option>${locationOptions}</select>
+            <input name="ukgId" placeholder="UKG ID" />
+            <label class="add-tech-date-field">Hire date<input name="hireDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" /></label>
           </div>
           ${
             makeRfm
@@ -439,19 +443,37 @@ export function renderTechniciansTab(content, openTo) {
       `,
     });
     const form = body.querySelector(".add-admin-modal-form");
+    wireDateMaskInput(form.hireDate);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = form.querySelector(".add-admin-modal-message");
+      if (form.hireDate.value.trim() && isoFromUs(form.hireDate.value) == null) {
+        msg.textContent = "Hire date must be a full MM/DD/YYYY date.";
+        return;
+      }
       try {
         const admin = await api.post("/api/admin/admins", {
           id: form.id.value.trim(),
           name: form.name.value.trim(),
           pin: form.pin.value.trim(),
         });
+        await api.patch(`/api/admin/admins/${encodeURIComponent(admin.id)}/basic-info`, {
+          homeLocationCode: form.homeLocationCode.value || null,
+          ukgId: form.ukgId.value.trim(),
+          hireDate: isoFromUs(form.hireDate.value),
+        });
         if (makeRfm) {
           await api.patch(`/api/admin/admins/${encodeURIComponent(admin.id)}/pse-reviewer`, { isPseReviewer: true });
         }
         close();
+        // Otherwise the new account is invisible -- it only ever shows up
+        // inside the (collapsed by default) Manage admin accounts panel,
+        // and + Add Admin/+ Add RFM are deliberately surfaced as their own
+        // top-level buttons specifically so creating one doesn't require
+        // opening that panel first. Force it open now so the account that
+        // was just created is actually on screen, not just "created
+        // somewhere I can't see."
+        showAdminAccounts = true;
         await draw();
       } catch (err) {
         msg.textContent = err.message;

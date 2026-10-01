@@ -609,7 +609,13 @@ Demo logins:
   Smartsheet's own framing settings, and this app never writes back to
   Smartsheet regardless -- see the sync section below). The tab's own hint
   text was updated to point elsewhere ("locations, or changing an existing
-  WOM") now that a new WOM/PO no longer needs an admin at all.
+  WOM") now that a new WOM/PO no longer needs an admin at all. The same two
+  links also sit at the top of the admin's own WOM Projects list
+  (`drawWoms` in `adminReview.js`) -- Admin and RFM need the same quick
+  path just as much as a tech does, not just a way to watch requests come
+  in after the fact. Both URLs now live in one place
+  (`public/js/constants.js`) rather than copy-pasted into each view, so the
+  two can't quietly drift out of sync if a form URL ever changes.
 - **Smartsheet Line # and direct link on every synced WOM**: a WOM that
   syncs in without a real WOM # or description yet (a bare request row) used
   to be nearly impossible to trace back to the actual Smartsheet request --
@@ -662,8 +668,19 @@ Demo logins:
   a filter searches both `admin` and `financial` at once
   (`role=admin,financial`, split back into an `IN` list server-side -- see
   `listTasks` in `server/data/db.js`). If nobody's been designated RFM yet,
-  every admin can act on every step, so the feature isn't locked up before
-  that one-time setup. "Review charges" has no role *gate* -- either an RFM
+  every admin can still *act* on every step (the permission check,
+  `isReviewer`/`isFinancial` in `tasks.js`/`adminReview.js`, is independent
+  and already permissive by default), so the feature isn't locked up before
+  that one-time setup -- but **`rolesForViewer` (`server/routes/tasks.js`)
+  deliberately never broadens an admin's own queue to include `reviewer`
+  just because no RFM is designated yet.** It used to, which meant every
+  unclaimed RFM-role task showed up in every admin's own My Work by default
+  ("why do I see RFM tasks? If I want to see RFM I'll go look at his
+  list") -- an admin's own queue is always just `admin` + `financial`
+  (both display as plain "Admin"); RFM's queue stays fully visible on Team
+  Work (unscoped by role for an admin) and via the role filter, exactly
+  where you'd deliberately go looking for it, it just doesn't auto-populate
+  into your own default list anymore. "Review charges" has no role *gate* -- either an RFM
   or an Admin can check it off, since reviewing charges together is a joint
   action rather than one person's job (`roleAllowed` in
   `tasks.js`/`adminReview.js` treats a step's `role: null` as "anyone").
@@ -762,17 +779,30 @@ Demo logins:
       many PSEs do I need to produce and send" and "how many of these need
       chasing" are both a glance at the top of the board, not something to
       infer from a single "High Priority: N" total.
-    - **"What do these mean?" legend** (`openLegendModal` in `tasks.js`,
-      next to Filters) -- a plain-English key for exactly the two things
-      that aren't obvious from a short tab/badge label alone: what each
-      list (My Work/Team Work/Unassigned/Overdue/Waiting/Needs Change
-      Order/TOY PO/Recurring/Upcoming/Completed) actually includes, and
-      what each badge color and the 🚩 flag mean (reusing this same
-      red/orange split explanation). A third section spells out the
-      "Unclaimed -- Admin/RFM/Tech" vs. plain "Unassigned" vs. a named
-      person distinction on a task's assignee line, since the two
-      unassigned-looking states mean very different things (one's in a
-      role's shared queue already; the other is nobody's problem yet).
+    - **"What do these mean?" legend** (`openLegendModal` in `tasks.js`) --
+      a plain-English key for exactly the two things that aren't obvious
+      from a short tab/badge label alone: what each list (My Work/Team
+      Work/Unassigned/Overdue/Waiting/Needs Change Order/TOY PO/Recurring/
+      Upcoming/Completed) actually includes, and what each badge color and
+      the 🚩 flag mean (reusing this same red/orange split explanation). A
+      third section spells out the "Unclaimed -- Admin/RFM/Tech" vs. plain
+      "Unassigned" vs. a named person distinction on a task's assignee
+      line, since the two unassigned-looking states mean very different
+      things (one's in a role's shared queue already; the other is
+      nobody's problem yet). Pushed to the far right of the action row
+      (`.task-legend-btn { margin-left: auto }`), separate from **Filters**
+      -- a solid button now, same visual weight as + New Task, rather than
+      a text link easy to miss among the row's other links.
+    - **"Unassigned" actually means unassigned.** Its filter
+      (`filters.unassignedOnly` in `listTasks`) used to check only
+      `assigned_to IS NULL`, so it caught nearly every WOM lifecycle task
+      ever created -- those are almost never claimed by a specific named
+      person, they live in a role's shared queue instead (Unclaimed --
+      RFM/Tech/Admin), a completely different, already-handled state. Now
+      requires `assigned_to IS NULL AND assigned_role IS NULL`, so
+      Unassigned only ever shows a task with neither -- genuinely nobody's
+      queue yet, which in practice is just a hand-created task where no
+      person or role was picked at all.
   - **"PSE produced -- send to Toyota" captures who it was sent to and
     when** -- clicking that action opens a small modal (rather than firing
     immediately) asking for the Toyota reviewer's email (defaulting from
@@ -1277,7 +1307,20 @@ Demo logins:
   Add technician) surface this same admin-creation capability up front,
   for the common case of onboarding a brand-new admin or RFM without
   first opening the Manage admin accounts panel -- + Add RFM creates the
-  account and immediately sets it as RFM in the same step.
+  account and immediately sets it as RFM in the same step. The form also
+  collects **home location, UKG ID, and hire date** up front (same fields
+  + Add technician already asks for), rather than requiring a second trip
+  through the separate Edit form afterward -- it used to only take
+  id/name/PIN. And since this modal is a top-level action, not something
+  reached from inside the (collapsed by default) Manage admin accounts
+  panel, creating an account here used to leave it genuinely invisible --
+  "it doesn't show up on the roster list" was a real report, not a
+  misunderstanding: the main Roster table only ever lists technicians
+  (`listTechnicians` filters `role = 'tech'`), and the new admin's one
+  actual home, the Manage admin accounts panel, was still collapsed.
+  Creating one now force-opens that panel so the account that was just
+  created is actually on screen afterward, not just "created somewhere I
+  can't see."
 - **Team Roster** (admin's Technicians tab): filterable by location/status,
   showing name, UKG ID, position, and home location. Clicking a row opens a
   tabbed **employee profile**:

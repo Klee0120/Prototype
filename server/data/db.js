@@ -2426,7 +2426,14 @@ function listTasks(filters = {}) {
     params.push(filters.dueBefore);
   }
   if (filters.unassignedOnly) {
-    clauses.push("assigned_to IS NULL");
+    // "Unassigned" means nobody's queue includes this at all -- not even a
+    // role's shared one. Checking assigned_to alone caught almost every
+    // WOM lifecycle task ever made, since those are near-never claimed by
+    // a specific named person -- they live in a role's queue instead
+    // (Unclaimed -- RFM/Tech/Admin), which is a completely different,
+    // already-covered state. Only a task with neither counts as genuinely
+    // unassigned.
+    clauses.push("assigned_to IS NULL AND assigned_role IS NULL");
   }
   if (filters.dueOn) {
     clauses.push("due_at LIKE ?");

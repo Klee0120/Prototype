@@ -8,6 +8,7 @@ import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { openModal } from "../modal.js";
+import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -2761,6 +2762,15 @@ export async function renderAdminReview(container) {
       </form>
 
       <h3>WOM Projects</h3>
+      <div class="review-actions">
+        <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
+        <a class="btn btn-secondary" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a C&amp;W PO ↗</a>
+      </div>
+      <p class="review-checklist-hint">
+        Same Smartsheet request forms technicians use -- a quick way to request a new WOM or a
+        C&amp;W PO (an internal purchase order, separate from the Toyota PO on the WOM lifecycle
+        checklist below) without leaving this tab to go find the link elsewhere.
+      </p>
       <div class="review-section-title">Active</div>
       <div class="review-list" id="wom-list-active"></div>
       <div class="review-section-title">Invoiced</div>
