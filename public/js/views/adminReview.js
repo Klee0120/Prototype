@@ -67,8 +67,9 @@ const NAV_SECTIONS = [
   { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "schedule", "overview", "review"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
+  { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
-  { key: "financials", label: "Financials", tabs: ["psetasks", "costanalysis", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["costanalysis", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
 
@@ -79,13 +80,13 @@ const TAB_LABELS = {
   schedule: "Schedule",
   overview: "Overview",
   review: "Weekly Review",
-  psetasks: "PSE Tasks",
   costanalysis: "Cost Analysis",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendors",
   onboarding: "Onboarding",
-  woms: "Locations & WOM",
+  locations: "Locations",
+  woms: "WOM Projects",
   womlookup: "WOM Lookup",
   audit: "Audit Trail",
 };
@@ -234,6 +235,7 @@ export async function renderAdminReview(container) {
     else if (activeTab === "schedule") await renderSchedule(content);
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
+    else if (activeTab === "locations") await drawLocations(content);
     else if (activeTab === "woms") await drawWoms(content);
     else if (activeTab === "womlookup") await drawWomLookup(content);
     else if (activeTab === "technicians") {
@@ -242,7 +244,6 @@ export async function renderAdminReview(container) {
     }
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
-    else if (activeTab === "psetasks") await drawPseTasks(content);
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
@@ -2680,7 +2681,16 @@ export async function renderAdminReview(container) {
             breakdown from ${escapeHtml(result.estimatedLaborColumn || "no Estimate Labor column found")} /
             ${escapeHtml(result.estimatedContractedColumn || "no Estimate Contracted Services column found")} /
             ${escapeHtml(result.appliedLaborColumn || "no Applied Labor column found")} /
-            ${escapeHtml(result.appliedContractedColumn || "no Applied Contracted Services column found")}, vendor from
+            ${escapeHtml(result.appliedContractedColumn || "no Applied Contracted Services column found")} /
+            ${escapeHtml(result.estimatedMaterialsColumn || "no Estimate Materials column found")} /
+            ${escapeHtml(result.appliedMaterialsColumn || "no Applied Materials column found")} /
+            ${escapeHtml(result.estimatedOtherDirectColumn || "no Estimate Other Direct column found")} /
+            ${escapeHtml(result.appliedOtherDirectColumn || "no Applied Other Direct column found")} /
+            ${escapeHtml(result.estimatedTaxColumn || "no Estimate Sales Tax column found")} /
+            ${escapeHtml(result.appliedTaxColumn || "no Applied Tax column found")} /
+            ${escapeHtml(result.estimatedContingencyColumn || "no Estimated Contingency column found")} /
+            ${escapeHtml(result.appliedContingencyColumn || "no Contingency column found")}, Toyota PO value from
+            ${escapeHtml(result.toyotaPoValueColumn || "no Toyota PO value column found")}, vendor from
             ${escapeHtml(result.vendorColumn || "no Vendor column found")} (matched by name against your own vendors).
           </p>
         `;
@@ -2730,29 +2740,17 @@ export async function renderAdminReview(container) {
     });
   }
 
-  async function drawWoms(content) {
-    const [allWoms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
-    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
-    const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
+  async function drawLocations(content) {
+    const locations = await api.get("/api/locations");
     const efSubsidiary = locations[0] ? locations[0].efSubsidiaryCode : "20920000";
-    const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
-    const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
-    const woms = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
 
     content.innerHTML = `
-      <h3>Smartsheet Connection</h3>
-      <p class="review-checklist-hint">
-        A one-way, read-only link to your WOM tracker in Smartsheet -- this app only ever reads from it, never
-        writes back. Preview the connection here before any column gets mapped to a WOM field.
-      </p>
-      <div id="smartsheet-panel"></div>
-
       <h3>Locations</h3>
       <p class="review-checklist-hint">
         Each location has its own E&amp;F Contract Job Number and WOM Job Number (from the JDE lookup). E&amp;F time
         always uses the standard subsidiary code <strong>${escapeHtml(efSubsidiary)}</strong> at every location —
         that part never changes location to location; WOM subsidiary codes vary by project and are set on each WOM
-        below. Region is used to match this location up against the monthly labor report.
+        (WOM tab). Region is used to match this location up against the monthly labor report.
       </p>
       <div class="review-list" id="location-list"></div>
       <form id="add-location-form" class="add-wom-form">
@@ -2765,6 +2763,48 @@ export async function renderAdminReview(container) {
         <button type="submit" class="btn btn-primary">Add location</button>
         <span class="save-message" id="location-message"></span>
       </form>
+    `;
+
+    const locationList = content.querySelector("#location-list");
+    for (const l of locations) {
+      locationList.appendChild(renderLocationRow(l, content));
+    }
+
+    content.querySelector("#add-location-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const msg = content.querySelector("#location-message");
+      try {
+        await api.post("/api/locations", {
+          code: form.code.value.trim(),
+          name: form.name.value.trim(),
+          efJobNumber: form.efJobNumber.value.trim() || null,
+          womJobNumber: form.womJobNumber.value.trim() || null,
+          region: form.region.value.trim() || null,
+          territory: form.territory.value,
+        });
+        await drawLocations(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  async function drawWoms(content) {
+    const [allWoms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
+    const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
+    const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
+    const woms = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
+
+    content.innerHTML = `
+      <h3>Smartsheet Connection</h3>
+      <p class="review-checklist-hint">
+        A one-way, read-only link to your WOM tracker in Smartsheet -- this app only ever reads from it, never
+        writes back. Preview the connection here before any column gets mapped to a WOM field.
+      </p>
+      <div id="smartsheet-panel"></div>
 
       <h3>WOM Projects</h3>
       <div class="review-actions">
@@ -2807,11 +2847,6 @@ export async function renderAdminReview(container) {
 
     await renderSmartsheetPanel(content.querySelector("#smartsheet-panel"), content);
 
-    const locationList = content.querySelector("#location-list");
-    for (const l of locations) {
-      locationList.appendChild(renderLocationRow(l, content));
-    }
-
     // Active is everything still in play (or not yet real); Invoiced groups
     // "invoiced" and "closed" together since both mean the job was billed,
     // just at different closeout points; Cancelled is its own section so a
@@ -2844,25 +2879,6 @@ export async function renderAdminReview(container) {
         drawWoms(content);
       });
     }
-
-    content.querySelector("#add-location-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const form = e.target;
-      const msg = content.querySelector("#location-message");
-      try {
-        await api.post("/api/locations", {
-          code: form.code.value.trim(),
-          name: form.name.value.trim(),
-          efJobNumber: form.efJobNumber.value.trim() || null,
-          womJobNumber: form.womJobNumber.value.trim() || null,
-          region: form.region.value.trim() || null,
-          territory: form.territory.value,
-        });
-        await drawWoms(content);
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    });
 
     content.querySelector("#add-wom-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -2907,7 +2923,7 @@ export async function renderAdminReview(container) {
       `;
       el.querySelector(".cancel-edit").addEventListener("click", async () => {
         locationEditing.delete(l.code);
-        await drawWoms(content);
+        await drawLocations(content);
       });
       el.querySelector(".edit-location-form").addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -2922,7 +2938,7 @@ export async function renderAdminReview(container) {
             territory: form.territory.value,
           });
           locationEditing.delete(l.code);
-          await drawWoms(content);
+          await drawLocations(content);
         } catch (err) {
           msg.textContent = err.message;
         }
@@ -2943,7 +2959,7 @@ export async function renderAdminReview(container) {
     `;
     el.querySelector(".edit-location-btn").addEventListener("click", async () => {
       locationEditing.add(l.code);
-      await drawWoms(content);
+      await drawLocations(content);
     });
     // Unlike a WOM, there's no "force" option here -- a location in use by a
     // whole set of technicians/WOMs/allocations is too big a thing to bulldoze
@@ -2953,7 +2969,7 @@ export async function renderAdminReview(container) {
       if (!window.confirm(`Delete location "${l.name}" (${l.code})? This can't be undone.`)) return;
       try {
         await api.delete(`/api/locations/${encodeURIComponent(l.code)}`);
-        await drawWoms(content);
+        await drawLocations(content);
       } catch (err) {
         window.alert(`Could not delete ${l.name}: ${err.message}`);
       }
@@ -3134,189 +3150,52 @@ export async function renderAdminReview(container) {
           .filter(([key]) => key !== "__smartsheetRowId")
           .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(value == null || value === "" ? "—" : String(value))}</td></tr>`)
           .join("");
-        openModal({
+        const { body } = openModal({
           title: `Smartsheet Detail — ${w.code}`,
           size: "large",
           bodyHtml: `
+            <div class="review-actions">
+              <button type="button" class="btn btn-secondary wom-sync-history-btn">Sync History</button>
+            </div>
+            <div class="wom-sync-history-panel"></div>
             <table class="detail-table wom-smartsheet-table">
               <thead><tr><th>Column</th><th>Value</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
           `,
         });
+        // What got changed on this specific WOM, sync by sync, pulled from
+        // each past sync run's own changed_woms_json -- the answer to "why
+        // does this keep showing as changed every time I sync," which the
+        // main sync panel's "Last sync" summary alone can't answer since it
+        // only ever shows the latest run.
+        body.querySelector(".wom-sync-history-btn").addEventListener("click", async () => {
+          const panel = body.querySelector(".wom-sync-history-panel");
+          panel.innerHTML = `<p class="empty-note">Loading…</p>`;
+          try {
+            const history = await api.get(`/api/woms/${encodeURIComponent(w.code)}/sync-history`);
+            if (history.length === 0) {
+              panel.innerHTML = `<p class="empty-note">No sync has changed this WOM yet.</p>`;
+              return;
+            }
+            panel.innerHTML = `
+              <table class="detail-table wom-sync-history-table">
+                <thead><tr><th>Synced</th><th>What changed</th></tr></thead>
+                <tbody>
+                  ${history
+                    .map((h) => `<tr><td>${new Date(h.syncedAt).toLocaleString()}</td><td>${escapeHtml(h.fields.join(", "))}</td></tr>`)
+                    .join("")}
+                </tbody>
+              </table>
+            `;
+          } catch (err) {
+            panel.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+          }
+        });
       });
     }
 
     return el;
-  }
-
-// "PSE Tasks": every WOM whose lifecycle checklist isn't finished yet
-  // (see WOM_LIFECYCLE_STEPS in server/data/db.js), split by role -- the
-  // designated reviewer (sends PSE to Toyota) sees WOMs whose next step is
-  // theirs; every other admin sees the "financial" ones (create the WOM/PO,
-  // post cost, invoice). "Review charges" has no single owner -- either
-  // role sees it. If nobody's been designated as reviewer yet, everyone
-  // sees everything, so the feature isn't unusable before that one-time
-  // setup step (Manage admin accounts, on the Roster tab).
-  async function drawPseTasks(content) {
-    const data = await api.get("/api/woms/lifecycle/tasks");
-    const isReviewer = !data.reviewerAdminId || data.reviewerAdminId === state.user.id;
-    const isFinancial = !data.reviewerAdminId || data.reviewerAdminId !== state.user.id;
-
-    content.innerHTML = `
-      <p class="review-checklist-hint">
-        Every WOM currently mid-checklist between PSE creation and invoicing.
-        ${
-          data.reviewerAdminId
-            ? ""
-            : "No RFM is designated yet (Roster tab &rarr; Manage admin accounts), so everyone can act on every step for now."
-        }
-      </p>
-      <div class="pse-task-list">
-        ${
-          data.tasks.length === 0
-            ? `<p class="empty-note">No open WOM lifecycle tasks right now.</p>`
-            : data.tasks.map((w) => renderPseTaskCard(w, isReviewer, isFinancial)).join("")
-        }
-      </div>
-    `;
-
-    content.querySelectorAll(".pse-lifecycle-toyota-btn").forEach((btn) => {
-      btn.addEventListener("click", () => openPseSentToToyotaModal(btn.dataset.code, content));
-    });
-    content.querySelectorAll(".pse-lifecycle-reviewed-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(btn.dataset.code)}/lifecycle/charges_reviewed`, {});
-          await drawPseTasks(content);
-        } catch (err) {
-          window.alert(err.message);
-          btn.disabled = false;
-        }
-      });
-    });
-    content.querySelectorAll(".pse-lifecycle-invoice-form").forEach((form) => {
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const msg = form.querySelector(".save-message");
-        try {
-          await api.post(`/api/woms/${encodeURIComponent(form.dataset.code)}/lifecycle/invoiced`, {
-            batchNumber: form.batchNumber.value.trim(),
-            invoiceNumber: form.invoiceNumber.value.trim(),
-          });
-          await drawPseTasks(content);
-        } catch (err) {
-          msg.textContent = err.message;
-        }
-      });
-    });
-  }
-
-  // Every step of one WOM's lifecycle checklist, in order -- a checkmark
-  // and when/how it completed for the ones already done, and for whichever
-  // step is next: a plain explanation for an auto-trigger step (nothing to
-  // click), or the real action for a manual one the viewer's role can take.
-  function renderPseTaskCard(w, isReviewer, isFinancial) {
-    const roleAllowed = (role) => role === null || (role === "reviewer" ? isReviewer : isFinancial);
-    const nextStep = nextLifecycleStep(w.lifecycleSteps);
-
-    const stepRows = w.lifecycleSteps
-      .map((s) => {
-        const done = Boolean(s.completedAt);
-        const meta = done ? `${s.completedBy === "sync" ? "auto-completed" : "completed"} ${new Date(s.completedAt).toLocaleString()}` : "";
-        return `
-        <div class="wom-lifecycle-step${done ? " wom-lifecycle-step-done" : ""}">
-          <span class="wom-lifecycle-step-icon">${done ? "\u2713" : "\u25CB"}</span>
-          <span class="wom-lifecycle-step-label">${escapeHtml(s.label)}</span>
-          <span class="wom-lifecycle-step-meta">${escapeHtml(meta)}</span>
-        </div>`;
-      })
-      .join("");
-
-    let action = "";
-    if (nextStep && nextStep.trigger === "auto") {
-      if (WOM_LIFECYCLE_STEP_HINTS[nextStep.key]) {
-        action = `<p class="review-checklist-hint">${escapeHtml(WOM_LIFECYCLE_STEP_HINTS[nextStep.key])}</p>`;
-      }
-    } else if (nextStep && roleAllowed(nextStep.role)) {
-      if (nextStep.key === "sent_to_toyota") {
-        action = `<div class="pse-task-actions"><button type="button" class="btn btn-secondary pse-lifecycle-toyota-btn" data-code="${escapeHtml(w.code)}">PSE produced -- send to Toyota</button></div>`;
-      } else if (nextStep.key === "charges_reviewed") {
-        action = `<div class="pse-task-actions"><button type="button" class="btn btn-secondary pse-lifecycle-reviewed-btn" data-code="${escapeHtml(w.code)}">Mark reviewed</button></div>`;
-      } else if (nextStep.key === "invoiced") {
-        action = `
-          <form class="modal-form pse-lifecycle-invoice-form" data-code="${escapeHtml(w.code)}">
-            <div class="vendor-edit-grid">
-              <label class="profile-field"><span>Batch #</span><input name="batchNumber" type="text" required /></label>
-              <label class="profile-field"><span>Invoice #</span><input name="invoiceNumber" type="text" required /></label>
-            </div>
-            <button type="submit" class="btn btn-secondary">Invoice</button>
-            <span class="save-message"></span>
-          </form>`;
-      }
-    }
-
-    const sentToToyotaLine = w.pseToyotaEmail
-      ? `<div class="wom-desc">Sent to Toyota: ${escapeHtml(w.pseToyotaEmail)}${w.pseToyotaSentAt ? ` on ${new Date(w.pseToyotaSentAt).toLocaleDateString()}` : ""}</div>`
-      : "";
-
-    return `
-      <div class="pse-task-card">
-        <div class="pse-task-header">
-          <strong>${escapeHtml(w.description || w.code)}</strong>
-          <span class="wom-code">${escapeHtml(w.code)}</span>
-          ${w.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(w.smartsheetLineNumber))}</span>` : ""}
-        </div>
-        <div class="wom-desc">
-          ${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}${
-      w.smartsheetLink ? ` &middot; <a href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""
-    }
-        </div>
-        ${sentToToyotaLine}
-        <div class="wom-lifecycle-checklist">${stepRows}</div>
-        ${action}
-      </div>
-    `;
-  }
-
-  // "PSE produced -- send to Toyota" is worth a real record of who
-  // received it and when, for a later follow-up -- not just a bare
-  // button click. Email defaults to whatever was used last time (for
-  // this browser, not synced across admins) since it's usually the same
-  // contact call after call.
-  function openPseSentToToyotaModal(code, content) {
-    const lastEmail = localStorage.getItem("laborapp:lastToyotaEmail") || "";
-    const today = new Date().toISOString().slice(0, 10);
-    const { body, close } = openModal({
-      title: `Sent to Toyota -- ${code}`,
-      bodyHtml: `
-        <form class="modal-form pse-sent-form">
-          <label class="profile-field"><span>Email it was sent to</span><input type="email" name="toyotaEmail" value="${escapeHtml(lastEmail)}" required /></label>
-          <label class="profile-field"><span>Date sent</span><input type="date" name="sentAt" value="${today}" required /></label>
-          <div class="modal-form-actions">
-            <button type="submit" class="btn btn-primary">Mark sent</button>
-          </div>
-          <span class="save-message"></span>
-        </form>
-      `,
-    });
-    const form = body.querySelector(".pse-sent-form");
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = form.querySelector(".save-message");
-      try {
-        await api.post(`/api/woms/${encodeURIComponent(code)}/lifecycle/sent_to_toyota`, {
-          toyotaEmail: form.toyotaEmail.value.trim(),
-          sentAt: new Date(form.sentAt.value).toISOString(),
-        });
-        localStorage.setItem("laborapp:lastToyotaEmail", form.toyotaEmail.value.trim());
-        close();
-        await drawPseTasks(content);
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    });
   }
 
   // Financials-wide estimated-vs-applied picture -- every non-cancelled
@@ -3337,10 +3216,19 @@ export async function renderAdminReview(container) {
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalEstimated)}</div><div class="task-tile-label">Total Estimated (${summary.estimatedCount} WOMs)</div></div>
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalApplied)}</div><div class="task-tile-label">Total Applied (${summary.appliedCount} WOMs)</div></div>
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalDelta)}</div><div class="task-tile-label">Estimated &minus; Applied</div></div>
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalToyotaPoValue)}</div><div class="task-tile-label">Total Toyota PO Value (${summary.toyotaPoValueCount} WOMs)</div></div>
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.appliedVsToyotaPoDelta)}</div><div class="task-tile-label">Applied &minus; Toyota PO Value</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-overquoted-list"><div class="task-tile-count">${summary.overquotedCount}</div><div class="task-tile-label">Excess Labor Budget</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-applied-no-po-list"><div class="task-tile-count">${summary.appliedNoPoCount}</div><div class="task-tile-label">Applied, No Toyota PO Yet</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-labor-overcharged-list"><div class="task-tile-count">${summary.laborOverchargedCount}</div><div class="task-tile-label">Labor Overcharged</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-contracted-increased-list"><div class="task-tile-count">${summary.contractedIncreasedCount}</div><div class="task-tile-label">Contracted Services Increased</div></div>
+        ${summary.categoryOverages
+          .map(
+            (cat) =>
+              `<div class="task-tile task-tile-clickable" data-target="cost-category-${cat.key}-list"><div class="task-tile-count">${cat.count}</div><div class="task-tile-label">${escapeHtml(cat.label)} Overcharged</div></div>`
+          )
+          .join("")}
+        <div class="task-tile task-tile-clickable" data-target="cost-over-toyota-po-list"><div class="task-tile-count">${summary.appliedOverToyotaPoCount}</div><div class="task-tile-label">Applied Over Toyota PO Value</div></div>
       </div>
 
       <h3>Excess labor budget (${summary.overquotedCount})</h3>
@@ -3370,6 +3258,28 @@ export async function renderAdminReview(container) {
         over quote, across these WOMs. Each row names the vendor whose charge came in over their own quote.
       </p>
       <div class="review-list" id="cost-contracted-increased-list"></div>
+
+      ${summary.categoryOverages
+        .map(
+          (cat) => `
+      <h3>${escapeHtml(cat.label)} overcharged (${cat.count})</h3>
+      <p class="review-checklist-hint">
+        Applied ${escapeHtml(cat.label.toLowerCase())} cost came in higher than what was estimated -- $${formatMoney(cat.total)}
+        over quote, across these WOMs.
+      </p>
+      <div class="review-list" id="cost-category-${cat.key}-list"></div>
+      `
+        )
+        .join("")}
+
+      <h3>Applied over Toyota PO value (${summary.appliedOverToyotaPoCount})</h3>
+      <p class="review-checklist-hint">
+        Applied project total came in higher than the actual Toyota-approved PO amount -- $${formatMoney(summary.appliedOverToyotaPoTotal)}
+        over the approved ceiling, across these WOMs. This checks against what Toyota actually approved, not
+        just against this app's own estimate (see Excess Labor Budget/Labor Overcharged/Contracted Services
+        Increased above for estimate-vs-applied by category).
+      </p>
+      <div class="review-list" id="cost-over-toyota-po-list"></div>
 
       ${
         summary.vendorsOverchargingRepeatedly.length > 0
@@ -3476,6 +3386,48 @@ export async function renderAdminReview(container) {
           </div>
         `;
         contractedIncList.appendChild(row);
+      });
+    }
+
+    for (const cat of summary.categoryOverages) {
+      const list = content.querySelector(`#cost-category-${cat.key}-list`);
+      if (cat.items.length === 0) {
+        list.innerHTML = `<p class="empty-note">No WOMs have a ${escapeHtml(cat.label.toLowerCase())} increase right now.</p>`;
+      } else {
+        cat.items.forEach((w) => {
+          const row = document.createElement("div");
+          row.className = "review-row";
+          row.innerHTML = `
+            <div class="review-row-summary">
+              <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
+              <span class="wom-code">${escapeHtml(w.code)}</span>
+              <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
+              <span class="wom-desc">Est $${formatMoney(w.estimated)} &middot; Applied $${formatMoney(w.applied)}</span>
+              <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
+            </div>
+          `;
+          list.appendChild(row);
+        });
+      }
+    }
+
+    const overToyotaPoList = content.querySelector("#cost-over-toyota-po-list");
+    if (summary.appliedOverToyotaPo.length === 0) {
+      overToyotaPoList.innerHTML = `<p class="empty-note">No WOMs are applied over their Toyota PO value right now.</p>`;
+    } else {
+      summary.appliedOverToyotaPo.forEach((w) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
+            <span class="wom-code">${escapeHtml(w.code)}</span>
+            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
+            <span class="wom-desc">Toyota PO $${formatMoney(w.toyotaPoValue)} &middot; Applied $${formatMoney(w.appliedPrice)}</span>
+            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
+          </div>
+        `;
+        overToyotaPoList.appendChild(row);
       });
     }
 

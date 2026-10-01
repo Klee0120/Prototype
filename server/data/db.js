@@ -584,6 +584,28 @@ if (!hasColumn("woms", "estimated_labor")) {
   db.exec("ALTER TABLE woms ADD COLUMN applied_contracted REAL");
   db.exec("ALTER TABLE woms ADD COLUMN vendor_id INTEGER");
 }
+// The actual dollar amount on the real Toyota-approved PO ("TOY Value" in
+// the tracker) -- a distinct figure from estimated_price (what the PSE
+// asked for) and applied_price (what actually got posted). Cost Analysis
+// needs this to compare applied cost against what Toyota actually approved,
+// not just against the original estimate.
+if (!hasColumn("woms", "toyota_po_value")) {
+  db.exec("ALTER TABLE woms ADD COLUMN toyota_po_value REAL");
+}
+// The tracker itemizes estimate/applied cost into six categories, not just
+// labor and contracted services -- materials, other direct costs, sales
+// tax, and contingency each get their own estimate/applied pair too (all
+// six sum to the WOM's project total). See WOM_COST_BREAKDOWN_FIELDS below.
+if (!hasColumn("woms", "estimated_materials")) {
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_materials REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_other_direct REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_tax REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN estimated_contingency REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN applied_materials REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN applied_other_direct REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN applied_tax REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN applied_contingency REAL");
+}
 // The tracker's own "Date Requested" column, kept verbatim (not just the
 // transient pending/requested-promotion check syncWomsFromSheetRows already
 // does with it) -- a real WOM that already has this filled in has plainly
@@ -2008,12 +2030,33 @@ function getWomCostSummary() {
   const rows = db.prepare("SELECT * FROM woms WHERE status != 'cancelled'").all();
   let totalEstimated = 0;
   let totalApplied = 0;
+  let totalToyotaPoValue = 0;
   let estimatedCount = 0;
   let appliedCount = 0;
+  let toyotaPoValueCount = 0;
   const overquoted = [];
   const appliedNoPo = [];
   const laborOvercharged = [];
   const contractedIncreased = [];
+  // Applied cost vs. the real Toyota-approved PO amount -- a different,
+  // more authoritative check than overquoted/laborOvercharged/
+  // contractedIncreased above, all of which only compare against this
+  // app's own estimate (the PSE ask), not what Toyota actually signed off
+  // on. A WOM can clear every one of those checks and still have gone over
+  // its real PO ceiling if the estimate itself undersold what Toyota
+  // approved, or vice versa.
+  const appliedOverToyotaPo = [];
+  // Materials, Other Direct, Tax, and Contingency are additional itemized
+  // categories the tracker breaks out -- same "applied came in over what
+  // was estimated" shape as Labor above, generic since none of them need
+  // Contracted Services' extra vendor attribution.
+  const SIMPLE_OVERCHARGE_CATEGORIES = [
+    { key: "materials", estCol: "estimated_materials", appCol: "applied_materials", label: "Materials" },
+    { key: "otherDirect", estCol: "estimated_other_direct", appCol: "applied_other_direct", label: "Other Direct Costs" },
+    { key: "tax", estCol: "estimated_tax", appCol: "applied_tax", label: "Sales Tax" },
+    { key: "contingency", estCol: "estimated_contingency", appCol: "applied_contingency", label: "Contingency" },
+  ];
+  const categoryOvercharges = Object.fromEntries(SIMPLE_OVERCHARGE_CATEGORIES.map((c) => [c.key, []]));
   // How much contracted-services $ has actually gone out to each vendor,
   // across every WOM on file (not just the overage ones) -- "who do we do
   // business with, and how much" independent of whether any single job ran
@@ -2036,6 +2079,20 @@ function getWomCostSummary() {
     if (w.applied_price != null) {
       totalApplied += w.applied_price;
       appliedCount++;
+    }
+    if (w.toyota_po_value != null) {
+      totalToyotaPoValue += w.toyota_po_value;
+      toyotaPoValueCount++;
+    }
+    if (w.applied_price != null && w.toyota_po_value != null && w.applied_price > w.toyota_po_value) {
+      appliedOverToyotaPo.push({
+        code: w.code,
+        description: w.description,
+        locationCode: w.location_code,
+        appliedPrice: w.applied_price,
+        toyotaPoValue: w.toyota_po_value,
+        overage: w.applied_price - w.toyota_po_value,
+      });
     }
     // Estimated came in higher than applied on the project as a whole --
     // budget that was quoted but never used, not an overcharge. See
@@ -2093,12 +2150,27 @@ function getWomCostSummary() {
       cur.womCount++;
       vendorSpendById.set(w.vendor_id, cur);
     }
+    for (const cat of SIMPLE_OVERCHARGE_CATEGORIES) {
+      const est = w[cat.estCol];
+      const app = w[cat.appCol];
+      if (est != null && app != null && app > est) {
+        categoryOvercharges[cat.key].push({
+          code: w.code,
+          description: w.description,
+          locationCode: w.location_code,
+          estimated: est,
+          applied: app,
+          overage: app - est,
+        });
+      }
+    }
   }
 
   overquoted.sort((a, b) => b.overage - a.overage);
   appliedNoPo.sort((a, b) => b.appliedPrice - a.appliedPrice);
   laborOvercharged.sort((a, b) => b.overage - a.overage);
   contractedIncreased.sort((a, b) => b.overage - a.overage);
+  appliedOverToyotaPo.sort((a, b) => b.overage - a.overage);
 
   // Which vendors show up more than once in contractedIncreased -- the
   // "reoccuringly charging on top of their quotes" list, not just a single
@@ -2116,6 +2188,11 @@ function getWomCostSummary() {
     .sort((a, b) => b.count - a.count || b.totalOverage - a.totalOverage);
   const vendorContractedSpend = [...vendorSpendById.values()].sort((a, b) => b.totalAppliedContracted - a.totalAppliedContracted);
 
+  const categoryOverages = SIMPLE_OVERCHARGE_CATEGORIES.map((cat) => {
+    const items = categoryOvercharges[cat.key].sort((a, b) => b.overage - a.overage);
+    return { key: cat.key, label: cat.label, count: items.length, total: items.reduce((sum, o) => sum + o.overage, 0), items };
+  });
+
   return {
     totalWoms: rows.length,
     estimatedCount,
@@ -2123,6 +2200,12 @@ function getWomCostSummary() {
     totalEstimated,
     totalApplied,
     totalDelta: totalEstimated - totalApplied,
+    toyotaPoValueCount,
+    totalToyotaPoValue,
+    appliedVsToyotaPoDelta: totalApplied - totalToyotaPoValue,
+    appliedOverToyotaPoCount: appliedOverToyotaPo.length,
+    appliedOverToyotaPoTotal: appliedOverToyotaPo.reduce((sum, o) => sum + o.overage, 0),
+    appliedOverToyotaPo,
     overquotedCount: overquoted.length,
     overquotedTotal: overquoted.reduce((sum, o) => sum + o.overage, 0),
     overquoted,
@@ -2137,6 +2220,7 @@ function getWomCostSummary() {
     contractedIncreased,
     vendorsOverchargingRepeatedly,
     vendorContractedSpend,
+    categoryOverages,
   };
 }
 
@@ -2701,6 +2785,26 @@ function getLastSyncLog() {
   return { ...row, changedWoms };
 }
 
+// Every sync run already keeps its own full changed_woms_json -- this just
+// asks "which of those mention this one WOM," newest first, so "why does
+// this keep showing as changed" can be answered by actually looking at the
+// sync history for that WOM rather than only ever seeing the latest run.
+function getWomSyncHistory(code) {
+  const rows = db.prepare("SELECT synced_at, changed_woms_json FROM wom_sync_log ORDER BY id DESC").all();
+  const history = [];
+  for (const row of rows) {
+    let changedWoms = [];
+    try {
+      changedWoms = row.changed_woms_json ? JSON.parse(row.changed_woms_json) : [];
+    } catch {
+      changedWoms = [];
+    }
+    const entry = changedWoms.find((c) => c.code === code);
+    if (entry) history.push({ syncedAt: row.synced_at, fields: entry.fields });
+  }
+  return history;
+}
+
 function markWomSmartsheetReflected(code) {
   const wom = findWom(code);
   if (!wom || wom.status !== "closed") return null;
@@ -2826,6 +2930,31 @@ function valuesDiffer(existingValue, nextValue) {
   return Number(existingValue) !== Number(nextValue) && String(existingValue) !== String(nextValue);
 }
 
+// Every itemized cost category Cost Analysis breaks estimate-vs-applied by
+// (all six estimate-side figures sum to the WOM's project total; same for
+// applied). `jsField` is this value's key both on `columns` (the resolved
+// Smartsheet column title for it) and on a sync row's `breakdown` object
+// (the parsed number); `dbColumn` is where it's stored. Centralized here --
+// not hand-copied across 5 SQL statements and diffFields -- because that
+// copy-paste is exactly the kind of bug class a silently-dropped/misordered
+// param creates in financial data. Adding another category Toyota's tracker
+// itemizes is one entry here instead of a hand-edit to 5 places.
+const WOM_COST_BREAKDOWN_FIELDS = [
+  { dbColumn: "estimated_labor", jsField: "estimatedLabor", diffLabel: "estimated labor" },
+  { dbColumn: "estimated_materials", jsField: "estimatedMaterials", diffLabel: "estimated materials" },
+  { dbColumn: "estimated_contracted", jsField: "estimatedContracted", diffLabel: "estimated contracted services" },
+  { dbColumn: "estimated_other_direct", jsField: "estimatedOtherDirect", diffLabel: "estimated other direct costs" },
+  { dbColumn: "estimated_tax", jsField: "estimatedTax", diffLabel: "estimated sales tax" },
+  { dbColumn: "estimated_contingency", jsField: "estimatedContingency", diffLabel: "estimated contingency" },
+  { dbColumn: "applied_labor", jsField: "appliedLabor", diffLabel: "applied labor" },
+  { dbColumn: "applied_materials", jsField: "appliedMaterials", diffLabel: "applied materials" },
+  { dbColumn: "applied_contracted", jsField: "appliedContracted", diffLabel: "applied contracted services" },
+  { dbColumn: "applied_other_direct", jsField: "appliedOtherDirect", diffLabel: "applied other direct costs" },
+  { dbColumn: "applied_tax", jsField: "appliedTax", diffLabel: "applied sales tax" },
+  { dbColumn: "applied_contingency", jsField: "appliedContingency", diffLabel: "applied contingency" },
+  { dbColumn: "toyota_po_value", jsField: "toyotaPoValue", diffLabel: "Toyota PO value" },
+];
+
 function diffFields(existing, next) {
   const fields = [];
   if (next.estimatedPrice != null && valuesDiffer(existing.estimated_price, next.estimatedPrice)) fields.push("estimate");
@@ -2833,12 +2962,9 @@ function diffFields(existing, next) {
   if (next.maximoNumber && valuesDiffer(existing.maximo_number, next.maximoNumber)) fields.push("Maximo #");
   if (next.subsidiaryCode && valuesDiffer(existing.subsidiary_code, next.subsidiaryCode)) fields.push("subsidiary code");
   if (next.matchedLocationCode && !existing.location_code) fields.push("location");
-  if (next.estimatedLabor != null && valuesDiffer(existing.estimated_labor, next.estimatedLabor)) fields.push("estimated labor");
-  if (next.estimatedContracted != null && valuesDiffer(existing.estimated_contracted, next.estimatedContracted))
-    fields.push("estimated contracted services");
-  if (next.appliedLabor != null && valuesDiffer(existing.applied_labor, next.appliedLabor)) fields.push("applied labor");
-  if (next.appliedContracted != null && valuesDiffer(existing.applied_contracted, next.appliedContracted))
-    fields.push("applied contracted services");
+  for (const f of WOM_COST_BREAKDOWN_FIELDS) {
+    if (next[f.jsField] != null && valuesDiffer(existing[f.dbColumn], next[f.jsField])) fields.push(f.diffLabel);
+  }
   if (next.matchedVendorId && !existing.vendor_id) fields.push("vendor");
   return fields;
 }
@@ -2846,13 +2972,13 @@ function diffFields(existing, next) {
 function syncWomsFromSheetRows(rows, columns) {
   const { wom: womColumn, estimate: estimateColumn, applied: appliedColumn, description: descriptionColumn } = columns;
   const { dateRequested: dateRequestedColumn, maximo: maximoColumn, location: locationColumn, subsidiary: subsidiaryColumn } = columns;
-  const {
-    estimatedLabor: estimatedLaborColumn,
-    estimatedContracted: estimatedContractedColumn,
-    appliedLabor: appliedLaborColumn,
-    appliedContracted: appliedContractedColumn,
-    vendor: vendorColumn,
-  } = columns;
+  const { vendor: vendorColumn } = columns;
+  // The Smartsheet column title for each breakdown category, resolved once
+  // up front -- looked up by row below, not re-resolved every row.
+  const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
+  const breakdownSetSql = WOM_COST_BREAKDOWN_FIELDS.map((f) => `${f.dbColumn} = ?`).join(", ");
+  const breakdownInsertColumnsSql = WOM_COST_BREAKDOWN_FIELDS.map((f) => f.dbColumn).join(", ");
+  const breakdownInsertPlaceholders = WOM_COST_BREAKDOWN_FIELDS.map(() => "?").join(", ");
   let created = 0;
   let promoted = 0;
   let updated = 0;
@@ -2884,13 +3010,16 @@ function syncWomsFromSheetRows(rows, columns) {
     const maximoNumber = (maximoColumn && row[maximoColumn] && String(row[maximoColumn]).trim()) || null;
     const subsidiaryCode = (subsidiaryColumn && row[subsidiaryColumn] && String(row[subsidiaryColumn]).trim()) || null;
     const matchedLocationCode = locationColumn ? matchLocationCodeByName(row[locationColumn]) : null;
-    const estimatedLabor = estimatedLaborColumn ? parseDollarAmount(row[estimatedLaborColumn]) : null;
-    const estimatedContracted = estimatedContractedColumn ? parseDollarAmount(row[estimatedContractedColumn]) : null;
-    const appliedLabor = appliedLaborColumn ? parseDollarAmount(row[appliedLaborColumn]) : null;
-    const appliedContracted = appliedContractedColumn ? parseDollarAmount(row[appliedContractedColumn]) : null;
     const matchedVendorId = vendorColumn ? matchVendorIdByName(row[vendorColumn]) : null;
     const rawData = JSON.stringify(row);
-    const breakdown = { estimatedLabor, estimatedContracted, appliedLabor, appliedContracted, matchedVendorId };
+    const breakdown = { matchedVendorId };
+    const breakdownParams = [];
+    WOM_COST_BREAKDOWN_FIELDS.forEach((f, i) => {
+      const colTitle = breakdownColumnTitles[i];
+      const value = colTitle ? parseDollarAmount(row[colTitle]) : null;
+      breakdown[f.jsField] = value;
+      breakdownParams.push(value);
+    });
 
     const existing = findWomBySmartsheetRowId(rowId);
 
@@ -2922,8 +3051,7 @@ function syncWomsFromSheetRows(rows, columns) {
         const fields = diffFields(collision, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, ...breakdown });
         db.prepare(
           `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-           location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-           applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+           location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
            smartsheet_raw_data = ?, smartsheet_synced_at = ?,
            smartsheet_row_number = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
         ).run(
@@ -2932,10 +3060,7 @@ function syncWomsFromSheetRows(rows, columns) {
           maximoNumber,
           subsidiaryCode,
           matchedLocationCode,
-          estimatedLabor,
-          estimatedContracted,
-          appliedLabor,
-          appliedContracted,
+          ...breakdownParams,
           matchedVendorId,
           dateRequestedValue,
           rawData,
@@ -2954,9 +3079,9 @@ function syncWomsFromSheetRows(rows, columns) {
       const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
-         location_code, estimated_labor, estimated_contracted, applied_labor, applied_contracted, vendor_id, date_requested,
+         location_code, ${breakdownInsertColumnsSql}, vendor_id, date_requested,
          smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${breakdownInsertPlaceholders}, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         description,
@@ -2966,10 +3091,7 @@ function syncWomsFromSheetRows(rows, columns) {
         maximoNumber,
         subsidiaryCode,
         matchedLocationCode,
-        estimatedLabor,
-        estimatedContracted,
-        appliedLabor,
-        appliedContracted,
+        ...breakdownParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -2985,8 +3107,7 @@ function syncWomsFromSheetRows(rows, columns) {
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
       db.prepare(
         `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -2996,10 +3117,7 @@ function syncWomsFromSheetRows(rows, columns) {
         maximoNumber,
         subsidiaryCode,
         matchedLocationCode,
-        estimatedLabor,
-        estimatedContracted,
-        appliedLabor,
-        appliedContracted,
+        ...breakdownParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -3017,8 +3135,7 @@ function syncWomsFromSheetRows(rows, columns) {
     if (existing.status === "pending" && requested) {
       db.prepare(
         `UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -3027,10 +3144,7 @@ function syncWomsFromSheetRows(rows, columns) {
         maximoNumber,
         subsidiaryCode,
         matchedLocationCode,
-        estimatedLabor,
-        estimatedContracted,
-        appliedLabor,
-        appliedContracted,
+        ...breakdownParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -3049,8 +3163,7 @@ function syncWomsFromSheetRows(rows, columns) {
       const fields = diffFields(existing, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, ...breakdown });
       db.prepare(
         `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-         location_code = COALESCE(location_code, ?), estimated_labor = ?, estimated_contracted = ?,
-         applied_labor = ?, applied_contracted = ?, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+         location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -3059,10 +3172,7 @@ function syncWomsFromSheetRows(rows, columns) {
         maximoNumber,
         subsidiaryCode,
         matchedLocationCode,
-        estimatedLabor,
-        estimatedContracted,
-        appliedLabor,
-        appliedContracted,
+        ...breakdownParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -3648,6 +3758,7 @@ module.exports = {
   setRecurringTaskTemplateActive,
   recordSyncLog,
   getLastSyncLog,
+  getWomSyncHistory,
   markWomSmartsheetReflected,
   setWomDetails,
   setWomPricing,

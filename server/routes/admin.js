@@ -570,10 +570,37 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       // these can be null if the connected sheet doesn't have that column
       // (an older sheet, or one that's never itemized this way); the fields
       // they'd feed just stay unset rather than the sync failing.
-      estimatedLabor: smartsheet.findColumn(sheet.columns, ["estimate", "labor", "$"]),
-      estimatedContracted: smartsheet.findColumn(sheet.columns, ["estimate", "contracted", "$"]),
-      appliedLabor: smartsheet.findColumn(sheet.columns, ["applied", "labor", "$"]),
-      appliedContracted: smartsheet.findColumn(sheet.columns, ["applied", "contracted", "$"]),
+      // No "$" requirement on either side -- the real tracker is
+      // inconsistent about it ("Estimate Labor $" has one, "Applied Labor"
+      // doesn't), and "estimate"/"applied" + "labor" alone is specific
+      // enough with nothing else on the sheet containing "labor" at all.
+      estimatedLabor: smartsheet.findColumn(sheet.columns, ["estimate", "labor"]),
+      // "Contracted Services" and "PO" are both names real sheets have used
+      // for the same vendor-contracted dollar figure -- see findAnyColumn.
+      estimatedContracted: smartsheet.findAnyColumn(sheet.columns, [
+        ["estimate", "contracted", "$"],
+        ["estimate", "po", "$"],
+      ]),
+      appliedLabor: smartsheet.findColumn(sheet.columns, ["applied", "labor"]),
+      appliedContracted: smartsheet.findAnyColumn(sheet.columns, [
+        ["applied", "contracted", "$"],
+        ["applied", "po", "$"],
+      ]),
+      estimatedMaterials: smartsheet.findColumn(sheet.columns, ["estimate", "materials"]),
+      appliedMaterials: smartsheet.findColumn(sheet.columns, ["applied", "materials"]),
+      estimatedOtherDirect: smartsheet.findColumn(sheet.columns, ["estimate", "other", "direct"]),
+      appliedOtherDirect: smartsheet.findColumn(sheet.columns, ["applied", "other", "direct"]),
+      estimatedTax: smartsheet.findColumn(sheet.columns, ["estimate", "tax"]),
+      appliedTax: smartsheet.findColumn(sheet.columns, ["applied", "tax"]),
+      estimatedContingency: smartsheet.findColumn(sheet.columns, ["estimate", "contingency"]),
+      // No "applied" (or any other) word of its own on the real tracker --
+      // just "Contingency $" -- so this excludes the estimate-side column
+      // instead of matching on a keyword the applied column doesn't have.
+      appliedContingency: smartsheet.findColumn(sheet.columns, ["contingency"], ["estimate", "estimated"]),
+      // The actual dollar amount on the real Toyota-approved PO ("TOY
+      // Value" in the tracker) -- distinct from the estimate/applied
+      // figures above, which are this app's own numbers, not Toyota's.
+      toyotaPoValue: smartsheet.findColumn(sheet.columns, ["toy", "value"]),
       vendor: smartsheet.findColumn(sheet.columns, ["vendor"]),
     };
     // Snapshot every task's status before the sync so the diff afterward
@@ -626,6 +653,15 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       estimatedContractedColumn: columns.estimatedContracted,
       appliedLaborColumn: columns.appliedLabor,
       appliedContractedColumn: columns.appliedContracted,
+      estimatedMaterialsColumn: columns.estimatedMaterials,
+      appliedMaterialsColumn: columns.appliedMaterials,
+      estimatedOtherDirectColumn: columns.estimatedOtherDirect,
+      appliedOtherDirectColumn: columns.appliedOtherDirect,
+      estimatedTaxColumn: columns.estimatedTax,
+      appliedTaxColumn: columns.appliedTax,
+      estimatedContingencyColumn: columns.estimatedContingency,
+      appliedContingencyColumn: columns.appliedContingency,
+      toyotaPoValueColumn: columns.toyotaPoValue,
       vendorColumn: columns.vendor,
     });
   } catch (err) {

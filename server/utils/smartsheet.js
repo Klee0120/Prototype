@@ -71,9 +71,35 @@ async function fetchSimplifiedSheet() {
 // line-wrapping the real sheet uses (e.g. "Estimate WOM $ - Project
 // Total"), since that can't be hardcoded byte-for-byte without seeing the
 // live sheet. Returns null if no column matches all the keywords.
-function findColumn(columns, keywords) {
+// `exclude` rules out a column that would otherwise match -- needed for a
+// pair like "Estimated Contingency $" / "Contingency $", where the applied
+// side has no "applied" (or any other) word of its own to distinguish it;
+// matching on "contingency" alone would just find the estimate column first
+// every time. Excluding "estimate"/"estimated" on the applied-side lookup
+// is what actually tells the two apart.
+function findColumn(columns, keywords, exclude = []) {
   const lower = keywords.map((k) => k.toLowerCase());
-  return columns.find((c) => lower.every((k) => c.toLowerCase().includes(k))) || null;
+  const excl = exclude.map((k) => k.toLowerCase());
+  return (
+    columns.find((c) => {
+      const lc = c.toLowerCase();
+      return lower.every((k) => lc.includes(k)) && !excl.some((k) => lc.includes(k));
+    }) || null
+  );
 }
 
-module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet, findColumn, rowLink };
+// Same column, more than one plausible name -- a sheet might call the
+// contracted-services dollar figure "Estimated/Applied Contracted Services
+// $" or just "Estimated/Applied PO $" depending on who set it up or when.
+// Tries each keyword set in order and returns the first match, rather than
+// requiring one exact vocabulary and silently finding nothing (and every
+// field downstream of it staying null) if the sheet uses the other one.
+function findAnyColumn(columns, keywordSets) {
+  for (const keywords of keywordSets) {
+    const match = findColumn(columns, keywords);
+    if (match) return match;
+  }
+  return null;
+}
+
+module.exports = { isConfigured, fetchSheet, fetchSimplifiedSheet, simplifySheet, findColumn, findAnyColumn, rowLink };

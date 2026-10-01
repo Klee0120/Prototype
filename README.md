@@ -571,15 +571,19 @@ Demo logins:
   flat, horizontally-scrolling row (Priorities, Tech Allocation, Schedule,
   Overview, Weekly Review, E&F Locations & WOM, Technicians, Vendors,
   Reports, Audit Trail) -- wide enough on most screens to need scrolling
-  just to see the last few. They're now grouped under seven top-level
+  just to see the last few. They're now grouped under eight top-level
   sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`):
   **Priorities**, **Timekeeping** (Tech Allocation, Schedule, Overview,
-  Weekly Review), **Roster** (Technicians), **Vendors**, **WOM** (Locations
-  & WOM, plus the new WOM Lookup below), **Financials** (PSE Tasks, Cost
-  Analysis, then Reports -- kept separate from Timekeeping since PO/PSE
-  pipeline tracking, portfolio-wide cost tracking, and filing WOM/Labor/
-  Financial/GL reports are financial tasks, not timekeeping ones), and
-  **Audit Trail**. A section
+  Weekly Review), **Roster** (Technicians), **Vendors**, **Locations** (its
+  own section -- see below), **WOM** (WOM Projects + Smartsheet Connection,
+  plus the WOM Lookup below), **Financials** (Cost Analysis, then
+  Reports -- kept separate from Timekeeping since portfolio-wide cost
+  tracking and filing WOM/Labor/Financial/GL reports are financial tasks,
+  not timekeeping ones), and **Audit Trail**. (Financials used to also carry
+  its own **PSE Tasks** tab -- removed once the Priorities/Tasks board's own
+  WOM-lifecycle checklist tasks covered exactly the same ground, so RFM and
+  every other admin now work that checklist from Priorities only, instead of
+  the same work existing in two places.) A section
   with only one tab behaves exactly as before (clicking it goes straight
   there); a section with more shows a second row of its own sub-tabs
   underneath, and remembers which sub-tab you were last on when you click
@@ -900,31 +904,64 @@ Demo logins:
     WOM's own paper trail. Photos/attachments for the job can already be
     attached directly to this task the same way any task supports
     attachments, so they travel with it.
-- **Cost Analysis (under the Financials section, next to PSE Tasks)**: a
-  portfolio-wide estimated-vs-applied view across **every** WOM on file
-  (`GET /api/woms/cost-summary`, admin-only) -- not just the ones
-  currently on the lifecycle checklist, so a WOM that never went through
-  it (or has already been invoiced and closed) still counts. Cancelled
-  WOMs are excluded throughout, and every list is sorted with the largest
-  dollar figure first. Seven stat tiles up top, each of the last four
-  jumping straight to its own list below: Total Estimated, Total Applied,
-  Estimated minus Applied, **Excess Labor Budget**, **Applied, No Toyota PO
-  Yet**, **Labor Overcharged**, and **Contracted Services Increased**.
+- **Cost Analysis (under the Financials section)**: a portfolio-wide
+  estimated-vs-applied view across **every** WOM on file (`GET
+  /api/woms/cost-summary`, admin-only) -- not just the ones currently on the
+  lifecycle checklist, so a WOM that never went through it (or has already
+  been invoiced and closed) still counts. Cancelled WOMs are excluded
+  throughout, and every list is sorted with the largest dollar figure first.
+  - **Six itemized cost categories, not just two.** The tracker breaks
+    estimate/applied cost into Labor, Materials, Contracted Services (a.k.a.
+    "PO $"), Other Direct Costs, Sales Tax, and Contingency -- all six sum
+    to the project total on each side. `WOM_COST_BREAKDOWN_FIELDS` in
+    `server/data/db.js` centralizes the dbColumn/jsField/diffLabel for all
+    thirteen breakdown figures (the six pairs plus Toyota PO value below) in
+    one place, built into the WOM upsert's SQL dynamically rather than
+    hand-copied across the sync's five separate INSERT/UPDATE statements --
+    a hand-copied, positional param list across that many statements is
+    exactly the kind of thing that silently drifts out of order in
+    financial data. Each category gets its own stat tile (jumping to its
+    own list below) and its own "N Overcharged" section once applied comes
+    in over estimate for that category specifically -- generic rendering
+    for Materials/Other Direct/Tax/Contingency (`categoryOverages` in the
+    API response), since none of them need Contracted Services' extra
+    vendor attribution.
+  - **Column names are inconsistent sheet to sheet, even between estimate
+    and applied side on the same sheet** -- the real tracker names its
+    applied-side Labor/Materials/Other Direct/Tax columns with no "Applied"
+    "$" suffix at all in some cases ("Applied Labor", not "Applied Labor
+    $"), and names the applied-side Contracted Services column "Applied PO
+    $" with no mention of "Contracted" at all, while contingency's
+    applied-side column is just "Contingency $" with no "Applied"/estimate
+    word whatsoever. `findColumn`/`findAnyColumn` in
+    `server/utils/smartsheet.js` handle this: `findAnyColumn` tries several
+    keyword sets in order (so "Contracted Services $" or "PO $" naming both
+    resolve to the same field), and `findColumn` takes an optional exclude
+    list (so "Contingency $" can be matched by just the word "contingency"
+    while explicitly ruling out "Estimated Contingency $", which would
+    otherwise match first). A column silently failing to match meant its
+    field stayed null forever and whatever depended on it (an overcharge
+    count, a "what changed" line) looked permanently empty regardless of
+    real data -- the actual root cause behind "Contracted Services
+    Increased" reading 0 forever despite real increases existing on the
+    sheet, and the same class of bug IDed for "Applied Labor" while building
+    a more faithful test fixture against it.
   - **Excess Labor Budget vs. Labor Overcharged -- opposite things, never
     conflated.** Estimated coming in *higher* than applied on the project
     total (`overquoted` in the API) is unused budget -- money quoted but
     never spent, a good thing, shown with a green "unused" badge. Applied
-    *labor* coming in higher than estimated *labor* specifically
-    (`laborOvercharged`, comparing the tracker's own itemized Estimate
-    Labor $/Applied Labor $ columns, not the project-total columns) is the
+    *labor* coming in higher than estimated *labor* specifically is the
     actual overspend, shown with a red "over" badge. The first says nothing
     about the second -- a WOM can show excess on its total while still
-    being overcharged on labor if some other line item (materials, tax)
-    swung the other way.
-  - **Contracted Services Increased**: the same idea as Labor Overcharged,
-    but for the itemized Estimate PO $ - Contracted Services / Applied PO
-    $ - Contracted Services columns -- applied contracted-services cost
-    coming in over what was quoted. Each row names the **vendor** whose
+    being overcharged on labor if some other line item swung the other way.
+  - **Toyota PO value** ("TOY Value" on the tracker) is a distinct, more
+    authoritative figure from this app's own estimate/applied numbers --
+    the actual dollar amount on the real Toyota-approved PO. **Applied Over
+    Toyota PO Value** compares applied cost against it directly, catching a
+    real overage even on a WOM that clears every estimate-vs-applied check
+    above (if the estimate itself undersold what Toyota approved, or vice
+    versa, those checks alone can't catch it).
+  - **Contracted Services Increased**: each row names the **vendor** whose
     charge went over (matched from the tracker's own "Vendor(s)
     Name/#/Phone" column by name, tolerant of the sheet's "Name -
     Phone#" format, left unmatched rather than guessed at if no vendor by
@@ -944,10 +981,11 @@ Demo logins:
     trip to Cost Analysis.
   - A WOM with contracted-services cost already applied but still no
     Maximo/PO # on file is automatically **High priority** on its own
-    lifecycle task (Priorities board and PSE Tasks alike) -- money's gone
-    out the door to a vendor with no paperwork backing it yet, which
-    deserves the same urgency as a PSE that hasn't been sent to Toyota,
-    independent of whatever step the rest of the checklist is on.
+    lifecycle task (Priorities board and the WOM lifecycle checklist
+    alike) -- money's gone out the door to a vendor with no paperwork
+    backing it yet, which deserves the same urgency as a PSE that hasn't
+    been sent to Toyota, independent of whatever step the rest of the
+    checklist is on.
 - **Task / workflow engine (Phase 1) -- "Priorities &rarr; My Work"**: a
   general-purpose task system built around one rule: **states create
   tasks, tasks create timestamps, timestamps create analytics.** Not a
@@ -1595,11 +1633,17 @@ same at every location; that's a fixed constant (`EF_SUBSIDIARY_CODE` in
 client as `efSubsidiaryCode` on every location so it's visible without being
 editable. WOM projects are different: each WOM has its *own* subsidiary code
 that varies project to project, entered by an admin when the WOM is created
-or edited. All of this is managed from the **"E&F Locations & WOM"** tab
-(named for what it actually covers, not just WOM status), which has a
-Locations section above the WOM list (add/edit a location's name, E&F Job
-Number, WOM Job Number, and Region) and lets the WOM add form and each WOM
-row's Edit button set/change the subsidiary code.
+or edited. Locations and WOM projects live on **separate top-level tabs** --
+**Locations** (its own nav section, not nested under WOM) for adding/editing
+a location's name, E&F Job Number, WOM Job Number, Region, and Territory;
+**WOM** (Smartsheet Connection + the WOM Projects list) for WOM records
+themselves, where the WOM add form and each WOM row's Edit button set/change
+the subsidiary code. These two used to share a single "Locations & WOM"
+tab/page; splitting them keeps "manage my physical sites" and "manage WOM
+projects/sync" as two separate day-to-day tasks instead of one long
+scrolling page covering both (`drawLocations`/`drawWoms` in
+`public/js/views/adminReview.js`, each with their own redraw rather than
+both sharing the old combined `drawWoms`).
 
 **Territory.** Every location also carries a Territory (Midwest, HQ, East,
 or West — `db.TERRITORIES`, `GET /api/locations/territories`), a label for

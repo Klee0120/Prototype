@@ -56,6 +56,22 @@ function presentWom(w) {
     estimatedContracted: w.estimated_contracted,
     appliedLabor: w.applied_labor,
     appliedContracted: w.applied_contracted,
+    // The remaining four cost categories the tracker itemizes alongside
+    // labor and contracted services -- all six estimate-side figures sum to
+    // estimatedPrice (same for applied/appliedPrice).
+    estimatedMaterials: w.estimated_materials,
+    appliedMaterials: w.applied_materials,
+    estimatedOtherDirect: w.estimated_other_direct,
+    appliedOtherDirect: w.applied_other_direct,
+    estimatedTax: w.estimated_tax,
+    appliedTax: w.applied_tax,
+    estimatedContingency: w.estimated_contingency,
+    appliedContingency: w.applied_contingency,
+    // The actual dollar amount on the real Toyota-approved PO ("TOY Value"
+    // in the tracker) -- separate from estimatedPrice (what the PSE asked
+    // for) and appliedPrice (what's actually been posted), so Cost Analysis
+    // can compare applied cost against what Toyota actually approved.
+    toyotaPoValue: w.toyota_po_value,
     vendorId: w.vendor_id,
     vendorName: w.vendor_id ? (db.findVendor(w.vendor_id) || {}).name || null : null,
     // The WOM lifecycle checklist -- every step, in order, with its
@@ -90,6 +106,16 @@ router.get("/:code/lookup", requireAuth, (req, res) => {
 router.get("/:code/history", requireAuth, requireAdmin, (req, res) => {
   if (!db.findWom(req.params.code)) return res.status(404).json({ error: "WOM not found" });
   res.json(db.listWomStatusHistory(req.params.code));
+});
+
+// Which past Smartsheet syncs actually touched this WOM, and what they
+// changed each time -- pulled from every sync run's own changed_woms_json
+// rather than a separate log, so "why does this keep showing as changed on
+// every sync" can be answered by looking at this WOM's own history instead
+// of only ever seeing the latest run's summary.
+router.get("/:code/sync-history", requireAuth, requireAdmin, (req, res) => {
+  if (!db.findWom(req.params.code)) return res.status(404).json({ error: "WOM not found" });
+  res.json(db.getWomSyncHistory(req.params.code));
 });
 
 router.post("/", requireAuth, requireAdmin, (req, res) => {

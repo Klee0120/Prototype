@@ -40,6 +40,7 @@ const COLUMNS = [
   { id: 11, title: "Applied Labor $" },
   { id: 12, title: "Applied PO $ - Contracted Services" },
   { id: 13, title: "Vendor(s) Name/#/Phone" },
+  { id: 14, title: "TOY Value" },
 ];
 
 function sheetWith(rows) {
@@ -206,6 +207,7 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
               { columnId: 10, value: 100, displayValue: "$100.00" },
               { columnId: 11, value: 2720, displayValue: "$2,720.00" },
               { columnId: 12, value: 350, displayValue: "$350.00" },
+              { columnId: 14, value: 3000, displayValue: "$3,000.00" },
               // Sheet's own "Name/#/Phone" format -- only the name portion
               // (before " - ") should be matched against this app's vendors.
               { columnId: 13, value: "Automated Solutions Group - 5883201", displayValue: "Automated Solutions Group - 5883201" },
@@ -228,6 +230,7 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.equal(res.body.estimatedContractedColumn, "Estimate PO $ - Contracted Services");
       assert.equal(res.body.appliedLaborColumn, "Applied Labor $");
       assert.equal(res.body.appliedContractedColumn, "Applied PO $ - Contracted Services");
+      assert.equal(res.body.toyotaPoValueColumn, "TOY Value");
       assert.equal(res.body.vendorColumn, "Vendor(s) Name/#/Phone");
 
       const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
@@ -236,6 +239,7 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
       assert.equal(matched.estimatedContracted, 100);
       assert.equal(matched.appliedLabor, 2720);
       assert.equal(matched.appliedContracted, 350);
+      assert.equal(matched.toyotaPoValue, 3000);
       assert.equal(matched.vendorId, vendorRes.body.id);
       assert.equal(matched.vendorName, "Automated Solutions Group");
 
@@ -610,5 +614,163 @@ test("smartsheet sync: creates, promotes, and updates WOMs by underlying row", a
     } finally {
       changed();
     }
+  });
+});
+
+// Mirrors the real tracker's full column set exactly (down to the
+// asymmetric "Estimated Contingency $" / "Contingency $" naming, where the
+// applied side has no "applied" word of its own) -- the actual shape that
+// exposed the Applied PO $ / TOY Value gaps this fixture exists to guard
+// against regressing.
+const FULL_BREAKDOWN_COLUMNS = [
+  { id: 1, title: "WOM #" },
+  { id: 2, title: "Project Name" },
+  { id: 3, title: "Estimate Labor $" },
+  { id: 4, title: "Estimate Materials $" },
+  { id: 5, title: "Estimate PO $ - Contracted Services" },
+  { id: 6, title: "Estimate Other Direct $" },
+  { id: 7, title: "Estimate Sales Tax" },
+  { id: 8, title: "Estimated Contingency $" },
+  { id: 9, title: "Estimate WOM $ - Project Total" },
+  { id: 10, title: "Applied Labor" },
+  { id: 11, title: "Applied Materials" },
+  { id: 12, title: "Applied PO $" },
+  { id: 13, title: "Applied Other Direct Costs" },
+  { id: 14, title: "Applied Tax" },
+  { id: 15, title: "Contingency $" },
+  { id: 16, title: "Applied WOM $ - Project Summary" },
+  { id: 17, title: "TOY Value" },
+];
+
+test("smartsheet sync: full six-category cost breakdown matches the real tracker's exact column names", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const restore = stubFetchOnce({
+    ok: true,
+    json: async () => ({
+      name: "Midwest PSE Request Tracker",
+      columns: FULL_BREAKDOWN_COLUMNS,
+      rows: [
+        {
+          id: 900,
+          cells: [
+            { columnId: 1, value: "20040145", displayValue: "20040145" },
+            { columnId: 2, value: "Riser Check Valves Repair", displayValue: "Riser Check Valves Repair" },
+            { columnId: 3, value: 3060, displayValue: "$3,060.00" },
+            { columnId: 4, value: 0, displayValue: "$0.00" },
+            { columnId: 5, value: 48500, displayValue: "$48,500.00" },
+            { columnId: 6, value: 2578, displayValue: "$2,578.00" },
+            { columnId: 7, value: 0, displayValue: "$0.00" },
+            { columnId: 8, value: 0, displayValue: "$0.00" },
+            { columnId: 9, value: 54138, displayValue: "$54,138.00" },
+            { columnId: 10, value: 0, displayValue: "$0.00" },
+            { columnId: 11, value: 0, displayValue: "$0.00" },
+            { columnId: 12, value: 35500, displayValue: "$35,500.00" },
+            { columnId: 13, value: 1775, displayValue: "$1,775.00" },
+            { columnId: 14, value: 0, displayValue: "$0.00" },
+            { columnId: 15, value: 0, displayValue: "$0.00" },
+            { columnId: 16, value: 37275, displayValue: "$37,275.00" },
+            { columnId: 17, value: 54138, displayValue: "$54,138.00" },
+          ],
+        },
+      ],
+    }),
+  });
+  try {
+    const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.estimatedMaterialsColumn, "Estimate Materials $");
+    assert.equal(res.body.appliedMaterialsColumn, "Applied Materials");
+    assert.equal(res.body.estimatedOtherDirectColumn, "Estimate Other Direct $");
+    assert.equal(res.body.appliedOtherDirectColumn, "Applied Other Direct Costs");
+    assert.equal(res.body.estimatedTaxColumn, "Estimate Sales Tax");
+    assert.equal(res.body.appliedTaxColumn, "Applied Tax");
+    assert.equal(res.body.estimatedContingencyColumn, "Estimated Contingency $");
+    // The trickiest pair: the applied-side column has no "applied" (or any
+    // other) word of its own, so this only works via the exclude list
+    // ruling out the estimate-side column.
+    assert.equal(res.body.appliedContingencyColumn, "Contingency $");
+    assert.equal(res.body.toyotaPoValueColumn, "TOY Value");
+
+    const wom = (await server.call("GET", "/api/woms", { userId: "ADMIN" })).body.find((w) => w.code === "20040145");
+    assert.equal(wom.estimatedLabor, 3060);
+    assert.equal(wom.estimatedMaterials, 0);
+    assert.equal(wom.estimatedContracted, 48500);
+    assert.equal(wom.estimatedOtherDirect, 2578);
+    assert.equal(wom.estimatedTax, 0);
+    assert.equal(wom.estimatedContingency, 0);
+    assert.equal(wom.appliedLabor, 0);
+    assert.equal(wom.appliedMaterials, 0);
+    assert.equal(wom.appliedContracted, 35500);
+    assert.equal(wom.appliedOtherDirect, 1775);
+    assert.equal(wom.appliedTax, 0);
+    assert.equal(wom.appliedContingency, 0);
+    assert.equal(wom.toyotaPoValue, 54138);
+
+    // Cost Analysis should flag this WOM as applied-over-Toyota-PO once the
+    // applied project total exceeds the Toyota-approved ceiling.
+    await server.call("PATCH", "/api/woms/20040145/pricing", { userId: "ADMIN", body: { appliedPrice: 60000 } });
+    const summary = (await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" })).body;
+    const flagged = summary.appliedOverToyotaPo.find((w) => w.code === "20040145");
+    assert.ok(flagged, "expected this WOM to show up as applied over its Toyota PO value");
+    assert.equal(flagged.overage, 60000 - 54138);
+  } finally {
+    restore();
+  }
+
+  // The original bug report: "Applied PO $" (no "Contracted Services" in
+  // the title) wasn't recognized at all, so Contracted Services Increased
+  // stayed stuck at 0 regardless of real data. Re-sync with a higher
+  // Applied PO $ and confirm it's now actually caught.
+  await t.test("a real Applied PO $ increase over estimate is caught as Contracted Services Increased", async () => {
+    const restoreIncrease = stubFetchOnce({
+      ok: true,
+      json: async () => ({
+        name: "Midwest PSE Request Tracker",
+        columns: FULL_BREAKDOWN_COLUMNS,
+        rows: [
+          {
+            id: 900,
+            cells: [
+              { columnId: 1, value: "20040145", displayValue: "20040145" },
+              { columnId: 2, value: "Riser Check Valves Repair", displayValue: "Riser Check Valves Repair" },
+              { columnId: 5, value: 48500, displayValue: "$48,500.00" },
+              { columnId: 12, value: 52000, displayValue: "$52,000.00" },
+            ],
+          },
+        ],
+      }),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const summary = (await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" })).body;
+      const flagged = summary.contractedIncreased.find((w) => w.code === "20040145");
+      assert.ok(flagged, "expected Applied PO $ exceeding Estimate PO $ to show up as Contracted Services Increased");
+      assert.equal(flagged.overage, 52000 - 48500);
+    } finally {
+      restoreIncrease();
+    }
+  });
+
+  await t.test("this WOM's own sync history shows the sync that actually changed it", async () => {
+    // Only one entry, not two: the very first sync *created* this WOM
+    // (tracked via the created count, not changedWoms) -- a creation isn't
+    // a "change" to something that already existed. The second sync (the
+    // Applied PO $ increase) is the one that counts.
+    const res = await server.call("GET", "/api/woms/20040145/sync-history", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 1);
+    assert.ok(res.body[0].fields.includes("applied contracted services"));
+  });
+
+  await t.test("a technician cannot see a WOM's sync history", async () => {
+    const res = await server.call("GET", "/api/woms/20040145/sync-history", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("sync history for an unknown WOM 404s", async () => {
+    const res = await server.call("GET", "/api/woms/NOPE-404/sync-history", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
   });
 });
