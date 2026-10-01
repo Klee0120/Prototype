@@ -680,7 +680,12 @@ test("WOM lifecycle: a vendor-only job with a request date and applied cost but 
       const after = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
       const taskAfter = after.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
       assert.ok(!taskAfter.title.includes("Needs Toyota PO"));
-      assert.equal(taskAfter.assignedRole, null, "Review charges has no single role -- either RFM or Admin can take it");
+      // Review charges has no role GATE -- either RFM or Admin can act on
+      // it (see roleAllowed in tasks.js) -- but it still defaults to RFM's
+      // queue for visibility, so it doesn't silently fall into Unassigned,
+      // the one step this would otherwise happen on since every other step
+      // has a real owner.
+      assert.equal(taskAfter.assignedRole, "reviewer");
       // Work is already done -- invoicing what's left is still worth
       // flagging, even with no paperwork gap anymore.
       assert.equal(taskAfter.priority, "high");

@@ -663,10 +663,18 @@ Demo logins:
   (`role=admin,financial`, split back into an `IN` list server-side -- see
   `listTasks` in `server/data/db.js`). If nobody's been designated RFM yet,
   every admin can act on every step, so the feature isn't locked up before
-  that one-time setup. "Review charges" has no role at all -- it's a shared
-  step either an RFM or an Admin can check off, since reviewing charges
-  together is a joint action rather than one person's job. Every step
-  still carries a role field even where it's auto-completed (used for
+  that one-time setup. "Review charges" has no role *gate* -- either an RFM
+  or an Admin can check it off, since reviewing charges together is a joint
+  action rather than one person's job (`roleAllowed` in
+  `tasks.js`/`adminReview.js` treats a step's `role: null` as "anyone").
+  That's a permission check, not a queue, though -- a task actually sitting
+  at that step still defaults its own `assignedRole` to `reviewer` (RFM)
+  purely so it lands somewhere a person looks by default (RFM's My
+  Work/Team Work) rather than falling into the Unassigned list, which is
+  what a bare `null` queue role would otherwise do, the one step this could
+  happen on since every other step has a real owner. Admin can still open
+  and act on it either way. Every step still carries a role field even
+  where it's auto-completed (used for
   queue-visibility -- e.g. "Schedule vendor" and "Work complete" are
   tagged Tech even though nothing here gives a technician a button to
   click, since a calendar entry or a timecard is what completes them).

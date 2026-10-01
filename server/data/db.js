@@ -1814,8 +1814,15 @@ function refreshWomLifecycleTask(code) {
       category: "wom_workflow",
       // A Toyota paperwork gap is RFM's to chase down regardless of which
       // checklist step the rest of the job's progress would otherwise
-      // route it to.
-      assignedRole: needsChangeOrderOrPo ? "reviewer" : nextStep ? nextStep.role : null,
+      // route it to. "Review charges" has no role GATE (either RFM or
+      // Admin can act on it -- see roleAllowed in tasks.js/adminReview.js,
+      // which treats a step's own role: null as "anyone"), but that's a
+      // permission check, not a queue -- defaulting it to "reviewer" here
+      // means it still lands somewhere a person actually looks (RFM's My
+      // Work/Team Work) instead of silently falling into the Unassigned
+      // list, the one step where that could otherwise happen since every
+      // other step has a real owner.
+      assignedRole: needsChangeOrderOrPo ? "reviewer" : nextStep ? nextStep.role || "reviewer" : null,
       priority: needsChangeOrderOrPo || sentToToyotaPending || workDone ? "high" : "normal",
       isException: needsChangeOrderOrPo,
       isChangeOrder: changeOrder,
