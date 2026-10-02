@@ -50,7 +50,8 @@ export async function renderGlReconciliation(container) {
       <div class="task-tiles">
         <div class="task-tile"><div class="task-tile-count">${data.reconciled.length}</div><div class="task-tile-label">POs matched to GL</div></div>
         <div class="task-tile"><div class="task-tile-count">${formatMoney(data.reconciledTotal)}</div><div class="task-tile-label">Net variance (paid &minus; approved)</div></div>
-        <div class="task-tile"><div class="task-tile-count">${data.codingMismatchCount}</div><div class="task-tile-label">Coding mismatches</div></div>
+        <div class="task-tile"><div class="task-tile-count">${data.subsidiaryMismatchCount}</div><div class="task-tile-label">Subsidiary mismatches</div></div>
+        <div class="task-tile"><div class="task-tile-count">${data.objectCodeMismatchCount}</div><div class="task-tile-label">Object code mismatches</div></div>
         <div class="task-tile"><div class="task-tile-count">${data.unmatchedEntries.length}</div><div class="task-tile-label">GL lines, no matching PO</div></div>
       </div>
 
@@ -60,8 +61,8 @@ export async function renderGlReconciliation(container) {
         imported so far -- a PO invoiced across multiple months shows its full running total here, not just
         the latest one. A variance isn't necessarily a problem by itself: a PO still being invoiced (check its
         own PO Status column) is just mid-billing, not wrong yet -- it's worth a look once that status shows
-        it's actually done. A coding mismatch means at least one GL line posted with a different object code
-        or subsidiary than what's on the PO itself.
+        it's actually done. Subsidiary and Object Code are checked separately against what's on the PO itself
+        (comparing just the leading code, since the PO Tracker stores these as "code + description").
       </p>
       <div class="gl-table-wrap"></div>
 
@@ -112,7 +113,8 @@ export async function renderGlReconciliation(container) {
             <th>Approved</th>
             <th>Actual paid (GL)</th>
             <th>Variance</th>
-            <th>Coding</th>
+            <th>Subsidiary</th>
+            <th>Object Code</th>
             <th></th>
           </tr>
         </thead>
@@ -130,7 +132,8 @@ export async function renderGlReconciliation(container) {
               <td>${formatMoney(r.poAmount)}</td>
               <td>${formatMoney(r.actualPaid)}</td>
               <td class="${r.variance > 0 ? "cost-amount-danger" : r.variance < 0 ? "cost-amount-ok" : ""}">${formatMoney(r.variance)}</td>
-              <td>${r.codingMismatch ? `<span class="badge badge-rejected">Mismatch</span>` : `<span class="badge badge-approved">Matches</span>`}</td>
+              <td>${r.subsidiaryMismatch ? `<span class="badge badge-rejected">Mismatch</span>` : `<span class="badge badge-approved">Matches</span>`}</td>
+              <td>${r.objectCodeMismatch ? `<span class="badge badge-rejected">Mismatch</span>` : `<span class="badge badge-approved">Matches</span>`}</td>
               <td class="cost-row-chevron">&rsaquo;</td>
             </tr>
           `
@@ -189,8 +192,8 @@ export async function renderGlReconciliation(container) {
           <tbody>
             <tr><th>Vendor</th><td>${escapeHtml(r.vendorName || "No vendor matched")}</td><th>Location</th><td>${escapeHtml(r.locationCode || "—")}</td></tr>
             <tr><th>WOM #</th><td>${escapeHtml(r.womNumber || "—")}</td><th>GL lines</th><td>${r.glLineCount}</td></tr>
-            <tr><th>PO Status</th><td>${escapeHtml(r.poStatus || "—")}</td><th>Coding</th><td>${r.codingMismatch ? "Mismatch" : "Matches"}</td></tr>
-            <tr><th>GL Period</th><td colspan="3">${escapeHtml(r.periodLabel || "—")}</td></tr>
+            <tr><th>PO Status</th><td>${escapeHtml(r.poStatus || "—")}</td><th>GL Period</th><td>${escapeHtml(r.periodLabel || "—")}</td></tr>
+            <tr><th>Subsidiary</th><td>${r.subsidiaryMismatch ? "Mismatch" : "Matches"}</td><th>Object Code</th><td>${r.objectCodeMismatch ? "Mismatch" : "Matches"}</td></tr>
             <tr><th>Approved</th><td>${formatMoney(r.poAmount)}</td><th>Actual paid (GL)</th><td>${formatMoney(r.actualPaid)}</td></tr>
             <tr><th>Variance</th><td colspan="3">${formatMoney(r.variance)}</td></tr>
           </tbody>

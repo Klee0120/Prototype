@@ -5193,11 +5193,21 @@ function getPoReconciliation() {
   // single period when the underlying lines span more than one.
   const reconciled = matchedPos.map((p) => {
     const lines = linesByPo.get(p.id) || [];
-    const codingMismatch = lines.some(
-      (l) =>
-        (p.poSubsidiary && l.subsidiary && String(l.subsidiary) !== String(p.poSubsidiary)) ||
-        (p.objectCode && l.objectAccountCode && String(l.objectAccountCode) !== String(p.objectCode))
-    );
+    // The PO Tracker stores Object Code/Subsidiary as a combined "code +
+    // description" string (e.g. "605200 Subcontracting Gen/Recurring"),
+    // while the GL only ever has the bare numeric code -- comparing those
+    // directly would flag a mismatch on every single row regardless of
+    // whether the actual code matches. Pull the leading number off the
+    // PO's own fields the same way parseObjectAccountCode already does for
+    // the GL side.
+    const poSubsidiaryCode = parseObjectAccountCode(p.poSubsidiary);
+    const poObjectCode = parseObjectAccountCode(p.objectCode);
+    // Reported separately (not one blended flag) -- they're different
+    // dimensions with different reliability, and conflating a real
+    // subsidiary error with an object-code difference under one "Mismatch"
+    // badge hides which one actually needs attention.
+    const subsidiaryMismatch = lines.some((l) => poSubsidiaryCode && l.subsidiary && String(l.subsidiary) !== poSubsidiaryCode);
+    const objectCodeMismatch = lines.some((l) => poObjectCode && l.objectAccountCode && String(l.objectAccountCode) !== poObjectCode);
     const periods = [...new Set(lines.map((l) => `P${l.periodNumber}/FY${l.fiscalYear}`))];
     return {
       poId: p.id,
@@ -5211,7 +5221,8 @@ function getPoReconciliation() {
       actualPaid: p.actualPaid,
       variance: p.actualPaid - (p.poAmount || 0),
       glLineCount: p.glLineCount,
-      codingMismatch,
+      subsidiaryMismatch,
+      objectCodeMismatch,
       periodLabel: periods.join(", "),
       lines,
     };
@@ -5232,7 +5243,8 @@ function getPoReconciliation() {
   return {
     reconciled,
     reconciledTotal: reconciled.reduce((sum, r) => sum + r.variance, 0),
-    codingMismatchCount: reconciled.filter((r) => r.codingMismatch).length,
+    subsidiaryMismatchCount: reconciled.filter((r) => r.subsidiaryMismatch).length,
+    objectCodeMismatchCount: reconciled.filter((r) => r.objectCodeMismatch).length,
     unmatchedEntries,
     unmatchedTotal: unmatchedEntries.reduce((sum, e) => sum + (e.amount || 0), 0),
   };
