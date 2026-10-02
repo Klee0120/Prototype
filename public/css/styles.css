@@ -202,6 +202,7 @@ h1, h2, h3, h4 {
 
 .subtab-band {
   display: flex;
+  align-items: center;
   gap: 6px;
   flex-wrap: wrap;
   padding: 12px 24px;
@@ -209,6 +210,31 @@ h1, h2, h3, h4 {
 }
 .subtab-band:empty {
   display: none;
+}
+
+/* A page-context picker (right now, just Tech Allocation's technician/week
+   selectors) pushed to the right of this same band's pill tabs, rather than
+   sitting separately up in the dark top bar -- reads easier right next to
+   the tabs it's context for. topbar-field/topbar-arrow-btn are otherwise
+   styled for the dark top bar's own background, so both need a light-
+   background override here. */
+.subtab-context-picker {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  margin-left: auto;
+}
+.subtab-band .topbar-field label {
+  color: var(--muted);
+}
+.subtab-band .topbar-arrow-btn {
+  background: var(--card);
+  color: var(--ink);
+  border: 1px solid var(--border);
+}
+.subtab-band .topbar-arrow-btn:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 .topbar-brand-text {

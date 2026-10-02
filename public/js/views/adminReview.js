@@ -257,10 +257,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
 
     const content = container.querySelector("#tab-content");
-    // Only a tab that actually has its own page-context picker (right now,
-    // just Tech Allocation's technician/week selectors) fills this back in
-    // -- cleared up front so switching away never leaves a stale control
-    // sitting in the top bar.
+    // No admin tab currently fills this back in (Tech Allocation's own
+    // technician/week picker moved into the sub-tab band instead -- see
+    // drawTechAllocation); still cleared up front in case a future tab
+    // wants it, same as the technician-facing view still does.
     topbarHost.innerHTML = "";
     if (activeTab === "mywork") await renderTaskBoard(content);
     else if (activeTab === "checklist") await drawPriorities(content);
@@ -1902,23 +1902,30 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const options = selectable.map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === allocTechId ? "selected" : ""}>${escapeHtml(t.name)}</option>`).join("");
     const currentIndex = selectable.findIndex((t) => t.id === allocTechId);
 
-    // The technician switcher lives in the shared top bar (next to the
-    // brand) rather than inline in the content -- it's page context (who
-    // this whole page is about), the same role the week picker plays, not
-    // a piece of the page's own content. A second field (#topbar-week-field)
-    // sits alongside it, filled in by renderTechWeek below once it knows
-    // this page wants its week-nav up there too, not inline.
-    topbarHost.innerHTML = `
-      <div class="topbar-field">
-        <label>Technician</label>
-        <div class="topbar-field-row">
-          <button class="topbar-arrow-btn tech-alloc-prev" type="button" ${currentIndex <= 0 ? "disabled" : ""} aria-label="Previous technician">&larr;</button>
-          <select class="topbar-pill-select tech-alloc-select">${options}</select>
-          <button class="topbar-arrow-btn tech-alloc-next" type="button" ${currentIndex === -1 || currentIndex >= selectable.length - 1 ? "disabled" : ""} aria-label="Next technician">&rarr;</button>
+    // The technician switcher sits in the sub-tab band, pushed to the right
+    // of the Tech Allocation/Overview/Weekly Review pills (not up in the
+    // dark top bar) -- it reads easier sitting right next to the tabs it's
+    // page-context for, rather than separated out above them. Appended
+    // (not replacing subtabHost's innerHTML) since draw() already put the
+    // pills there; a second field (#topbar-week-field) sits alongside it,
+    // filled in by renderTechWeek below once it knows this page wants its
+    // week-nav there too, not inline in the page content.
+    subtabHost.insertAdjacentHTML(
+      "beforeend",
+      `
+      <div class="subtab-context-picker">
+        <div class="topbar-field">
+          <label>Technician</label>
+          <div class="topbar-field-row">
+            <button class="topbar-arrow-btn tech-alloc-prev" type="button" ${currentIndex <= 0 ? "disabled" : ""} aria-label="Previous technician">&larr;</button>
+            <select class="topbar-pill-select tech-alloc-select">${options}</select>
+            <button class="topbar-arrow-btn tech-alloc-next" type="button" ${currentIndex === -1 || currentIndex >= selectable.length - 1 ? "disabled" : ""} aria-label="Next technician">&rarr;</button>
+          </div>
         </div>
+        <div class="topbar-field" id="topbar-week-field"></div>
       </div>
-      <div class="topbar-field" id="topbar-week-field"></div>
-    `;
+    `
+    );
 
     content.innerHTML = `
       <p class="tech-alloc-hint">You're allocating this technician's time on their behalf.</p>
@@ -1930,20 +1937,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       return;
     }
 
-    topbarHost.querySelector(".tech-alloc-select").addEventListener("change", (e) => {
+    subtabHost.querySelector(".tech-alloc-select").addEventListener("change", (e) => {
       allocTechId = e.target.value;
       draw();
     });
-    topbarHost.querySelector(".tech-alloc-prev").addEventListener("click", () => {
+    subtabHost.querySelector(".tech-alloc-prev").addEventListener("click", () => {
       if (currentIndex > 0) allocTechId = selectable[currentIndex - 1].id;
       draw();
     });
-    topbarHost.querySelector(".tech-alloc-next").addEventListener("click", () => {
+    subtabHost.querySelector(".tech-alloc-next").addEventListener("click", () => {
       if (currentIndex < selectable.length - 1) allocTechId = selectable[currentIndex + 1].id;
       draw();
     });
 
-    await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId, topbarHost.querySelector("#topbar-week-field"));
+    await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId, subtabHost.querySelector("#topbar-week-field"));
   }
 
   const DAILY_GOAL_TARGET = 10;
