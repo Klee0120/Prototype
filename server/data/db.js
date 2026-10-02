@@ -575,6 +575,16 @@ db.exec(`
     matched_po_id INTEGER,
     created_at TEXT NOT NULL
   );
+
+  -- Without these, every GL Reconciliation page load and reclass GL-link
+  -- lookup does a full table scan of gl_entries -- fine at one month's
+  -- ~8,000 rows, not fine once several months have accumulated (each
+  -- import only replaces its own period, so this table only ever grows).
+  CREATE INDEX IF NOT EXISTS idx_gl_entries_matched_po_id ON gl_entries(matched_po_id);
+  CREATE INDEX IF NOT EXISTS idx_gl_entries_purchase_order ON gl_entries(purchase_order);
+  CREATE INDEX IF NOT EXISTS idx_gl_entries_business_unit ON gl_entries(business_unit);
+  CREATE INDEX IF NOT EXISTS idx_gl_entries_period ON gl_entries(period_number, fiscal_year);
+  CREATE INDEX IF NOT EXISTS idx_pos_wom_number ON pos(wom_number);
 `);
 
 // A sync's actual per-WOM changes (code/description/which fields differed),

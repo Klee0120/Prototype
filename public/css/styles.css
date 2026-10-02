@@ -2442,6 +2442,15 @@ h1, h2, h3, h4 {
   min-width: 36px;
   text-align: center;
 }
+.gl-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 12px 0;
+  font-size: 0.9em;
+  color: var(--text-secondary, #666);
+}
 .po-desc-cell {
   max-width: 320px;
 }

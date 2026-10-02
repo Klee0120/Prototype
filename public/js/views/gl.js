@@ -73,6 +73,29 @@ export async function renderGlReconciliation(container) {
   let glCodingFilter = ""; // "" | "subsidiary" | "objectCode" | "either"
   let glAboveOnly = false; // variance > 0 ("posted above PO")
   let glMissingLocationOnly = false;
+  // Every GL import only adds to gl_entries (each one replaces just its own
+  // period), so these three tables only ever grow as more months get
+  // imported -- rendering all of them as one giant unpaginated table is
+  // what was making the page feel slow. Paginated client-side (the data's
+  // already in hand either way); each table keeps its own current page.
+  const GL_PAGE_SIZE = 100;
+  let reconciledPage = 1;
+  let unmatchedPage = 1;
+  let noPoReferencePage = 1;
+
+  function renderPager(wrapClass, totalRows, page) {
+    const totalPages = Math.max(1, Math.ceil(totalRows / GL_PAGE_SIZE));
+    if (totalPages <= 1) return "";
+    const start = (page - 1) * GL_PAGE_SIZE + 1;
+    const end = Math.min(totalRows, page * GL_PAGE_SIZE);
+    return `
+      <div class="gl-pager ${wrapClass}">
+        <button type="button" class="btn btn-secondary gl-pager-prev" ${page <= 1 ? "disabled" : ""}>&larr; Prev</button>
+        <span>Showing ${start}&ndash;${end} of ${totalRows}</span>
+        <button type="button" class="btn btn-secondary gl-pager-next" ${page >= totalPages ? "disabled" : ""}>Next &rarr;</button>
+      </div>
+    `;
+  }
 
   await draw();
 
@@ -206,18 +229,22 @@ export async function renderGlReconciliation(container) {
 
     container.querySelector(".gl-status-filter").addEventListener("change", (e) => {
       glStatusFilter = e.target.value;
+      reconciledPage = 1;
       renderReconciledTable();
     });
     container.querySelector(".gl-coding-filter").addEventListener("change", (e) => {
       glCodingFilter = e.target.value;
+      reconciledPage = 1;
       renderReconciledTable();
     });
     container.querySelector(".gl-above-filter").addEventListener("change", (e) => {
       glAboveOnly = e.target.checked;
+      reconciledPage = 1;
       renderReconciledTable();
     });
     container.querySelector(".gl-missing-location-filter").addEventListener("change", (e) => {
       glMissingLocationOnly = e.target.checked;
+      reconciledPage = 1;
       renderReconciledTable();
     });
 
@@ -249,6 +276,9 @@ export async function renderGlReconciliation(container) {
       wrap.innerHTML = `<p class="empty-note">No PO matches these filters.</p>`;
       return;
     }
+    const totalPages = Math.max(1, Math.ceil(filtered.length / GL_PAGE_SIZE));
+    if (reconciledPage > totalPages) reconciledPage = totalPages;
+    const pageItems = filtered.slice((reconciledPage - 1) * GL_PAGE_SIZE, reconciledPage * GL_PAGE_SIZE);
     wrap.innerHTML = `
       <table class="detail-table gl-table">
         <thead>
@@ -268,7 +298,7 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${filtered
+          ${pageItems
             .map(
               (r) => `
             <tr class="gl-row" data-po-id="${r.poId}">
@@ -290,6 +320,7 @@ export async function renderGlReconciliation(container) {
             .join("")}
         </tbody>
       </table>
+      ${renderPager("gl-reconciled-pager", filtered.length, reconciledPage)}
     `;
     wrap.querySelectorAll("tr.gl-row").forEach((row) => {
       row.addEventListener("click", () => {
@@ -297,10 +328,17 @@ export async function renderGlReconciliation(container) {
         if (r) openPoDetailModal(r);
       });
     });
+    const prevBtn = wrap.querySelector(".gl-reconciled-pager .gl-pager-prev");
+    const nextBtn = wrap.querySelector(".gl-reconciled-pager .gl-pager-next");
+    if (prevBtn) prevBtn.addEventListener("click", () => { reconciledPage--; renderReconciledTable(); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { reconciledPage++; renderReconciledTable(); });
   }
 
   function renderUnmatchedTable() {
     const wrap = container.querySelector(".gl-unmatched-wrap");
+    const totalPages = Math.max(1, Math.ceil(data.unmatchedEntries.length / GL_PAGE_SIZE));
+    if (unmatchedPage > totalPages) unmatchedPage = totalPages;
+    const pageItems = data.unmatchedEntries.slice((unmatchedPage - 1) * GL_PAGE_SIZE, unmatchedPage * GL_PAGE_SIZE);
     wrap.innerHTML = `
       <table class="detail-table gl-table">
         <thead>
@@ -315,7 +353,7 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${data.unmatchedEntries
+          ${pageItems
             .map(
               (e) => `
             <tr>
@@ -332,7 +370,12 @@ export async function renderGlReconciliation(container) {
             .join("")}
         </tbody>
       </table>
+      ${renderPager("gl-unmatched-pager", data.unmatchedEntries.length, unmatchedPage)}
     `;
+    const prevBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-prev");
+    const nextBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-next");
+    if (prevBtn) prevBtn.addEventListener("click", () => { unmatchedPage--; renderUnmatchedTable(); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { unmatchedPage++; renderUnmatchedTable(); });
   }
 
   // Same shape as renderUnmatchedTable, but "PO # (per GL)" would always
@@ -341,6 +384,9 @@ export async function renderGlReconciliation(container) {
   // payroll/journal/accrual line from a real invoice.
   function renderNoPoReferenceTable() {
     const wrap = container.querySelector(".gl-no-po-ref-wrap");
+    const totalPages = Math.max(1, Math.ceil(data.noPoReferenceEntries.length / GL_PAGE_SIZE));
+    if (noPoReferencePage > totalPages) noPoReferencePage = totalPages;
+    const pageItems = data.noPoReferenceEntries.slice((noPoReferencePage - 1) * GL_PAGE_SIZE, noPoReferencePage * GL_PAGE_SIZE);
     wrap.innerHTML = `
       <table class="detail-table gl-table">
         <thead>
@@ -355,7 +401,7 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${data.noPoReferenceEntries
+          ${pageItems
             .map(
               (e) => `
             <tr>
@@ -372,7 +418,12 @@ export async function renderGlReconciliation(container) {
             .join("")}
         </tbody>
       </table>
+      ${renderPager("gl-no-po-ref-pager", data.noPoReferenceEntries.length, noPoReferencePage)}
     `;
+    const prevBtn = wrap.querySelector(".gl-no-po-ref-pager .gl-pager-prev");
+    const nextBtn = wrap.querySelector(".gl-no-po-ref-pager .gl-pager-next");
+    if (prevBtn) prevBtn.addEventListener("click", () => { noPoReferencePage--; renderNoPoReferenceTable(); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { noPoReferencePage++; renderNoPoReferenceTable(); });
   }
 
   function openPoDetailModal(r) {
