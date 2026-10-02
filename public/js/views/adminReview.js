@@ -8,6 +8,7 @@ import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { renderPos } from "./pos.js";
+import { renderReclasses } from "./reclasses.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 
@@ -71,7 +72,7 @@ const NAV_SECTIONS = [
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup", "schedule"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
-  { key: "financials", label: "Financials", tabs: ["costanalysis", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["costanalysis", "reclasses", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
 
@@ -83,6 +84,7 @@ const TAB_LABELS = {
   overview: "Overview",
   review: "Weekly Review",
   costanalysis: "Cost Analysis",
+  reclasses: "Reclasses",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendor Directory",
@@ -279,6 +281,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "pos") await renderPos(content);
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
+    else if (activeTab === "reclasses") await renderReclasses(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
 

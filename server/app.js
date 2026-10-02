@@ -15,6 +15,7 @@ const vendorLookupRoutes = require("./routes/vendorLookup");
 const scheduleRoutes = require("./routes/schedule");
 const taskRoutes = require("./routes/tasks");
 const poRoutes = require("./routes/pos");
+const reclassRoutes = require("./routes/reclasses");
 
 function createApp() {
   const app = express();
@@ -61,6 +62,7 @@ function createApp() {
   app.use("/api/schedule", scheduleRoutes);
   app.use("/api/tasks", taskRoutes);
   app.use("/api/admin/pos", poRoutes);
+  app.use("/api/admin/reclasses", reclassRoutes);
 
   // Every redeploy restarts this process (see scripts/redeploy.sh), but a
   // browser tab left open from before -- or one that just hits a normal

@@ -232,6 +232,71 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  -- A GL reclass submission -- modeled directly on Krista's real "RECLASS"
+  -- tracking sheet (JOURNAL ENTRY FORM - RECLASS), not a generic placeholder.
+  -- One batch per submission (region/revision/reason, matching the sheet's
+  -- own metric block), many line items each. Submitting a reclass in this
+  -- app never changes any posted-actuals figure -- see financial_entries
+  -- below once it exists; a reclass only ever reflects as "pending" until a
+  -- later GL import confirms the same correction landed.
+  CREATE TABLE IF NOT EXISTS reclass_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    region TEXT,
+    reason_for_change TEXT,
+    revision_no INTEGER,
+    revision_date TEXT,
+    original_date_published TEXT,
+    produced_by TEXT,
+    total_gl_line_items INTEGER,
+    reported_total_amount REAL,
+    source_file_name TEXT,
+    imported_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- Each line keeps the full FROM/TO coding (job#/object/subsidiary/WOM/
+  -- amount on both sides), exactly like the real sheet -- never collapsed
+  -- into a single "corrected to" field, since knowing what it WAS coded as
+  -- is what makes the recurring-error pattern analysis possible later.
+  -- source distinguishes how this app came to have the row: 'imported' (a
+  -- historical submission file), 'manual' (an admin logged a finding by
+  -- hand), or 'auto_flagged' (created from a GL-vs-WOM/PO coding mismatch
+  -- the app itself caught -- not wired up yet, but the schema's ready for
+  -- it rather than needing a migration later).
+  CREATE TABLE IF NOT EXISTS reclass_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER,
+    line_number INTEGER,
+    from_job_number TEXT,
+    from_object_code TEXT,
+    from_subsidiary TEXT,
+    from_wom_number TEXT,
+    from_amount REAL,
+    to_job_number TEXT,
+    to_object_code TEXT,
+    to_subsidiary TEXT,
+    to_wom_number TEXT,
+    to_amount REAL,
+    vendor TEXT,
+    comments TEXT,
+    region TEXT,
+    cost_center_adjusted INTEGER NOT NULL DEFAULT 0,
+    subledger_adjusted INTEGER NOT NULL DEFAULT 0,
+    object_code_adjusted INTEGER NOT NULL DEFAULT 0,
+    wom_adjusted INTEGER NOT NULL DEFAULT 0,
+    impacts_final_invoice TEXT,
+    caused_by TEXT,
+    root_cause TEXT,
+    path_forward TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'flagged',
+    confirmed_gl_reference TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   -- The generic task/workflow engine: "states create tasks, tasks create
   -- timestamps, timestamps create analytics." A task is always the record
   -- of something a person needs to do -- generated automatically off a WOM
@@ -1676,6 +1741,263 @@ function addVendorRemark(vendorId, authorId, authorName, body) {
 
 function listVendorRemarks(vendorId) {
   return db.prepare("SELECT * FROM vendor_remarks WHERE vendor_id = ? ORDER BY id DESC").all(Number(vendorId));
+}
+
+// ---- GL Reclasses ----
+
+const RECLASS_STATUSES = ["flagged", "reviewed", "draft", "submitted", "confirmed_posted"];
+const RECLASS_STATUS_LABELS = {
+  flagged: "Flagged",
+  reviewed: "Reviewed",
+  draft: "Draft",
+  submitted: "Submitted",
+  confirmed_posted: "Confirmed Posted",
+};
+// Matches the real sheet's own category vocabulary exactly (see
+// parseReclassWorkbook in routes/reclasses.js) rather than inventing a
+// different one.
+const RECLASS_CAUSED_BY_OPTIONS = ["PSG", "UGL West", "UGL East", "SBU", "SSG", "Other", "Customer"];
+const RECLASS_ROOT_CAUSE_OPTIONS = ["Process Failure", "Manual Mistake", "System Mistake", "Management Change", "Customer Change"];
+
+function presentReclassItem(r) {
+  return {
+    id: r.id,
+    batchId: r.batch_id,
+    lineNumber: r.line_number,
+    fromJobNumber: r.from_job_number,
+    fromObjectCode: r.from_object_code,
+    fromSubsidiary: r.from_subsidiary,
+    fromWomNumber: r.from_wom_number,
+    fromAmount: r.from_amount,
+    toJobNumber: r.to_job_number,
+    toObjectCode: r.to_object_code,
+    toSubsidiary: r.to_subsidiary,
+    toWomNumber: r.to_wom_number,
+    toAmount: r.to_amount,
+    vendor: r.vendor,
+    comments: r.comments,
+    region: r.region,
+    costCenterAdjusted: Boolean(r.cost_center_adjusted),
+    subledgerAdjusted: Boolean(r.subledger_adjusted),
+    objectCodeAdjusted: Boolean(r.object_code_adjusted),
+    womAdjusted: Boolean(r.wom_adjusted),
+    impactsFinalInvoice: r.impacts_final_invoice,
+    causedBy: r.caused_by,
+    rootCause: r.root_cause,
+    pathForward: r.path_forward,
+    source: r.source,
+    status: r.status,
+    confirmedGlReference: r.confirmed_gl_reference,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function presentReclassBatch(b) {
+  return {
+    id: b.id,
+    region: b.region,
+    reasonForChange: b.reason_for_change,
+    revisionNo: b.revision_no,
+    revisionDate: b.revision_date,
+    originalDatePublished: b.original_date_published,
+    producedBy: b.produced_by,
+    totalGlLineItems: b.total_gl_line_items,
+    reportedTotalAmount: b.reported_total_amount,
+    sourceFileName: b.source_file_name,
+    importedBy: b.imported_by,
+    createdAt: b.created_at,
+    updatedAt: b.updated_at,
+  };
+}
+
+// Imports a parsed reclass submission -- rows already extracted by
+// parseReclassWorkbook in routes/reclasses.js, this function just owns the
+// DB side. Items land as source='imported', status='submitted' (the file
+// itself IS a real historical submission, not a new finding being flagged),
+// so the only thing left for Krista to do is mark one 'confirmed_posted'
+// once a later GL import shows the correction actually landed.
+function importReclassBatch(metadata, items, importedBy, sourceFileName) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO reclass_batches (
+        region, reason_for_change, revision_no, revision_date, original_date_published,
+        produced_by, total_gl_line_items, reported_total_amount, source_file_name, imported_by,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      metadata.region || null,
+      metadata.reasonForChange || null,
+      metadata.revisionNo || null,
+      metadata.revisionDate || null,
+      metadata.originalDatePublished || null,
+      metadata.producedBy || null,
+      metadata.totalGlLineItems || null,
+      metadata.totalAmount || null,
+      sourceFileName || null,
+      importedBy || null,
+      now,
+      now
+    );
+  const batchId = Number(result.lastInsertRowid);
+
+  const insertItem = db.prepare(
+    `INSERT INTO reclass_items (
+      batch_id, line_number, from_job_number, from_object_code, from_subsidiary, from_wom_number, from_amount,
+      to_job_number, to_object_code, to_subsidiary, to_wom_number, to_amount,
+      vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
+      impacts_final_invoice, caused_by, root_cause, path_forward, source, status, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', 'submitted', ?, ?, ?)`
+  );
+  for (const item of items) {
+    insertItem.run(
+      batchId,
+      item.lineNumber || null,
+      item.fromJobNumber || null,
+      item.fromObjectCode || null,
+      item.fromSubsidiary || null,
+      item.fromWomNumber || null,
+      item.fromAmount == null ? null : item.fromAmount,
+      item.toJobNumber || null,
+      item.toObjectCode || null,
+      item.toSubsidiary || null,
+      item.toWomNumber || null,
+      item.toAmount == null ? null : item.toAmount,
+      item.vendor || null,
+      item.comments || null,
+      item.region || null,
+      item.costCenterAdjusted ? 1 : 0,
+      item.subledgerAdjusted ? 1 : 0,
+      item.objectCodeAdjusted ? 1 : 0,
+      item.womAdjusted ? 1 : 0,
+      item.impactsFinalInvoice || null,
+      item.causedBy || null,
+      item.rootCause || null,
+      item.pathForward || null,
+      importedBy || null,
+      now,
+      now
+    );
+  }
+
+  return findReclassBatch(batchId);
+}
+
+function listReclassBatches() {
+  const batches = db.prepare("SELECT * FROM reclass_batches ORDER BY id DESC").all();
+  return batches.map((b) => {
+    const counts = db
+      .prepare("SELECT COUNT(*) AS n, COALESCE(SUM(ABS(from_amount)), 0) AS total FROM reclass_items WHERE batch_id = ?")
+      .get(b.id);
+    return { ...presentReclassBatch(b), itemCount: counts.n, itemTotal: counts.total };
+  });
+}
+
+function findReclassBatch(id) {
+  const batch = db.prepare("SELECT * FROM reclass_batches WHERE id = ?").get(Number(id));
+  if (!batch) return null;
+  const items = db.prepare("SELECT * FROM reclass_items WHERE batch_id = ? ORDER BY line_number, id").all(Number(id));
+  return { ...presentReclassBatch(batch), items: items.map(presentReclassItem) };
+}
+
+// Every reclass item regardless of batch -- the main Reclasses tab's own
+// list, filterable by status/source/region so a repeated-error pattern (a
+// region or coding combo that keeps needing a reclass) is easy to spot.
+function listReclassItems(filters = {}) {
+  const clauses = [];
+  const params = [];
+  if (filters.status) {
+    clauses.push("status = ?");
+    params.push(filters.status);
+  }
+  if (filters.source) {
+    clauses.push("source = ?");
+    params.push(filters.source);
+  }
+  if (filters.region) {
+    clauses.push("region = ?");
+    params.push(filters.region);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return db
+    .prepare(`SELECT * FROM reclass_items ${where} ORDER BY id DESC`)
+    .all(...params)
+    .map(presentReclassItem);
+}
+
+function findReclassItem(id) {
+  const row = db.prepare("SELECT * FROM reclass_items WHERE id = ?").get(Number(id));
+  return row ? presentReclassItem(row) : null;
+}
+
+// A finding an admin spots during manual GL/labor review, logged by hand --
+// source='manual', starts 'flagged' (nothing's been reviewed/submitted yet).
+function addReclassItem(fields, createdBy) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO reclass_items (
+        batch_id, line_number, from_job_number, from_object_code, from_subsidiary, from_wom_number, from_amount,
+        to_job_number, to_object_code, to_subsidiary, to_wom_number, to_amount,
+        vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
+        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, created_by, created_at, updated_at
+      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?)`
+    )
+    .run(
+      fields.fromJobNumber || null,
+      fields.fromObjectCode || null,
+      fields.fromSubsidiary || null,
+      fields.fromWomNumber || null,
+      fields.fromAmount == null || fields.fromAmount === "" ? null : Number(fields.fromAmount),
+      fields.toJobNumber || null,
+      fields.toObjectCode || null,
+      fields.toSubsidiary || null,
+      fields.toWomNumber || null,
+      fields.toAmount == null || fields.toAmount === "" ? null : Number(fields.toAmount),
+      fields.vendor || null,
+      fields.comments || null,
+      fields.region || null,
+      fields.costCenterAdjusted ? 1 : 0,
+      fields.subledgerAdjusted ? 1 : 0,
+      fields.objectCodeAdjusted ? 1 : 0,
+      fields.womAdjusted ? 1 : 0,
+      fields.impactsFinalInvoice || null,
+      fields.causedBy || null,
+      fields.rootCause || null,
+      fields.pathForward || null,
+      createdBy || null,
+      now,
+      now
+    );
+  return findReclassItem(Number(result.lastInsertRowid));
+}
+
+function updateReclassItem(id, fields) {
+  const existing = findReclassItem(id);
+  if (!existing) return null;
+  if (fields.status && !RECLASS_STATUSES.includes(fields.status)) {
+    throw new Error(`status must be one of: ${RECLASS_STATUSES.join(", ")}`);
+  }
+  db.prepare(
+    `UPDATE reclass_items SET
+      comments = ?, path_forward = ?, caused_by = ?, root_cause = ?, impacts_final_invoice = ?,
+      status = ?, confirmed_gl_reference = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(
+    fields.comments !== undefined ? fields.comments : existing.comments,
+    fields.pathForward !== undefined ? fields.pathForward : existing.pathForward,
+    fields.causedBy !== undefined ? fields.causedBy : existing.causedBy,
+    fields.rootCause !== undefined ? fields.rootCause : existing.rootCause,
+    fields.impactsFinalInvoice !== undefined ? fields.impactsFinalInvoice : existing.impactsFinalInvoice,
+    fields.status || existing.status,
+    fields.confirmedGlReference !== undefined ? fields.confirmedGlReference : existing.confirmedGlReference,
+    new Date().toISOString(),
+    Number(id)
+  );
+  return findReclassItem(id);
 }
 
 // A vendor onboarding/compliance case (e.g. a ServiceEdge COI Case, Toyota
@@ -4656,6 +4978,17 @@ module.exports = {
   setVendorPreferred,
   addVendorRemark,
   listVendorRemarks,
+  RECLASS_STATUSES,
+  RECLASS_STATUS_LABELS,
+  RECLASS_CAUSED_BY_OPTIONS,
+  RECLASS_ROOT_CAUSE_OPTIONS,
+  importReclassBatch,
+  listReclassBatches,
+  findReclassBatch,
+  listReclassItems,
+  findReclassItem,
+  addReclassItem,
+  updateReclassItem,
   VENDOR_COI_FIELDS,
   listVendorRequests,
   addVendorRequest,

@@ -2253,6 +2253,12 @@ h1, h2, h3, h4 {
 .po-table tbody tr.po-row:hover {
   background: var(--neutral-bg);
 }
+.reclass-table tbody tr.reclass-row {
+  cursor: pointer;
+}
+.reclass-table tbody tr.reclass-row:hover {
+  background: var(--neutral-bg);
+}
 .po-desc-cell {
   max-width: 320px;
 }
