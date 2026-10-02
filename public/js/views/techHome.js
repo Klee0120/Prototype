@@ -21,30 +21,31 @@ function formatMoney(n) {
  * own Forms/Documents (view only -- they can't upload or delete here; an
  * admin manages those from the Technicians tab).
  */
-export async function renderTechHome(container) {
+export async function renderTechHome(container, navHost) {
   let activeTab = "week";
+  const TECH_TABS = [
+    ["mywork", "My Work"],
+    ["week", "My Week"],
+    ["schedule", "Schedule"],
+    ["locations", "Locations &amp; WOM"],
+    ["vendors", "Vendors"],
+    ["documents", "My Documents"],
+  ];
 
   draw();
 
   async function draw() {
-    container.innerHTML = `
-      <div class="tabs">
-        <button class="tab ${activeTab === "mywork" ? "active" : ""}" data-tab="mywork">My Work</button>
-        <button class="tab ${activeTab === "week" ? "active" : ""}" data-tab="week">My Week</button>
-        <button class="tab ${activeTab === "schedule" ? "active" : ""}" data-tab="schedule">Schedule</button>
-        <button class="tab ${activeTab === "locations" ? "active" : ""}" data-tab="locations">Locations &amp; WOM</button>
-        <button class="tab ${activeTab === "vendors" ? "active" : ""}" data-tab="vendors">Vendors</button>
-        <button class="tab ${activeTab === "documents" ? "active" : ""}" data-tab="documents">My Documents</button>
-      </div>
-      <div id="tab-content" class="tab-content"></div>
-    `;
-
-    container.querySelectorAll(".tab").forEach((btn) => {
+    navHost.innerHTML = TECH_TABS.map(
+      ([key, label]) => `<button class="sidebar-nav-item ${activeTab === key ? "active" : ""}" data-tab="${key}"><span>${label}</span></button>`
+    ).join("");
+    navHost.querySelectorAll(".sidebar-nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
         activeTab = btn.dataset.tab;
         draw();
       });
     });
+
+    container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
 
     const content = container.querySelector("#tab-content");
     if (activeTab === "mywork") await renderTaskBoard(content);

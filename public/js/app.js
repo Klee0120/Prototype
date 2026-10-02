@@ -34,8 +34,8 @@ export function setUser(user) {
 // setUser whenever the change could affect what the header displays (your
 // own name).
 export function refreshHeader() {
-  const existing = document.querySelector(".app-header");
-  if (existing) existing.replaceWith(renderHeader());
+  const existing = document.querySelector(".sidebar-user");
+  if (existing) existing.replaceWith(renderSidebarUser());
 }
 
 export async function logout() {
@@ -96,39 +96,70 @@ export async function render() {
   }
 
   const shell = document.createElement("div");
-  shell.className = "shell";
-  shell.appendChild(renderHeader());
+  shell.className = "app-shell";
+  shell.appendChild(renderSidebar());
 
+  const main = document.createElement("main");
+  main.className = "app-main";
   const content = document.createElement("div");
   content.className = "content";
   content.id = "view-content";
-  shell.appendChild(content);
+  main.appendChild(content);
+  shell.appendChild(main);
 
   root.innerHTML = "";
   root.appendChild(shell);
 
+  const navHost = shell.querySelector("#sidebar-nav");
   if (state.user.role === "admin") {
-    await renderAdminReview(content);
+    await renderAdminReview(content, navHost);
   } else {
-    await renderTechHome(content);
+    await renderTechHome(content, navHost);
   }
 }
 
-function renderHeader() {
-  const header = document.createElement("header");
-  header.className = "app-header";
-  header.innerHTML = `
-    <div class="app-header-title">
+// A fixed left column (brand up top, the active view's own nav in the
+// middle via #sidebar-nav -- filled in by renderAdminReview/renderTechHome,
+// not here, since which sections/tabs exist is each view's own concern,
+// user block pinned to the bottom) replaces the old full-width header +
+// horizontal nav-sections row. One persistent shell the whole app sits
+// inside, rather than each page redrawing its own nav alongside its
+// content on every tab switch.
+function renderSidebar() {
+  const sidebar = document.createElement("aside");
+  sidebar.className = "app-sidebar";
+  sidebar.innerHTML = `
+    <div class="sidebar-brand">
       <div class="app-logo-mark">LA</div>
-      <div class="app-header-text">
-        <span class="app-name">Labor Allocation</span>
-        <span class="app-user">${escapeHtml(state.user.name)} &middot; ${state.user.role === "admin" ? "Admin" : "Technician"}</span>
+      <span class="sidebar-brand-name">Labor Allocation</span>
+    </div>
+    <nav class="sidebar-nav" id="sidebar-nav"></nav>
+  `;
+  sidebar.appendChild(renderSidebarUser());
+  return sidebar;
+}
+
+function renderSidebarUser() {
+  const el = document.createElement("div");
+  el.className = "sidebar-user";
+  const initials = state.user.name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  el.innerHTML = `
+    <div class="sidebar-user-row">
+      <div class="sidebar-user-avatar">${escapeHtml(initials)}</div>
+      <div class="sidebar-user-text">
+        <span class="sidebar-user-name">${escapeHtml(state.user.name)}</span>
+        <span class="sidebar-user-role">${state.user.role === "admin" ? "Admin" : "Technician"}</span>
       </div>
     </div>
-    <button class="btn btn-ghost" id="logout-btn">Log out</button>
+    <button class="btn btn-ghost sidebar-logout-btn" id="logout-btn">Log out</button>
   `;
-  header.querySelector("#logout-btn").addEventListener("click", logout);
-  return header;
+  el.querySelector("#logout-btn").addEventListener("click", logout);
+  return el;
 }
 
 render();

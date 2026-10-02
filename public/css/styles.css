@@ -28,6 +28,13 @@
   --violet-bg: #f1e9f8;
   --teal: #0f7a72;
   --teal-bg: #e3f5f3;
+  /* The persistent left sidebar's own dark palette -- deliberately not
+     derived from --ink (which is warm and meant for light surfaces); a
+     dark slate rather than near-black keeps it feeling like part of the
+     same elevated, soft system instead of a jarring pure-black panel. */
+  --sidebar-bg: #3a4250;
+  --sidebar-bg-darker: #2d3440;
+  --sidebar-text: #aab2c0;
   --radius: 14px;
   --radius-sm: 10px;
   --shadow-sm: 0 1px 2px rgba(40, 20, 20, 0.07);
@@ -115,30 +122,44 @@ h1, h2, h3, h4 {
   margin: 10px 0 0;
 }
 
-/* ---- Shell / header ---- */
+/* ---- Shell / sidebar ---- */
+/* A persistent left sidebar (brand, nav, user block) plus a scrolling
+   main pane -- replaces the old full-width header + horizontal nav-
+   sections row sitting above the content. One shell the whole app lives
+   inside; which nav items appear in #sidebar-nav is each view's own
+   concern (see renderAdminReview/renderTechHome), not this file's. */
 
-.shell {
-  max-width: 1120px;
-  margin: 0 auto;
+.app-shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
 }
 
-.app-header {
+.app-sidebar {
+  width: 240px;
+  flex-shrink: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 20px;
-  background: linear-gradient(180deg, #fffaf8 0%, var(--bg) 100%);
-  border-bottom: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--sidebar-bg) 0%, var(--sidebar-bg-darker) 100%);
+  color: var(--sidebar-text);
   position: sticky;
   top: 0;
-  z-index: 10;
+  height: 100vh;
+  overflow-y: auto;
 }
 
-.app-header-title {
+.sidebar-brand {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 20px 18px 16px;
+}
+
+.sidebar-brand-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+  letter-spacing: -0.01em;
 }
 
 .app-logo-mark {
@@ -155,25 +176,118 @@ h1, h2, h3, h4 {
   flex-shrink: 0;
 }
 
-.app-header-text {
+.sidebar-nav {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  padding: 8px 12px;
+  overflow-y: auto;
 }
 
-.app-name {
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--sidebar-text);
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-nav-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.sidebar-nav-item.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.sidebar-nav-item .tab-badge {
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--accent-dark);
+}
+
+.sidebar-user {
+  padding: 14px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-user-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.sidebar-user-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
   font-weight: 700;
-  font-size: 16px;
-  letter-spacing: -0.01em;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
-.app-user {
-  font-size: 12px;
-  color: var(--muted);
+.sidebar-user-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sidebar-user-name {
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-user-role {
+  color: var(--sidebar-text);
+  font-size: 11px;
+}
+
+.sidebar-logout-btn {
+  width: 100%;
+  justify-content: center;
+  display: flex;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--sidebar-text);
+}
+.sidebar-logout-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg);
 }
 
 .content {
-  padding: 20px;
+  padding: 24px 28px;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 /* ---- Buttons ---- */
@@ -710,40 +824,7 @@ h1, h2, h3, h4 {
   border-radius: 999px;
 }
 
-/* ---- Nav sections + tabs (admin) ---- */
-
-.nav-sections {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
-
-.nav-section {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 9px 18px;
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--muted);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.nav-section:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-bg);
-}
-
-.nav-section.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(163, 24, 42, 0.28);
-}
+/* ---- Sub-tabs (within a sidebar section's content) ---- */
 
 .tabs {
   display: flex;
@@ -1225,8 +1306,9 @@ h1, h2, h3, h4 {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 14px;
   text-align: center;
+  box-shadow: var(--shadow-sm);
 }
 
 .task-tile-clickable {
@@ -2950,8 +3032,40 @@ h1, h2, h3, h4 {
   .ukg-banner {
     grid-template-columns: 1fr;
   }
-  .app-header {
-    padding: 12px;
+  .app-shell {
+    flex-direction: column;
+  }
+  .app-sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 10px 12px;
+  }
+  .sidebar-brand {
+    padding: 0 10px 0 0;
+  }
+  .sidebar-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow-x: auto;
+    padding: 4px 0;
+  }
+  .sidebar-nav-item {
+    white-space: nowrap;
+  }
+  .sidebar-user {
+    border-top: none;
+    padding: 0 0 0 10px;
+    margin-left: auto;
+  }
+  .sidebar-user-row {
+    margin-bottom: 0;
+  }
+  .content {
+    padding: 16px;
   }
   .day-row {
     flex-wrap: wrap;

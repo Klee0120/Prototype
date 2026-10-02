@@ -146,7 +146,7 @@ function reportYearOptions(selectedYear) {
     .join("");
 }
 
-export async function renderAdminReview(container) {
+export async function renderAdminReview(container, navHost) {
   let activeTab = "review";
   let allocTechId = null;
   // Which technicians' detail panels are expanded on Weekly Review -- just
@@ -198,16 +198,15 @@ export async function renderAdminReview(container) {
     const myGeneration = ++drawGeneration;
     const currentSection = sectionForTab(activeTab);
 
+    navHost.innerHTML = NAV_SECTIONS.map(
+      (s) => `
+        <button class="sidebar-nav-item ${currentSection.key === s.key ? "active" : ""}" data-section="${s.key}">
+          <span>${s.label}</span>${s.key === "priorities" && priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}
+        </button>
+      `
+    ).join("");
+
     container.innerHTML = `
-      <div class="nav-sections">
-        ${NAV_SECTIONS.map(
-          (s) => `
-          <button class="nav-section ${currentSection.key === s.key ? "active" : ""}" data-section="${s.key}">
-            ${s.label}${s.key === "priorities" && priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}
-          </button>
-        `
-        ).join("")}
-      </div>
       ${
         currentSection.tabs.length > 1
           ? `<div class="tabs">${currentSection.tabs
@@ -218,7 +217,7 @@ export async function renderAdminReview(container) {
       <div id="tab-content" class="tab-content"></div>
     `;
 
-    container.querySelectorAll(".nav-section").forEach((btn) => {
+    navHost.querySelectorAll(".sidebar-nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
         const section = NAV_SECTIONS.find((s) => s.key === btn.dataset.section);
         goTo(sectionLastTab[section.key] || section.tabs[0]);
@@ -261,7 +260,7 @@ export async function renderAdminReview(container) {
     const count = await computePriorityCount();
     if (myGeneration !== drawGeneration) return;
     priorityCount = count;
-    const nav = container.querySelector('.nav-section[data-section="priorities"]');
+    const nav = navHost.querySelector('.sidebar-nav-item[data-section="priorities"]');
     if (!nav) return;
     const existingBadge = nav.querySelector(".tab-badge");
     if (count > 0) {
