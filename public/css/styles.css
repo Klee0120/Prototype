@@ -1769,6 +1769,26 @@ h1, h2, h3, h4 {
   padding-left: 32px;
   color: var(--muted);
 }
+.cost-table tbody tr.cost-row-nested-wrap td {
+  padding: 14px 16px;
+  background: var(--neutral-bg);
+}
+.va-detail .va-vendor-profile-link {
+  display: inline-block;
+  margin-bottom: 10px;
+}
+.va-detail-table th,
+.va-detail-table td {
+  font-size: 0.92em;
+}
+.va-detail-table .wom-desc {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+.va-review-reason-select {
+  font-size: 0.9em;
+  padding: 2px 4px;
+}
 
 .task-secondary-stats {
   display: flex;

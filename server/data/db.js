@@ -297,6 +297,23 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 
+  -- One row per WOM whose contracted-services cost has ever been flagged
+  -- above its own quote in Financials -- an admin's record of why, not a
+  -- recomputation of the flag itself (that's always live off woms.estimated_
+  -- contracted/applied_contracted). review_reason is one of: scope_change,
+  -- entry_error, coding_issue, unexplained -- set when review_status moves
+  -- to 'reviewed'; left null while still 'needs_review'. Keyed by WOM code
+  -- rather than WOM+vendor since a WOM only ever has one vendor_id today.
+  CREATE TABLE IF NOT EXISTS wom_cost_reviews (
+    wom_code TEXT PRIMARY KEY,
+    review_status TEXT NOT NULL DEFAULT 'needs_review',
+    review_reason TEXT,
+    note TEXT DEFAULT '',
+    reviewed_by TEXT,
+    reviewed_at TEXT,
+    updated_at TEXT NOT NULL
+  );
+
   -- The generic task/workflow engine: "states create tasks, tasks create
   -- timestamps, timestamps create analytics." A task is always the record
   -- of something a person needs to do -- generated automatically off a WOM
@@ -1788,6 +1805,49 @@ function listVendorRemarks(vendorId) {
   return db.prepare("SELECT * FROM vendor_remarks WHERE vendor_id = ? ORDER BY id DESC").all(Number(vendorId));
 }
 
+// ---- Financials: contracted-services cost review (Repeated Costs Above
+// Quote) ----
+// An admin's recorded reason for a WOM whose applied contracted-services
+// cost came in above its own quote -- never changes the quote/applied
+// figures themselves, just tracks whether someone's looked at the
+// difference and why.
+const WOM_COST_REVIEW_STATUSES = ["needs_review", "reviewed"];
+const WOM_COST_REVIEW_REASONS = ["scope_change", "entry_error", "coding_issue", "unexplained"];
+
+function presentWomCostReview(row) {
+  if (!row) return { reviewStatus: "needs_review", reviewReason: null, note: "", reviewedBy: null, reviewedAt: null };
+  return {
+    reviewStatus: row.review_status,
+    reviewReason: row.review_reason,
+    note: row.note || "",
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+  };
+}
+
+// Bulk map for building the cost summary -- one query instead of one per WOM.
+function getWomCostReviewMap() {
+  const rows = db.prepare("SELECT * FROM wom_cost_reviews").all();
+  return new Map(rows.map((r) => [r.wom_code, r]));
+}
+
+function setWomCostReview(code, { reviewStatus, reviewReason, note }, actorId) {
+  if (!findWom(code)) return null;
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO wom_cost_reviews (wom_code, review_status, review_reason, note, reviewed_by, reviewed_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(wom_code) DO UPDATE SET
+       review_status = excluded.review_status,
+       review_reason = excluded.review_reason,
+       note = excluded.note,
+       reviewed_by = excluded.reviewed_by,
+       reviewed_at = excluded.reviewed_at,
+       updated_at = excluded.updated_at`
+  ).run(code, reviewStatus, reviewReason || null, note || "", actorId, now, now);
+  return presentWomCostReview(db.prepare("SELECT * FROM wom_cost_reviews WHERE wom_code = ?").get(code));
+}
+
 // ---- GL Reclasses ----
 
 const RECLASS_STATUSES = ["flagged", "reviewed", "draft", "submitted", "confirmed_posted"];
@@ -2816,7 +2876,16 @@ function getWomCostSummary() {
   const overquoted = [];
   const appliedNoPo = [];
   const laborOvercharged = [];
-  const contractedIncreased = [];
+  // One entry per WOM with BOTH a recorded quote (estimated_contracted) and
+  // a reported applied cost -- "comparable" in the sense Krista asked for:
+  // a WOM missing either figure is left out entirely rather than treated as
+  // a 0, since a missing value and an actual zero mean different things.
+  // vendorId/vendorName are null when the WOM's vendor hasn't been matched
+  // to a confirmed vendor record -- those are kept here (for the flat
+  // "Contracted services increased" review list) but excluded from any
+  // vendor-grouped rollup below, so an unresolved vendor never silently
+  // inherits a cost that isn't confirmed to be theirs.
+  const contractedComparisons = [];
   // Applied cost vs. the real Toyota-approved PO amount -- a different,
   // more authoritative check than overquoted/laborOvercharged/
   // contractedIncreased above, all of which only compare against this
@@ -2837,10 +2906,16 @@ function getWomCostSummary() {
   ];
   const categoryOvercharges = Object.fromEntries(SIMPLE_OVERCHARGE_CATEGORIES.map((c) => [c.key, []]));
   // How much contracted-services $ has actually gone out to each vendor,
-  // across every WOM on file (not just the overage ones) -- "who do we do
-  // business with, and how much" independent of whether any single job ran
-  // over its own estimate.
+  // across every WOM on file (not just the overage ones, and not limited to
+  // WOMs with a recorded quote) -- "who do we do business with, and how
+  // much" independent of whether any single job ran over its own estimate.
+  // Per-WOM detail (vendorSpendDetail) is kept alongside the vendor-grouped
+  // rollup (vendorSpendById) so the Financials UI can re-filter/re-group by
+  // region, location, subsidiary, or status without a round trip.
   const vendorSpendById = new Map();
+  const vendorSpendDetail = [];
+  let unallocatedContractedTotal = 0;
+  let unallocatedContractedCount = 0;
   const vendorNameCache = new Map();
   const vendorName = (id) => {
     if (!vendorNameCache.has(id)) {
@@ -2849,6 +2924,7 @@ function getWomCostSummary() {
     }
     return vendorNameCache.get(id);
   };
+  const womCostReviewMap = getWomCostReviewMap();
 
   for (const w of rows) {
     if (w.estimated_price != null) {
@@ -2906,16 +2982,27 @@ function getWomCostSummary() {
         overage: w.applied_labor - w.estimated_labor,
       });
     }
-    if (w.estimated_contracted != null && w.applied_contracted != null && w.applied_contracted > w.estimated_contracted) {
-      contractedIncreased.push({
+    if (w.estimated_contracted != null && w.applied_contracted != null) {
+      const diff = w.applied_contracted - w.estimated_contracted;
+      // "N/A" rather than a number when the quote itself is 0 -- any applied
+      // amount against a $0 quote is an infinite percentage, which isn't a
+      // meaningful figure to show or sort by.
+      const pctAboveQuote = w.estimated_contracted !== 0 ? (diff / w.estimated_contracted) * 100 : null;
+      const review = presentWomCostReview(womCostReviewMap.get(w.code));
+      contractedComparisons.push({
         code: w.code,
         description: w.description,
         locationCode: w.location_code,
-        vendorId: w.vendor_id,
+        subsidiaryCode: w.subsidiary_code,
+        status: w.status,
+        vendorId: w.vendor_id || null,
         vendorName: w.vendor_id ? vendorName(w.vendor_id) : null,
-        estimatedContracted: w.estimated_contracted,
-        appliedContracted: w.applied_contracted,
-        overage: w.applied_contracted - w.estimated_contracted,
+        quote: w.estimated_contracted,
+        applied: w.applied_contracted,
+        diff,
+        aboveQuote: diff > 0,
+        pctAboveQuote,
+        ...review,
       });
     }
     if (w.vendor_id && w.applied_contracted != null) {
@@ -2928,6 +3015,23 @@ function getWomCostSummary() {
       cur.totalAppliedContracted += w.applied_contracted;
       cur.womCount++;
       vendorSpendById.set(w.vendor_id, cur);
+      vendorSpendDetail.push({
+        code: w.code,
+        description: w.description,
+        locationCode: w.location_code,
+        subsidiaryCode: w.subsidiary_code,
+        status: w.status,
+        vendorId: w.vendor_id,
+        vendorName: vendorName(w.vendor_id),
+        applied: w.applied_contracted,
+      });
+    } else if (w.applied_contracted != null) {
+      // A contracted-services cost is on file, but this WOM's vendor hasn't
+      // been matched to a confirmed vendor record -- "Vendor cost allocation
+      // needed" rather than guessing, and kept out of every vendor-specific
+      // total/ranking below.
+      unallocatedContractedTotal += w.applied_contracted;
+      unallocatedContractedCount++;
     }
     for (const cat of SIMPLE_OVERCHARGE_CATEGORIES) {
       const est = w[cat.estCol];
@@ -2948,24 +3052,69 @@ function getWomCostSummary() {
   overquoted.sort((a, b) => b.overage - a.overage);
   appliedNoPo.sort((a, b) => b.appliedPrice - a.appliedPrice);
   laborOvercharged.sort((a, b) => b.overage - a.overage);
-  contractedIncreased.sort((a, b) => b.overage - a.overage);
+  contractedComparisons.sort((a, b) => b.diff - a.diff);
   appliedOverToyotaPo.sort((a, b) => b.overage - a.overage);
 
-  // Which vendors show up more than once in contractedIncreased -- the
-  // "reoccuringly charging on top of their quotes" list, not just a single
-  // one-off overage.
-  const vendorOverageById = new Map();
-  for (const c of contractedIncreased) {
+  // Kept under its old name/shape for the "Contracted services increased"
+  // review-category tile -- every comparable WOM that came in above quote,
+  // vendor-matched or not (see vendorAboveQuote below for the vendor-grouped,
+  // vendor-confirmed-only view).
+  const contractedIncreased = contractedComparisons
+    .filter((c) => c.aboveQuote)
+    .map((c) => ({
+      code: c.code,
+      description: c.description,
+      locationCode: c.locationCode,
+      vendorId: c.vendorId,
+      vendorName: c.vendorName,
+      estimatedContracted: c.quote,
+      appliedContracted: c.applied,
+      overage: c.diff,
+    }));
+
+  // Repeated Costs Above Quote -- grouped by confirmed vendor only (an
+  // unmatched WOM is never folded into a vendor's numbers). comparableWomCount
+  // is every quote+applied WOM for that vendor, aboveQuoteCount how many of
+  // those came in over -- "4 of 10 comparable WOMs above quote" reads
+  // straight off these two. pctAboveQuote is total excess over the SAME
+  // above-quote WOMs' total quote (not every comparable WOM's quote), per
+  // Krista's definition -- null when that total is 0 rather than a divide-
+  // by-zero. reviewStatus rolls up every above-quote WOM's own review: only
+  // "reviewed" once every one of them is, "needs_review" when none are,
+  // "mixed" otherwise.
+  const vendorCompById = new Map();
+  for (const c of contractedComparisons) {
     if (!c.vendorId) continue;
-    const cur = vendorOverageById.get(c.vendorId) || { vendorId: c.vendorId, vendorName: c.vendorName, count: 0, totalOverage: 0 };
-    cur.count++;
-    cur.totalOverage += c.overage;
-    vendorOverageById.set(c.vendorId, cur);
+    const cur = vendorCompById.get(c.vendorId) || { vendorId: c.vendorId, vendorName: c.vendorName, comparable: [], aboveQuote: [] };
+    cur.comparable.push(c);
+    if (c.aboveQuote) cur.aboveQuote.push(c);
+    vendorCompById.set(c.vendorId, cur);
   }
-  const vendorsOverchargingRepeatedly = [...vendorOverageById.values()]
-    .filter((v) => v.count > 1)
-    .sort((a, b) => b.count - a.count || b.totalOverage - a.totalOverage);
-  const vendorContractedSpend = [...vendorSpendById.values()].sort((a, b) => b.totalAppliedContracted - a.totalAppliedContracted);
+  const vendorAboveQuote = [...vendorCompById.values()]
+    .filter((v) => v.aboveQuote.length > 1)
+    .map((v) => {
+      const totalAboveQuote = v.aboveQuote.reduce((sum, c) => sum + c.diff, 0);
+      const totalComparisonQuote = v.aboveQuote.reduce((sum, c) => sum + c.quote, 0);
+      const reviewedCount = v.aboveQuote.filter((c) => c.reviewStatus === "reviewed").length;
+      const reviewStatus = reviewedCount === 0 ? "needs_review" : reviewedCount === v.aboveQuote.length ? "reviewed" : "mixed";
+      return {
+        vendorId: v.vendorId,
+        vendorName: v.vendorName,
+        comparableWomCount: v.comparable.length,
+        aboveQuoteCount: v.aboveQuote.length,
+        totalAboveQuote,
+        totalComparisonQuote,
+        pctAboveQuote: totalComparisonQuote !== 0 ? (totalAboveQuote / totalComparisonQuote) * 100 : null,
+        reviewStatus,
+      };
+    })
+    .sort((a, b) => b.aboveQuoteCount - a.aboveQuoteCount || b.totalAboveQuote - a.totalAboveQuote);
+
+  const vendorSpend = [...vendorSpendById.values()].sort((a, b) => b.totalAppliedContracted - a.totalAppliedContracted);
+  const totalMatchedVendorCosts = vendorSpend.reduce((sum, v) => sum + v.totalAppliedContracted, 0);
+  for (const v of vendorSpend) {
+    v.shareOfMatchedCosts = totalMatchedVendorCosts !== 0 ? (v.totalAppliedContracted / totalMatchedVendorCosts) * 100 : null;
+  }
 
   const categoryOverages = SIMPLE_OVERCHARGE_CATEGORIES.map((cat) => {
     const items = categoryOvercharges[cat.key].sort((a, b) => b.overage - a.overage);
@@ -3032,8 +3181,16 @@ function getWomCostSummary() {
     contractedIncreasedCount: contractedIncreased.length,
     contractedIncreasedTotal: contractedIncreased.reduce((sum, o) => sum + o.overage, 0),
     contractedIncreased,
-    vendorsOverchargingRepeatedly,
-    vendorContractedSpend,
+    // Repeated Costs Above Quote and Vendor Spend Overview -- see the
+    // comments above where each is built. contractedComparisons/
+    // vendorSpendDetail are the flat per-WOM rows the Financials UI filters
+    // and re-groups by region/location/subsidiary/status; vendorAboveQuote/
+    // vendorSpend are the same thing already grouped by vendor, unfiltered.
+    contractedComparisons,
+    vendorAboveQuote,
+    vendorSpend,
+    vendorSpendDetail,
+    contractedUnallocated: { count: unallocatedContractedCount, total: unallocatedContractedTotal },
     categoryOverages,
     remainingToyotaPoCount: remainingToyotaPo.length,
     remainingToyotaPoTotal: remainingToyotaPo.reduce((sum, o) => sum + o.overage, 0),
@@ -5339,6 +5496,9 @@ module.exports = {
   setVendorPreferred,
   addVendorRemark,
   listVendorRemarks,
+  WOM_COST_REVIEW_STATUSES,
+  WOM_COST_REVIEW_REASONS,
+  setWomCostReview,
   RECLASS_STATUSES,
   RECLASS_STATUS_LABELS,
   RECLASS_CAUSED_BY_OPTIONS,

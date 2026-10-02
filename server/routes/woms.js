@@ -201,6 +201,29 @@ router.patch("/:code/pricing", requireAuth, requireAdmin, (req, res) => {
   res.json(presentWom(db.findWom(wom.code)));
 });
 
+// Records an admin's review of a WOM whose contracted-services cost came in
+// above its own quote (Financials -> Repeated Costs Above Quote) -- never
+// touches the quote/applied figures themselves, just the review note. A
+// reason is required once the review is actually marked reviewed; "needs
+// review" can clear a prior reason by leaving it out.
+router.patch("/:code/cost-review", requireAuth, requireAdmin, (req, res) => {
+  const { reviewStatus, reviewReason, note } = req.body || {};
+  if (!db.WOM_COST_REVIEW_STATUSES.includes(reviewStatus)) {
+    return res.status(400).json({ error: `reviewStatus must be one of: ${db.WOM_COST_REVIEW_STATUSES.join(", ")}` });
+  }
+  if (reviewReason != null && !db.WOM_COST_REVIEW_REASONS.includes(reviewReason)) {
+    return res.status(400).json({ error: `reviewReason must be one of: ${db.WOM_COST_REVIEW_REASONS.join(", ")}` });
+  }
+  if (reviewStatus === "reviewed" && !reviewReason) {
+    return res.status(400).json({ error: "reviewReason is required to mark a review complete" });
+  }
+  const result = db.setWomCostReview(req.params.code, { reviewStatus, reviewReason: reviewReason || null, note: note || "" }, req.user.id);
+  if (!result) return res.status(404).json({ error: "WOM not found" });
+
+  db.addAudit(req.user.id, "WOM_COST_REVIEW_UPDATED", `${req.user.name} set the cost review for WOM ${req.params.code} to ${reviewStatus}`);
+  res.json(result);
+});
+
 // Lets a technician mark a job done from their own allocation screen
 // without giving them the ability to reopen/close WOMs at will the way
 // the admin-only PATCH above does.

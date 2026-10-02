@@ -186,6 +186,19 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // Vendor cost analysis section lower on the page) -- which vendor groups
   // are currently expanded.
   const expandedCostVendors = new Set();
+  // Financials -> Repeated Costs Above Quote / Vendor Spend Overview: one
+  // shared filter bar (region/location/subsidiary/project status, plus
+  // review status for the first table only), each table's own sort, and
+  // which vendor rows are expanded to show their supporting WOMs.
+  let vaRegionFilter = "";
+  let vaLocationFilter = "";
+  let vaSubsidiaryFilter = "";
+  let vaStatusFilter = ""; // "" | "open" | "completed"
+  let vaReviewStatusFilter = ""; // "" | "needs_review" | "mixed" | "reviewed" -- table 1 only
+  const vaAboveQuoteExpanded = new Set();
+  const vaSpendExpanded = new Set();
+  let vaAboveQuoteSort = { key: "aboveQuoteCount", dir: "desc" };
+  let vaSpendSort = { key: "totalAppliedContracted", dir: "desc" };
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   let laborReportMonth = currentMonthISO();
   let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
@@ -4073,6 +4086,452 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     URL.revokeObjectURL(url);
   }
 
+  // Repeated Costs Above Quote / Vendor Spend Overview -- helpers shared by
+  // both tables. "Open" vs "completed" is the same split the WOM_STATUSES
+  // comment above already draws: pending/requested/open are still in
+  // flight, invoiced/closed are done. cancelled WOMs never reach either
+  // table (getWomCostSummary already excludes them).
+  const VA_OPEN_STATUSES = new Set(["pending", "requested", "open"]);
+  const VA_REVIEW_REASON_LABELS = {
+    scope_change: "Approved scope change / change order",
+    entry_error: "Quote or estimate entry error",
+    coding_issue: "Coding issue",
+    unexplained: "Unexplained difference",
+  };
+  const VA_REVIEW_STATUS_LABELS = { needs_review: "Needs review", mixed: "Mixed", reviewed: "Reviewed" };
+  function vaReviewBadgeClass(status) {
+    if (status === "reviewed") return "badge-approved";
+    if (status === "mixed") return "badge-warn";
+    return "badge-rejected";
+  }
+  function vaStatusGroup(status) {
+    return VA_OPEN_STATUSES.has(status) ? "open" : "completed";
+  }
+  function formatPct(pct) {
+    return pct == null ? "N/A" : `${pct.toFixed(1)}%`;
+  }
+
+  function vaMatchesFilters(item, locationByCode) {
+    if (vaRegionFilter) {
+      const loc = item.locationCode ? locationByCode[item.locationCode] : null;
+      if (!loc || loc.region !== vaRegionFilter) return false;
+    }
+    if (vaLocationFilter && item.locationCode !== vaLocationFilter) return false;
+    if (vaSubsidiaryFilter && (item.subsidiaryCode || "") !== vaSubsidiaryFilter) return false;
+    if (vaStatusFilter && vaStatusGroup(item.status) !== vaStatusFilter) return false;
+    return true;
+  }
+
+  // Mirrors the vendor-grouping math getWomCostSummary does server-side
+  // (unfiltered) so the UI can re-group after the admin narrows the filter
+  // bar, without a round trip -- same "group a flat item list client-side"
+  // approach renderVendorGroupedTable above already uses.
+  function vaAggregateAboveQuote(items) {
+    const byVendor = new Map();
+    for (const c of items) {
+      if (!c.vendorId) continue;
+      const cur = byVendor.get(c.vendorId) || { vendorId: c.vendorId, vendorName: c.vendorName, comparable: [], aboveQuote: [] };
+      cur.comparable.push(c);
+      if (c.aboveQuote) cur.aboveQuote.push(c);
+      byVendor.set(c.vendorId, cur);
+    }
+    return [...byVendor.values()]
+      .filter((v) => v.aboveQuote.length > 1)
+      .map((v) => {
+        const totalAboveQuote = v.aboveQuote.reduce((sum, c) => sum + c.diff, 0);
+        const totalComparisonQuote = v.aboveQuote.reduce((sum, c) => sum + c.quote, 0);
+        const reviewedCount = v.aboveQuote.filter((c) => c.reviewStatus === "reviewed").length;
+        const reviewStatus = reviewedCount === 0 ? "needs_review" : reviewedCount === v.aboveQuote.length ? "reviewed" : "mixed";
+        return {
+          vendorId: v.vendorId,
+          vendorName: v.vendorName,
+          comparableWomCount: v.comparable.length,
+          aboveQuoteCount: v.aboveQuote.length,
+          totalAboveQuote,
+          totalComparisonQuote,
+          pctAboveQuote: totalComparisonQuote !== 0 ? (totalAboveQuote / totalComparisonQuote) * 100 : null,
+          reviewStatus,
+          comparableItems: v.comparable,
+        };
+      });
+  }
+
+  function vaAggregateSpend(items) {
+    const byVendor = new Map();
+    for (const it of items) {
+      const cur = byVendor.get(it.vendorId) || { vendorId: it.vendorId, vendorName: it.vendorName, items: [], total: 0 };
+      cur.items.push(it);
+      cur.total += it.applied;
+      byVendor.set(it.vendorId, cur);
+    }
+    const groups = [...byVendor.values()];
+    const grandTotal = groups.reduce((sum, g) => sum + g.total, 0);
+    return groups.map((g) => ({
+      vendorId: g.vendorId,
+      vendorName: g.vendorName,
+      womCount: g.items.length,
+      totalAppliedContracted: g.total,
+      shareOfMatchedCosts: grandTotal !== 0 ? (g.total / grandTotal) * 100 : null,
+      items: g.items,
+    }));
+  }
+
+  function vaSortRows(rows, sortState, getters) {
+    const getter = getters[sortState.key];
+    if (!getter) return rows;
+    const sorted = [...rows];
+    sorted.sort((a, b) => {
+      const av = getter(a);
+      const bv = getter(b);
+      if (av < bv) return sortState.dir === "asc" ? -1 : 1;
+      if (av > bv) return sortState.dir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }
+
+  const VA_ABOVE_QUOTE_GETTERS = {
+    vendorName: (r) => (r.vendorName || "").toLowerCase(),
+    comparableWomCount: (r) => r.comparableWomCount,
+    aboveQuoteCount: (r) => r.aboveQuoteCount,
+    totalAboveQuote: (r) => r.totalAboveQuote,
+    pctAboveQuote: (r) => (r.pctAboveQuote == null ? -Infinity : r.pctAboveQuote),
+    reviewStatus: (r) => ({ needs_review: 0, mixed: 1, reviewed: 2 }[r.reviewStatus]),
+  };
+  const VA_SPEND_GETTERS = {
+    vendorName: (r) => (r.vendorName || "").toLowerCase(),
+    womCount: (r) => r.womCount,
+    totalAppliedContracted: (r) => r.totalAppliedContracted,
+    shareOfMatchedCosts: (r) => (r.shareOfMatchedCosts == null ? -Infinity : r.shareOfMatchedCosts),
+  };
+
+  function vaSortArrow(sortState, key) {
+    if (sortState.key !== key) return "";
+    return sortState.dir === "asc" ? " ▲" : " ▼";
+  }
+
+  function vaReviewReasonSelectHtml(c) {
+    return `
+      <select class="va-review-reason-select" data-code="${escapeHtml(c.code)}">
+        <option value="">Needs review</option>
+        ${Object.entries(VA_REVIEW_REASON_LABELS)
+          .map(([k, label]) => `<option value="${k}" ${c.reviewReason === k ? "selected" : ""}>${escapeHtml(label)}</option>`)
+          .join("")}
+      </select>
+    `;
+  }
+
+  function renderVendorAboveQuoteDetail(v, locationByCode) {
+    const items = [...v.comparableItems].sort((a, b) => b.diff - a.diff);
+    return `
+      <tr class="cost-row-nested-wrap"><td colspan="7">
+        <div class="va-detail">
+          <button type="button" class="btn-link va-vendor-profile-link" data-vendor-id="${v.vendorId}">View vendor profile &rsaquo;</button>
+          <table class="detail-table va-detail-table">
+            <thead>
+              <tr><th>WOM</th><th>Location</th><th>Status</th><th>Quote</th><th>Applied</th><th>Difference</th><th>% Above</th><th>Review reason</th></tr>
+            </thead>
+            <tbody>
+              ${items
+                .map((c) => {
+                  const loc = c.locationCode ? locationByCode[c.locationCode] : null;
+                  return `
+                <tr>
+                  <td><button type="button" class="btn-link va-wom-link" data-code="${escapeHtml(c.code)}">${escapeHtml(c.code)}</button><div class="wom-desc">${escapeHtml(c.description || "")}</div></td>
+                  <td>${loc ? escapeHtml(loc.name) : "—"}</td>
+                  <td>${escapeHtml(WOM_STATUS_LABELS[c.status] || c.status || "—")}</td>
+                  <td>$${formatMoney(c.quote)}</td>
+                  <td>$${formatMoney(c.applied)}</td>
+                  <td class="${c.aboveQuote ? "cost-amount-danger" : "cost-amount-ok"}">$${formatMoney(c.diff)}</td>
+                  <td>${formatPct(c.pctAboveQuote)}</td>
+                  <td>${c.aboveQuote ? vaReviewReasonSelectHtml(c) : "—"}</td>
+                </tr>`;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </td></tr>
+    `;
+  }
+
+  function renderVendorAboveQuoteTable(rows, locationByCode) {
+    if (rows.length === 0) {
+      return `<p class="empty-note">No vendor has come in above quote on more than one comparable WOM matching these filters.</p>`;
+    }
+    const sorted = vaSortRows(rows, vaAboveQuoteSort, VA_ABOVE_QUOTE_GETTERS);
+    return `
+      <table class="detail-table cost-table va-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-va-sort="vendorName">Vendor${vaSortArrow(vaAboveQuoteSort, "vendorName")}</th>
+            <th class="sortable" data-va-sort="comparableWomCount">Comparable WOMs${vaSortArrow(vaAboveQuoteSort, "comparableWomCount")}</th>
+            <th class="sortable" data-va-sort="aboveQuoteCount">WOMs Above Quote${vaSortArrow(vaAboveQuoteSort, "aboveQuoteCount")}</th>
+            <th class="sortable" data-va-sort="totalAboveQuote">Total Above Quote${vaSortArrow(vaAboveQuoteSort, "totalAboveQuote")}</th>
+            <th class="sortable" data-va-sort="pctAboveQuote" title="Total excess across this vendor's above-quote WOMs, divided by the total quote across those same above-quote WOMs.">% Above Quote${vaSortArrow(vaAboveQuoteSort, "pctAboveQuote")}</th>
+            <th class="sortable" data-va-sort="reviewStatus">Review Status${vaSortArrow(vaAboveQuoteSort, "reviewStatus")}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted
+            .map((v) => {
+              const expanded = vaAboveQuoteExpanded.has(String(v.vendorId));
+              const row = `
+              <tr class="cost-vendor-group-row va-above-row" data-vendor-id="${v.vendorId}">
+                <td>${escapeHtml(v.vendorName || "Unknown vendor")}</td>
+                <td>${v.comparableWomCount}</td>
+                <td>${v.aboveQuoteCount} of ${v.comparableWomCount}</td>
+                <td class="cost-amount-danger">$${formatMoney(v.totalAboveQuote)}</td>
+                <td>${formatPct(v.pctAboveQuote)}</td>
+                <td><span class="badge ${vaReviewBadgeClass(v.reviewStatus)}">${VA_REVIEW_STATUS_LABELS[v.reviewStatus]}</span></td>
+                <td class="cost-row-chevron">${expanded ? "▼" : "▶"}</td>
+              </tr>`;
+              return row + (expanded ? renderVendorAboveQuoteDetail(v, locationByCode) : "");
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderVendorSpendDetail(v, locationByCode) {
+    const items = [...v.items].sort((a, b) => b.applied - a.applied);
+    return `
+      <tr class="cost-row-nested-wrap"><td colspan="5">
+        <div class="va-detail">
+          <button type="button" class="btn-link va-vendor-profile-link" data-vendor-id="${v.vendorId}">View vendor profile &rsaquo;</button>
+          <table class="detail-table va-detail-table">
+            <thead><tr><th>WOM</th><th>Location</th><th>Status</th><th>Applied</th></tr></thead>
+            <tbody>
+              ${items
+                .map((it) => {
+                  const loc = it.locationCode ? locationByCode[it.locationCode] : null;
+                  return `
+                <tr>
+                  <td><button type="button" class="btn-link va-wom-link" data-code="${escapeHtml(it.code)}">${escapeHtml(it.code)}</button><div class="wom-desc">${escapeHtml(it.description || "")}</div></td>
+                  <td>${loc ? escapeHtml(loc.name) : "—"}</td>
+                  <td>${escapeHtml(WOM_STATUS_LABELS[it.status] || it.status || "—")}</td>
+                  <td>$${formatMoney(it.applied)}</td>
+                </tr>`;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </td></tr>
+    `;
+  }
+
+  function renderVendorSpendTable(rows, locationByCode) {
+    if (rows.length === 0) {
+      return `<p class="empty-note">No WOM matching these filters has both a vendor match and an applied contracted-services cost.</p>`;
+    }
+    const sorted = vaSortRows(rows, vaSpendSort, VA_SPEND_GETTERS);
+    return `
+      <table class="detail-table cost-table va-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-va-sort="vendorName">Vendor${vaSortArrow(vaSpendSort, "vendorName")}</th>
+            <th class="sortable" data-va-sort="womCount">Linked WOMs${vaSortArrow(vaSpendSort, "womCount")}</th>
+            <th class="sortable" data-va-sort="totalAppliedContracted">Reported Applied Cost${vaSortArrow(vaSpendSort, "totalAppliedContracted")}</th>
+            <th class="sortable" data-va-sort="shareOfMatchedCosts">Share of Matched Vendor Costs${vaSortArrow(vaSpendSort, "shareOfMatchedCosts")}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted
+            .map((v) => {
+              const expanded = vaSpendExpanded.has(String(v.vendorId));
+              const row = `
+              <tr class="cost-vendor-group-row va-spend-row" data-vendor-id="${v.vendorId}">
+                <td>${escapeHtml(v.vendorName || "Unknown vendor")}</td>
+                <td>${v.womCount}</td>
+                <td>$${formatMoney(v.totalAppliedContracted)}</td>
+                <td>${formatPct(v.shareOfMatchedCosts)}</td>
+                <td class="cost-row-chevron">${expanded ? "▼" : "▶"}</td>
+              </tr>`;
+              return row + (expanded ? renderVendorSpendDetail(v, locationByCode) : "");
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function latestDataRefresh(allWoms) {
+    let max = null;
+    for (const w of allWoms) {
+      if (w.smartsheetSyncedAt && (!max || w.smartsheetSyncedAt > max)) max = w.smartsheetSyncedAt;
+    }
+    return max;
+  }
+
+  // Draws the filter bar + both tables, and re-draws just this section (not
+  // the whole Cost Analysis page) on every filter/sort/expand change --
+  // same "redraw a sub-tree" pattern GL Reconciliation's own tables use.
+  function drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms) {
+    const comparisons = summary.contractedComparisons.filter((c) => vaMatchesFilters(c, locationByCode));
+    const spendDetail = summary.vendorSpendDetail.filter((it) => vaMatchesFilters(it, locationByCode));
+    const aboveQuoteRows = vaAggregateAboveQuote(comparisons);
+    const filteredAboveQuoteRows = vaReviewStatusFilter ? aboveQuoteRows.filter((r) => r.reviewStatus === vaReviewStatusFilter) : aboveQuoteRows;
+    const spendRows = vaAggregateSpend(spendDetail);
+
+    const allItemsForFilters = [...summary.contractedComparisons, ...summary.vendorSpendDetail];
+    const regionsInUse = [
+      ...new Set(
+        allItemsForFilters.map((it) => (it.locationCode ? (locationByCode[it.locationCode] || {}).region : null)).filter(Boolean)
+      ),
+    ].sort();
+    const locCodesInUse = new Set(allItemsForFilters.map((it) => it.locationCode).filter(Boolean));
+    const locationsInUse = locations.filter((l) => locCodesInUse.has(l.code)).sort((a, b) => a.name.localeCompare(b.name));
+    const subsidiariesInUse = [...new Set(allItemsForFilters.map((it) => it.subsidiaryCode).filter(Boolean))].sort();
+    const refresh = latestDataRefresh(allWoms);
+    const unallocated = summary.contractedUnallocated;
+
+    wrap.innerHTML = `
+      <p class="overview-hint">
+        All imported projects &middot; Project-reported amounts${refresh ? ` &middot; Latest data refresh: ${new Date(refresh).toLocaleString()}` : ""}.
+        Not labeled as fiscal-year actuals -- that comparison belongs to GL Reconciliation once GL data supports it.
+      </p>
+      <div class="wom-filter-bar va-filter-bar">
+        <select class="va-region-filter">
+          <option value="">All regions</option>
+          ${regionsInUse.map((r) => `<option value="${escapeHtml(r)}" ${vaRegionFilter === r ? "selected" : ""}>${escapeHtml(r)}</option>`).join("")}
+        </select>
+        <select class="va-location-filter">
+          <option value="">All locations</option>
+          ${locationsInUse.map((l) => `<option value="${escapeHtml(l.code)}" ${vaLocationFilter === l.code ? "selected" : ""}>${escapeHtml(l.name)}</option>`).join("")}
+        </select>
+        <select class="va-subsidiary-filter">
+          <option value="">All subsidiaries</option>
+          ${subsidiariesInUse.map((s) => `<option value="${escapeHtml(s)}" ${vaSubsidiaryFilter === s ? "selected" : ""}>${escapeHtml(s)}</option>`).join("")}
+        </select>
+        <select class="va-status-filter">
+          <option value="">Open + completed</option>
+          <option value="open" ${vaStatusFilter === "open" ? "selected" : ""}>Open projects</option>
+          <option value="completed" ${vaStatusFilter === "completed" ? "selected" : ""}>Completed projects</option>
+        </select>
+        <select class="va-review-status-filter">
+          <option value="">Any review status</option>
+          <option value="needs_review" ${vaReviewStatusFilter === "needs_review" ? "selected" : ""}>Needs review</option>
+          <option value="mixed" ${vaReviewStatusFilter === "mixed" ? "selected" : ""}>Mixed</option>
+          <option value="reviewed" ${vaReviewStatusFilter === "reviewed" ? "selected" : ""}>Reviewed</option>
+        </select>
+      </div>
+
+      <h3>Repeated Costs Above Quote</h3>
+      <p class="review-checklist-hint">
+        Vendors whose reported applied contracted-services costs exceed their quoted amount on multiple WOMs.
+        Review the projects for scope changes, approved adjustments, or unexplained differences.
+      </p>
+      <div class="va-above-quote-wrap"></div>
+
+      <h3>Vendor Spend Overview</h3>
+      <p class="review-checklist-hint">Reported applied contracted-services costs by vendor across imported WOMs.</p>
+      <div class="va-spend-wrap"></div>
+
+      ${
+        unallocated.count > 0
+          ? `<p class="review-checklist-hint">
+               <strong>Vendor cost allocation needed:</strong> ${unallocated.count} WOM${unallocated.count === 1 ? "" : "s"} with a reported applied
+               contracted-services cost (totaling $${formatMoney(unallocated.total)}) ${unallocated.count === 1 ? "has" : "have"} no confirmed vendor match yet --
+               excluded from both tables above until matched. See the Budget PO Tracker / Vendor Directory to resolve.
+             </p>`
+          : ""
+      }
+    `;
+
+    wrap.querySelector(".va-above-quote-wrap").innerHTML = renderVendorAboveQuoteTable(filteredAboveQuoteRows, locationByCode);
+    wrap.querySelector(".va-spend-wrap").innerHTML = renderVendorSpendTable(spendRows, locationByCode);
+
+    wrap.querySelector(".va-region-filter").addEventListener("change", (e) => {
+      vaRegionFilter = e.target.value;
+      drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+    });
+    wrap.querySelector(".va-location-filter").addEventListener("change", (e) => {
+      vaLocationFilter = e.target.value;
+      drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+    });
+    wrap.querySelector(".va-subsidiary-filter").addEventListener("change", (e) => {
+      vaSubsidiaryFilter = e.target.value;
+      drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+    });
+    wrap.querySelector(".va-status-filter").addEventListener("change", (e) => {
+      vaStatusFilter = e.target.value;
+      drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+    });
+    wrap.querySelector(".va-review-status-filter").addEventListener("change", (e) => {
+      vaReviewStatusFilter = e.target.value;
+      drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+    });
+
+    wrap.querySelectorAll(".va-above-quote-wrap th.sortable").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.vaSort;
+        if (vaAboveQuoteSort.key === key) vaAboveQuoteSort.dir = vaAboveQuoteSort.dir === "asc" ? "desc" : "asc";
+        else vaAboveQuoteSort = { key, dir: "desc" };
+        drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+      });
+    });
+    wrap.querySelectorAll(".va-spend-wrap th.sortable").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.vaSort;
+        if (vaSpendSort.key === key) vaSpendSort.dir = vaSpendSort.dir === "asc" ? "desc" : "asc";
+        else vaSpendSort = { key, dir: "desc" };
+        drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+      });
+    });
+
+    wrap.querySelectorAll(".va-above-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const key = row.dataset.vendorId;
+        if (vaAboveQuoteExpanded.has(key)) vaAboveQuoteExpanded.delete(key);
+        else vaAboveQuoteExpanded.add(key);
+        drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+      });
+    });
+    wrap.querySelectorAll(".va-spend-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const key = row.dataset.vendorId;
+        if (vaSpendExpanded.has(key)) vaSpendExpanded.delete(key);
+        else vaSpendExpanded.add(key);
+        drawVendorAnalysisSection(wrap, content, summary, locationByCode, locations, allWoms);
+      });
+    });
+
+    wrap.querySelectorAll(".va-vendor-profile-link").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openVendorProfile(Number(btn.dataset.vendorId));
+      });
+    });
+    wrap.querySelectorAll(".va-wom-link").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const w = allWoms.find((item) => item.code === btn.dataset.code);
+        if (w) openWomProjectModal(w, content, locationByCode, locations);
+      });
+    });
+    wrap.querySelectorAll(".va-review-reason-select").forEach((select) => {
+      select.addEventListener("click", (e) => e.stopPropagation());
+      select.addEventListener("change", async (e) => {
+        e.stopPropagation();
+        const code = select.dataset.code;
+        const reviewReason = select.value || null;
+        try {
+          await api.patch(`/api/woms/${encodeURIComponent(code)}/cost-review`, {
+            reviewStatus: reviewReason ? "reviewed" : "needs_review",
+            reviewReason,
+          });
+          await drawCostAnalysis(content);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    });
+  }
+
   async function drawCostAnalysis(content) {
     const [summary, allWoms, locations, reclassItems] = await Promise.all([
       api.get("/api/woms/cost-summary"),
@@ -4164,26 +4623,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <h3>Review categories</h3>
       <div id="cost-body"></div>
 
-      ${
-        summary.vendorsOverchargingRepeatedly.length > 0
-          ? `
-      <h3>Vendors repeatedly over quote</h3>
-      <p class="review-checklist-hint">
-        Vendors whose contracted-services charge has come in over their own quote on more than one WOM --
-        worth a conversation about why their estimates keep running short. Compared against this app's own
-        estimate, not a confirmed GL actual.
-      </p>
-      <div class="review-list" id="cost-vendor-repeat-list"></div>
-      `
-          : ""
-      }
-
-      <h3>Vendor cost analysis</h3>
-      <p class="review-checklist-hint">
-        Total contracted-services $ applied per vendor, across every WOM on file -- how much business we
-        actually do with each one.
-      </p>
-      <div class="review-list" id="cost-vendor-spend-list"></div>
+      <div class="va-section"></div>
     `;
 
     redrawCostBody(content, categories, allWoms, locationByCode, locations);
@@ -4213,39 +4653,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       downloadCsv(`financials-${cat.key}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
     });
 
-    const vendorRepeatList = content.querySelector("#cost-vendor-repeat-list");
-    if (vendorRepeatList) {
-      summary.vendorsOverchargingRepeatedly.forEach((v) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(v.vendorName || "Unknown vendor")}</span>
-            <span class="wom-desc">${v.count} WOMs over quote</span>
-            <span class="badge badge-rejected">$${formatMoney(v.totalOverage)} total over</span>
-          </div>
-        `;
-        vendorRepeatList.appendChild(row);
-      });
-    }
-
-    const vendorSpendList = content.querySelector("#cost-vendor-spend-list");
-    if (summary.vendorContractedSpend.length === 0) {
-      vendorSpendList.innerHTML = `<p class="empty-note">No WOM has both a vendor match and an applied contracted-services cost yet.</p>`;
-    } else {
-      summary.vendorContractedSpend.forEach((v) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(v.vendorName || "Unknown vendor")}</span>
-            <span class="wom-desc">${v.womCount} WOM${v.womCount === 1 ? "" : "s"}</span>
-            <span class="badge badge-submitted">$${formatMoney(v.totalAppliedContracted)} applied</span>
-          </div>
-        `;
-        vendorSpendList.appendChild(row);
-      });
-    }
+    drawVendorAnalysisSection(content.querySelector(".va-section"), content, summary, locationByCode, locations, allWoms);
   }
 
   // Re-renders just the category tile strip + selected category's detail

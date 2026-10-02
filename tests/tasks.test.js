@@ -1071,7 +1071,7 @@ test("WOM lifecycle: labor/contracted-services breakdown and vendor cost analysi
     assert.equal(task.priority, "high");
   });
 
-  await t.test("a second WOM over quote with the same vendor makes them show up in vendorsOverchargingRepeatedly", async () => {
+  await t.test("a second WOM above quote with the same vendor makes them show up in vendorAboveQuote", async () => {
     await syncItemizedRow(802, {
       code: "60000003",
       estimatedContracted: 200,
@@ -1079,13 +1079,17 @@ test("WOM lifecycle: labor/contracted-services breakdown and vendor cost analysi
       vendorText: "Acme Mechanical - 5551234",
     });
     const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
-    const entry = res.body.vendorsOverchargingRepeatedly.find((v) => v.vendorId === vendorId);
-    assert.ok(entry, "expected Acme Mechanical to show up as a repeat overcharger");
-    assert.equal(entry.count, 2);
-    assert.equal(entry.totalOverage, 500);
+    const entry = res.body.vendorAboveQuote.find((v) => v.vendorId === vendorId);
+    assert.ok(entry, "expected Acme Mechanical to show up as repeatedly above quote");
+    assert.equal(entry.comparableWomCount, 2);
+    assert.equal(entry.aboveQuoteCount, 2);
+    assert.equal(entry.totalAboveQuote, 500);
+    assert.equal(entry.totalComparisonQuote, 700);
+    assert.equal(Math.round(entry.pctAboveQuote * 100) / 100, Math.round((500 / 700) * 100 * 100) / 100);
+    assert.equal(entry.reviewStatus, "needs_review");
   });
 
-  await t.test("vendorContractedSpend totals every WOM's applied contracted cost for that vendor, overage or not", async () => {
+  await t.test("vendorSpend totals every WOM's applied contracted cost for that vendor, overage or not", async () => {
     // A third WOM for the same vendor that did NOT run over its estimate --
     // still counts toward total business done with them.
     await syncItemizedRow(803, {
@@ -1095,10 +1099,13 @@ test("WOM lifecycle: labor/contracted-services breakdown and vendor cost analysi
       vendorText: "Acme Mechanical - 5551234",
     });
     const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
-    const spend = res.body.vendorContractedSpend.find((v) => v.vendorId === vendorId);
+    const spend = res.body.vendorSpend.find((v) => v.vendorId === vendorId);
     assert.ok(spend);
     assert.equal(spend.womCount, 3);
     assert.equal(spend.totalAppliedContracted, 900 + 300 + 1000);
+    // Only one vendor is matched across this test's WOMs so far -- it holds
+    // 100% of the matched-vendor total.
+    assert.equal(spend.shareOfMatchedCosts, 100);
   });
 
   await t.test("the vendor's own profile shows the same contracted spend total and no last-invoiced date yet", async () => {
