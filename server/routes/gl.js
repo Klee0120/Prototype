@@ -174,7 +174,7 @@ router.get("/imports", (req, res) => {
 });
 
 router.get("/status", (req, res) => {
-  res.json(db.getGlImportStatus());
+  res.json({ ...db.getGlImportStatus(), coverage: db.getGlFiscalYearCoverage() });
 });
 
 router.get("/reconciliation", (req, res) => {

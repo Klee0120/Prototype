@@ -5262,6 +5262,29 @@ function getGlImportStatus() {
   };
 }
 
+// Every period in the close calendar, each marked with whether it's been
+// imported and whether it's even closed yet -- so the admin can see at a
+// glance how much of the fiscal year is actually covered rather than just
+// the single most-recent gap getGlImportStatus flags. "Not closed yet" is
+// distinct from "missing": nothing to import there yet either way.
+function getGlFiscalYearCoverage() {
+  const today = new Date().toISOString().slice(0, 10);
+  const importedPeriods = new Set(
+    db
+      .prepare("SELECT DISTINCT period_number AS periodNumber, fiscal_year AS fiscalYear FROM gl_imports")
+      .all()
+      .map((r) => `${r.periodNumber}|${r.fiscalYear}`)
+  );
+  return GL_FISCAL_CALENDAR_2026.map((period) => ({
+    periodNumber: period.periodNumber,
+    fiscalYear: period.fiscalYear,
+    monthName: period.monthName,
+    closedDate: period.hfmCorporateLoad,
+    closedYet: period.hfmCorporateLoad <= today,
+    imported: importedPeriods.has(`${period.periodNumber}|${period.fiscalYear}`),
+  }));
+}
+
 function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileName) {
   const now = new Date().toISOString();
   db.prepare("DELETE FROM gl_entries WHERE period_number = ? AND fiscal_year = ?").run(periodNumber, fiscalYear);
@@ -5648,4 +5671,5 @@ module.exports = {
   findGlImportByPeriod,
   getPoReconciliation,
   getGlImportStatus,
+  getGlFiscalYearCoverage,
 };

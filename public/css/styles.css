@@ -2433,6 +2433,15 @@ h1, h2, h3, h4 {
   border-top: 2px solid var(--border);
   background: var(--neutral-bg);
 }
+.gl-coverage-strip {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.gl-coverage-strip .badge {
+  min-width: 36px;
+  text-align: center;
+}
 .po-desc-cell {
   max-width: 320px;
 }

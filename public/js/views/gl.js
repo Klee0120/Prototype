@@ -25,6 +25,35 @@ function monthName(periodNumber) {
   return MONTH_NAMES[periodNumber - 1] || `Period ${periodNumber}`;
 }
 
+// A compact per-period strip for the whole fiscal year, not just the single
+// most-recently-closed gap the overdue banner above already covers -- so
+// it's obvious at a glance how much of the year's GL is actually in, not
+// just whether the latest month is.
+function renderCoverageStrip(coverage) {
+  const importedCount = coverage.filter((p) => p.imported).length;
+  const dueCount = coverage.filter((p) => p.closedYet).length;
+  const fiscalYear = coverage[0] ? coverage[0].fiscalYear : null;
+  return `
+    <p class="review-checklist-hint">
+      <strong>FY${fiscalYear} GL coverage:</strong> ${importedCount} of ${dueCount} closed period${dueCount === 1 ? "" : "s"} imported
+      (${coverage.length} period${coverage.length === 1 ? "" : "s"} in the fiscal year).
+    </p>
+    <div class="gl-coverage-strip">
+      ${coverage
+        .map((p) => {
+          const cls = p.imported ? "badge-approved" : p.closedYet ? "badge-rejected" : "badge-draft";
+          const title = p.imported
+            ? `${p.monthName} 20${p.fiscalYear} -- imported`
+            : p.closedYet
+              ? `${p.monthName} 20${p.fiscalYear} -- closed ${p.closedDate}, not imported yet`
+              : `${p.monthName} 20${p.fiscalYear} -- doesn't close until ${p.closedDate}`;
+          return `<span class="badge ${cls}" title="${escapeHtml(title)}">${escapeHtml(p.monthName.slice(0, 3))}</span>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 // GL Reconciliation -- matches a monthly GL extract against the Budget PO
 // Tracker by PO number (see server/routes/gl.js), to show what actually got
 // paid against each PO vs. what it was approved for, and whether the GL
@@ -81,6 +110,8 @@ export async function renderGlReconciliation(container) {
         Compares real GL amounts against the Budget PO Tracker -- this never changes anything on the PO or WOM side, it's a read-only check.
       </p>
 
+      ${status && status.coverage ? renderCoverageStrip(status.coverage) : ""}
+
       <div class="task-tiles">
         <div class="task-tile"><div class="task-tile-count">${data.reconciled.length}</div><div class="task-tile-label">POs matched to GL</div></div>
         <div class="task-tile"><div class="task-tile-count">${formatMoney(data.reconciledTotal)}</div><div class="task-tile-label">Net variance (paid &minus; approved)</div></div>
@@ -91,7 +122,7 @@ export async function renderGlReconciliation(container) {
 
       <h3>PO reconciliation</h3>
       <p class="review-checklist-hint">
-        Approved PO amount vs. what the GL actually shows paid against it, summed across every GL period
+        The PO's own dollar amount (from the Budget PO Tracker) vs. what the GL actually shows paid against it, summed across every GL period
         imported so far -- a PO invoiced across multiple months shows its full running total here, not just
         the latest one. A variance isn't necessarily a problem by itself: a PO still being invoiced (check its
         own PO Status column) is just mid-billing, not wrong yet -- it's worth a look once that status shows
@@ -144,7 +175,7 @@ export async function renderGlReconciliation(container) {
             <th>WOM #</th>
             <th>PO Status</th>
             <th>GL Period</th>
-            <th>Approved</th>
+            <th>PO Amount</th>
             <th>Actual paid (GL)</th>
             <th>Variance</th>
             <th>Subsidiary</th>
@@ -228,7 +259,7 @@ export async function renderGlReconciliation(container) {
             <tr><th>WOM #</th><td>${escapeHtml(r.womNumber || "—")}</td><th>GL lines</th><td>${r.glLineCount}</td></tr>
             <tr><th>PO Status</th><td>${escapeHtml(r.poStatus || "—")}</td><th>GL Period</th><td>${escapeHtml(r.periodLabel || "—")}</td></tr>
             <tr><th>Subsidiary</th><td>${r.subsidiaryMismatch ? "Mismatch" : "Matches"}</td><th>Object Code</th><td>${r.objectCodeMismatch ? "Mismatch" : "Matches"}</td></tr>
-            <tr><th>Approved</th><td>${formatMoney(r.poAmount)}</td><th>Actual paid (GL)</th><td>${formatMoney(r.actualPaid)}</td></tr>
+            <tr><th>PO Amount</th><td>${formatMoney(r.poAmount)}</td><th>Actual paid (GL)</th><td>${formatMoney(r.actualPaid)}</td></tr>
             <tr><th>Variance</th><td colspan="3">${formatMoney(r.variance)}</td></tr>
           </tbody>
         </table>
