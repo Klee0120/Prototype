@@ -368,10 +368,14 @@ db.exec(`
   -- and region are "sticky" -- an import only ever sets them when they're
   -- still NULL, never overwrites a value this app (auto-match, or the
   -- admin's own confirm/assign action) already put there, so a re-import
-  -- can never undo manual organization work. lifecycle_status is entirely
-  -- separate from whether vendor/region are resolved -- it only ever
-  -- changes via the explicit Move to Active POs action, never as a side
-  -- effect of matching. line_number (the sheet's own row position) is tried
+  -- can never undo manual organization work. lifecycle_status flips from
+  -- needs_organization to active the moment a record has a real PO Number, a
+  -- matched location, AND a matched vendor (see isPoFullyResolved/
+  -- maybeAutoActivatePo) -- at that point there's nothing left to organize,
+  -- so holding it back would just be friction, not a safeguard. A record
+  -- missing any one of those three still needs Krista's own explicit Move
+  -- to Active action; this never un-activates a record either way.
+  -- line_number (the sheet's own row position) is tried
   -- FIRST on re-import, ahead of either key -- Krista's workflow edits a
   -- row's vendor/description text in place after correcting a vendor
   -- number, which can change what composite_key that row would compute to;
@@ -1536,7 +1540,23 @@ function createVendor(fields) {
   const result = db
     .prepare(`INSERT INTO vendors (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
     .run(...values);
-  return findVendor(result.lastInsertRowid);
+  const newVendorId = Number(result.lastInsertRowid);
+
+  // A new vendor profile with a JDE # that already shows up, unmatched, on
+  // some PO record (the exact "flagged in Vendors" case -- see
+  // listUnregisteredPoVendors) should link up immediately, not wait for a
+  // future PO re-import -- same "Vendor Number column match only" rule as
+  // import-time matching, just triggered from the other direction. Reuses
+  // confirmPoVendor so this also benefits from its own auto-activate check.
+  if (fields.jdeVendorNumber) {
+    const trimmed = String(fields.jdeVendorNumber).trim();
+    if (trimmed) {
+      const unmatchedPos = db.prepare("SELECT id FROM pos WHERE vendor_id IS NULL AND vendor_number = ?").all(trimmed);
+      for (const po of unmatchedPos) confirmPoVendor(po.id, newVendorId);
+    }
+  }
+
+  return findVendor(newVendorId);
 }
 
 function updateVendor(id, fields) {
@@ -4344,6 +4364,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
           now,
           existing.id
         );
+        maybeAutoActivatePo(existing.id);
         if (changed) updated++;
         else unchanged++;
       } else {
@@ -4392,6 +4413,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
             now
           );
         touchedIds.add(Number(result.lastInsertRowid));
+        maybeAutoActivatePo(Number(result.lastInsertRowid));
         created++;
       }
     }
@@ -4433,6 +4455,24 @@ function runPoImport(rows, importedBy, { dryRun }) {
   }
 }
 
+// A record has nothing left for Krista to confirm once it has a real PO
+// Number, a matched location, and a matched vendor -- at that point sitting
+// in Needs Organization is just friction, not a safeguard, so it's moved to
+// Active automatically. Never fires the other way (doesn't touch an
+// already-Active record, and never un-activates one), and never overrides a
+// still-needs_organization record missing any of the three -- those still
+// need either a real match or Krista's own manual Move to Active call.
+function isPoFullyResolved(po) {
+  return Boolean(po.po_number && /^\d+$/.test(String(po.po_number).trim()) && po.location_code && po.vendor_id);
+}
+
+function maybeAutoActivatePo(id) {
+  const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(id);
+  if (po && po.lifecycle_status === "needs_organization" && isPoFullyResolved(po)) {
+    db.prepare("UPDATE pos SET lifecycle_status = 'active', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+  }
+}
+
 function confirmPoVendor(id, vendorId) {
   const vendor = findVendor(vendorId);
   if (!vendor) throw new Error("Vendor not found");
@@ -4441,6 +4481,7 @@ function confirmPoVendor(id, vendorId) {
     new Date().toISOString(),
     id
   );
+  maybeAutoActivatePo(id);
   return findPo(id);
 }
 
@@ -4461,6 +4502,7 @@ function assignPoRegion(id, region) {
     new Date().toISOString(),
     id
   );
+  maybeAutoActivatePo(id);
   return findPo(id);
 }
 
@@ -4494,6 +4536,35 @@ function bulkMovePoToActive(ids) {
 // to be seen from.
 function listPoTasks(poId) {
   return db.prepare("SELECT * FROM tasks WHERE related_po_id = ? ORDER BY id DESC").all(poId);
+}
+
+// Flags vendors doing real business with us (they show up on a PO, by name
+// AND a JDE Vendor #) who have no vendor profile on file at all -- distinct
+// from "Needs matching" in the PO tracker, which also covers a PO missing a
+// vendor number entirely. Grouped by vendor_number (the stable identity),
+// never by name, same reasoning as everywhere else vendor matching happens
+// in this app. Covers POs in either lifecycle state -- whether this
+// particular PO record has been organized yet doesn't change the fact that
+// this vendor itself has no profile.
+function listUnregisteredPoVendors() {
+  return db
+    .prepare(
+      `SELECT
+         vendor_number AS vendorNumber,
+         (SELECT p2.vendor_name FROM pos p2
+           WHERE p2.vendor_number = p.vendor_number AND p2.vendor_id IS NULL
+           ORDER BY p2.last_seen_at DESC LIMIT 1) AS vendorName,
+         COUNT(*) AS poCount,
+         SUM(po_amount) AS totalAmount
+       FROM pos p
+       WHERE vendor_id IS NULL AND vendor_number IS NOT NULL AND vendor_number != ''
+         AND vendor_number NOT IN (
+           SELECT jde_vendor_number FROM vendors WHERE jde_vendor_number IS NOT NULL AND jde_vendor_number != ''
+         )
+       GROUP BY vendor_number
+       ORDER BY poCount DESC`
+    )
+    .all();
 }
 
 module.exports = {
@@ -4653,4 +4724,5 @@ module.exports = {
   movePoToActive,
   bulkMovePoToActive,
   listPoTasks,
+  listUnregisteredPoVendors,
 };

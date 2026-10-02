@@ -36,6 +36,13 @@ router.get("/onboarding/case-summary", (req, res) => {
   res.json({ caseTypes: db.ONBOARDING_CASE_TYPES, summaries: db.listOnboardingCaseSummaries() });
 });
 
+// Vendors showing up on a Budget PO (name + JDE Vendor #) with no vendor
+// profile on file at all -- the Vendor Directory's own "needs attention"
+// banner, same pattern as the outdated-forms one.
+router.get("/unregistered-po-vendors", (req, res) => {
+  res.json(db.listUnregisteredPoVendors());
+});
+
 router.post("/", (req, res) => {
   const error = validateVendorBody(req.body);
   if (error) return res.status(400).json({ error });

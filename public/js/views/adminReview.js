@@ -173,6 +173,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // searched client-side (291+ rows is small enough that refetching on
   // every keystroke would just be wasted network, not a real cache concern).
   let vendorsCache = null;
+  // Vendors that show up on a Budget PO (name + JDE #) but have no profile
+  // here at all -- the Vendor Directory's own "needs attention" banner, same
+  // idea as the outdated-forms one below it. Cleared alongside vendorsCache
+  // any time a vendor's created/edited, same staleness reasoning.
+  let unregisteredPoVendorsCache = null;
+  let showUnregisteredPoVendors = false;
+  function invalidateVendorsCache() {
+    vendorsCache = null;
+    unregisteredPoVendorsCache = null;
+  }
   const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "" };
   const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
   // Which vendor's full profile page is open (null = showing the directory
@@ -345,6 +355,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function drawVendors(content) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    if (!unregisteredPoVendorsCache) unregisteredPoVendorsCache = await api.get("/api/admin/vendors/unregistered-po-vendors");
     if (vendorProfileId) {
       const v = vendorsCache.find((x) => x.id === vendorProfileId);
       if (v) {
@@ -398,7 +409,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     btn.addEventListener("click", async () => {
       try {
         await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: WELCOME_EMAIL_REQUEST_TYPE, status: "Sent" });
-        vendorsCache = null;
+        invalidateVendorsCache();
         await onLogged();
       } catch (err) {
         window.alert(err.message);
@@ -558,7 +569,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         row.querySelector(".onboarding-start-btn").addEventListener("click", async () => {
           try {
             await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: WELCOME_EMAIL_REQUEST_TYPE, status: "Sent" });
-            vendorsCache = null;
+            invalidateVendorsCache();
             await drawVendorOnboarding(content);
           } catch (err) {
             window.alert(err.message);
@@ -651,7 +662,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         const reasonInput = el.querySelector(".onboarding-denied-reason-input");
         try {
           await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
-          vendorsCache = null;
+          invalidateVendorsCache();
         } catch (err) {
           window.alert(err.message);
         }
@@ -773,7 +784,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         } else {
           await api.post(`/api/admin/vendors/${v.id}/requests`, { requestType: ct.type, status, referenceNumber, note, asOf });
         }
-        vendorsCache = null;
+        invalidateVendorsCache();
         await onLogged();
       } catch (err) {
         window.alert(err.message);
@@ -899,6 +910,19 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
               </div>
             </div>`
       }
+      ${
+        unregisteredPoVendorsCache.length === 0
+          ? ""
+          : `<div class="expiring-forms-banner">
+              <div class="expiring-forms-title">Vendors with no profile on file</div>
+              <div class="expiring-forms-row">
+                <span class="rfm-flag">Unregistered</span>
+                <span>${unregisteredPoVendorsCache.length} vendor${unregisteredPoVendorsCache.length === 1 ? "" : "s"} show${unregisteredPoVendorsCache.length === 1 ? "s" : ""} up on a Budget PO by name and JDE # but ${unregisteredPoVendorsCache.length === 1 ? "has" : "have"} no vendor profile here yet.</span>
+                <button class="btn btn-link vendor-view-unregistered-btn" type="button">${showUnregisteredPoVendors ? "Hide" : "View"}</button>
+              </div>
+              ${showUnregisteredPoVendors ? renderUnregisteredPoVendorsList(content) : ""}
+            </div>`
+      }
       <div class="vendor-toolbar">
         <input class="vendor-search" type="text" placeholder="Vendor name, JDE #, or service" value="${escapeHtml(vendorFilters.search)}" />
         <select class="vendor-cw-filter">
@@ -945,8 +969,46 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         renderVendorsUI(content);
       });
     }
+    const viewUnregisteredBtn = content.querySelector(".vendor-view-unregistered-btn");
+    if (viewUnregisteredBtn) {
+      viewUnregisteredBtn.addEventListener("click", () => {
+        showUnregisteredPoVendors = !showUnregisteredPoVendors;
+        renderVendorsUI(content);
+      });
+    }
+    content.querySelectorAll(".unregistered-po-vendor-create-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        openAddVendorModal(content, { name: btn.dataset.name, jdeVendorNumber: btn.dataset.vendorNumber });
+      });
+    });
 
     refreshVendorList(content);
+  }
+
+  // Plain HTML string (not a DOM mutation) so it can sit inline inside
+  // renderVendorsUI's own template literal -- the "Create vendor profile"
+  // buttons it renders are wired up alongside the rest of that function's
+  // listeners, after the real innerHTML assignment.
+  function renderUnregisteredPoVendorsList(content) {
+    return `
+      <table class="detail-table unregistered-po-vendor-table">
+        <thead><tr><th>Vendor Name (as imported)</th><th>JDE Vendor #</th><th>PO Count</th><th>Total $</th><th></th></tr></thead>
+        <tbody>
+          ${unregisteredPoVendorsCache
+            .map(
+              (v) => `
+            <tr>
+              <td>${escapeHtml(v.vendorName || "(no name on file)")}</td>
+              <td>${escapeHtml(v.vendorNumber)}</td>
+              <td>${v.poCount}</td>
+              <td>$${formatMoney(v.totalAmount || 0)}</td>
+              <td><button type="button" class="btn btn-secondary unregistered-po-vendor-create-btn" data-name="${escapeHtml(v.vendorName || "")}" data-vendor-number="${escapeHtml(v.vendorNumber)}">Create vendor profile</button></td>
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
   }
 
   function refreshVendorList(content) {
@@ -961,14 +1023,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
   }
 
-  function openAddVendorModal(content) {
+  function openAddVendorModal(content, prefill) {
     const { body, close } = openModal({
       title: "Add Vendor",
       bodyHtml: `
         <form class="add-vendor-form modal-form">
           <div class="add-tech-grid">
-            <input name="name" placeholder="Vendor name" required />
-            <input name="jdeVendorNumber" placeholder="JDE Vendor #" />
+            <input name="name" placeholder="Vendor name" value="${escapeHtml(prefill?.name || "")}" required />
+            <input name="jdeVendorNumber" placeholder="JDE Vendor #" value="${escapeHtml(prefill?.jdeVendorNumber || "")}" />
             <select name="cwStatus">
               <option value="unknown">C&amp;W Unknown</option>
               <option value="active">C&amp;W Active</option>
@@ -1004,7 +1066,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           toyotaStatus: addForm.toyotaStatus.value,
           services: addForm.services.value.trim(),
         });
-        vendorsCache = null;
+        invalidateVendorsCache();
         close();
         // Straight into the new vendor's own profile -- Add vendor -> Open
         // profile -> Start onboarding is the whole flow, not three separate
@@ -1110,7 +1172,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           })
         );
         Object.assign(v, updated);
-        vendorsCache = null;
+        invalidateVendorsCache();
         close();
         await drawVendors(content);
       } catch (err) {
@@ -1122,7 +1184,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (!window.confirm(`Remove vendor "${v.name}"? This can't be undone.`)) return;
       try {
         await api.delete(`/api/admin/vendors/${v.id}`);
-        vendorsCache = null;
+        invalidateVendorsCache();
         vendorProfileId = null;
         close();
         await drawVendors(content);
@@ -1278,7 +1340,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       docChecksHost.innerHTML = renderVendorDocChecksForm(v);
       wireVendorDocChecksForm(docChecksHost.querySelector(".vendor-doc-checks-form"), v, (updated) => {
         Object.assign(v, updated);
-        vendorsCache = null;
+        invalidateVendorsCache();
         attachDocChecksForm();
       });
     }
@@ -1634,7 +1696,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       docChecksHost.innerHTML = renderVendorDocChecksForm(v);
       wireVendorDocChecksForm(docChecksHost.querySelector(".vendor-doc-checks-form"), v, (updated) => {
         Object.assign(v, updated);
-        vendorsCache = null;
+        invalidateVendorsCache();
         attachDocChecksForm();
       });
     }

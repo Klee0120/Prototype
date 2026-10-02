@@ -2804,6 +2804,10 @@ h1, h2, h3, h4 {
   font-size: 14px;
 }
 
+.unregistered-po-vendor-table {
+  margin-top: 10px;
+}
+
 .attachment-expiry-field {
   display: inline-flex;
   align-items: center;

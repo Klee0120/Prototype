@@ -143,10 +143,35 @@ export async function renderPos(container) {
     searchDebounceTimer = setTimeout(() => draw(), 350);
   }
 
+  // Same definition as the server's own auto-activate rule (a real PO #,
+  // a matched location, and a matched vendor -- see isPoFullyResolved in
+  // db.js): a brand new or freshly re-confirmed record skips Needs
+  // Organization automatically once it meets this, but a record that was
+  // already sitting here before that rule shipped won't retroactively
+  // move itself -- this button is the manual catch-up for that backlog.
+  function isPoReadyToActivate(p) {
+    return Boolean(p.poNumber && /^\d+$/.test(String(p.poNumber).trim()) && p.locationCode && p.vendorLinkStatus === "matched");
+  }
+
   function renderPoTable() {
     const wrap = container.querySelector(".po-list-table-wrap");
     const countEl = container.querySelector(".po-count");
-    countEl.textContent = `${listCache.length} match${listCache.length === 1 ? "" : "es"}.`;
+    const readyCount = listCache.filter(isPoReadyToActivate).length;
+    countEl.innerHTML = `${listCache.length} match${listCache.length === 1 ? "" : "es"}.${
+      subTab === "needs_organization" && readyCount > 0
+        ? ` <button type="button" class="btn btn-link po-select-ready-btn">Select all ${readyCount} with PO #, location, and vendor all matched</button>`
+        : ""
+    }`;
+    const selectReadyBtn = countEl.querySelector(".po-select-ready-btn");
+    if (selectReadyBtn) {
+      selectReadyBtn.addEventListener("click", () => {
+        listCache.forEach((p) => {
+          if (isPoReadyToActivate(p)) selectedIds.add(p.id);
+        });
+        syncCheckboxesToSelection();
+        renderBulkToolbar();
+      });
+    }
     if (listCache.length === 0) {
       wrap.innerHTML = `<p class="empty-note">No PO records match these filters.</p>`;
       return;
@@ -155,7 +180,7 @@ export async function renderPos(container) {
       <table class="detail-table po-table">
         <thead>
           <tr>
-            <th></th>
+            <th><input type="checkbox" class="po-select-all-checkbox" title="Select all visible" /></th>
             <th>Date</th>
             <th>Requestor</th>
             <th>Description</th>
@@ -205,10 +230,30 @@ export async function renderPos(container) {
         const id = Number(cb.dataset.id);
         if (cb.checked) selectedIds.add(id);
         else selectedIds.delete(id);
+        syncCheckboxesToSelection();
         renderBulkToolbar();
       });
     });
+    wrap.querySelector(".po-select-all-checkbox").addEventListener("change", (e) => {
+      if (e.target.checked) listCache.forEach((p) => selectedIds.add(p.id));
+      else listCache.forEach((p) => selectedIds.delete(p.id));
+      syncCheckboxesToSelection();
+      renderBulkToolbar();
+    });
+    syncCheckboxesToSelection();
     renderBulkToolbar();
+  }
+
+  // Keeps every row checkbox, and the header's own "select all visible"
+  // checkbox, reflecting selectedIds -- needed because selectedIds can
+  // change from outside a checkbox click too (the "Select all N with a
+  // matched vendor + region assigned" shortcut above).
+  function syncCheckboxesToSelection() {
+    container.querySelectorAll(".po-select-checkbox").forEach((cb) => {
+      cb.checked = selectedIds.has(Number(cb.dataset.id));
+    });
+    const selectAll = container.querySelector(".po-select-all-checkbox");
+    if (selectAll) selectAll.checked = listCache.length > 0 && listCache.every((p) => selectedIds.has(p.id));
   }
 
   function renderBulkToolbar() {
