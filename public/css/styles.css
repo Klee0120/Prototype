@@ -1574,6 +1574,43 @@ h1, h2, h3, h4 {
   margin-top: 2px;
 }
 
+.task-tiles-main {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.task-tile-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.task-tile-active .task-tile-count {
+  color: var(--accent);
+}
+
+.task-secondary-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+
+.task-secondary-stat-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.task-secondary-stat-link:hover {
+  color: var(--accent);
+}
+.task-secondary-stat-link strong {
+  color: var(--ink);
+}
+
 .task-view-tabs {
   margin-bottom: 14px;
 }
@@ -1591,6 +1628,10 @@ h1, h2, h3, h4 {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+}
+.review-row-summary > .task-card-meta {
+  flex-basis: 100%;
+  margin-top: 2px;
 }
 .task-due-overdue {
   color: var(--danger);
@@ -1666,6 +1707,11 @@ h1, h2, h3, h4 {
 
 .task-exception-flag {
   margin-right: 4px;
+}
+
+.task-card-chips {
+  flex-basis: 100%;
+  margin: 2px 0 0;
 }
 
 .task-snooze-banner {

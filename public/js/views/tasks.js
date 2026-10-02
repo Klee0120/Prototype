@@ -321,6 +321,7 @@ export async function renderTaskBoard(container) {
   // Opens automatically once any filter is actually set (e.g. from a WOM
   // lookup elsewhere), and stays open across redraws once toggled on.
   let filtersOpen = false;
+  let searchQuery = "";
 
   await draw();
 
@@ -449,24 +450,49 @@ export async function renderTaskBoard(container) {
     // is more confusing than the panel being open.
     if (Object.values(filters).some(Boolean)) filtersOpen = true;
 
+    // Secondary counts (Recurring/PSE Not Sent/Needs Change Order-Toyota PO)
+    // still jump to their view on click, just as a compact text line rather
+    // than full tiles -- the 4 tiles above are the ones worth a glance at
+    // all times; these three are more of a "something to know about" count.
+    const secondaryStats = [
+      { label: "Recurring", count: summary.recurring, view: isAdmin ? "recurring" : null },
+      isAdmin ? { label: "PSE not sent", count: summary.pseNotSent, view: null } : null,
+      { label: "Change order / Toyota PO", count: summary.exceptions, view: isAdmin ? "exceptions" : null },
+    ].filter(Boolean);
+
     container.innerHTML = `
-      <p class="review-checklist-hint">
-        Work generated automatically from WOM status changes and recurring responsibilities, plus anything added by hand.
-      </p>
-      <div class="task-tiles">
+      <div class="page-header">
+        <div>
+          <h1 class="page-header-title">Task Manager</h1>
+          <p class="page-header-subtitle">Tasks from WOM updates, recurring work and manual entries.</p>
+        </div>
+        <div class="page-header-actions">
+          <button class="btn btn-primary task-new-btn" type="button">+ New task</button>
+        </div>
+      </div>
+      <div class="task-tiles task-tiles-main">
         ${renderTile("Due Today", summary.dueToday, null)}
         ${renderTile("Overdue", summary.overdue, "overdue")}
         ${renderTile("High Priority", summary.highPriority, null)}
         ${renderTile("Waiting", summary.waiting, "waiting")}
-        ${renderTile("Recurring", summary.recurring, isAdmin ? "recurring" : null)}
-        ${isAdmin ? renderTile("PSE Not Sent", summary.pseNotSent, null) : ""}
-        ${renderTile(VIEW_LABELS.exceptions, summary.exceptions, isAdmin ? "exceptions" : null)}
       </div>
+      <p class="task-secondary-stats">
+        ${secondaryStats
+          .map((s) =>
+            s.view
+              ? `<button type="button" class="task-secondary-stat-link" data-view="${s.view}">${s.label} <strong>${s.count}</strong></button>`
+              : `<span>${s.label} <strong>${s.count}</strong></span>`
+          )
+          .join(" &middot; ")}
+      </p>
       <div class="tabs task-view-tabs">
         ${views.map((v) => `<button class="tab ${view === v ? "active" : ""}" data-view="${v}">${VIEW_LABELS[v]}</button>`).join("")}
       </div>
-      <div class="review-actions">
-        <button class="btn btn-secondary task-new-btn" type="button">+ New Task</button>
+      <div class="wom-filter-bar">
+        <label class="search-field">
+          <span class="search-field-icon">&#128269;</span>
+          <input type="search" class="task-search-input" placeholder="Search tasks..." value="${escapeHtml(searchQuery)}" />
+        </label>
         ${
           isAdmin
             ? `<button class="btn btn-secondary task-filters-toggle" type="button">${filtersOpen ? "Hide filters" : "Filters"}</button>`
@@ -493,7 +519,7 @@ export async function renderTaskBoard(container) {
     }
     container.querySelector(".task-legend-btn").addEventListener("click", openLegendModal);
 
-    container.querySelectorAll(".task-tile[data-view]").forEach((el) => {
+    container.querySelectorAll(".task-tile[data-view], .task-secondary-stat-link[data-view]").forEach((el) => {
       el.addEventListener("click", () => {
         view = el.dataset.view;
         draw();
@@ -508,16 +534,30 @@ export async function renderTaskBoard(container) {
     container.querySelector(".task-new-btn").addEventListener("click", openNewTaskModal);
     container.querySelector(".task-group-by").addEventListener("change", (e) => {
       groupBy = e.target.value;
-      renderTaskList(container.querySelector("#task-list"), lastTasks);
+      renderTaskList(container.querySelector("#task-list"), visibleTasks());
+    });
+    container.querySelector(".task-search-input").addEventListener("input", (e) => {
+      searchQuery = e.target.value;
+      renderTaskList(container.querySelector("#task-list"), visibleTasks());
     });
 
     if (isAdmin) await renderFilters(container.querySelector("#task-filters"));
-    renderTaskList(container.querySelector("#task-list"), tasks);
+    renderTaskList(container.querySelector("#task-list"), visibleTasks());
+  }
+
+  // Plain-text search against the already-fetched list -- title/description
+  // only, client-side, since the view/role/filter panel above already does
+  // the real server-side narrowing.
+  function visibleTasks() {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return lastTasks;
+    return lastTasks.filter((t) => t.title.toLowerCase().includes(q) || (t.description || "").toLowerCase().includes(q));
   }
 
   function renderTile(label, count, targetView) {
+    const isActive = targetView && targetView === view;
     return `
-      <div class="task-tile ${targetView ? "task-tile-clickable" : ""}" ${targetView ? `data-view="${targetView}"` : ""}>
+      <div class="task-tile ${targetView ? "task-tile-clickable" : ""} ${isActive ? "task-tile-active" : ""}" ${targetView ? `data-view="${targetView}"` : ""}>
         <div class="task-tile-count">${count}</div>
         <div class="task-tile-label">${label}</div>
       </div>
@@ -1070,11 +1110,12 @@ export async function renderTaskBoard(container) {
       <div class="review-row-summary">
         ${isAdmin ? `<input type="checkbox" class="task-select-checkbox" data-id="${t.id}" />` : ""}
         <span class="review-row-name">
-          ${t.isChangeOrder ? `<span class="task-exception-flag" title="A real cost overage -- Toyota needs to sign off on a change order">🚩</span>` : ""}${escapeHtml(t.title)}${contextBits.length ? `<span class="wom-desc"> — ${contextBits.join(" · ")}</span>` : ""}
+          ${t.isChangeOrder ? `<span class="task-exception-flag" title="A real cost overage -- Toyota needs to sign off on a change order">🚩</span>` : ""}${escapeHtml(t.title)}
         </span>
         <span class="badge badge-${URGENCY_BADGE_CLASS[t.urgency] || "draft"}">${escapeHtml(badgeLabel)}</span>
-        <span class="task-card-meta">${escapeHtml(assignee)}${canClaim ? ` <button class="btn btn-link task-claim-btn" type="button" data-id="${t.id}">Claim</button>` : ""} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}${t.snoozedUntil ? ` &middot; <span class="task-due-soon">snoozed until ${escapeHtml(formatDate(t.snoozedUntil))}</span>` : ""}</span>
         <button class="btn btn-link task-detail-toggle" type="button">Details</button>
+        ${contextBits.length ? `<div class="chip-row task-card-chips">${contextBits.map((c) => `<span class="chip">${c}</span>`).join("")}</div>` : ""}
+        <span class="task-card-meta">${escapeHtml(assignee)}${canClaim ? ` <button class="btn btn-link task-claim-btn" type="button" data-id="${t.id}">Claim</button>` : ""} &middot; <span class="${dueInfo.cls}">${escapeHtml(dueInfo.text)}</span> &middot; ${ageLabel}${t.snoozedUntil ? ` &middot; <span class="task-due-soon">snoozed until ${escapeHtml(formatDate(t.snoozedUntil))}</span>` : ""}</span>
       </div>
       <div class="review-row-detail task-card-detail" hidden></div>
     `;
