@@ -393,6 +393,16 @@ export async function renderSchedule(container) {
                 ${defaultLocationCode ? womOptionsFor(defaultLocationCode) : ""}
               </select>
             </label>
+            <div class="schedule-po-warning" hidden>
+              <p>
+                No Toyota PO is on file for this WOM yet. You can still schedule it, but check with your RFM
+                that it's okay to proceed before Toyota has approved a PO.
+              </p>
+              <label class="schedule-po-confirm">
+                <input type="checkbox" name="confirmNoPo" />
+                I've checked with my RFM and have permission to schedule this anyway.
+              </label>
+            </div>
             <div class="schedule-add-daterange">
               <label class="schedule-add-field"><span>First day</span><input name="startDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
               <label class="schedule-add-field"><span>Last day</span><input name="endDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
@@ -412,13 +422,27 @@ export async function renderSchedule(container) {
       wireDateMaskInput(body.querySelector('input[name="endDate"]'));
       const addLocationSelect = body.querySelector('select[name="locationCode"]');
       if (defaultLocationCode) addLocationSelect.value = defaultLocationCode;
+      const poWarning = body.querySelector(".schedule-po-warning");
+      // Scheduling is a planning action, not a billing one -- a missing
+      // Toyota PO shouldn't block it outright, but it's worth a pause since
+      // charging time to a WOM Toyota hasn't actually approved yet is
+      // exactly the kind of thing an RFM needs to have signed off on.
+      function updatePoWarning() {
+        const womSelect = body.querySelector('select[name="womCode"]');
+        const wom = openWoms.find((w) => w.code === womSelect.value);
+        const needsWarning = Boolean(wom) && wom.toyotaPoValue == null;
+        poWarning.hidden = !needsWarning;
+        if (!needsWarning) poWarning.querySelector('input[name="confirmNoPo"]').checked = false;
+      }
       function applyLocationCode(locationCode) {
         addLocationSelect.value = locationCode;
         const womSelect = body.querySelector('select[name="womCode"]');
         womSelect.disabled = !locationCode;
         womSelect.innerHTML = `<option value="">${locationCode ? "Choose one" : "Choose a location first"}</option>${locationCode ? womOptionsFor(locationCode) : ""}`;
+        updatePoWarning();
       }
       addLocationSelect.addEventListener("change", (e) => applyLocationCode(e.target.value));
+      body.querySelector('select[name="womCode"]').addEventListener("change", updatePoWarning);
       if (isAdmin) {
         // Re-defaults to the newly-picked technician's own home location --
         // still just a starting point, not a restriction; the location
@@ -434,6 +458,10 @@ export async function renderSchedule(container) {
         const techId = isAdmin ? form.techId.value : state.user.id;
         const womCode = form.womCode.value;
         const hours = Number(form.hours.value);
+        if (!poWarning.hidden && !form.confirmNoPo.checked) {
+          msg.textContent = "Check the box confirming RFM permission, or pick a WOM with a Toyota PO on file.";
+          return;
+        }
         if (!techId || !form.locationCode.value || !womCode || !hours || !form.startDate.value.trim() || !form.endDate.value.trim()) {
           msg.textContent = "Choose a technician, location, project, date range, and hours.";
           return;

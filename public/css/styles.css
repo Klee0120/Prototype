@@ -3300,6 +3300,26 @@ h1, h2, h3, h4 {
   font: inherit;
 }
 
+.schedule-po-warning {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.schedule-po-warning p {
+  margin: 0 0 8px;
+}
+
+.schedule-po-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-weight: 600;
+}
+
 .schedule-entry {
   font-size: 11px;
   display: block;
