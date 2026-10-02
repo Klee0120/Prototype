@@ -2891,6 +2891,7 @@ h1, h2, h3, h4 {
 }
 
 .schedule-calendar-grid {
+  width: 100%;
   min-width: 900px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2931,8 +2932,8 @@ h1, h2, h3, h4 {
 .schedule-daycell {
   grid-row: 1 / -1;
   border-right: 1px solid var(--border);
-  padding: 6px 8px 4px;
-  min-height: 34px;
+  padding: 8px 10px 6px;
+  min-height: 130px;
 }
 
 .schedule-daycell:last-child {
@@ -2985,20 +2986,26 @@ h1, h2, h3, h4 {
   display: block;
   min-width: 0;
   border: 1px solid var(--accent);
-  background: var(--card);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent-dark);
   margin: 2px 3px;
-  padding: 3px 6px;
+  padding: 4px 7px;
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  color: inherit;
   border-radius: 5px;
   position: relative;
   z-index: 1;
 }
 
 .schedule-entry:hover {
-  background: var(--bg);
+  background: #f2d2cf;
+}
+
+.schedule-entry .badge {
+  background: var(--accent);
+  color: #fff;
 }
 
 .schedule-entry-main {
