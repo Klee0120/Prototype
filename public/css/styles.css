@@ -158,8 +158,12 @@ h1, h2, h3, h4 {
 }
 
 .sidebar-brand {
-  padding: 18px;
+  height: 71px;
+  box-sizing: border-box;
+  padding: 0 18px;
   background: #fff;
+  display: flex;
+  align-items: center;
 }
 
 .sidebar-brand-logo {
@@ -3717,6 +3721,7 @@ h1, h2, h3, h4 {
     padding: 10px 12px;
   }
   .sidebar-brand {
+    height: auto;
     padding: 4px 10px 4px 0;
     background: none;
   }
