@@ -1072,6 +1072,14 @@ if (!hasColumn("vendor_requests", "as_of")) {
   db.exec("UPDATE vendor_requests SET as_of = date(requested_at) WHERE as_of IS NULL");
 }
 
+// Payroll, journal entries, accruals, etc. legitimately have no PO at all --
+// tracked separately from unmatched_count (a PO # that IS present but isn't
+// in the Budget PO Tracker), which is the only one that's actually a thing
+// to go investigate.
+if (!hasColumn("gl_imports", "no_po_reference_count")) {
+  db.exec("ALTER TABLE gl_imports ADD COLUMN no_po_reference_count INTEGER NOT NULL DEFAULT 0");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -5309,19 +5317,24 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
 
   const importRow = db.prepare(
     `INSERT INTO gl_imports
-      (period_number, fiscal_year, row_count, matched_count, unmatched_count, source_file_name, imported_by, created_at)
-     VALUES (?, ?, 0, 0, 0, ?, ?, ?)`
+      (period_number, fiscal_year, row_count, matched_count, unmatched_count, no_po_reference_count, source_file_name, imported_by, created_at)
+     VALUES (?, ?, 0, 0, 0, 0, ?, ?, ?)`
   ).run(periodNumber, fiscalYear, sourceFileName, importedBy, now);
   const importId = Number(importRow.lastInsertRowid);
 
   let matchedCount = 0;
   let unmatchedCount = 0;
+  let noPoReferenceCount = 0;
   for (const r of rows) {
     const poNumber = normalizePoNumber(r.purchaseOrder);
     const matchedPoId = poNumber ? lookupPoId(poNumber) : null;
     if (poNumber) {
       if (matchedPoId) matchedCount++;
       else unmatchedCount++;
+    } else {
+      // Payroll, journal entries, accruals, etc. -- legitimately never had a
+      // PO # to begin with, not a reconciliation gap.
+      noPoReferenceCount++;
     }
     insert.run(
       importId,
@@ -5346,10 +5359,11 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       now
     );
   }
-  db.prepare("UPDATE gl_imports SET row_count = ?, matched_count = ?, unmatched_count = ? WHERE id = ?").run(
+  db.prepare("UPDATE gl_imports SET row_count = ?, matched_count = ?, unmatched_count = ?, no_po_reference_count = ? WHERE id = ?").run(
     rows.length,
     matchedCount,
     unmatchedCount,
+    noPoReferenceCount,
     importId
   );
   return findGlImport(importId);
@@ -5364,6 +5378,7 @@ function presentGlImport(row) {
     rowCount: row.row_count,
     matchedCount: row.matched_count,
     unmatchedCount: row.unmatched_count,
+    noPoReferenceCount: row.no_po_reference_count,
     sourceFileName: row.source_file_name,
     importedBy: row.imported_by,
     createdAt: row.created_at,
@@ -5386,6 +5401,18 @@ function findGlImportByPeriod(periodNumber, fiscalYear) {
 
 function listGlImports() {
   return db.prepare("SELECT * FROM gl_imports ORDER BY created_at DESC").all().map(presentGlImport);
+}
+
+// A plain keyword read of the PO's own free-text status, for the Open/
+// Closed filter only -- never shown in place of the real status text (see
+// the Financials UI comment on why that's never algorithmically
+// classified elsewhere). "fully invoiced"/"closed" are the only wordings
+// confirmed to mean done; anything else (including blank) defaults to
+// open rather than guess.
+function classifyPoStatusBucket(status) {
+  if (!status) return "open";
+  const s = status.toLowerCase();
+  return s.includes("closed") || s.includes("fully invoiced") ? "closed" : "open";
 }
 
 // Per-PO reconciliation: what the PO was approved for vs. what the GL shows
@@ -5457,6 +5484,7 @@ function getPoReconciliation() {
       womNumber: p.womNumber,
       vendorName: p.vendorName,
       poStatus: p.poStatus,
+      statusBucket: classifyPoStatusBucket(p.poStatus),
       poAmount: p.poAmount,
       actualPaid: p.actualPaid,
       variance: p.actualPaid - (p.poAmount || 0),
@@ -5468,16 +5496,21 @@ function getPoReconciliation() {
     };
   });
 
-  const unmatchedEntries = db
-    .prepare(
-      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
+  const GL_ENTRY_COLUMNS = `period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
               document_type AS documentType, document_number AS documentNumber,
               object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
-              purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber
-       FROM gl_entries
-       WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL
-       ORDER BY ABS(amount) DESC`
-    )
+              purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber`;
+  // A GL line naming a PO # that isn't in the Budget PO Tracker -- a real
+  // gap worth investigating (missing from the tracker, or billed against
+  // the wrong PO #).
+  const unmatchedEntries = db
+    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL ORDER BY ABS(amount) DESC`)
+    .all();
+  // A GL line with no PO # at all -- payroll, journal entries, accruals,
+  // and similar legitimately never have one. Kept separate from
+  // unmatchedEntries above so this never reads as the same kind of gap.
+  const noPoReferenceEntries = db
+    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NULL ORDER BY ABS(amount) DESC`)
     .all();
 
   return {
@@ -5487,6 +5520,8 @@ function getPoReconciliation() {
     objectCodeMismatchCount: reconciled.filter((r) => r.objectCodeMismatch).length,
     unmatchedEntries,
     unmatchedTotal: unmatchedEntries.reduce((sum, e) => sum + (e.amount || 0), 0),
+    noPoReferenceEntries,
+    noPoReferenceTotal: noPoReferenceEntries.reduce((sum, e) => sum + (e.amount || 0), 0),
   };
 }
 

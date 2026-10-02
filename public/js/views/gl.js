@@ -64,6 +64,15 @@ export async function renderGlReconciliation(container) {
   let data = null;
   let imports = [];
   let status = null;
+  // PO reconciliation table filters -- all independent, all client-side
+  // (the full reconciled list is already in hand). "PO reference not
+  // found" isn't one of these: that's a GL-line-level gap, not a PO-level
+  // one, so it's its own section below rather than a filter here (see
+  // renderNoMatchingPoTable).
+  let glStatusFilter = ""; // "" | "open" | "closed"
+  let glCodingFilter = ""; // "" | "subsidiary" | "objectCode" | "either"
+  let glAboveOnly = false; // variance > 0 ("posted above PO")
+  let glMissingLocationOnly = false;
 
   await draw();
 
@@ -104,7 +113,7 @@ export async function renderGlReconciliation(container) {
       <p class="review-checklist-hint">
         ${
           lastImport
-            ? `Last import: Period ${lastImport.periodNumber}/FY${lastImport.fiscalYear}, ${new Date(lastImport.createdAt).toLocaleString()} -- ${lastImport.rowCount} GL lines, ${lastImport.matchedCount} matched to a PO, ${lastImport.unmatchedCount} with a PO # not on file.`
+            ? `Last import: Period ${lastImport.periodNumber}/FY${lastImport.fiscalYear}, ${new Date(lastImport.createdAt).toLocaleString()} -- ${lastImport.rowCount} GL lines: ${lastImport.matchedCount} GL lines matched to a PO, ${lastImport.unmatchedCount} GL lines with a PO # not on file, ${lastImport.noPoReferenceCount ?? 0} GL lines with no PO reference (payroll, journal entries, accruals, etc.).`
             : "No GL report imported yet."
         }
         Compares real GL amounts against the Budget PO Tracker -- this never changes anything on the PO or WOM side, it's a read-only check.
@@ -113,11 +122,12 @@ export async function renderGlReconciliation(container) {
       ${status && status.coverage ? renderCoverageStrip(status.coverage) : ""}
 
       <div class="task-tiles">
-        <div class="task-tile"><div class="task-tile-count">${data.reconciled.length}</div><div class="task-tile-label">POs matched to GL</div></div>
-        <div class="task-tile"><div class="task-tile-count">${formatMoney(data.reconciledTotal)}</div><div class="task-tile-label">Net variance (paid &minus; approved)</div></div>
+        <div class="task-tile"><div class="task-tile-count">${data.reconciled.length}</div><div class="task-tile-label">Unique POs matched to GL</div></div>
+        <div class="task-tile"><div class="task-tile-count">${formatMoney(data.reconciledTotal)}</div><div class="task-tile-label">Net variance (paid &minus; PO amount)</div></div>
         <div class="task-tile"><div class="task-tile-count">${data.subsidiaryMismatchCount}</div><div class="task-tile-label">Subsidiary mismatches</div></div>
         <div class="task-tile"><div class="task-tile-count">${data.objectCodeMismatchCount}</div><div class="task-tile-label">Object code mismatches</div></div>
-        <div class="task-tile"><div class="task-tile-count">${data.unmatchedEntries.length}</div><div class="task-tile-label">GL lines, no matching PO</div></div>
+        <div class="task-tile"><div class="task-tile-count">${data.unmatchedEntries.length}</div><div class="task-tile-label">GL lines, PO # not found</div></div>
+        <div class="task-tile"><div class="task-tile-count">${data.noPoReferenceEntries.length}</div><div class="task-tile-label">GL lines, no PO reference</div></div>
       </div>
 
       <h3>PO reconciliation</h3>
@@ -129,17 +139,56 @@ export async function renderGlReconciliation(container) {
         it's actually done. Subsidiary and Object Code are checked separately against what's on the PO itself
         (comparing just the leading code, since the PO Tracker stores these as "code + description").
       </p>
+      <div class="wom-filter-bar gl-po-filter-bar">
+        <select class="gl-status-filter">
+          <option value="">Open + closed POs</option>
+          <option value="open" ${glStatusFilter === "open" ? "selected" : ""}>Open POs</option>
+          <option value="closed" ${glStatusFilter === "closed" ? "selected" : ""}>Closed POs</option>
+        </select>
+        <select class="gl-coding-filter">
+          <option value="">Any coding</option>
+          <option value="subsidiary" ${glCodingFilter === "subsidiary" ? "selected" : ""}>Subsidiary mismatch</option>
+          <option value="objectCode" ${glCodingFilter === "objectCode" ? "selected" : ""}>Object code mismatch</option>
+          <option value="either" ${glCodingFilter === "either" ? "selected" : ""}>Any coding mismatch</option>
+        </select>
+        <label class="roster-filter-field">
+          <input type="checkbox" class="gl-above-filter" ${glAboveOnly ? "checked" : ""} />
+          <span>Posted above PO</span>
+        </label>
+        <label class="roster-filter-field">
+          <input type="checkbox" class="gl-missing-location-filter" ${glMissingLocationOnly ? "checked" : ""} />
+          <span>Missing location</span>
+        </label>
+      </div>
+      <p class="review-checklist-hint">
+        <strong>Open/Closed</strong> is read off the PO's own Status text ("closed"/"fully invoiced" count as closed, everything
+        else as open) -- a convenience filter only, never a substitute for reading the real PO Status column.
+      </p>
       <div class="gl-table-wrap"></div>
 
       ${
         data.unmatchedEntries.length > 0
           ? `
-      <h3>GL lines with no matching PO</h3>
+      <h3>GL lines with a PO # not on file</h3>
       <p class="review-checklist-hint">
         These GL lines name a Purchase Order # that isn't in the Budget PO Tracker -- worth checking whether it's
         missing from the tracker, or was billed against the wrong PO #.
       </p>
       <div class="gl-unmatched-wrap"></div>
+      `
+          : ""
+      }
+
+      ${
+        data.noPoReferenceEntries.length > 0
+          ? `
+      <h3>GL lines with no PO reference</h3>
+      <p class="review-checklist-hint">
+        These GL lines never named a Purchase Order # at all -- payroll, journal entries, accruals, and similar
+        entries legitimately have no PO. Not an exception by itself; listed here for visibility, not as a
+        to-do.
+      </p>
+      <div class="gl-no-po-ref-wrap"></div>
       `
           : ""
       }
@@ -155,14 +204,49 @@ export async function renderGlReconciliation(container) {
       await runImport(file);
     });
 
+    container.querySelector(".gl-status-filter").addEventListener("change", (e) => {
+      glStatusFilter = e.target.value;
+      renderReconciledTable();
+    });
+    container.querySelector(".gl-coding-filter").addEventListener("change", (e) => {
+      glCodingFilter = e.target.value;
+      renderReconciledTable();
+    });
+    container.querySelector(".gl-above-filter").addEventListener("change", (e) => {
+      glAboveOnly = e.target.checked;
+      renderReconciledTable();
+    });
+    container.querySelector(".gl-missing-location-filter").addEventListener("change", (e) => {
+      glMissingLocationOnly = e.target.checked;
+      renderReconciledTable();
+    });
+
     renderReconciledTable();
     if (data.unmatchedEntries.length > 0) renderUnmatchedTable();
+    if (data.noPoReferenceEntries.length > 0) renderNoPoReferenceTable();
+  }
+
+  function filterReconciled(rows) {
+    return rows.filter((r) => {
+      if (glStatusFilter && r.statusBucket !== glStatusFilter) return false;
+      if (glCodingFilter === "subsidiary" && !r.subsidiaryMismatch) return false;
+      if (glCodingFilter === "objectCode" && !r.objectCodeMismatch) return false;
+      if (glCodingFilter === "either" && !r.subsidiaryMismatch && !r.objectCodeMismatch) return false;
+      if (glAboveOnly && !(r.variance > 0)) return false;
+      if (glMissingLocationOnly && r.locationCode) return false;
+      return true;
+    });
   }
 
   function renderReconciledTable() {
     const wrap = container.querySelector(".gl-table-wrap");
     if (data.reconciled.length === 0) {
       wrap.innerHTML = `<p class="empty-note">No PO has a matching GL line yet -- import a GL report to populate this.</p>`;
+      return;
+    }
+    const filtered = filterReconciled(data.reconciled);
+    if (filtered.length === 0) {
+      wrap.innerHTML = `<p class="empty-note">No PO matches these filters.</p>`;
       return;
     }
     wrap.innerHTML = `
@@ -184,10 +268,10 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${data.reconciled
+          ${filtered
             .map(
-              (r, i) => `
-            <tr class="gl-row" data-index="${i}">
+              (r) => `
+            <tr class="gl-row" data-po-id="${r.poId}">
               <td class="wom-code">${escapeHtml(r.poNumber || "—")}</td>
               <td>${escapeHtml(r.vendorName || "No vendor matched")}</td>
               <td>${escapeHtml(r.locationCode || "—")}</td>
@@ -208,7 +292,10 @@ export async function renderGlReconciliation(container) {
       </table>
     `;
     wrap.querySelectorAll("tr.gl-row").forEach((row) => {
-      row.addEventListener("click", () => openPoDetailModal(data.reconciled[Number(row.dataset.index)]));
+      row.addEventListener("click", () => {
+        const r = data.reconciled.find((item) => String(item.poId) === row.dataset.poId);
+        if (r) openPoDetailModal(r);
+      });
     });
   }
 
@@ -235,6 +322,46 @@ export async function renderGlReconciliation(container) {
               <td>P${escapeHtml(String(e.periodNumber))}/FY${escapeHtml(String(e.fiscalYear))}</td>
               <td>${escapeHtml(e.glDate || "—")}</td>
               <td class="wom-code">${escapeHtml(e.purchaseOrder || "—")}</td>
+              <td>${escapeHtml(e.objectAccount || "—")}</td>
+              <td>${escapeHtml(e.subsidiary || "—")}</td>
+              <td>${formatMoney(e.amount)}</td>
+              <td>${escapeHtml(e.supplierInvoiceNumber || "—")}</td>
+            </tr>
+          `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // Same shape as renderUnmatchedTable, but "PO # (per GL)" would always
+  // read "—" here (that's the whole point of this list) -- Document Type is
+  // shown in its place instead, since that's what actually distinguishes a
+  // payroll/journal/accrual line from a real invoice.
+  function renderNoPoReferenceTable() {
+    const wrap = container.querySelector(".gl-no-po-ref-wrap");
+    wrap.innerHTML = `
+      <table class="detail-table gl-table">
+        <thead>
+          <tr>
+            <th>GL Period</th>
+            <th>GL Date</th>
+            <th>Document Type</th>
+            <th>Object Account</th>
+            <th>Subsidiary</th>
+            <th>Amount</th>
+            <th>Invoice #</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.noPoReferenceEntries
+            .map(
+              (e) => `
+            <tr>
+              <td>P${escapeHtml(String(e.periodNumber))}/FY${escapeHtml(String(e.fiscalYear))}</td>
+              <td>${escapeHtml(e.glDate || "—")}</td>
+              <td>${escapeHtml(e.documentType || "—")}</td>
               <td>${escapeHtml(e.objectAccount || "—")}</td>
               <td>${escapeHtml(e.subsidiary || "—")}</td>
               <td>${formatMoney(e.amount)}</td>
@@ -333,8 +460,9 @@ export async function renderGlReconciliation(container) {
         body.innerHTML = `
           <p class="review-checklist-hint">
             Imported <strong>${result.rowCount}</strong> GL line${result.rowCount === 1 ? "" : "s"} for Period
-            ${result.periodNumber}/FY${result.fiscalYear} -- ${result.matchedCount} matched to a PO on file,
-            ${result.unmatchedCount} named a PO # that isn't in the Budget PO Tracker.
+            ${result.periodNumber}/FY${result.fiscalYear} -- ${result.matchedCount} GL lines matched to a PO on file,
+            ${result.unmatchedCount} GL lines named a PO # that isn't in the Budget PO Tracker,
+            ${result.noPoReferenceCount ?? 0} GL lines with no PO reference (payroll, journal entries, accruals, etc.).
           </p>
           <div class="modal-form-actions">
             <button type="button" class="btn btn-primary gl-import-close">Done</button>
