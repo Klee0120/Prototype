@@ -1,26 +1,37 @@
 :root {
-  --ink: #161b2c;
-  --muted: #667085;
-  --border: #e3e6ed;
-  --bg: #f4f5f9;
+  /* Cushman & Wakefield red as the brand accent (nav, buttons, links,
+     active states) -- everything that was cool blue before. --danger is
+     kept as its own, brighter red so an urgent/overage badge still reads
+     as distinct from an ordinary primary button next to it. Neutrals
+     warmed from cool gray/navy to a soft warm ink + cream, matching the
+     elevated-but-simple mood boards (warm background, not stark white). */
+  --ink: #241f1f;
+  --muted: #8a7976;
+  --border: #ead9d6;
+  --bg: #f8f2ee;
   --card: #ffffff;
-  --accent: #2f5be0;
-  --accent-dark: #1e46ad;
-  --accent-bg: #eaf0ff;
-  --ok: #17825c;
+  /* A warm, color-neutral tint (no particular status/brand meaning) for
+     generic badges/pills/table headers that used to be flat cool gray
+     (var(--neutral-bg) etc.) -- keeps them from reading as leftover blue-era chrome
+     next to the warm accent everywhere else. */
+  --neutral-bg: #f1e9e5;
+  --accent: #a3182a;
+  --accent-dark: #7d1220;
+  --accent-bg: #f8e3e1;
+  --ok: #1f7a4d;
   --ok-bg: #e6f6ef;
   --warn: #b8590a;
   --warn-bg: #fdf1e4;
-  --danger: #c0392b;
-  --danger-bg: #fbe9e7;
+  --danger: #d6342c;
+  --danger-bg: #fbe4e1;
   --violet: #6b3fa0;
   --violet-bg: #f1e9f8;
   --teal: #0f7a72;
   --teal-bg: #e3f5f3;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow-sm: 0 1px 2px rgba(20, 25, 45, 0.06);
-  --shadow-md: 0 4px 16px rgba(20, 25, 45, 0.08);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow-sm: 0 1px 2px rgba(40, 20, 20, 0.07);
+  --shadow-md: 0 8px 24px rgba(40, 20, 20, 0.1);
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -55,15 +66,16 @@ h1, h2, h3, h4 {
   align-items: center;
   justify-content: center;
   padding: 20px;
+  background: radial-gradient(circle at 50% 0%, #fdeae7 0%, var(--bg) 60%);
 }
 
 .login-card {
   background: var(--card);
   border-radius: var(--radius);
-  padding: 28px 24px;
+  padding: 32px 28px;
   width: 100%;
   max-width: 360px;
-  box-shadow: 0 4px 20px rgba(20, 25, 40, 0.08);
+  box-shadow: 0 12px 32px rgba(90, 30, 30, 0.12);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -115,7 +127,8 @@ h1, h2, h3, h4 {
   align-items: center;
   justify-content: space-between;
   padding: 14px 20px;
-  background: var(--card);
+  background: linear-gradient(180deg, #fffaf8 0%, var(--bg) 100%);
+  border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow-sm);
   position: sticky;
   top: 0;
@@ -129,9 +142,9 @@ h1, h2, h3, h4 {
 }
 
 .app-logo-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
   background: linear-gradient(155deg, var(--accent), var(--accent-dark));
   color: #fff;
   font-weight: 700;
@@ -183,21 +196,23 @@ h1, h2, h3, h4 {
 .btn-primary {
   background: var(--accent);
   color: #fff;
-  box-shadow: 0 1px 2px rgba(47, 91, 224, 0.35);
+  box-shadow: 0 1px 2px rgba(163, 24, 42, 0.35);
 }
 .btn-primary:hover { background: var(--accent-dark); }
 .btn-primary:disabled {
-  background: #a9b6d6;
+  background: #d9b8bc;
   box-shadow: none;
   cursor: not-allowed;
 }
 
 .btn-secondary {
-  background: #eceff5;
+  background: var(--bg);
   color: var(--ink);
+  border: 1px solid var(--border);
 }
 .btn-secondary:hover {
-  background: #e2e6f0;
+  background: var(--accent-bg);
+  border-color: var(--accent);
 }
 
 .btn-ghost {
@@ -220,7 +235,7 @@ h1, h2, h3, h4 {
 }
 
 .btn-icon {
-  background: #f2f2f5;
+  background: var(--bg);
   color: var(--danger);
   border-radius: 6px;
   width: 30px;
@@ -310,9 +325,9 @@ h1, h2, h3, h4 {
   padding: 10px 14px;
   margin-bottom: 16px;
   font-size: 14px;
-  background: #eef1f7;
+  background: var(--neutral-bg);
 }
-.status-banner.status-submitted { background: #eaf1fd; color: var(--accent-dark); }
+.status-banner.status-submitted { background: var(--accent-bg); color: var(--accent-dark); }
 .status-banner.status-approved { background: var(--ok-bg); color: var(--ok); }
 .status-banner.status-rejected { background: var(--danger-bg); color: var(--danger); }
 .status-note {
@@ -707,55 +722,60 @@ h1, h2, h3, h4 {
 .nav-section {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 16px;
+  border-radius: 999px;
+  padding: 9px 18px;
   font-weight: 600;
   font-size: 14px;
   color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .nav-section:hover {
   border-color: var(--accent);
-  color: var(--ink);
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 
 .nav-section.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  box-shadow: 0 1px 2px rgba(47, 91, 224, 0.3);
+  box-shadow: 0 2px 6px rgba(163, 24, 42, 0.28);
 }
 
 .tabs {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
+  gap: 6px;
+  border-bottom: none;
   margin-bottom: 16px;
+  padding-bottom: 4px;
   overflow-x: auto;
 }
 
 .tab {
-  background: none;
-  border: none;
-  padding: 10px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 14px;
   font-weight: 600;
+  font-size: 13px;
   color: var(--muted);
   cursor: pointer;
-  border-bottom: 2px solid transparent;
   white-space: nowrap;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 .tab:hover {
-  color: var(--ink);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .tab.active {
   color: var(--accent);
-  border-bottom-color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
 }
 
 .tab-badge {
@@ -899,7 +919,7 @@ h1, h2, h3, h4 {
   font-weight: 600;
   padding: 3px 8px;
   border-radius: 999px;
-  background: #eceff5;
+  background: var(--neutral-bg);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -928,8 +948,8 @@ h1, h2, h3, h4 {
   border-radius: 999px;
   text-transform: capitalize;
 }
-.badge-draft { background: #eceff5; color: var(--muted); }
-.badge-submitted { background: #eaf1fd; color: var(--accent-dark); }
+.badge-draft { background: var(--neutral-bg); color: var(--muted); }
+.badge-submitted { background: var(--accent-bg); color: var(--accent-dark); }
 .badge-approved { background: var(--ok-bg); color: var(--ok); }
 .badge-rejected { background: var(--danger-bg); color: var(--danger); }
 .badge-warn { background: var(--warn-bg); color: var(--warn); }
@@ -1285,8 +1305,8 @@ h1, h2, h3, h4 {
 .task-section-onboarding { background: var(--violet-bg); color: var(--violet); }
 .task-section-it { background: var(--teal-bg); color: var(--teal); }
 .task-section-financial { background: var(--accent-bg); color: var(--accent-dark); }
-.task-section-recurring { background: #eceff5; color: var(--muted); }
-.task-section-general { background: #eceff5; color: var(--muted); }
+.task-section-recurring { background: var(--neutral-bg); color: var(--muted); }
+.task-section-general { background: var(--neutral-bg); color: var(--muted); }
 
 .task-card.task-section-compliance { border-left-color: var(--warn); }
 .task-card.task-section-onboarding { border-left-color: var(--violet); }
@@ -1337,7 +1357,7 @@ h1, h2, h3, h4 {
   font-size: 13px;
   padding: 8px 10px;
   margin-bottom: 6px;
-  background: #f6f7fa;
+  background: var(--neutral-bg);
   border-radius: var(--radius-sm);
 }
 
@@ -1551,7 +1571,7 @@ h1, h2, h3, h4 {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
-  background: var(--surface-alt, #f8f9fb);
+  background: var(--neutral-bg);
 }
 
 .onboarding-case-summary {
@@ -1568,18 +1588,18 @@ h1, h2, h3, h4 {
 
 .onboarding-case-ref {
   font-size: 12px;
-  color: var(--text-muted, #666);
+  color: var(--muted);
 }
 
 .onboarding-case-coi-ref {
   font-size: 12px;
-  color: var(--text-muted, #666);
+  color: var(--muted);
   margin-top: 4px;
 }
 
 .onboarding-case-note {
   font-size: 12px;
-  color: var(--text-muted, #666);
+  color: var(--muted);
   margin-top: 4px;
   font-style: italic;
 }
@@ -1603,7 +1623,7 @@ h1, h2, h3, h4 {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: var(--text-muted, #666);
+  color: var(--muted);
   margin-top: 10px;
 }
 
@@ -1738,7 +1758,7 @@ h1, h2, h3, h4 {
 }
 
 .detail-table th {
-  background: #f0f2f6;
+  background: var(--neutral-bg);
   font-size: 12px;
   text-transform: uppercase;
   color: var(--muted);
@@ -2078,6 +2098,19 @@ h1, h2, h3, h4 {
   border-radius: 8px;
 }
 
+.task-filter-exclude-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.task-filter-exclude-toggle input {
+  cursor: pointer;
+}
+
 /* ---- UKG hours form (admin) ---- */
 
 .ukg-hours-form {
@@ -2186,7 +2219,7 @@ h1, h2, h3, h4 {
 /* ---- WOM photo prompt ---- */
 
 .wom-photo-prompt {
-  background: var(--accent-bg, #eaf1fd);
+  background: var(--accent-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 14px;
@@ -2836,7 +2869,7 @@ h1, h2, h3, h4 {
   font-weight: 700;
   text-transform: uppercase;
   color: var(--muted);
-  background: #eceff5;
+  background: var(--neutral-bg);
   padding: 2px 8px;
   border-radius: 999px;
   margin-right: 6px;
