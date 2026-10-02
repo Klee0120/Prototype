@@ -583,6 +583,154 @@ test("task engine: WOM sync creates one persistent lifecycle task that tracks th
   });
 });
 
+test("WOM change order: request Toyota PO, or refer to admin to try reducing labor instead", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("setup: a WOM with a real cost overage, flagged as a change order", async () => {
+    await syncOneOpenWom(server, "90000001", 980);
+    await server.call("PATCH", "/api/woms/90000001/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-5001" },
+    });
+    const res = await server.call("PATCH", "/api/woms/90000001/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1400 } });
+    assert.equal(res.status, 200);
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true);
+    assert.equal(task.assignedRole, "reviewer");
+  });
+
+  await t.test("requesting the PO on a WOM that isn't flagged is rejected", async () => {
+    await syncOneOpenWom(server, "90000002", 981);
+    const res = await server.call("POST", "/api/woms/90000002/change-order/request-po", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: new Date().toISOString() },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("referring to admin on a WOM that isn't a change order is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/90000002/change-order/refer-to-admin", {
+      userId: "ADMIN",
+      body: { note: "try reducing labor" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can't request the PO or refer to admin", async () => {
+    const res1 = await server.call("POST", "/api/woms/90000001/change-order/request-po", {
+      userId: "T1001",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: new Date().toISOString() },
+    });
+    assert.equal(res1.status, 403);
+    const res2 = await server.call("POST", "/api/woms/90000001/change-order/refer-to-admin", {
+      userId: "T1001",
+      body: { note: "try reducing labor" },
+    });
+    assert.equal(res2.status, 403);
+  });
+
+  await t.test("referring the change order to admin routes it to finance's queue instead of RFM, and logs a comment", async () => {
+    const res = await server.call("POST", "/api/woms/90000001/change-order/refer-to-admin", {
+      userId: "ADMIN",
+      body: { note: "Can we trim labor hours to avoid the change order?" },
+    });
+    assert.equal(res.status, 200);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.assignedRole, "financial", "handed off to finance's queue, not RFM's");
+    assert.equal(task.assignedTo, null, "unclaimed in that queue, not pinned to one person");
+    assert.ok(task.referredToAdminAt, "expected the referral timestamp to be set");
+
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.ok(
+      detail.body.comments.some((c) => c.body.includes("Can we trim labor hours")),
+      "expected the note to be logged as a comment"
+    );
+  });
+
+  await t.test("a later task-list read doesn't undo the referral", async () => {
+    await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.assignedRole, "financial", "the lazy refresh on every GET must not snap this back to reviewer");
+  });
+
+  await t.test("finance fixing the labor cost clears the referral and resolves the change order", async () => {
+    const res = await server.call("PATCH", "/api/woms/90000001/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 950 } });
+    assert.equal(res.status, 200);
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.isChangeOrder, false);
+    assert.equal(task.referredToAdminAt, null, "the referral shouldn't linger once there's nothing left to refer");
+  });
+
+  await t.test("a fresh change order on the same WOM doesn't inherit the stale referral", async () => {
+    const res = await server.call("PATCH", "/api/woms/90000001/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1500 } });
+    assert.equal(res.status, 200);
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true);
+    assert.equal(task.assignedRole, "reviewer", "a brand new overage routes back to RFM, not finance");
+  });
+
+  await t.test("requesting the Toyota PO logs a comment, puts the task on waiting, and clears any referral", async () => {
+    await server.call("POST", "/api/woms/90000001/change-order/refer-to-admin", {
+      userId: "ADMIN",
+      body: { note: "one more try" },
+    });
+    const res = await server.call("POST", "/api/woms/90000001/change-order/request-po", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: "2026-10-02T00:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.status, "waiting");
+    assert.equal(task.referredToAdminAt, null);
+
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.ok(
+      detail.body.comments.some((c) => c.body.includes("Requested Toyota PO change order approval") && c.body.includes("pse@toyota.example")),
+      "expected the PO request to be logged as a comment"
+    );
+  });
+
+  await t.test("requesting a plain missing-PO (not a change order) logs without the 'change order' wording", async () => {
+    await syncOneOpenWom(server, "90000003", 982);
+    await server.call("PATCH", "/api/woms/90000003/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+    let tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    let task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000003-LIFECYCLE");
+    assert.equal(task.isException, true);
+    assert.equal(task.isChangeOrder, false);
+
+    const res = await server.call("POST", "/api/woms/90000003/change-order/request-po", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: "2026-11-03T00:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000003-LIFECYCLE");
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.ok(
+      detail.body.comments.some(
+        (c) => c.body.startsWith("Requested Toyota PO approval -- sent to pse@toyota.example on") && !c.body.includes("change order")
+      )
+    );
+  });
+
+  await t.test("the WOM lookup exposes the cost breakdown fields the task detail view reads", async () => {
+    const wom = await server.call("GET", "/api/woms/90000001/lookup", { userId: "ADMIN" });
+    assert.equal(wom.status, 200);
+    assert.equal(wom.body.estimatedPrice, 1000);
+    assert.equal(wom.body.appliedPrice, 1500);
+  });
+});
+
 test("WOM lifecycle: a step completing out of order moves the task's queue role forward", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

@@ -93,6 +93,7 @@ function presentTask(t) {
     workflowRule: t.workflow_rule,
     isException: Boolean(t.is_exception),
     isChangeOrder: Boolean(t.is_change_order),
+    referredToAdminAt: t.referred_to_admin_at,
     createdBy: t.created_by,
     createdByName: creator ? creator.name : null,
     createdAt: t.created_at,

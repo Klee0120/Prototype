@@ -1379,6 +1379,31 @@ h1, h2, h3, h4 {
   color: var(--muted);
 }
 
+.wom-cost-gap {
+  margin-bottom: 14px;
+}
+.wom-cost-breakdown-table {
+  margin: 6px 0 10px;
+}
+.wom-cost-breakdown-table th:not(:first-child),
+.wom-cost-breakdown-table td:not(:first-child) {
+  text-align: right;
+}
+.wom-cost-row-total td {
+  font-weight: 600;
+  border-top: 2px solid var(--border);
+}
+.wom-cost-row-over {
+  color: var(--danger);
+}
+.wom-cost-over-note {
+  font-weight: 400;
+  font-size: 12px;
+}
+.wom-cost-gap-actions {
+  gap: 10px;
+}
+
 .task-activity-heading {
   margin: 14px 0 4px;
   font-size: 13px;

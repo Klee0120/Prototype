@@ -767,6 +767,46 @@ Demo logins:
       vendor's own PO or a C&W internal one (see the tech-facing "Request a
       C&W PO" link below, a genuinely different kind of PO from either of
       these).
+    - **A paperwork-gap task shows the real dollar figures behind it, and
+      two real ways forward, not just a flag saying something's wrong**
+      (`renderWomCostBreakdown` in `tasks.js`, shown in the task detail
+      above the checklist whenever `isChangeOrder` or `isException` is
+      true). A table of every cost category the tracker itemizes --
+      Labor, Materials, Contracted Services, Other Direct Costs, Sales
+      Tax, Contingency -- estimated vs. applied side by side, only for
+      whichever categories either side actually has a number for, plus the
+      Project Total row and (when synced) the Toyota PO Value row with the
+      exact overage called out. From there, RFM (or finance, once referred
+      -- see below) picks one of two ways forward:
+      - **"Request Toyota PO [change order]"** -- the same email+date
+        record as the initial PSE send (`openRequestToyotaPoModal` in
+        `tasks.js`, `POST /api/woms/:code/change-order/request-po`), just
+        logged against this later moment instead. Puts the task on
+        **Waiting** and logs the request as an activity-feed comment;
+        clears any pending referral below, since once the PO is actually
+        being requested there's nothing left to hand back.
+      - **"Ask admin to reduce labor instead"** (change orders only --
+        there's no labor to trim on a plain missing-PO gap) --
+        `openReferChangeOrderToAdminModal` in `tasks.js`, `POST
+        /api/woms/:code/change-order/refer-to-admin`. Takes a required
+        note, logs it as a comment, and hands the task to finance's own
+        queue (`assignedRole: "financial"`, unclaimed) instead of closing
+        or creating anything new. This needed one real piece of persisted
+        state beyond the task's usual live-recomputed fields:
+        `tasks.referred_to_admin_at`. Every WOM lifecycle task normally
+        gets fully re-derived on every sync and every task-list read
+        (`refreshWomLifecycleTask`), and a Toyota paperwork gap's
+        `assignedRole` is hard-forced back to `reviewer` regardless of
+        checklist progress (see above) -- without a flag surviving that
+        re-derivation, handing the task to finance would snap straight
+        back to RFM's queue the very next time anyone loaded the task
+        list, before finance had a chance to even look at it. The flag
+        only stays "active" while there's still a live change order to
+        refer (`referredToAdminActive` in `refreshWomLifecycleTask`); the
+        moment the overage clears on its own (finance actually trimmed the
+        labor, or any other correction brought applied back under
+        estimate) it's wiped automatically, so a *future*, unrelated
+        change order on that same WOM never inherits a stale referral.
     - The task list itself sorts by full priority tier first (Emergency
       down to Low), then due date -- previously only Emergency got special
       treatment, so a High-priority task with no due date could sink below

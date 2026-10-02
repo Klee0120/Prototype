@@ -217,6 +217,70 @@ function formatDateTime(iso) {
   return new Date(iso).toLocaleString();
 }
 
+function formatMoney(n) {
+  if (n == null) return "—";
+  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// The six cost categories the Smartsheet tracker itemizes (see
+// WOM_COST_BREAKDOWN_FIELDS in server/data/db.js), estimate vs. applied
+// side by side -- only the categories either side actually has a number
+// for, so a vendor-only job with no itemized breakdown just shows its two
+// totals instead of six empty rows.
+const WOM_COST_CATEGORY_PAIRS = [
+  ["Labor", "estimatedLabor", "appliedLabor"],
+  ["Materials", "estimatedMaterials", "appliedMaterials"],
+  ["Contracted Services", "estimatedContracted", "appliedContracted"],
+  ["Other Direct Costs", "estimatedOtherDirect", "appliedOtherDirect"],
+  ["Sales Tax", "estimatedTax", "appliedTax"],
+  ["Contingency", "estimatedContingency", "appliedContingency"],
+];
+
+// Shown on a WOM lifecycle task once it's flagged for a change order or a
+// plain missing Toyota PO (needsChangeOrderOrPo in db.js) -- the actual
+// dollar gap RFM is being asked to decide about, not just a flag saying
+// something's wrong. A change order's whole premise is "applied came in
+// over estimate," so that comparison leads; the Toyota PO value (what was
+// actually approved) follows underneath since it's the number a change
+// order needs sign-off against.
+function renderWomCostBreakdown(wom) {
+  const rows = WOM_COST_CATEGORY_PAIRS.filter(([, estKey, appKey]) => wom[estKey] != null || wom[appKey] != null)
+    .map(([label, estKey, appKey]) => {
+      const est = wom[estKey];
+      const app = wom[appKey];
+      const over = est != null && app != null && app > est;
+      return `<tr class="${over ? "wom-cost-row-over" : ""}">
+        <td>${escapeHtml(label)}</td>
+        <td>${formatMoney(est)}</td>
+        <td>${formatMoney(app)}</td>
+      </tr>`;
+    })
+    .join("");
+  const totalOver = wom.estimatedPrice != null && wom.appliedPrice != null && wom.appliedPrice > wom.estimatedPrice;
+  const toyotaOver = wom.toyotaPoValue != null && wom.appliedPrice != null && wom.appliedPrice > wom.toyotaPoValue;
+  return `
+    <table class="detail-table wom-cost-breakdown-table">
+      <thead><tr><th>Category</th><th>Estimated</th><th>Applied</th></tr></thead>
+      <tbody>
+        ${rows}
+        <tr class="wom-cost-row-total${totalOver ? " wom-cost-row-over" : ""}">
+          <td>Project Total</td>
+          <td>${formatMoney(wom.estimatedPrice)}</td>
+          <td>${formatMoney(wom.appliedPrice)}</td>
+        </tr>
+        ${
+          wom.toyotaPoValue != null
+            ? `<tr class="wom-cost-row-total${toyotaOver ? " wom-cost-row-over" : ""}">
+                <td>Toyota PO Value</td>
+                <td colspan="2">${formatMoney(wom.toyotaPoValue)}${toyotaOver ? ` <span class="wom-cost-over-note">-- applied is ${formatMoney(wom.appliedPrice - wom.toyotaPoValue)} over</span>` : ""}</td>
+              </tr>`
+            : ""
+        }
+      </tbody>
+    </table>
+  `;
+}
+
 // "Due 10/2/2026" takes a beat to parse against today; "Due tomorrow"/
 // "3 days overdue" doesn't. Compares calendar days (midnight to midnight),
 // not raw hours, so a task due at 11pm today still reads "Due today," not
@@ -1519,6 +1583,79 @@ export async function renderTaskBoard(container) {
     });
   }
 
+  // RFM's (or finance's, once a change order's been referred to them --
+  // see openReferChangeOrderToAdminModal) first option on a flagged WOM:
+  // proceed with Toyota's own paperwork. Same email+date record as the
+  // initial PSE send, just logged against a different lifecycle moment.
+  function openRequestToyotaPoModal(womCode, isChangeOrder, onDone) {
+    const lastEmail = localStorage.getItem("laborapp:lastToyotaEmail") || "";
+    const today = new Date().toISOString().slice(0, 10);
+    const { body, close } = openModal({
+      title: `Request Toyota PO${isChangeOrder ? " change order" : ""} -- ${womCode}`,
+      bodyHtml: `
+        <form class="modal-form pse-sent-form">
+          <label class="profile-field"><span>Email it was sent to</span><input type="email" name="toyotaEmail" value="${escapeHtml(lastEmail)}" required /></label>
+          <label class="profile-field"><span>Date sent</span><input type="date" name="sentAt" value="${today}" required /></label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Mark requested</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".pse-sent-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post(`/api/woms/${encodeURIComponent(womCode)}/change-order/request-po`, {
+          toyotaEmail: form.toyotaEmail.value.trim(),
+          sentAt: new Date(form.sentAt.value).toISOString(),
+        });
+        localStorage.setItem("laborapp:lastToyotaEmail", form.toyotaEmail.value.trim());
+        close();
+        await onDone();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // RFM's other option on a change order: skip the Toyota paperwork and
+  // see if admin can trim labor back under the approved estimate instead.
+  // Hands the task to finance's queue (see referWomChangeOrderToAdmin in
+  // db.js) rather than closing anything -- it comes back to RFM on its own
+  // once the overage actually clears, or sooner if finance decides to
+  // request the Toyota PO after all.
+  function openReferChangeOrderToAdminModal(womCode, onDone) {
+    const { body, close } = openModal({
+      title: `Ask admin to reduce labor -- ${womCode}`,
+      bodyHtml: `
+        <form class="modal-form wom-refer-admin-form">
+          <label class="profile-field"><span>Note to admin</span><textarea name="note" rows="3" required placeholder="e.g. Can we trim labor hours to bring this back under the estimate and skip the Toyota change order?"></textarea></label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Send to admin</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".wom-refer-admin-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post(`/api/woms/${encodeURIComponent(womCode)}/change-order/refer-to-admin`, {
+          note: form.note.value.trim(),
+        });
+        close();
+        await onDone();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
   // The WOM lifecycle checklist, in place of a generic "mark complete" --
   // every step, in order, with a checkmark and when/how it completed for
   // the ones already done, and for whichever step is next: either a plain
@@ -1562,11 +1699,50 @@ export async function renderTaskBoard(container) {
         ? `<p class="review-checklist-hint">No RFM is designated yet (Roster &rarr; Manage admin accounts), so any admin can take a step.</p>`
         : "";
 
+    // A real cost overage or a missing Toyota PO is its own decision point
+    // for RFM, separate from (and often unrelated to) whichever checklist
+    // step the rest of the job happens to be sitting at -- see
+    // needsChangeOrderOrPo in db.js. Shows the actual dollar gap plus both
+    // ways forward: request the Toyota paperwork now, or (change orders
+    // only) hand it to finance to see if labor can be trimmed instead.
+    const needsChangeOrderOrPo = t.isChangeOrder || t.isException;
+    const gapSection = needsChangeOrderOrPo
+      ? `
+        <div class="wom-cost-gap">
+          <h5 class="task-activity-heading">${t.isChangeOrder ? "Change order -- cost breakdown" : "Missing Toyota PO -- cost breakdown"}</h5>
+          ${renderWomCostBreakdown(wom)}
+          ${
+            t.referredToAdminAt
+              ? `<p class="review-checklist-hint">Referred to admin ${escapeHtml(formatDateTime(t.referredToAdminAt))} to see if labor can be trimmed instead -- see Activity below.</p>`
+              : ""
+          }
+          ${
+            isAdmin
+              ? `<div class="review-actions wom-cost-gap-actions">
+                  <button type="button" class="btn btn-secondary wom-request-po-btn">${t.isChangeOrder ? "Request Toyota PO change order" : "Request Toyota PO"}</button>
+                  ${
+                    t.isChangeOrder && !t.referredToAdminAt
+                      ? `<button type="button" class="btn btn-link wom-refer-admin-btn">Ask admin to reduce labor instead</button>`
+                      : ""
+                  }
+                </div>`
+              : ""
+          }
+        </div>
+      `
+      : "";
+
     host.innerHTML = `
+      ${gapSection}
       ${reviewerNote}
       <div class="wom-lifecycle-checklist">${rows}</div>
       <div class="wom-lifecycle-action"></div>
     `;
+
+    const requestPoBtn = host.querySelector(".wom-request-po-btn");
+    if (requestPoBtn) requestPoBtn.addEventListener("click", () => openRequestToyotaPoModal(t.relatedWomCode, t.isChangeOrder, draw));
+    const referAdminBtn = host.querySelector(".wom-refer-admin-btn");
+    if (referAdminBtn) referAdminBtn.addEventListener("click", () => openReferChangeOrderToAdminModal(t.relatedWomCode, draw));
 
     const nextStep = nextLifecycleStep(steps);
     const actionHost = host.querySelector(".wom-lifecycle-action");

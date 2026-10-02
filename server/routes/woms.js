@@ -248,6 +248,40 @@ router.get("/cost-summary", requireAuth, requireAdmin, (req, res) => {
   res.json(db.getWomCostSummary());
 });
 
+// RFM's two options once a WOM lifecycle task is flagged for a change
+// order or a plain missing Toyota PO: proceed with Toyota's own paperwork,
+// or (change orders only) hand it to finance to see if labor can be
+// trimmed to avoid it. Both require the task to actually be in that state
+// right now -- these aren't general-purpose task actions, so they live
+// here rather than under /api/tasks.
+router.post("/:code/change-order/request-po", requireAuth, requireAdmin, (req, res) => {
+  const wom = db.findWom(req.params.code);
+  if (!wom) return res.status(404).json({ error: "WOM not found" });
+  const task = db.findTaskBySourceKey(db.lifecycleTaskSourceKey(req.params.code));
+  if (!task || !(task.is_change_order || task.is_exception)) {
+    return res.status(400).json({ error: "This WOM isn't currently flagged for a Toyota PO or change order." });
+  }
+  const { toyotaEmail, sentAt } = req.body || {};
+  if (!toyotaEmail || !sentAt) return res.status(400).json({ error: "toyotaEmail and sentAt are required" });
+  db.requestWomChangeOrderPo(req.params.code, { toyotaEmail, sentAt, userId: req.user.id, userName: req.user.name });
+  db.addAudit(req.user.id, "WOM_CHANGE_ORDER_PO_REQUESTED", `${req.user.name} requested Toyota PO approval for ${req.params.code}`);
+  res.json(presentWom(db.findWom(req.params.code)));
+});
+
+router.post("/:code/change-order/refer-to-admin", requireAuth, requireAdmin, (req, res) => {
+  const wom = db.findWom(req.params.code);
+  if (!wom) return res.status(404).json({ error: "WOM not found" });
+  const task = db.findTaskBySourceKey(db.lifecycleTaskSourceKey(req.params.code));
+  if (!task || !task.is_change_order) {
+    return res.status(400).json({ error: "This WOM isn't currently flagged for a change order." });
+  }
+  const note = ((req.body || {}).note || "").trim();
+  if (!note) return res.status(400).json({ error: "note is required" });
+  db.referWomChangeOrderToAdmin(req.params.code, { note, userId: req.user.id, userName: req.user.name });
+  db.addAudit(req.user.id, "WOM_CHANGE_ORDER_REFERRED", `${req.user.name} referred the ${req.params.code} change order to admin`);
+  res.json(presentWom(db.findWom(req.params.code)));
+});
+
 // A WOM closed here doesn't close it on the external Smartsheet tracker --
 // admin goes and updates that by hand, then marks it done here so it drops
 // off the Priorities list instead of nagging forever.

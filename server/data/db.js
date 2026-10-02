@@ -678,6 +678,18 @@ if (!hasColumn("tasks", "snoozed_until")) {
 if (!hasColumn("tasks", "is_change_order")) {
   db.exec("ALTER TABLE tasks ADD COLUMN is_change_order INTEGER NOT NULL DEFAULT 0");
 }
+// RFM's escape hatch on a change-order task: hand it to finance to see if
+// trimming labor can bring the applied cost back in line and avoid the
+// Toyota paperwork, instead of requesting the change order. A timestamp
+// (not just a role flip) so refreshWomLifecycleTask -- which otherwise
+// always forces a Toyota-paperwork-gap task back into RFM's queue
+// regardless of the real lifecycle step, see its own comment -- knows to
+// leave this one with finance instead, until either the overage clears on
+// its own or someone actually requests the Toyota PO (see
+// referWomChangeOrderToAdmin/requestWomChangeOrderPo below).
+if (!hasColumn("tasks", "referred_to_admin_at")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN referred_to_admin_at TEXT");
+}
 if (!tableExists("task_reschedules")) {
   db.exec(`
     CREATE TABLE task_reschedules (
@@ -1840,6 +1852,14 @@ function refreshWomLifecycleTask(code) {
   // work and getting paid for it -- that's always worth flagging, not just
   // when something's additionally gone wrong.
   const workDone = Boolean(steps.find((s) => s.key === "work_complete").completedAt);
+  // Whether RFM has already handed this change order to finance to try
+  // trimming labor instead of requesting the Toyota paperwork (see
+  // referWomChangeOrderToAdmin) -- only still "active" while there's still
+  // a real change order to hand off; if the overage already cleared on its
+  // own, there's nothing left to refer and the flag gets wiped below so a
+  // *future* change order on this same WOM doesn't inherit a stale referral.
+  const existingTask = findTaskBySourceKey(lifecycleTaskSourceKey(code));
+  const referredToAdminActive = changeOrder && Boolean(existingTask && existingTask.referred_to_admin_at);
   upsertTaskBySourceKey(
     lifecycleTaskSourceKey(code),
     {
@@ -1864,11 +1884,18 @@ function refreshWomLifecycleTask(code) {
       // means it still lands somewhere a person actually looks (RFM's My
       // Work/Team Work) instead of silently falling into the Unassigned
       // list, the one step where that could otherwise happen since every
-      // other step has a real owner.
-      assignedRole: needsChangeOrderOrPo ? "reviewer" : nextStep ? nextStep.role || "reviewer" : null,
+      // other step has a real owner. Once RFM has referred a change order
+      // to finance instead, this leaves it routed there (see
+      // referredToAdminActive above) rather than snapping it straight back
+      // to RFM's queue the next time anyone loads the task list.
+      assignedRole: referredToAdminActive ? "financial" : needsChangeOrderOrPo ? "reviewer" : nextStep ? nextStep.role || "reviewer" : null,
       priority: needsChangeOrderOrPo || sentToToyotaPending || workDone ? "high" : "normal",
       isException: needsChangeOrderOrPo,
       isChangeOrder: changeOrder,
+      // Cleared the moment there's no longer a live change order to refer
+      // (left untouched, i.e. preserved, while one still exists -- see the
+      // undefined-means-preserve convention in upsertTaskBySourceKey).
+      referredToAdminAt: changeOrder ? undefined : null,
       relatedWomCode: code,
       relatedLocationCode: wom.location_code,
       source: "wom_workflow",
@@ -1881,6 +1908,41 @@ function refreshWomLifecycleTask(code) {
   // *after* the furthest-completed one) -- so completion still has to check
   // every step, not just "nothing left after the furthest point reached."
   if (steps.every((s) => s.completedAt)) completeTaskBySourceKey(lifecycleTaskSourceKey(code));
+}
+
+// RFM's first option on a change order: hand it to finance instead of
+// taking it to Toyota, to see if trimming labor can bring the applied cost
+// back under what Toyota already approved and skip the paperwork entirely.
+// Only makes sense for a real cost overage (not a plain missing-PO gap --
+// there's no cost to trim there), so the caller is expected to have already
+// checked is_change_order. Sets referred_to_admin_at (read back by
+// refreshWomLifecycleTask the next time it runs) and reassigns the task to
+// finance's own queue, unclaimed, so anyone there can pick it up.
+function referWomChangeOrderToAdmin(code, { note, userId, userName }) {
+  const task = findTaskBySourceKey(lifecycleTaskSourceKey(code));
+  if (!task) return null;
+  db.prepare("UPDATE tasks SET referred_to_admin_at = ? WHERE id = ?").run(new Date().toISOString(), task.id);
+  assignTask(task.id, { assignedTo: null, assignedRole: "financial" });
+  addTaskComment(task.id, userId, userName, `Referred to admin to try reducing labor and avoid the change order: ${note}`);
+  return findTask(task.id);
+}
+
+// The other branch of that same decision -- proceeding with Toyota's own
+// paperwork, whether that's a change order's sign-off or just a plain
+// missing PO. Clears any pending referral above: once the PO is actually
+// being requested, there's nothing left to hand back to RFM.
+function requestWomChangeOrderPo(code, { toyotaEmail, sentAt, userId, userName }) {
+  const task = findTaskBySourceKey(lifecycleTaskSourceKey(code));
+  if (!task) return null;
+  db.prepare("UPDATE tasks SET referred_to_admin_at = NULL WHERE id = ?").run(task.id);
+  setTaskStatus(task.id, "waiting");
+  addTaskComment(
+    task.id,
+    userId,
+    userName,
+    `Requested Toyota PO${task.is_change_order ? " change order" : ""} approval -- sent to ${toyotaEmail} on ${new Date(sentAt).toLocaleDateString()}.`
+  );
+  return findTask(task.id);
 }
 
 // Re-evaluates every auto-trigger step against the WOM's current data and
@@ -2396,6 +2458,7 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true, prese
     `UPDATE tasks SET title = ?, description = ?, assigned_to = ?, assigned_role = ?, category = ?,
      priority = ?, due_at = ?, related_wom_code = ?, related_vendor_id = ?, related_location_code = ?,
      related_tech_id = ?, related_po = ?, workflow_rule = ?, is_exception = ?, is_change_order = ?,
+     referred_to_admin_at = ?,
      status = CASE WHEN status IN ('completed','cancelled') THEN 'open' ELSE status END,
      completed_at = CASE WHEN status IN ('completed','cancelled') THEN NULL ELSE completed_at END,
      last_status_change_at = ?
@@ -2416,6 +2479,7 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true, prese
     fields.workflowRule ?? existing.workflow_rule,
     fields.isException !== undefined ? (fields.isException ? 1 : 0) : existing.is_exception,
     fields.isChangeOrder !== undefined ? (fields.isChangeOrder ? 1 : 0) : existing.is_change_order,
+    fields.referredToAdminAt !== undefined ? fields.referredToAdminAt : existing.referred_to_admin_at,
     now,
     existing.id
   );
@@ -3853,6 +3917,9 @@ module.exports = {
   getWomLifecycleSteps,
   checkWomLifecycleAutoSteps,
   refreshAllOpenWomLifecycles,
+  lifecycleTaskSourceKey,
+  referWomChangeOrderToAdmin,
+  requestWomChangeOrderPo,
   refreshVendorComplianceTask,
   refreshAllVendorComplianceTasks,
   listVendorComplianceTasks,
