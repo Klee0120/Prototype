@@ -21,7 +21,7 @@ function formatMoney(n) {
  * own Forms/Documents (view only -- they can't upload or delete here; an
  * admin manages those from the Technicians tab).
  */
-export async function renderTechHome(container, navHost) {
+export async function renderTechHome(container, navHost, topbarHost) {
   let activeTab = "week";
   const TECH_TABS = [
     ["mywork", "My Work"],
@@ -46,6 +46,9 @@ export async function renderTechHome(container, navHost) {
     });
 
     container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
+    // Only My Week has its own page-context picker (the week nav) -- see
+    // the matching reset in adminReview.js's draw().
+    topbarHost.innerHTML = "";
 
     const content = container.querySelector("#tab-content");
     if (activeTab === "mywork") await renderTaskBoard(content);
@@ -53,7 +56,7 @@ export async function renderTechHome(container, navHost) {
     else if (activeTab === "locations") await drawLocationsAndWoms(content);
     else if (activeTab === "vendors") await drawApprovedVendors(content);
     else if (activeTab === "documents") await drawMyDocuments(content);
-    else await renderTechWeek(content);
+    else await renderTechWeek(content, undefined, topbarHost);
   }
 
   // Deliberately not the same list the admin Vendors tab shows: this is

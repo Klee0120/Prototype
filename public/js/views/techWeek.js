@@ -27,7 +27,7 @@ const WEEKLY_HOURS_TARGET = 40;
 // lines up with what actually gets flagged for RFM on the Overview tab.
 const HOURS_CHECK_THRESHOLD = 3;
 
-export async function renderTechWeek(container, techIdOverride) {
+export async function renderTechWeek(container, techIdOverride, weekNavHost) {
   const techId = techIdOverride || state.user.id;
   const [week, woms, locations] = await Promise.all([
     api.get(`/api/technicians/${techId}/weeks/${state.weekMonday}`),
@@ -183,12 +183,34 @@ export async function renderTechWeek(container, techIdOverride) {
     const weekPct = week.ukgTotal > 0 ? Math.min(100, Math.round((weekAllocated / week.ukgTotal) * 100)) : 0;
     const summaryDays = weekendEditable ? REGULAR_DAY_NAMES : DAY_NAMES;
 
+    // When a top-bar host is given (the shared page-context slot next to
+    // the brand -- see app.js/renderTopBar), the week picker renders there
+    // as a compact pill+arrows field instead of its own full-width bar
+    // inline in the content; the week-main-col picks up where that bar
+    // used to be. Same ids either way, so the wiring below doesn't care
+    // which one actually exists.
+    const weekNavMarkup = weekNavHost
+      ? `
+        <div class="topbar-field">
+          <label>Week</label>
+          <div class="topbar-field-row">
+            <button class="topbar-arrow-btn" id="prev-week" aria-label="Previous week">&larr;</button>
+            <span class="topbar-pill-static">📅 ${weekRangeLabel(state.weekMonday)}</span>
+            <button class="topbar-arrow-btn" id="next-week" aria-label="Next week">&rarr;</button>
+          </div>
+        </div>
+      `
+      : `
+        <div class="week-nav">
+          <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
+          <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
+          <button class="btn btn-ghost" id="next-week">Next &rarr;</button>
+        </div>
+      `;
+    if (weekNavHost) weekNavHost.innerHTML = weekNavMarkup;
+
     main.innerHTML = `
-      <div class="week-nav">
-        <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
-        <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
-        <button class="btn btn-ghost" id="next-week">Next &rarr;</button>
-      </div>
+      ${weekNavHost ? "" : weekNavMarkup}
 
       <div class="week-kpi-tiles">
         <div class="kpi-tile">
@@ -366,13 +388,14 @@ export async function renderTechWeek(container, techIdOverride) {
     }
     if (!timeOffOnly) main.querySelector("#receipt-host").appendChild(renderReceipt());
 
-    main.querySelector("#prev-week").addEventListener("click", () => {
+    const weekNavRoot = weekNavHost || main;
+    weekNavRoot.querySelector("#prev-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, -1);
-      renderTechWeek(container, techIdOverride);
+      renderTechWeek(container, techIdOverride, weekNavHost);
     });
-    main.querySelector("#next-week").addEventListener("click", () => {
+    weekNavRoot.querySelector("#next-week").addEventListener("click", () => {
       state.weekMonday = shiftWeek(state.weekMonday, 1);
-      renderTechWeek(container, techIdOverride);
+      renderTechWeek(container, techIdOverride, weekNavHost);
     });
 
     const unlockBtn = main.querySelector(".unlock-week-btn");
@@ -381,7 +404,7 @@ export async function renderTechWeek(container, techIdOverride) {
         unlockBtn.disabled = true;
         try {
           await api.post(`/api/admin/weeks/${techId}/${state.weekMonday}/unlock`);
-          await renderTechWeek(container, techIdOverride);
+          await renderTechWeek(container, techIdOverride, weekNavHost);
         } catch (err) {
           unlockBtn.disabled = false;
           window.alert(`Could not unlock: ${err.message}`);
@@ -868,7 +891,7 @@ export async function renderTechWeek(container, techIdOverride) {
         }
       }
 
-      await renderTechWeek(container, techIdOverride);
+      await renderTechWeek(container, techIdOverride, weekNavHost);
     } catch (err) {
       saveMessage = err.message;
       draw();

@@ -146,7 +146,7 @@ function reportYearOptions(selectedYear) {
     .join("");
 }
 
-export async function renderAdminReview(container, navHost) {
+export async function renderAdminReview(container, navHost, topbarHost) {
   let activeTab = "review";
   let allocTechId = null;
   // Which technicians' detail panels are expanded on Weekly Review -- just
@@ -228,6 +228,11 @@ export async function renderAdminReview(container, navHost) {
     });
 
     const content = container.querySelector("#tab-content");
+    // Only a tab that actually has its own page-context picker (right now,
+    // just Tech Allocation's technician/week selectors) fills this back in
+    // -- cleared up front so switching away never leaves a stale control
+    // sitting in the top bar.
+    topbarHost.innerHTML = "";
     if (activeTab === "mywork") await renderTaskBoard(content);
     else if (activeTab === "checklist") await drawPriorities(content);
     else if (activeTab === "techalloc") await drawTechAllocation(content);
@@ -1476,12 +1481,25 @@ export async function renderAdminReview(container, navHost) {
     const options = selectable.map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === allocTechId ? "selected" : ""}>${escapeHtml(t.name)}</option>`).join("");
     const currentIndex = selectable.findIndex((t) => t.id === allocTechId);
 
-    content.innerHTML = `
-      <div class="tech-alloc-switcher">
-        <button class="btn btn-ghost tech-alloc-prev" type="button" ${currentIndex <= 0 ? "disabled" : ""}>&larr; Prev</button>
-        <select class="tech-alloc-select">${options}</select>
-        <button class="btn btn-ghost tech-alloc-next" type="button" ${currentIndex === -1 || currentIndex >= selectable.length - 1 ? "disabled" : ""}>Next &rarr;</button>
+    // The technician switcher lives in the shared top bar (next to the
+    // brand) rather than inline in the content -- it's page context (who
+    // this whole page is about), the same role the week picker plays, not
+    // a piece of the page's own content. A second field (#topbar-week-field)
+    // sits alongside it, filled in by renderTechWeek below once it knows
+    // this page wants its week-nav up there too, not inline.
+    topbarHost.innerHTML = `
+      <div class="topbar-field">
+        <label>Technician</label>
+        <div class="topbar-field-row">
+          <button class="topbar-arrow-btn tech-alloc-prev" type="button" ${currentIndex <= 0 ? "disabled" : ""} aria-label="Previous technician">&larr;</button>
+          <select class="topbar-pill-select tech-alloc-select">${options}</select>
+          <button class="topbar-arrow-btn tech-alloc-next" type="button" ${currentIndex === -1 || currentIndex >= selectable.length - 1 ? "disabled" : ""} aria-label="Next technician">&rarr;</button>
+        </div>
       </div>
+      <div class="topbar-field" id="topbar-week-field"></div>
+    `;
+
+    content.innerHTML = `
       <p class="tech-alloc-hint">You're allocating this technician's time on their behalf.</p>
       <div class="tech-alloc-body"></div>
     `;
@@ -1491,20 +1509,20 @@ export async function renderAdminReview(container, navHost) {
       return;
     }
 
-    content.querySelector(".tech-alloc-select").addEventListener("change", (e) => {
+    topbarHost.querySelector(".tech-alloc-select").addEventListener("change", (e) => {
       allocTechId = e.target.value;
       draw();
     });
-    content.querySelector(".tech-alloc-prev").addEventListener("click", () => {
+    topbarHost.querySelector(".tech-alloc-prev").addEventListener("click", () => {
       if (currentIndex > 0) allocTechId = selectable[currentIndex - 1].id;
       draw();
     });
-    content.querySelector(".tech-alloc-next").addEventListener("click", () => {
+    topbarHost.querySelector(".tech-alloc-next").addEventListener("click", () => {
       if (currentIndex < selectable.length - 1) allocTechId = selectable[currentIndex + 1].id;
       draw();
     });
 
-    await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId);
+    await renderTechWeek(content.querySelector(".tech-alloc-body"), allocTechId, topbarHost.querySelector("#topbar-week-field"));
   }
 
   const DAILY_GOAL_TARGET = 10;

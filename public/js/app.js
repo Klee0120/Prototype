@@ -95,6 +95,10 @@ export async function render() {
     }
   }
 
+  const root2 = document.createElement("div");
+  root2.className = "app-root";
+  root2.appendChild(renderTopBar());
+
   const shell = document.createElement("div");
   shell.className = "app-shell";
   shell.appendChild(renderSidebar());
@@ -106,35 +110,52 @@ export async function render() {
   content.id = "view-content";
   main.appendChild(content);
   shell.appendChild(main);
+  root2.appendChild(shell);
 
   root.innerHTML = "";
-  root.appendChild(shell);
+  root.appendChild(root2);
 
   const navHost = shell.querySelector("#sidebar-nav");
+  const topbarHost = root2.querySelector("#topbar-context");
   if (state.user.role === "admin") {
-    await renderAdminReview(content, navHost);
+    await renderAdminReview(content, navHost, topbarHost);
   } else {
-    await renderTechHome(content, navHost);
+    await renderTechHome(content, navHost, topbarHost);
   }
 }
 
-// A fixed left column (brand up top, the active view's own nav in the
-// middle via #sidebar-nav -- filled in by renderAdminReview/renderTechHome,
-// not here, since which sections/tabs exist is each view's own concern,
-// user block pinned to the bottom) replaces the old full-width header +
-// horizontal nav-sections row. One persistent shell the whole app sits
-// inside, rather than each page redrawing its own nav alongside its
-// content on every tab switch.
+// The full-width strip across the very top -- brand on the left, and an
+// empty #topbar-context slot on the right that the active view fills with
+// whatever page-specific picker it needs (which technician, which week),
+// left empty otherwise. Sits above the sidebar/main row rather than being
+// part of the sidebar itself, so a page's own context controls read as
+// part of the app's chrome, not buried in its content.
+function renderTopBar() {
+  const bar = document.createElement("header");
+  bar.className = "app-topbar";
+  bar.innerHTML = `
+    <div class="topbar-brand">
+      <div class="app-logo-mark">LA</div>
+      <div class="topbar-brand-text">
+        <span class="topbar-brand-name">Labor Allocation</span>
+        <span class="topbar-brand-sub">Allocate technician time and match to work orders, locations and financials.</span>
+      </div>
+    </div>
+    <div class="topbar-context" id="topbar-context"></div>
+  `;
+  return bar;
+}
+
+// A fixed left column (nav in the middle via #sidebar-nav -- filled in by
+// renderAdminReview/renderTechHome, not here, since which sections/tabs
+// exist is each view's own concern, user block pinned to the bottom)
+// replaces the old full-width header + horizontal nav-sections row. One
+// persistent shell the whole app sits inside, rather than each page
+// redrawing its own nav alongside its content on every tab switch.
 function renderSidebar() {
   const sidebar = document.createElement("aside");
   sidebar.className = "app-sidebar";
-  sidebar.innerHTML = `
-    <div class="sidebar-brand">
-      <div class="app-logo-mark">LA</div>
-      <span class="sidebar-brand-name">Labor Allocation</span>
-    </div>
-    <nav class="sidebar-nav" id="sidebar-nav"></nav>
-  `;
+  sidebar.innerHTML = `<nav class="sidebar-nav" id="sidebar-nav"></nav>`;
   sidebar.appendChild(renderSidebarUser());
   return sidebar;
 }
