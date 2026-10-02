@@ -955,6 +955,30 @@ Demo logins:
       assigned to someone else) is allowed -- claiming your own unclaimed
       work isn't really a privileged action, it's just a faster version of
       what `canSeeTask` already lets a tech act on.
+  - **With a single active admin, an admin-bucket task skips "Unclaimed"
+    entirely and goes straight to them.** Claim still exists for a real
+    multi-admin team, but on a one-person team every `admin`/`financial`/
+    `reviewer`-routed task (WOM lifecycle, recurring, vendor compliance,
+    even a hand-added one left role-only) has exactly one honest answer to
+    "who does this belong to" -- making that person click Claim on every
+    single one added nothing but clicks. `defaultAssigneeForRole`/
+    `withAutoAssignee` (`server/data/db.js`) resolve a default owner --
+    the designated RFM for the `reviewer` queue specifically
+    (`getPseReviewerId`), or whichever admin account is the *only* active
+    one -- and both `createTask` and `upsertTaskBySourceKey`'s refresh path
+    apply it whenever a task would otherwise land with a role but no
+    person. Centralized in those two functions rather than each workflow
+    remembering to call it, so it applies uniformly (and retroactively, on
+    the very next lazy refresh, to a backlog of already-existing unclaimed
+    tasks too, not just newly-created ones going forward). The moment a
+    second active admin exists with no RFM designated, `defaultAssigneeForRole`
+    has no more single honest answer and returns nothing -- new/refreshed
+    tasks fall straight back to today's role-queued "Unclaimed -- Admin,
+    Claim" behavior, no flag or migration needed for that transition.
+    `assignTask` (the explicit Assign control / Back to role queue) is
+    deliberately untouched by this -- it stays a direct "set exactly what
+    was asked," so on a genuine multi-admin team, intentionally bouncing a
+    task back to the shared queue still means something.
   - **A comment on a recurring task pushes its due date out, clearing
     overdue.** An ongoing responsibility worked in pieces over time (vendor
     compliance cleanup, say) used to read "N days overdue" indefinitely
@@ -1229,6 +1253,16 @@ Demo logins:
     (Overdue still gets a warning tint) since "who it's assigned to" isn't
     itself a kind of work the way Type is. Switching modes re-renders
     against the already-fetched task list -- no extra round trip.
+  - **The Type filter can invert to "everything but"** -- an **"Exclude
+    this type"** checkbox next to the Filters panel's Type dropdown
+    (`filters.categoryExclude` in `tasks.js`) flips `category=X` to
+    `excludeCategory=X` on the request (`category != ?` server-side in
+    `listTasks`) instead of adding a second control. Built for exactly the
+    "show me everything except Compliance" case -- a single large category
+    (e.g. a long tail of per-vendor compliance follow-ups) can otherwise
+    bury every other kind of task on the board, and picking every *other*
+    type one at a time isn't a real option once there are more than a
+    couple.
   - **A WOM-workflow task's detail panel takes the real action, not a
     generic "mark complete."** Opening a task like "WOM lifecycle:
     LC-1234" fetches that WOM's live `lifecycleSteps` and renders the

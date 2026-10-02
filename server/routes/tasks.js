@@ -189,6 +189,11 @@ router.get("/", requireAuth, (req, res) => {
     if (req.query.wom) filters.relatedWomCode = req.query.wom;
     if (req.query.vendor) filters.relatedVendorId = req.query.vendor;
     if (req.query.category) filters.category = req.query.category;
+    // "Show everything BUT compliance" -- the same Type dropdown, flipped
+    // to an exclusion via the Filters panel's "Exclude this type" checkbox,
+    // rather than a separate control. Mutually exclusive with category
+    // above (the frontend only ever sends one or the other).
+    if (req.query.excludeCategory) filters.excludeCategory = req.query.excludeCategory;
     if (req.query.dueDate) filters.dueOn = req.query.dueDate;
     if (req.query.status) filters.status = String(req.query.status).split(",");
   }

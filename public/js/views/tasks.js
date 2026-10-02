@@ -302,7 +302,7 @@ function formatRelativeDue(iso) {
 export async function renderTaskBoard(container) {
   const isAdmin = state.user.role === "admin";
   let view = "my";
-  let filters = { assignedTo: "", role: "", location: "", territory: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
+  let filters = { assignedTo: "", role: "", location: "", territory: "", wom: "", vendor: "", category: "", categoryExclude: false, dueDate: "", status: "" };
   let staffCache = null;
   // Bulk selection (admin only) -- cleared on every full redraw, since a
   // filter/view change means the selected rows may not even be on screen
@@ -428,7 +428,7 @@ export async function renderTaskBoard(container) {
       if (filters.territory) params.set("territory", filters.territory);
       if (filters.wom) params.set("wom", filters.wom);
       if (filters.vendor) params.set("vendor", filters.vendor);
-      if (filters.category) params.set("category", filters.category);
+      if (filters.category) params.set(filters.categoryExclude ? "excludeCategory" : "category", filters.category);
       if (filters.dueDate) params.set("dueDate", filters.dueDate);
       if (filters.status) params.set("status", filters.status);
     }
@@ -598,6 +598,9 @@ export async function renderTaskBoard(container) {
           <option value="">Any category</option>
           ${Object.entries(CATEGORY_LABELS).map(([k, l]) => `<option value="${k}" ${filters.category === k ? "selected" : ""}>${l}</option>`).join("")}
         </select>
+        <label class="task-filter-exclude-toggle" title="Show every category EXCEPT the one picked above">
+          <input type="checkbox" class="task-filter-category-exclude" ${filters.categoryExclude ? "checked" : ""} /> Exclude this type
+        </label>
         <input class="task-filter-due" type="date" value="${escapeHtml(filters.dueDate)}" />
         <select class="task-filter-status">
           <option value="">Any status</option>
@@ -623,8 +626,12 @@ export async function renderTaskBoard(container) {
     bind(".task-filter-category", "category");
     bind(".task-filter-due", "dueDate");
     bind(".task-filter-status", "status");
+    host.querySelector(".task-filter-category-exclude").addEventListener("change", (e) => {
+      filters.categoryExclude = e.target.checked;
+      draw();
+    });
     host.querySelector(".task-filter-clear").addEventListener("click", () => {
-      filters = { assignedTo: "", role: "", location: "", territory: "", wom: "", vendor: "", category: "", dueDate: "", status: "" };
+      filters = { assignedTo: "", role: "", location: "", territory: "", wom: "", vendor: "", category: "", categoryExclude: false, dueDate: "", status: "" };
       draw();
     });
   }

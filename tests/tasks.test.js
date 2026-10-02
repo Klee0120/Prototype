@@ -641,7 +641,11 @@ test("WOM change order: request Toyota PO, or refer to admin to try reducing lab
     const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
     assert.equal(task.assignedRole, "financial", "handed off to finance's queue, not RFM's");
-    assert.equal(task.assignedTo, null, "unclaimed in that queue, not pinned to one person");
+    // With only one active admin in this fixture (the seed's default
+    // "ADMIN"), defaultAssigneeForRole auto-assigns the financial queue's
+    // only possible owner directly rather than leaving it sitting
+    // unclaimed -- see withAutoAssignee in db.js.
+    assert.equal(task.assignedTo, "ADMIN", "auto-assigned -- there's only one admin this could possibly go to");
     assert.ok(task.referredToAdminAt, "expected the referral timestamp to be set");
 
     const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });

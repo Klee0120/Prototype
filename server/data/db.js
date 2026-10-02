@@ -2394,9 +2394,39 @@ function findTaskBySourceKey(sourceKey) {
   return db.prepare("SELECT * FROM tasks WHERE source_key = ?").get(sourceKey);
 }
 
+// A role-queued task (assignedRole set, assignedTo not -- "Unclaimed --
+// Admin/RFM", requiring a Claim click) only needs to stay unclaimed when
+// there's genuinely more than one person it could belong to. With a single
+// active admin account, or (for the reviewer-specific queue) a designated
+// RFM, there's exactly one honest answer to "who does this belong to," so
+// it goes straight to them instead of making a one-person team click
+// Claim on everything. The moment a second active admin exists with no
+// RFM designated, this naturally stops firing -- there's no longer a safe
+// single default -- and new/refreshed tasks fall back to the existing
+// role-queued behavior with no flag or migration needed for that
+// transition. Never applies to "tech" (always more than one tech) or a
+// bare null role (genuinely unassigned, nobody's queue at all).
+function defaultAssigneeForRole(assignedRole) {
+  if (assignedRole !== "admin" && assignedRole !== "financial" && assignedRole !== "reviewer") return null;
+  if (assignedRole === "reviewer") {
+    const reviewerId = getPseReviewerId();
+    if (reviewerId) return reviewerId;
+  }
+  const activeAdmins = listAdmins().filter((a) => a.active);
+  return activeAdmins.length === 1 ? activeAdmins[0].id : null;
+}
+
+// Centralized so every task creation/refresh path (WOM lifecycle,
+// recurring, vendor compliance, and a hand-added task alike) gets
+// auto-assignment for free rather than each workflow having to remember
+// to call it -- an explicit assignedTo is always left alone either way.
+function withAutoAssignee(assignedTo, assignedRole) {
+  return assignedTo || defaultAssigneeForRole(assignedRole);
+}
+
 function createTask(fields) {
   const now = new Date().toISOString();
-  const assignedTo = fields.assignedTo || null;
+  const assignedTo = withAutoAssignee(fields.assignedTo || null, fields.assignedRole || null);
   const result = db
     .prepare(
       `INSERT INTO tasks (source_key, title, description, assigned_to, assigned_role, category, priority, due_at,
@@ -2454,6 +2484,16 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true, prese
   if (!reopenIfClosed && (existing.status === "completed" || existing.status === "cancelled")) return existing;
 
   const now = new Date().toISOString();
+  // Resolved ahead of the query (rather than inline in .run()) since
+  // withAutoAssignee needs the final role, not just whatever this one
+  // call happened to pass -- an unrelated refresh (e.g. a sync touching
+  // the WOM) that doesn't pass assignedRole at all must still auto-assign
+  // off the role the task already has.
+  const resolvedAssignedRole = fields.assignedRole !== undefined ? fields.assignedRole || null : existing.assigned_role;
+  const resolvedAssignedTo = withAutoAssignee(
+    fields.assignedTo !== undefined ? fields.assignedTo || null : existing.assigned_to,
+    resolvedAssignedRole
+  );
   db.prepare(
     `UPDATE tasks SET title = ?, description = ?, assigned_to = ?, assigned_role = ?, category = ?,
      priority = ?, due_at = ?, related_wom_code = ?, related_vendor_id = ?, related_location_code = ?,
@@ -2466,8 +2506,8 @@ function upsertTaskBySourceKey(sourceKey, fields, { reopenIfClosed = true, prese
   ).run(
     fields.title ?? existing.title,
     fields.description ?? existing.description,
-    fields.assignedTo !== undefined ? fields.assignedTo || null : existing.assigned_to,
-    fields.assignedRole !== undefined ? fields.assignedRole || null : existing.assigned_role,
+    resolvedAssignedTo,
+    resolvedAssignedRole,
     fields.category ?? existing.category,
     fields.priority ?? existing.priority,
     preserveDueAtOnUpdate ? existing.due_at : fields.dueAt !== undefined ? fields.dueAt || null : existing.due_at,
@@ -2674,6 +2714,10 @@ function listTasks(filters = {}) {
   if (filters.category) {
     clauses.push("category = ?");
     params.push(filters.category);
+  }
+  if (filters.excludeCategory) {
+    clauses.push("category != ?");
+    params.push(filters.excludeCategory);
   }
   if (filters.source) {
     clauses.push("source = ?");
