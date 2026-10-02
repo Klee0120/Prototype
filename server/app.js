@@ -24,7 +24,24 @@ function createApp() {
   // loads its own same-origin JS/CSS plus the one Google Fonts stylesheet
   // already in index.html. Doesn't touch the actual gap (no TLS yet --
   // see README "Where this stands"), just closes off the cheap stuff.
-  app.use(helmet());
+  //
+  // upgrade-insecure-requests is dropped from helmet's default CSP: on a
+  // site still served over plain HTTP (no cert yet), that directive tells
+  // the browser to silently rewrite every request -- scripts, the API
+  // calls, everything -- to https:// first. There's nothing listening on
+  // 443, so every one of those just hangs, which is exactly what turned
+  // the whole app into a stuck blank page the first time this shipped.
+  // Safe to bring back once the HTTPS gap itself is closed (see README).
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          "upgrade-insecure-requests": null,
+        },
+      },
+    })
+  );
 
   app.use(express.json());
 
