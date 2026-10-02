@@ -271,6 +271,7 @@ export async function renderReclasses(container, options = {}) {
   }
 
   function openReclassDetailModal(item) {
+    const hasWom = Boolean(item.fromWomNumber || item.toWomNumber);
     const { body, close } = openModal({
       title: `Reclass #${item.id}`,
       size: "large",
@@ -288,6 +289,7 @@ export async function renderReclasses(container, options = {}) {
         <p>${escapeHtml(item.comments || "—")}</p>
         <h4>Path Forward</h4>
         <p>${escapeHtml(item.pathForward || "—")}</p>
+        ${hasWom ? `<h4>Linked PO / GL</h4><div class="reclass-gl-links">Loading…</div>` : ""}
         <form class="reclass-status-form modal-form">
           <label class="profile-field">
             <span>Status</span>
@@ -306,6 +308,7 @@ export async function renderReclasses(container, options = {}) {
         </form>
       `,
     });
+    if (hasWom) loadReclassGlLinks(body, item);
     const form = body.querySelector(".reclass-status-form");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -321,5 +324,79 @@ export async function renderReclasses(container, options = {}) {
         msg.textContent = err.message;
       }
     });
+  }
+
+  // Read-only: looks up the item's own WOM #(s) against the Budget PO
+  // Tracker's wom_number field, then shows whatever GL has actually posted
+  // against each matching PO -- lets the admin eyeball whether the
+  // correction shows up yet, without the app declaring it posted on its own.
+  async function loadReclassGlLinks(body, item) {
+    const wrap = body.querySelector(".reclass-gl-links");
+    if (!wrap) return;
+    let data;
+    try {
+      data = await api.get(`/api/admin/reclasses/items/${item.id}/gl-links`);
+    } catch (err) {
+      wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    const sides = [
+      { label: "From", womNumber: data.fromWomNumber, links: data.fromLinks },
+      { label: "To", womNumber: data.toWomNumber, links: data.toLinks },
+    ].filter((s) => s.womNumber);
+    if (sides.every((s) => s.links.length === 0)) {
+      wrap.innerHTML = `<p class="empty-note">No PO in the Budget PO Tracker names ${sides.map((s) => `WOM ${escapeHtml(s.womNumber)}`).join(" or ")}.</p>`;
+      return;
+    }
+    wrap.innerHTML = `
+      <p class="review-checklist-hint">
+        Looked up by WOM # against the Budget PO Tracker -- not a confirmation this reclass posted. Check the
+        GL lines below yourself before marking Confirmed Posted.
+      </p>
+      ${sides
+        .map((side) =>
+          side.links.length === 0
+            ? `<p class="empty-note">${side.label} WOM ${escapeHtml(side.womNumber)}: no PO on file.</p>`
+            : side.links
+                .map(
+                  (po) => `
+          <table class="detail-table">
+            <tbody>
+              <tr><th>${side.label} WOM</th><td>${escapeHtml(side.womNumber)}</td><th>PO #</th><td class="wom-code">${escapeHtml(po.poNumber || "—")}</td></tr>
+              <tr><th>PO Status</th><td>${escapeHtml(po.poStatus || "—")}</td><th>PO Amount</th><td>${formatMoney(po.poAmount)}</td></tr>
+              <tr><th>GL lines</th><td>${po.glLineCount}</td><th>Actual paid (GL)</th><td>${formatMoney(po.actualPaid)}</td></tr>
+            </tbody>
+          </table>
+          ${
+            po.lines.length > 0
+              ? `
+          <table class="detail-table">
+            <thead><tr><th>Period</th><th>Date</th><th>Doc Type</th><th>Doc #</th><th>Object Account</th><th>Subsidiary</th><th>Amount</th><th>Invoice #</th></tr></thead>
+            <tbody>
+              ${po.lines
+                .map(
+                  (l) => `
+                <tr>
+                  <td>P${escapeHtml(String(l.periodNumber))}/FY${escapeHtml(String(l.fiscalYear))}</td>
+                  <td>${escapeHtml(l.glDate || "—")}</td>
+                  <td>${escapeHtml(l.documentType || "—")}</td>
+                  <td>${escapeHtml(l.documentNumber || "—")}</td>
+                  <td>${escapeHtml(l.objectAccount || "—")}</td>
+                  <td>${escapeHtml(l.subsidiary || "—")}</td>
+                  <td>${formatMoney(l.amount)}</td>
+                  <td>${escapeHtml(l.supplierInvoiceNumber || "—")}</td>
+                </tr>`
+                )
+                .join("")}
+            </tbody>
+          </table>`
+              : `<p class="empty-note">No GL report imported has a line matched to this PO yet.</p>`
+          }
+        `
+                )
+                .join("")
+        )
+        .join("")}
+    `;
   }
 }

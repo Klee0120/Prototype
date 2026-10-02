@@ -5403,6 +5403,40 @@ function listGlImports() {
   return db.prepare("SELECT * FROM gl_imports ORDER BY created_at DESC").all().map(presentGlImport);
 }
 
+// A WOM's real Toyota PO(s) (Budget PO Tracker's own wom_number, same field
+// getWomCostSummary's Remaining Toyota PO check already sums by), plus
+// whatever GL has actually posted against each one -- read-only, for
+// looking at whether a reclass naming this WOM actually shows up in the
+// GL yet. Never used to auto-confirm a reclass; that's still the admin's
+// own call (see confirmed_gl_reference on reclass_items).
+function getPoGlLinksByWom(womNumber) {
+  if (!womNumber) return [];
+  const pos = db
+    .prepare("SELECT id, po_number AS poNumber, po_amount AS poAmount, status AS poStatus, object_code AS objectCode, subsidiary AS subsidiary FROM pos WHERE wom_number = ?")
+    .all(womNumber);
+  return pos.map((p) => {
+    const lines = db
+      .prepare(
+        `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, document_type AS documentType,
+                document_number AS documentNumber, object_account AS objectAccount, subsidiary, amount,
+                supplier_invoice_number AS supplierInvoiceNumber
+         FROM gl_entries WHERE matched_po_id = ? ORDER BY gl_date`
+      )
+      .all(p.id);
+    return {
+      poId: p.id,
+      poNumber: p.poNumber,
+      poAmount: p.poAmount,
+      poStatus: p.poStatus,
+      objectCode: p.objectCode,
+      subsidiary: p.subsidiary,
+      glLineCount: lines.length,
+      actualPaid: lines.reduce((sum, l) => sum + (l.amount || 0), 0),
+      lines,
+    };
+  });
+}
+
 // A plain keyword read of the PO's own free-text status, for the Open/
 // Closed filter only -- never shown in place of the real status text (see
 // the Financials UI comment on why that's never algorithmically
@@ -5704,6 +5738,7 @@ module.exports = {
   listGlImports,
   findGlImport,
   findGlImportByPeriod,
+  getPoGlLinksByWom,
   getPoReconciliation,
   getGlImportStatus,
   getGlFiscalYearCoverage,

@@ -171,6 +171,22 @@ router.post("/items", (req, res) => {
   res.status(201).json(item);
 });
 
+// Looks up this item's named WOM(s) against the Budget PO Tracker's own
+// wom_number field, then shows whatever GL has actually posted against
+// each matching PO -- lets the admin see with their own eyes whether a
+// reclass has shown up in the GL yet, without the app auto-declaring it
+// posted (that's still a manual call -- see confirmed_gl_reference).
+router.get("/items/:id/gl-links", (req, res) => {
+  const item = db.findReclassItem(Number(req.params.id));
+  if (!item) return res.status(404).json({ error: "Reclass item not found" });
+  res.json({
+    fromWomNumber: item.fromWomNumber,
+    fromLinks: db.getPoGlLinksByWom(item.fromWomNumber),
+    toWomNumber: item.toWomNumber,
+    toLinks: item.toWomNumber && item.toWomNumber !== item.fromWomNumber ? db.getPoGlLinksByWom(item.toWomNumber) : [],
+  });
+});
+
 router.patch("/items/:id", (req, res) => {
   try {
     const updated = db.updateReclassItem(req.params.id, req.body || {});
