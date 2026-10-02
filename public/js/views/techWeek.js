@@ -179,6 +179,10 @@ export async function renderTechWeek(container, techIdOverride) {
     // dedicated endpoint that never touches the already-locked Mon-Fri rows.
     const weekendEditable = locked;
 
+    const weekRemaining = round2(week.ukgTotal - weekAllocated);
+    const weekPct = week.ukgTotal > 0 ? Math.min(100, Math.round((weekAllocated / week.ukgTotal) * 100)) : 0;
+    const summaryDays = weekendEditable ? REGULAR_DAY_NAMES : DAY_NAMES;
+
     main.innerHTML = `
       <div class="week-nav">
         <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
@@ -186,83 +190,115 @@ export async function renderTechWeek(container, techIdOverride) {
         <button class="btn btn-ghost" id="next-week">Next &rarr;</button>
       </div>
 
-      <div class="ukg-banner">
-        <div>
-          <div class="ukg-label">UKG total hours (source of truth)</div>
-          <div class="ukg-value">${week.ukgTotal}h</div>
+      <div class="week-kpi-tiles">
+        <div class="kpi-tile">
+          <div class="kpi-tile-icon">⏱</div>
+          <div><div class="kpi-tile-label">UKG total hours<br>(source of truth)</div><div class="kpi-tile-value">${week.ukgTotal}h</div></div>
         </div>
-        <div>
-          <div class="ukg-label">Allocated hours</div>
-          <div class="ukg-value ${Math.abs(weekAllocated - week.ukgTotal) < 0.01 ? "ok" : "warn"}">${weekAllocated}h</div>
+        <div class="kpi-tile">
+          <div class="kpi-tile-icon">📋</div>
+          <div><div class="kpi-tile-label">Allocated hours</div><div class="kpi-tile-value ${Math.abs(weekAllocated - week.ukgTotal) < 0.01 ? "" : "kpi-tile-value-warn"}">${weekAllocated}h</div></div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-tile-icon">⏳</div>
+          <div><div class="kpi-tile-label">Remaining</div><div class="kpi-tile-value ${Math.abs(weekRemaining) > 0.01 ? "kpi-tile-value-warn" : ""}">${weekRemaining}h</div></div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-tile-icon">📄</div>
+          <div><div class="kpi-tile-label">Status</div><div class="kpi-tile-value kpi-tile-status status-${week.status}">${STATUS_LABELS[week.status]}</div></div>
         </div>
       </div>
 
-      <div class="status-banner status-${week.status}">
-        <strong>${STATUS_LABELS[week.status]}</strong>
-        ${week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : ""}
-        ${
-          week.status === "approved" || week.status === "submitted"
-            ? state.user.role === "admin"
-              ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
-              : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
-            : ""
-        }
-        ${locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : ""}
-        ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
-        ${
-          state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
-            ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
-            : ""
-        }
-      </div>
+      <div class="week-layout">
+        <div class="week-main-col">
+          <div class="status-banner status-${week.status}">
+            <strong>${STATUS_LABELS[week.status]}</strong>
+            ${week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : ""}
+            ${
+              week.status === "approved" || week.status === "submitted"
+                ? state.user.role === "admin"
+                  ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
+                  : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
+                : ""
+            }
+            ${locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : ""}
+            ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
+            ${
+              state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
+                ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
+                : ""
+            }
+          </div>
 
-      ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
+          ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
 
-      ${
-        weekendEditable
-          ? `<div class="weekend-section">
-              <div class="weekend-section-title">Weekend hours</div>
-              <p class="weekend-section-hint">Called in after this week was already ${week.status}? Log Saturday/Sunday
-                here — Mon-Fri below stays exactly as ${week.status}.</p>
-              ${
-                week.weekendAddendumAt
-                  ? `<div class="weekend-addendum-note">
-                      <strong>Weekend hours added</strong> since this week was ${week.status}.
-                      ${
-                        state.user.role === "admin"
-                          ? "Accept these (and correct the hours if needed) from Weekly Review."
-                          : "Your admin will review these, correct them to match UKG's actual time if needed, and accept them -- no action needed from you."
-                      }
-                    </div>`
-                  : ""
-              }
-              <div class="day-grid weekend-day-grid" id="weekend-day-grid"></div>
-              <div class="action-row">
-                <button class="btn btn-primary" id="save-weekend">Save weekend hours</button>
-                <span class="save-message">${escapeHtml(saveMessage)}</span>
-              </div>
-            </div>`
-          : ""
-      }
+          ${
+            weekendEditable
+              ? `<div class="weekend-section">
+                  <div class="weekend-section-title">Weekend hours</div>
+                  <p class="weekend-section-hint">Called in after this week was already ${week.status}? Log Saturday/Sunday
+                    here — Mon-Fri below stays exactly as ${week.status}.</p>
+                  ${
+                    week.weekendAddendumAt
+                      ? `<div class="weekend-addendum-note">
+                          <strong>Weekend hours added</strong> since this week was ${week.status}.
+                          ${
+                            state.user.role === "admin"
+                              ? "Accept these (and correct the hours if needed) from Weekly Review."
+                              : "Your admin will review these, correct them to match UKG's actual time if needed, and accept them -- no action needed from you."
+                          }
+                        </div>`
+                      : ""
+                  }
+                  <div class="day-grid weekend-day-grid" id="weekend-day-grid"></div>
+                  <div class="action-row">
+                    <button class="btn btn-primary" id="save-weekend">Save weekend hours</button>
+                    <span class="save-message">${escapeHtml(saveMessage)}</span>
+                  </div>
+                </div>`
+              : ""
+          }
 
-      <div id="wom-photo-prompt-host"></div>
-      <div id="hours-check-host"></div>
+          <div id="wom-photo-prompt-host"></div>
+          <div id="hours-check-host"></div>
 
-      <div class="day-grid" id="day-grid"></div>
+          <div class="day-grid" id="day-grid"></div>
 
-      <div id="receipt-host"></div>
-
-      ${
-        locked
-          ? ""
-          : `
-        <div class="action-row">
-          <button class="btn btn-secondary" id="save-draft">Save draft</button>
-          ${timeOffOnly ? "" : `<button class="btn btn-primary" id="submit-week" ${canSubmitWeek() ? "" : "disabled"}>Submit for review</button>`}
-          <span class="save-message">${escapeHtml(saveMessage)}</span>
+          <div id="receipt-host"></div>
         </div>
-      `
-      }
+
+        <div class="week-side-col">
+          <div class="side-card">
+            <h4>Weekly Summary</h4>
+            <div class="side-summary-row"><span>UKG total hours</span><strong>${week.ukgTotal}h</strong></div>
+            <div class="side-summary-row"><span>Allocated hours</span><strong>${weekAllocated}h</strong></div>
+            <div class="side-summary-row"><span>Remaining</span><strong class="${Math.abs(weekRemaining) > 0.01 ? "side-summary-warn" : ""}">${weekRemaining}h</strong></div>
+            <div class="side-summary-days">
+              ${summaryDays
+                .map((day) => {
+                  const dUkg = week.ukgHoursByDay[day] || 0;
+                  const dTotal = dayTotal(day);
+                  const dOk = Math.abs(round2(dTotal - dUkg)) < 0.01;
+                  return `<div class="side-day-row"><span>${day}</span><span class="day-complete-pill ${dOk ? "ok" : "warn"}">${dTotal}h / ${dUkg}h</span></div>`;
+                })
+                .join("")}
+            </div>
+            <div class="side-progress-track"><div class="side-progress-fill" style="width:${weekPct}%"></div></div>
+            <div class="side-progress-label">${weekAllocated}h of ${week.ukgTotal}h allocated &middot; ${weekPct}%</div>
+          </div>
+          ${
+            locked
+              ? ""
+              : `<div class="side-card">
+                  <h4>Quick Actions</h4>
+                  <button class="btn btn-primary side-action-btn" id="save-draft" type="button">💾 Save draft</button>
+                  ${timeOffOnly ? "" : `<button class="btn btn-secondary side-action-btn" id="submit-week" type="button" ${canSubmitWeek() ? "" : "disabled"}>📨 Submit for review</button>`}
+                  <button class="btn btn-secondary side-action-btn" id="print-week" type="button">🖨 Print / Export</button>
+                  <span class="save-message">${escapeHtml(saveMessage)}</span>
+                </div>`
+          }
+        </div>
+      </div>
     `;
 
     // Admins allocating on a technician's behalf don't need this nudge --
@@ -357,6 +393,7 @@ export async function renderTechWeek(container, techIdOverride) {
       main.querySelector("#save-draft").addEventListener("click", () => saveDraft());
       const submitBtn = main.querySelector("#submit-week");
       if (submitBtn) submitBtn.addEventListener("click", submit);
+      main.querySelector("#print-week").addEventListener("click", () => window.print());
     }
     if (weekendEditable) {
       main.querySelector("#save-weekend").addEventListener("click", () => saveWeekendHours());
