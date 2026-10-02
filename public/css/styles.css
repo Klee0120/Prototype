@@ -35,6 +35,10 @@
   --sidebar-bg: #3a4250;
   --sidebar-bg-darker: #2d3440;
   --sidebar-text: #aab2c0;
+  /* The lighter gray band a page's own sub-tabs sit on, between the dark
+     info bar above and the cream content below -- a distinct middle tone,
+     not just --bg with a border. */
+  --subtab-band-bg: #dcd5d0;
   --radius: 14px;
   --radius-sm: 10px;
   --shadow-sm: 0 1px 2px rgba(40, 20, 20, 0.07);
@@ -122,19 +126,54 @@ h1, h2, h3, h4 {
   margin: 10px 0 0;
 }
 
-/* ---- Shell: top bar + sidebar ---- */
-/* A full-width top bar (brand, plus whatever page-context picker the
-   active view wants -- see #topbar-context) sits above a sidebar/main
-   row -- replaces the old full-width header + horizontal nav-sections
-   row sitting above the content. One shell the whole app lives inside;
-   which nav items appear in #sidebar-nav, and what (if anything) fills
-   the top bar's context slot, is each view's own concern (see
-   renderAdminReview/renderTechHome/renderTechWeek), not this file's. */
+/* ---- Shell: sidebar + (top bar / sub-tab band / content) ---- */
+/* The sidebar spans the full height from the real top-left corner (the
+   C&W logo lives there, not in a separate top bar) -- replaces the old
+   full-width header + horizontal nav-sections row. To its right, the main
+   pane stacks three bands: a dark info bar (page title plus whatever
+   context picker the active view wants, see #topbar-context), a lighter
+   gray band for that view's own sub-tabs (see #subtab-band), then the
+   actual content. Which nav items appear in #sidebar-nav, and what (if
+   anything) fills the top bar's context slot or the sub-tab band, is each
+   view's own concern (see renderAdminReview/renderTechHome/
+   renderTechWeek), not this file's. */
 
-.app-root {
+.app-shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  width: 240px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  background: linear-gradient(180deg, var(--sidebar-bg) 0%, var(--sidebar-bg-darker) 100%);
+  color: var(--sidebar-text);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  padding: 18px;
+  background: #fff;
+}
+
+.sidebar-brand-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
 }
 
 .app-topbar {
@@ -146,16 +185,18 @@ h1, h2, h3, h4 {
   padding: 16px 24px;
   background: var(--sidebar-bg);
   color: #fff;
-  position: sticky;
-  top: 0;
-  z-index: 30;
   box-shadow: var(--shadow-sm);
 }
 
-.topbar-brand {
+.subtab-band {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 12px 24px;
+  background: var(--subtab-band-bg);
+}
+.subtab-band:empty {
+  display: none;
 }
 
 .topbar-brand-text {
@@ -241,35 +282,6 @@ h1, h2, h3, h4 {
 .topbar-arrow-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
-}
-
-.app-shell {
-  display: flex;
-  align-items: stretch;
-  flex: 1 1 auto;
-}
-
-.app-sidebar {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  background: linear-gradient(180deg, var(--sidebar-bg) 0%, var(--sidebar-bg-darker) 100%);
-  color: var(--sidebar-text);
-}
-
-.app-logo-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(155deg, var(--accent), var(--accent-dark));
-  color: #fff;
-  font-weight: 700;
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
 }
 
 .sidebar-nav {
@@ -372,12 +384,6 @@ h1, h2, h3, h4 {
 .sidebar-logout-btn:hover {
   background: rgba(255, 255, 255, 0.16);
   color: #fff;
-}
-
-.app-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  background: var(--bg);
 }
 
 .content {
@@ -1071,8 +1077,8 @@ h1, h2, h3, h4 {
 }
 
 .tab {
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: var(--neutral-bg);
+  border: 1px solid transparent;
   border-radius: 999px;
   padding: 7px 14px;
   font-weight: 600;
@@ -1089,9 +1095,9 @@ h1, h2, h3, h4 {
 }
 
 .tab.active {
-  color: var(--accent);
+  color: #fff;
+  background: var(--accent);
   border-color: var(--accent);
-  background: var(--accent-bg);
 }
 
 .tab-badge {
@@ -3292,10 +3298,18 @@ h1, h2, h3, h4 {
   .app-sidebar {
     width: 100%;
     height: auto;
+    position: static;
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
     padding: 10px 12px;
+  }
+  .sidebar-brand {
+    padding: 4px 10px 4px 0;
+    background: none;
+  }
+  .sidebar-brand-logo {
+    width: 110px;
   }
   .sidebar-nav {
     flex-direction: row;

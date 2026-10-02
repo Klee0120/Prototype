@@ -95,67 +95,69 @@ export async function render() {
     }
   }
 
-  const root2 = document.createElement("div");
-  root2.className = "app-root";
-  root2.appendChild(renderTopBar());
-
   const shell = document.createElement("div");
   shell.className = "app-shell";
   shell.appendChild(renderSidebar());
 
   const main = document.createElement("main");
   main.className = "app-main";
+  main.appendChild(renderTopBar());
+  const subtabBand = document.createElement("div");
+  subtabBand.className = "subtab-band";
+  subtabBand.id = "subtab-band";
+  main.appendChild(subtabBand);
   const content = document.createElement("div");
   content.className = "content";
   content.id = "view-content";
   main.appendChild(content);
   shell.appendChild(main);
-  root2.appendChild(shell);
 
   root.innerHTML = "";
-  root.appendChild(root2);
+  root.appendChild(shell);
 
   const navHost = shell.querySelector("#sidebar-nav");
-  const topbarHost = root2.querySelector("#topbar-context");
+  const topbarHost = main.querySelector("#topbar-context");
   if (state.user.role === "admin") {
-    await renderAdminReview(content, navHost, topbarHost);
+    await renderAdminReview(content, navHost, topbarHost, subtabBand);
   } else {
-    await renderTechHome(content, navHost, topbarHost);
+    await renderTechHome(content, navHost, topbarHost, subtabBand);
   }
 }
 
-// The full-width strip across the very top -- brand on the left, and an
-// empty #topbar-context slot on the right that the active view fills with
-// whatever page-specific picker it needs (which technician, which week),
-// left empty otherwise. Sits above the sidebar/main row rather than being
-// part of the sidebar itself, so a page's own context controls read as
-// part of the app's chrome, not buried in its content.
+// The dark info bar at the top of the main pane (NOT spanning the sidebar
+// -- the sidebar carries the real brand mark in its own corner) -- just a
+// page title plus an empty #topbar-context slot the active view fills
+// with whatever page-specific picker it needs (which technician, which
+// week), left empty otherwise.
 function renderTopBar() {
-  const bar = document.createElement("header");
+  const bar = document.createElement("div");
   bar.className = "app-topbar";
   bar.innerHTML = `
-    <div class="topbar-brand">
-      <div class="app-logo-mark">LA</div>
-      <div class="topbar-brand-text">
-        <span class="topbar-brand-name">Labor Allocation</span>
-        <span class="topbar-brand-sub">Allocate technician time and match to work orders, locations and financials.</span>
-      </div>
+    <div class="topbar-brand-text">
+      <span class="topbar-brand-name">Labor Allocation</span>
+      <span class="topbar-brand-sub">Allocate technician time and match to work orders, locations and financials.</span>
     </div>
     <div class="topbar-context" id="topbar-context"></div>
   `;
   return bar;
 }
 
-// A fixed left column (nav in the middle via #sidebar-nav -- filled in by
-// renderAdminReview/renderTechHome, not here, since which sections/tabs
-// exist is each view's own concern, user block pinned to the bottom)
-// replaces the old full-width header + horizontal nav-sections row. One
-// persistent shell the whole app sits inside, rather than each page
-// redrawing its own nav alongside its content on every tab switch.
+// A fixed left column, full height from the very top-left corner -- the
+// real C&W Services logo up top, the active view's own nav in the middle
+// via #sidebar-nav (filled in by renderAdminReview/renderTechHome, not
+// here, since which sections/tabs exist is each view's own concern), user
+// block pinned to the bottom. One persistent shell the whole app sits
+// inside, rather than each page redrawing its own nav alongside its
+// content on every tab switch.
 function renderSidebar() {
   const sidebar = document.createElement("aside");
   sidebar.className = "app-sidebar";
-  sidebar.innerHTML = `<nav class="sidebar-nav" id="sidebar-nav"></nav>`;
+  sidebar.innerHTML = `
+    <div class="sidebar-brand">
+      <img class="sidebar-brand-logo" src="/img/cw-logo.webp" alt="Cushman &amp; Wakefield | C&amp;W Services" />
+    </div>
+    <nav class="sidebar-nav" id="sidebar-nav"></nav>
+  `;
   sidebar.appendChild(renderSidebarUser());
   return sidebar;
 }

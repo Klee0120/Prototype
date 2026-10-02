@@ -146,7 +146,7 @@ function reportYearOptions(selectedYear) {
     .join("");
 }
 
-export async function renderAdminReview(container, navHost, topbarHost) {
+export async function renderAdminReview(container, navHost, topbarHost, subtabHost) {
   let activeTab = "review";
   let allocTechId = null;
   // Which technicians' detail panels are expanded on Weekly Review -- just
@@ -206,16 +206,17 @@ export async function renderAdminReview(container, navHost, topbarHost) {
       `
     ).join("");
 
-    container.innerHTML = `
-      ${
-        currentSection.tabs.length > 1
-          ? `<div class="tabs">${currentSection.tabs
-              .map((t) => `<button class="tab ${activeTab === t ? "active" : ""}" data-tab="${t}">${TAB_LABELS[t]}</button>`)
-              .join("")}</div>`
-          : ""
-      }
-      <div id="tab-content" class="tab-content"></div>
-    `;
+    // The sub-tab pill row lives in the gray band above the content (see
+    // #subtab-band in app.js), not inline in the content itself -- it's
+    // part of the page's chrome, same reasoning as the sidebar nav and the
+    // top bar's context picker. Empty (and collapses via CSS :empty) for a
+    // single-tab section.
+    subtabHost.innerHTML =
+      currentSection.tabs.length > 1
+        ? currentSection.tabs.map((t) => `<button class="tab ${activeTab === t ? "active" : ""}" data-tab="${t}">${TAB_LABELS[t]}</button>`).join("")
+        : "";
+
+    container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
 
     navHost.querySelectorAll(".sidebar-nav-item").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -223,7 +224,7 @@ export async function renderAdminReview(container, navHost, topbarHost) {
         goTo(sectionLastTab[section.key] || section.tabs[0]);
       });
     });
-    container.querySelectorAll(".tab").forEach((btn) => {
+    subtabHost.querySelectorAll(".tab").forEach((btn) => {
       btn.addEventListener("click", () => goTo(btn.dataset.tab));
     });
 

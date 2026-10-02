@@ -21,7 +21,7 @@ function formatMoney(n) {
  * own Forms/Documents (view only -- they can't upload or delete here; an
  * admin manages those from the Technicians tab).
  */
-export async function renderTechHome(container, navHost, topbarHost) {
+export async function renderTechHome(container, navHost, topbarHost, subtabHost) {
   let activeTab = "week";
   const TECH_TABS = [
     ["mywork", "My Work"],
@@ -47,8 +47,11 @@ export async function renderTechHome(container, navHost, topbarHost) {
 
     container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
     // Only My Week has its own page-context picker (the week nav) -- see
-    // the matching reset in adminReview.js's draw().
+    // the matching reset in adminReview.js's draw(). The tech view's top-
+    // level tabs are already the sidebar nav, so there's never a sub-tab
+    // row for the gray band here.
     topbarHost.innerHTML = "";
+    subtabHost.innerHTML = "";
 
     const content = container.querySelector("#tab-content");
     if (activeTab === "mywork") await renderTaskBoard(content);
