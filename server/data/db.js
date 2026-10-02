@@ -354,6 +354,84 @@ db.exec(`
     exceptions_flagged INTEGER NOT NULL DEFAULT 0,
     total_rows INTEGER NOT NULL DEFAULT 0
   );
+
+  -- Budget PO Tracker: one row per request/PO from the Operations PO
+  -- tracker Excel export -- a separate, manually-uploaded tracker (not a
+  -- live Smartsheet sync like WOMs), for non-Toyota operating-budget
+  -- purchases. Two identities, both computed by computePoMatchKeys:
+  -- composite_key (requestor/date/description) is always set and never
+  -- changes once a row exists; po_number_key (the real PO Number) starts
+  -- NULL and gets filled in the moment one appears, found from then on by
+  -- either key -- never by renaming/replacing composite_key, which would
+  -- orphan a still-PO-less duplicate row elsewhere in the same tracker that
+  -- needs to keep finding this same record by its composite key. vendor_id
+  -- and region are "sticky" -- an import only ever sets them when they're
+  -- still NULL, never overwrites a value this app (auto-match, or the
+  -- admin's own confirm/assign action) already put there, so a re-import
+  -- can never undo manual organization work. lifecycle_status is entirely
+  -- separate from whether vendor/region are resolved -- it only ever
+  -- changes via the explicit Move to Active POs action, never as a side
+  -- effect of matching. line_number (the sheet's own row position) is tried
+  -- FIRST on re-import, ahead of either key -- Krista's workflow edits a
+  -- row's vendor/description text in place after correcting a vendor
+  -- number, which can change what composite_key that row would compute to;
+  -- matching by line_number first means that edit still lands on the same
+  -- record instead of registering as a new one. It's a sticky-ish fallback
+  -- rather than the sole identity, though: a row that's genuinely moved
+  -- (sheet re-sorted, rows inserted above it) falls through to po_number_key
+  -- / composite_key like before, and line_number is then updated to match.
+  CREATE TABLE IF NOT EXISTS pos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    composite_key TEXT NOT NULL UNIQUE,
+    po_number_key TEXT UNIQUE,
+    line_number INTEGER,
+    po_number TEXT,
+    date_requested TEXT,
+    requestor TEXT,
+    description TEXT,
+    ef_job_number_raw TEXT,
+    ef_job_number TEXT,
+    location_code TEXT,
+    region TEXT,
+    region_confirmed INTEGER NOT NULL DEFAULT 0,
+    po_amount REAL,
+    change_order TEXT,
+    status TEXT,
+    vendor_name TEXT,
+    vendor_number TEXT,
+    vendor_id INTEGER,
+    vendor_link_confirmed INTEGER NOT NULL DEFAULT 0,
+    pps_job_number TEXT,
+    e1_wom_job_number TEXT,
+    wom_number TEXT,
+    asset_number TEXT,
+    maximo_wo TEXT,
+    object_code TEXT,
+    subsidiary TEXT,
+    admin_name TEXT,
+    urgent INTEGER NOT NULL DEFAULT 0,
+    urgent_notes TEXT,
+    lifecycle_status TEXT NOT NULL DEFAULT 'needs_organization',
+    missing_from_import INTEGER NOT NULL DEFAULT 0,
+    first_imported_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- One row per completed import run -- the "last import" timestamp/summary
+  -- the POs page shows, and the audit log of what each one did.
+  CREATE TABLE IF NOT EXISTS po_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    imported_by TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    created_count INTEGER NOT NULL DEFAULT 0,
+    updated_count INTEGER NOT NULL DEFAULT 0,
+    unchanged_count INTEGER NOT NULL DEFAULT 0,
+    missing_count INTEGER NOT NULL DEFAULT 0,
+    invalid_count INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 // A sync's actual per-WOM changes (code/description/which fields differed),
@@ -707,6 +785,16 @@ if (!hasColumn("tasks", "is_change_order")) {
 // referWomChangeOrderToAdmin/requestWomChangeOrderPo below).
 if (!hasColumn("tasks", "referred_to_admin_at")) {
   db.exec("ALTER TABLE tasks ADD COLUMN referred_to_admin_at TEXT");
+}
+// A task can be created against a Budget PO Tracker record while it's still
+// sitting in Needs Organization (e.g. "figure out who this vendor is") --
+// related_po_id is how it's linked. Distinct from the older free-text
+// related_po column, which is just a PO-number note, not a real relation.
+// See listTasks' own join: a task pointing at a still-needs_organization PO
+// is excluded from every list/summary/notification until that PO is moved
+// to Active.
+if (!hasColumn("tasks", "related_po_id")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN related_po_id INTEGER");
 }
 if (!tableExists("task_reschedules")) {
   db.exec(`
@@ -2524,9 +2612,9 @@ function createTask(fields) {
   const result = db
     .prepare(
       `INSERT INTO tasks (source_key, title, description, assigned_to, assigned_role, category, priority, due_at,
-       status, related_wom_code, related_vendor_id, related_location_code, related_tech_id, related_po,
+       status, related_wom_code, related_vendor_id, related_location_code, related_tech_id, related_po, related_po_id,
        source, source_record_id, workflow_rule, is_exception, is_change_order, created_by, created_at, assigned_at, last_status_change_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.sourceKey || null,
@@ -2542,6 +2630,7 @@ function createTask(fields) {
       fields.relatedLocationCode || null,
       fields.relatedTechId || null,
       fields.relatedPo || null,
+      fields.relatedPoId || null,
       fields.source || "manual",
       fields.sourceRecordId || null,
       fields.workflowRule || null,
@@ -2787,6 +2876,12 @@ function listTaskComments(taskId) {
 function listTasks(filters = {}) {
   const clauses = [];
   const params = [];
+
+  // A task tied to a Budget PO Tracker record still sitting in Needs
+  // Organization stays out of every list/count/notification, unconditionally
+  // -- not just the default views -- until that PO is moved to Active. A
+  // task with no PO link at all is unaffected.
+  clauses.push("(related_po_id IS NULL OR related_po_id IN (SELECT id FROM pos WHERE lifecycle_status = 'active'))");
 
   if (filters.status) {
     clauses.push(`status IN (${filters.status.map(() => "?").join(",")})`);
@@ -3989,6 +4084,418 @@ function listWeekendAddenda() {
     .all();
 }
 
+// ---- Budget PO Tracker ----
+// A separate, manually-uploaded Excel tracker (not a live Smartsheet sync
+// like WOMs) for non-Toyota operating-budget purchases. See the pos table
+// comment for the overall model: sticky vendor_id/region, lifecycle_status
+// only ever changed by the explicit Move to Active POs action.
+
+function normalizeMatchText(v) {
+  return String(v == null ? "" : v).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// The real PO Number once one exists is this app's preferred identity for a
+// record across re-imports -- stable for the rest of that PO's life. Before
+// one exists (a brand new request, or one logged with a status word like
+// "Cancelled"/"Hold" instead of a number -- the source tracker does this
+// for a meaningful fraction of rows), fall back to a composite of
+// requestor/date/description: not bulletproof (editing the description
+// between imports reads as a new request), but the best available signal
+// given the source has no dedicated per-row tracking ID at all.
+// Two independent keys per row, not one switched identity -- see the pos
+// table comment for why. composite_key is always returned; po_number_key is
+// null unless poNumber is a real number. A single real PO Number can
+// legitimately cover more than one line item (several distinct charges
+// invoiced under one PO), so both keys fold in the description too, to keep
+// those as separate records instead of one line item's import silently
+// overwriting another's.
+function computePoMatchKeys({ poNumber, requestor, dateRequested, description }) {
+  const trimmedPo = String(poNumber == null ? "" : poNumber).trim();
+  const normDesc = normalizeMatchText(description);
+  const compositeKey = `composite:${normalizeMatchText(requestor)}|${normalizeMatchText(dateRequested)}|${normDesc}`;
+  const poNumberKey = /^\d+$/.test(trimmedPo) ? `po:${trimmedPo}|${normDesc}` : null;
+  return { compositeKey, poNumberKey };
+}
+
+// The "E&F Contract Job #" column in the source sheet carries the job
+// number and the location's own name together, tab-separated (e.g.
+// "100110042966\tCincinnati ROB") -- these are the exact job numbers
+// already on file in this app's own locations table. Returns just the
+// numeric job number part, or null for a blank/placeholder cell ("-").
+function parseEfJobNumber(raw) {
+  if (!raw) return null;
+  const first = String(raw).split(/[\t\n]/)[0].trim();
+  if (!first || first === "-") return null;
+  return first;
+}
+
+function findLocationByEfJobNumber(jobNumber) {
+  if (!jobNumber) return null;
+  return db.prepare("SELECT * FROM locations WHERE ef_job_number = ?").get(jobNumber);
+}
+
+// Vendor Number in the source sheet lines up with this app's own JDE
+// Vendor # -- the only thing ever allowed to auto-link a vendor (never the
+// vendor name, which is preserved as free text and can collide across
+// unrelated vendors).
+function findVendorByNumber(vendorNumber) {
+  const trimmed = String(vendorNumber == null ? "" : vendorNumber).trim();
+  if (!trimmed) return null;
+  return db.prepare("SELECT id FROM vendors WHERE jde_vendor_number = ?").get(trimmed);
+}
+
+function presentPoRow(p) {
+  return {
+    id: p.id,
+    lineNumber: p.line_number,
+    poNumber: p.po_number,
+    dateRequested: p.date_requested,
+    requestor: p.requestor,
+    description: p.description,
+    efJobNumberRaw: p.ef_job_number_raw,
+    efJobNumber: p.ef_job_number,
+    locationCode: p.location_code,
+    locationName: p.location_code ? (findLocation(p.location_code) || {}).name || null : null,
+    region: p.region,
+    regionConfirmed: Boolean(p.region_confirmed),
+    poAmount: p.po_amount,
+    changeOrder: p.change_order,
+    status: p.status,
+    vendorName: p.vendor_name,
+    vendorNumber: p.vendor_number,
+    vendorId: p.vendor_id,
+    vendorLinkedName: p.vendor_id ? (findVendor(p.vendor_id) || {}).name || null : null,
+    vendorLinkConfirmed: Boolean(p.vendor_link_confirmed),
+    vendorLinkStatus: p.vendor_id ? "matched" : "needs_matching",
+    ppsJobNumber: p.pps_job_number,
+    e1WomJobNumber: p.e1_wom_job_number,
+    womNumber: p.wom_number,
+    assetNumber: p.asset_number,
+    maximoWo: p.maximo_wo,
+    objectCode: p.object_code,
+    subsidiary: p.subsidiary,
+    adminName: p.admin_name,
+    urgent: Boolean(p.urgent),
+    urgentNotes: p.urgent_notes,
+    lifecycleStatus: p.lifecycle_status,
+    missingFromImport: Boolean(p.missing_from_import),
+    firstImportedAt: p.first_imported_at,
+    lastSeenAt: p.last_seen_at,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at,
+  };
+}
+
+function listPos(filters = {}) {
+  const clauses = [];
+  const params = [];
+  if (filters.lifecycleStatus) {
+    clauses.push("lifecycle_status = ?");
+    params.push(filters.lifecycleStatus);
+  }
+  if (filters.vendorId) {
+    clauses.push("vendor_id = ?");
+    params.push(Number(filters.vendorId));
+  }
+  if (filters.locationCode) {
+    clauses.push("location_code = ?");
+    params.push(filters.locationCode);
+  }
+  if (filters.status) {
+    clauses.push("status = ?");
+    params.push(filters.status);
+  }
+  if (filters.vendorUnmatched) {
+    clauses.push("vendor_id IS NULL");
+  }
+  if (filters.regionUnassigned) {
+    clauses.push("region IS NULL");
+  }
+  if (filters.search) {
+    clauses.push("(vendor_name LIKE ? OR description LIKE ? OR po_number LIKE ? OR requestor LIKE ?)");
+    const like = `%${filters.search}%`;
+    params.push(like, like, like, like);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return db
+    .prepare(`SELECT * FROM pos ${where} ORDER BY date_requested DESC, id DESC`)
+    .all(...params)
+    .map(presentPoRow);
+}
+
+function findPo(id) {
+  const row = db.prepare("SELECT * FROM pos WHERE id = ?").get(Number(id));
+  return row ? presentPoRow(row) : null;
+}
+
+function getLastPoImport() {
+  return db.prepare("SELECT * FROM po_imports ORDER BY id DESC LIMIT 1").get() || null;
+}
+
+// The shared engine behind both the import preview and the real import --
+// identical logic either way, run inside a transaction that's committed for
+// a real import and rolled back for a preview, so "what would happen" can
+// never drift from what actually happens.
+function runPoImport(rows, importedBy, { dryRun }) {
+  const now = new Date().toISOString();
+  const touchedIds = new Set();
+  let created = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let invalid = 0;
+
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      const poNumberRaw = row.poNumber == null ? "" : String(row.poNumber).trim();
+      const hasAnyContent = row.description || row.vendorName || poNumberRaw || row.requestor;
+      if (!hasAnyContent) {
+        invalid++;
+        continue;
+      }
+
+      const { compositeKey, poNumberKey } = computePoMatchKeys(row);
+      const lineNumber = row.lineNumber || null;
+
+      // Line position is tried first -- see the pos table comment: Krista
+      // edits a row's vendor/description text in place once she's corrected
+      // a vendor number, which can change what composite_key that row would
+      // compute to, so matching by line_number lets that edit still land on
+      // the same record. It's only trusted when the requestor on file still
+      // matches, though -- a row deleted/inserted elsewhere in the sheet
+      // shifts every later line_number down or up by one, and without that
+      // guard this would silently hijack a since-shifted, unrelated record
+      // instead of falling through to the key-based lookup below.
+      let existing = null;
+      if (lineNumber) {
+        const byLine = db.prepare("SELECT * FROM pos WHERE line_number = ?").get(lineNumber);
+        if (byLine && normalizeMatchText(byLine.requestor) === normalizeMatchText(row.requestor)) {
+          existing = byLine;
+        }
+      }
+      // The real PO Number, once one exists, is the next most specific
+      // identity -- try it before the composite key. Falling back to the
+      // composite key (never the other way around) is what makes the
+      // "promotion" below safe: it only ever adds a po_number_key to a
+      // record the composite key already owns, it never moves/renames that
+      // record's composite_key, so any other row in this same tracker still
+      // sharing that composite identity (a not-yet-PO'd duplicate of this
+      // exact request) keeps finding it too.
+      if (!existing) existing = poNumberKey ? db.prepare("SELECT * FROM pos WHERE po_number_key = ?").get(poNumberKey) : null;
+      if (!existing) existing = db.prepare("SELECT * FROM pos WHERE composite_key = ?").get(compositeKey);
+
+      const efJobNumber = parseEfJobNumber(row.efJobNumberRaw);
+      const matchedLocation = efJobNumber ? findLocationByEfJobNumber(efJobNumber) : null;
+      const matchedVendor = row.vendorNumber ? findVendorByNumber(row.vendorNumber) : null;
+
+      if (existing) {
+        touchedIds.add(existing.id);
+        const changed =
+          existing.po_number !== (poNumberRaw || null) ||
+          existing.description !== (row.description || null) ||
+          existing.po_amount !== (row.poAmount == null ? null : row.poAmount) ||
+          existing.status !== (row.status || null) ||
+          existing.change_order !== (row.changeOrder || null) ||
+          existing.vendor_name !== (row.vendorName || null) ||
+          existing.vendor_number !== (row.vendorNumber || null);
+
+        db.prepare(
+          `UPDATE pos SET
+            po_number_key = COALESCE(po_number_key, ?),
+            line_number = ?,
+            po_number = ?, date_requested = ?, requestor = ?, description = ?,
+            ef_job_number_raw = ?, ef_job_number = ?,
+            location_code = COALESCE(location_code, ?),
+            region = COALESCE(region, ?),
+            po_amount = ?, change_order = ?, status = ?, vendor_name = ?, vendor_number = ?,
+            vendor_id = COALESCE(vendor_id, ?),
+            pps_job_number = ?, e1_wom_job_number = ?, wom_number = ?, asset_number = ?, maximo_wo = ?,
+            object_code = ?, subsidiary = ?, admin_name = ?, urgent = ?, urgent_notes = ?,
+            missing_from_import = 0, last_seen_at = ?, updated_at = ?
+           WHERE id = ?`
+        ).run(
+          poNumberKey,
+          lineNumber,
+          poNumberRaw || null,
+          row.dateRequested || null,
+          row.requestor || null,
+          row.description || null,
+          row.efJobNumberRaw || null,
+          efJobNumber,
+          matchedLocation ? matchedLocation.code : null,
+          matchedLocation ? matchedLocation.territory || null : null,
+          row.poAmount == null ? null : row.poAmount,
+          row.changeOrder || null,
+          row.status || null,
+          row.vendorName || null,
+          row.vendorNumber || null,
+          matchedVendor ? matchedVendor.id : null,
+          row.ppsJobNumber || null,
+          row.e1WomJobNumber || null,
+          row.womNumber || null,
+          row.assetNumber || null,
+          row.maximoWo || null,
+          row.objectCode || null,
+          row.subsidiary || null,
+          row.adminName || null,
+          row.urgent ? 1 : 0,
+          row.urgentNotes || null,
+          now,
+          now,
+          existing.id
+        );
+        if (changed) updated++;
+        else unchanged++;
+      } else {
+        const result = db
+          .prepare(
+            `INSERT INTO pos (
+              composite_key, po_number_key, line_number, po_number, date_requested, requestor, description,
+              ef_job_number_raw, ef_job_number, location_code, region,
+              po_amount, change_order, status, vendor_name, vendor_number, vendor_id,
+              pps_job_number, e1_wom_job_number, wom_number, asset_number, maximo_wo,
+              object_code, subsidiary, admin_name, urgent, urgent_notes,
+              lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+          )
+          .run(
+            compositeKey,
+            poNumberKey,
+            lineNumber,
+            poNumberRaw || null,
+            row.dateRequested || null,
+            row.requestor || null,
+            row.description || null,
+            row.efJobNumberRaw || null,
+            efJobNumber,
+            matchedLocation ? matchedLocation.code : null,
+            matchedLocation ? matchedLocation.territory || null : null,
+            row.poAmount == null ? null : row.poAmount,
+            row.changeOrder || null,
+            row.status || null,
+            row.vendorName || null,
+            row.vendorNumber || null,
+            matchedVendor ? matchedVendor.id : null,
+            row.ppsJobNumber || null,
+            row.e1WomJobNumber || null,
+            row.womNumber || null,
+            row.assetNumber || null,
+            row.maximoWo || null,
+            row.objectCode || null,
+            row.subsidiary || null,
+            row.adminName || null,
+            row.urgent ? 1 : 0,
+            row.urgentNotes || null,
+            now,
+            now,
+            now,
+            now
+          );
+        touchedIds.add(Number(result.lastInsertRowid));
+        created++;
+      }
+    }
+
+    // Anything on file from a previous import that this run didn't touch at
+    // all is flagged, never deleted -- the source row may have simply been
+    // deleted/moved in the tracker, and that's for a person to review, not
+    // for an import to decide on its own.
+    const allIds = db.prepare("SELECT id FROM pos").all().map((r) => r.id);
+    const missingIds = allIds.filter((id) => !touchedIds.has(id));
+    for (const id of missingIds) {
+      db.prepare("UPDATE pos SET missing_from_import = 1 WHERE id = ?").run(id);
+    }
+    // A record that WAS missing but reappeared in this import is un-flagged
+    // by the normal update path above (missing_from_import = 0 is part of
+    // every UPDATE), so no extra step is needed for that direction.
+
+    const summary = {
+      totalRows: rows.length,
+      createdCount: created,
+      updatedCount: updated,
+      unchangedCount: unchanged,
+      missingCount: missingIds.length,
+      invalidCount: invalid,
+    };
+
+    if (dryRun) {
+      db.exec("ROLLBACK");
+    } else {
+      db.prepare(
+        "INSERT INTO po_imports (imported_by, imported_at, total_rows, created_count, updated_count, unchanged_count, missing_count, invalid_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(importedBy, now, summary.totalRows, created, updated, unchanged, missingIds.length, invalid);
+      db.exec("COMMIT");
+    }
+    return summary;
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+function confirmPoVendor(id, vendorId) {
+  const vendor = findVendor(vendorId);
+  if (!vendor) throw new Error("Vendor not found");
+  db.prepare("UPDATE pos SET vendor_id = ?, vendor_link_confirmed = 1, updated_at = ? WHERE id = ?").run(
+    vendorId,
+    new Date().toISOString(),
+    id
+  );
+  return findPo(id);
+}
+
+function clearPoVendorMatch(id) {
+  // Lets an admin undo a wrong auto-match/confirmation -- back to "needs
+  // matching" so it shows up in that filter again, picked up by the next
+  // bulk-confirm or hand-matched to the right vendor instead.
+  db.prepare("UPDATE pos SET vendor_id = NULL, vendor_link_confirmed = 0, updated_at = ? WHERE id = ?").run(
+    new Date().toISOString(),
+    id
+  );
+  return findPo(id);
+}
+
+function assignPoRegion(id, region) {
+  db.prepare("UPDATE pos SET region = ?, region_confirmed = 1, updated_at = ? WHERE id = ?").run(
+    region || null,
+    new Date().toISOString(),
+    id
+  );
+  return findPo(id);
+}
+
+function bulkConfirmPoVendor(ids, vendorId) {
+  return ids.map((id) => confirmPoVendor(id, vendorId));
+}
+
+function bulkAssignPoRegion(ids, region) {
+  return ids.map((id) => assignPoRegion(id, region));
+}
+
+// The one explicit switch from Needs Organization to Active -- never a side
+// effect of matching a vendor or assigning a region. Tasks already linked
+// to this PO (created while it was still being organized) become visible in
+// task lists the moment lifecycle_status flips, via listTasks' own join --
+// no separate "activate its tasks" step needed, and nothing is duplicated
+// since they're the same rows all along.
+function movePoToActive(id) {
+  db.prepare("UPDATE pos SET lifecycle_status = 'active', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+  return findPo(id);
+}
+
+function bulkMovePoToActive(ids) {
+  return ids.map((id) => movePoToActive(id));
+}
+
+// Every task linked to this PO, any status -- the PO detail page's own
+// Tasks section. Unlike listTasks, this is never filtered by
+// lifecycle_status: the PO's own detail page is one of the two places
+// (alongside the Needs Organization tab) a pre-activation task is allowed
+// to be seen from.
+function listPoTasks(poId) {
+  return db.prepare("SELECT * FROM tasks WHERE related_po_id = ? ORDER BY id DESC").all(poId);
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -4134,4 +4641,16 @@ module.exports = {
   listExpiringForms,
   listWeekendAddenda,
   listReportGapMonths,
+  listPos,
+  findPo,
+  getLastPoImport,
+  runPoImport,
+  confirmPoVendor,
+  clearPoVendorMatch,
+  assignPoRegion,
+  bulkConfirmPoVendor,
+  bulkAssignPoRegion,
+  movePoToActive,
+  bulkMovePoToActive,
+  listPoTasks,
 };

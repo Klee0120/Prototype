@@ -87,6 +87,7 @@ function presentTask(t) {
     relatedLocationName: location ? location.name : null,
     relatedTechId: t.related_tech_id,
     relatedTechName: relatedTech ? relatedTech.name : null,
+    relatedPoId: t.related_po_id,
     relatedPo: t.related_po,
     source: t.source,
     sourceRecordId: t.source_record_id,
