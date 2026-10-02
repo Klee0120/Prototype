@@ -167,6 +167,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   let womLocationFilter = ""; // "" = all locations
   let womStatusFilter = ""; // "" = all statuses
   let womSearchQuery = "";
+  // Financials -> Cost Analysis: which review category's table is showing
+  // below the tile strip, plus that table's own location/search filters and
+  // sort state. null costCategoryKey means "not drawn yet" -- drawCostAnalysis
+  // defaults it to the first category the first time it runs.
+  let costCategoryKey = null;
+  let costLocationFilter = "";
+  let costSearchQuery = "";
+  let costSortKey = null; // "project" | "wom" | "location" | "col<N>" | null (server's own default order)
+  let costSortDir = "asc";
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   let laborReportMonth = currentMonthISO();
   let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
@@ -3832,89 +3841,254 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   // Financials-wide estimated-vs-applied picture -- every non-cancelled
+  // WOM, not just the ones currently sitting in the PSE pipeline. Each
+  // "review category" below is one estimate-vs-applied check (remaining
+  // labor budget, a cost category that came in over quote, applied cost
+  // over the real Toyota PO ceiling, etc.) -- selecting a tile swaps in
+  // that category's own sortable/filterable table rather than stacking
+  // every category's list on the page at once.
+  //
+  // Turns the raw cost-summary category arrays (db.js's getWomCostSummary)
+  // into one consistent shape the tile strip + detail table both render
+  // off of: a tile label/count/total, and a `columns` list whose last
+  // entry is always the category's own headline $ figure (remaining
+  // estimate, or over-quote amount) -- used for both the table's last
+  // column and the detail header's total.
+  function buildCostCategories(summary) {
+    const categories = [
+      {
+        key: "overquoted",
+        tileLabel: "Remaining estimate: Labor",
+        count: summary.overquotedCount,
+        total: summary.overquotedTotal,
+        totalLabel: "total remaining",
+        sectionTitle: "Remaining labor estimate",
+        hint:
+          "Remaining estimate is not confirmed savings -- it's only accurate once the project is complete " +
+          "and costs are reconciled.",
+        emptyNote: "No WOMs have remaining estimate right now.",
+        items: summary.overquoted,
+        columns: [
+          { label: "Estimated", get: (w) => w.estimatedPrice },
+          { label: "Reported applied", get: (w) => w.appliedPrice },
+          { label: "Remaining estimate", get: (w) => w.overage, tone: "ok" },
+        ],
+      },
+      {
+        key: "appliedNoPo",
+        tileLabel: "No Toyota PO",
+        count: summary.appliedNoPoCount,
+        total: summary.appliedNoPoTotal,
+        totalLabel: "total applied",
+        sectionTitle: "Applied cost, no Toyota PO yet",
+        hint: "A charge has been applied against these WOMs, but there's no Maximo/PO # on file yet.",
+        emptyNote: "Every WOM with an applied cost has a Toyota PO on file.",
+        items: summary.appliedNoPo,
+        columns: [
+          { label: "Status", get: (w) => WOM_STATUS_LABELS[w.status] || w.status || "—", isText: true },
+          { label: "Reported applied", get: (w) => w.appliedPrice },
+        ],
+      },
+      {
+        key: "laborOvercharged",
+        tileLabel: "Labor over estimate",
+        count: summary.laborOverchargedCount,
+        total: summary.laborOverchargedTotal,
+        totalLabel: "total over",
+        sectionTitle: "Labor applied over estimate",
+        hint:
+          "Compares against this app's own estimate, not a confirmed GL actual -- see Reconciliation once a " +
+          "GL import is available for that comparison.",
+        emptyNote: "No WOMs have applied labor over estimate right now.",
+        items: summary.laborOvercharged,
+        columns: [
+          { label: "Estimated labor", get: (w) => w.estimatedLabor },
+          { label: "Applied labor", get: (w) => w.appliedLabor },
+          { label: "Over amount", get: (w) => w.overage, tone: "danger" },
+        ],
+      },
+      {
+        key: "contractedIncreased",
+        tileLabel: "Contracted services increased",
+        count: summary.contractedIncreasedCount,
+        total: summary.contractedIncreasedTotal,
+        totalLabel: "total over",
+        sectionTitle: "Contracted services increased",
+        hint: "Each row names the vendor whose charge came in over their own quote.",
+        emptyNote: "No WOMs have a contracted-services increase right now.",
+        items: summary.contractedIncreased,
+        columns: [
+          { label: "Vendor", get: (w) => w.vendorName || "No vendor matched", isText: true },
+          { label: "Estimated contracted", get: (w) => w.estimatedContracted },
+          { label: "Applied contracted", get: (w) => w.appliedContracted },
+          { label: "Over amount", get: (w) => w.overage, tone: "danger" },
+        ],
+      },
+      ...summary.categoryOverages.map((cat) => ({
+        key: `category-${cat.key}`,
+        tileLabel: cat.label,
+        count: cat.count,
+        total: cat.total,
+        totalLabel: "total over",
+        sectionTitle: `${cat.label} applied over estimate`,
+        hint: `Applied ${cat.label.toLowerCase()} cost came in higher than what was estimated.`,
+        emptyNote: `No WOMs have a ${cat.label.toLowerCase()} increase right now.`,
+        items: cat.items,
+        columns: [
+          { label: "Estimated", get: (w) => w.estimated },
+          { label: "Applied", get: (w) => w.applied },
+          { label: "Over amount", get: (w) => w.overage, tone: "danger" },
+        ],
+      })),
+      {
+        key: "appliedOverToyotaPo",
+        tileLabel: "Applied over PO",
+        count: summary.appliedOverToyotaPoCount,
+        total: summary.appliedOverToyotaPoTotal,
+        totalLabel: "total over",
+        sectionTitle: "Applied over Toyota PO value",
+        hint:
+          "Checks against what Toyota actually approved, not just against this app's own estimate -- see the " +
+          "other categories above for estimate-vs-applied by category.",
+        emptyNote: "No WOMs are applied over their Toyota PO value right now.",
+        items: summary.appliedOverToyotaPo,
+        columns: [
+          { label: "Toyota PO value", get: (w) => w.toyotaPoValue },
+          { label: "Reported applied", get: (w) => w.appliedPrice },
+          { label: "Over amount", get: (w) => w.overage, tone: "danger" },
+        ],
+      },
+    ];
+    return categories;
+  }
 
-  // WOM, not just the ones currently sitting in the PSE pipeline. Two
-  // concrete follow-up lists rather than just totals: WOMs quoted higher
-  // than what actually got applied (money quoted on labor that was never
-  // used), and WOMs with a charge applied but no Toyota PO/Maximo # on
-  // file yet (a billing gap waiting to be closed).
+  function filterCostItems(items, locationFilter, query) {
+    let filtered = items;
+    if (locationFilter) filtered = filtered.filter((w) => w.locationCode === locationFilter);
+    const q = query.trim().toLowerCase();
+    if (q) filtered = filtered.filter((w) => (w.description || "").toLowerCase().includes(q) || (w.code || "").toLowerCase().includes(q));
+    return filtered;
+  }
+
+  function sortCostItems(items, columns, sortKey, sortDir) {
+    if (!sortKey) return items;
+    let getter;
+    if (sortKey === "project") getter = (w) => (w.description || w.code || "").toLowerCase();
+    else if (sortKey === "wom") getter = (w) => (w.code || "").toLowerCase();
+    else if (sortKey === "location") getter = (w) => (w.locationCode || "").toLowerCase();
+    else {
+      const col = columns[Number(sortKey.slice(3))];
+      getter = col.isText ? (w) => String(col.get(w) || "").toLowerCase() : (w) => Number(col.get(w)) || 0;
+    }
+    const sorted = [...items];
+    sorted.sort((a, b) => {
+      const av = getter(a);
+      const bv = getter(b);
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }
+
+  function costSortArrow(key) {
+    if (costSortKey !== key) return "";
+    return costSortDir === "asc" ? " ▲" : " ▼";
+  }
+
+  function downloadCsv(filename, headers, rows) {
+    const escapeCsv = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.map(escapeCsv).join(","), ...rows.map((r) => r.map(escapeCsv).join(","))];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   async function drawCostAnalysis(content) {
-    const summary = await api.get("/api/woms/cost-summary");
+    const [summary, allWoms, locations] = await Promise.all([
+      api.get("/api/woms/cost-summary"),
+      api.get("/api/woms"),
+      api.get("/api/locations"),
+    ]);
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const categories = buildCostCategories(summary);
+    if (!costCategoryKey || !categories.some((c) => c.key === costCategoryKey)) {
+      costCategoryKey = categories[0].key;
+    }
+
     content.innerHTML = `
-      <p class="review-checklist-hint">
-        Estimated vs. applied across every WOM on file (cancelled ones excluded), not just what's
-        currently on the WOM lifecycle checklist.
-      </p>
-      <div class="task-tiles">
-        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalEstimated)}</div><div class="task-tile-label">Total Estimated (${summary.estimatedCount} WOMs)</div></div>
-        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalApplied)}</div><div class="task-tile-label">Total Applied (${summary.appliedCount} WOMs)</div></div>
-        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalDelta)}</div><div class="task-tile-label">Estimated &minus; Applied</div></div>
-        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.totalToyotaPoValue)}</div><div class="task-tile-label">Total Toyota PO Value (${summary.toyotaPoValueCount} WOMs)</div></div>
-        <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.appliedVsToyotaPoDelta)}</div><div class="task-tile-label">Applied &minus; Toyota PO Value</div></div>
-        <div class="task-tile task-tile-clickable" data-target="cost-overquoted-list"><div class="task-tile-count">${summary.overquotedCount}</div><div class="task-tile-label">Excess Labor Budget</div></div>
-        <div class="task-tile task-tile-clickable" data-target="cost-applied-no-po-list"><div class="task-tile-count">${summary.appliedNoPoCount}</div><div class="task-tile-label">Applied, No Toyota PO Yet</div></div>
-        <div class="task-tile task-tile-clickable" data-target="cost-labor-overcharged-list"><div class="task-tile-count">${summary.laborOverchargedCount}</div><div class="task-tile-label">Labor Applied Over Estimate</div></div>
-        <div class="task-tile task-tile-clickable" data-target="cost-contracted-increased-list"><div class="task-tile-count">${summary.contractedIncreasedCount}</div><div class="task-tile-label">Contracted Services Increased</div></div>
-        ${summary.categoryOverages
-          .map(
-            (cat) =>
-              `<div class="task-tile task-tile-clickable" data-target="cost-category-${cat.key}-list"><div class="task-tile-count">${cat.count}</div><div class="task-tile-label">${escapeHtml(cat.label)} Applied Over Estimate</div></div>`
-          )
-          .join("")}
-        <div class="task-tile task-tile-clickable" data-target="cost-over-toyota-po-list"><div class="task-tile-count">${summary.appliedOverToyotaPoCount}</div><div class="task-tile-label">Applied Over Toyota PO Value</div></div>
+      <div class="page-header">
+        <div>
+          <h1 class="page-header-title">Financials</h1>
+          <p class="page-header-subtitle">Project cost analysis</p>
+          <p class="overview-hint">
+            Project-reported amounts &middot; all WOMs on file, excluding cancelled. Compares against this
+            app's own estimate, not a confirmed GL actual.
+          </p>
+        </div>
+        <div class="page-header-actions">
+          <select class="cost-location-filter">
+            <option value="">All locations</option>
+            ${locations
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((l) => `<option value="${escapeHtml(l.code)}" ${costLocationFilter === l.code ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
+              .join("")}
+          </select>
+          <label class="search-field">
+            <span class="search-field-icon">&#128269;</span>
+            <input type="search" class="cost-search-input" placeholder="Search projects, WOMs..." value="${escapeHtml(costSearchQuery)}" />
+          </label>
+          <button type="button" class="btn btn-primary cost-export-btn">&#8681; Export</button>
+        </div>
       </div>
 
-      <h3>Remaining estimate -- labor (${summary.overquotedCount})</h3>
-      <p class="review-checklist-hint">
-        Estimated price came in higher than what was actually applied -- $${formatMoney(summary.overquotedTotal)} in labor quoted
-        that hasn't been used (yet, or at all). This is remaining estimate, not confirmed savings --
-        it's only accurate once the project is complete and costs are reconciled.
-      </p>
-      <div class="review-list" id="cost-overquoted-list"></div>
+      <div class="cost-kpi-tiles">
+        <div class="cost-kpi-tile">
+          <div class="cost-kpi-icon">&#128196;</div>
+          <div class="cost-kpi-text">
+            <span class="cost-kpi-label">Total estimated</span>
+            <span class="cost-kpi-value">$${formatMoney(summary.totalEstimated)}</span>
+            <span class="cost-kpi-sub">${summary.estimatedCount} WOMs</span>
+          </div>
+        </div>
+        <div class="cost-kpi-tile">
+          <div class="cost-kpi-icon">$</div>
+          <div class="cost-kpi-text">
+            <span class="cost-kpi-label">Reported applied</span>
+            <span class="cost-kpi-value">$${formatMoney(summary.totalApplied)}</span>
+            <span class="cost-kpi-sub">${summary.appliedCount} WOMs</span>
+          </div>
+        </div>
+        <div class="cost-kpi-tile">
+          <div class="cost-kpi-icon">&#128196;</div>
+          <div class="cost-kpi-text">
+            <span class="cost-kpi-label">Toyota PO value</span>
+            <span class="cost-kpi-value">$${formatMoney(summary.totalToyotaPoValue)}</span>
+            <span class="cost-kpi-sub">${summary.toyotaPoValueCount} WOMs</span>
+          </div>
+        </div>
+        <div class="cost-kpi-tile">
+          <div class="cost-kpi-icon">&#128202;</div>
+          <div class="cost-kpi-text">
+            <span class="cost-kpi-label">Estimate less reported applied</span>
+            <span class="cost-kpi-value">$${formatMoney(summary.totalDelta)}</span>
+            <span class="cost-kpi-sub">Project-reported difference</span>
+          </div>
+        </div>
+      </div>
 
-      <h3>Applied cost, no Toyota PO yet (${summary.appliedNoPoCount})</h3>
-      <p class="review-checklist-hint">
-        A charge has been applied against these WOMs, but there's no Maximo/PO # on file yet -- $${formatMoney(summary.appliedNoPoTotal)}
-        applied and not yet tied to a real PO.
-      </p>
-      <div class="review-list" id="cost-applied-no-po-list"></div>
-
-      <h3>Labor applied over estimate (${summary.laborOverchargedCount})</h3>
-      <p class="review-checklist-hint">
-        Applied labor cost came in higher than what was estimated -- $${formatMoney(summary.laborOverchargedTotal)} over quote,
-        across these WOMs. This compares against this app's own estimate, not a confirmed GL actual --
-        see Reconciliation once a GL import is available for that comparison.
-      </p>
-      <div class="review-list" id="cost-labor-overcharged-list"></div>
-
-      <h3>Contracted services increased (${summary.contractedIncreasedCount})</h3>
-      <p class="review-checklist-hint">
-        Applied contracted-services cost came in higher than what was estimated -- $${formatMoney(summary.contractedIncreasedTotal)}
-        over quote, across these WOMs. Each row names the vendor whose charge came in over their own quote.
-      </p>
-      <div class="review-list" id="cost-contracted-increased-list"></div>
-
-      ${summary.categoryOverages
-        .map(
-          (cat) => `
-      <h3>${escapeHtml(cat.label)} applied over estimate (${cat.count})</h3>
-      <p class="review-checklist-hint">
-        Applied ${escapeHtml(cat.label.toLowerCase())} cost came in higher than what was estimated -- $${formatMoney(cat.total)}
-        over quote, across these WOMs.
-      </p>
-      <div class="review-list" id="cost-category-${cat.key}-list"></div>
-      `
-        )
-        .join("")}
-
-      <h3>Applied over Toyota PO value (${summary.appliedOverToyotaPoCount})</h3>
-      <p class="review-checklist-hint">
-        Applied project total came in higher than the actual Toyota-approved PO amount -- $${formatMoney(summary.appliedOverToyotaPoTotal)}
-        over the approved ceiling, across these WOMs. This checks against what Toyota actually approved, not
-        just against this app's own estimate (see Remaining Estimate/Labor Applied Over Estimate/Contracted
-        Services Increased above for estimate-vs-applied by category).
-      </p>
-      <div class="review-list" id="cost-over-toyota-po-list"></div>
+      <h3>Review categories</h3>
+      <div id="cost-body"></div>
 
       ${
         summary.vendorsOverchargingRepeatedly.length > 0
@@ -3938,134 +4112,29 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="review-list" id="cost-vendor-spend-list"></div>
     `;
 
-    content.querySelectorAll(".task-tile-clickable").forEach((tile) => {
-      tile.addEventListener("click", () => {
-        const target = content.querySelector(`#${tile.dataset.target}`);
-        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+    redrawCostBody(content, categories, allWoms, locationByCode, locations);
+
+    content.querySelector(".cost-location-filter").addEventListener("change", (e) => {
+      costLocationFilter = e.target.value;
+      redrawCostBody(content, categories, allWoms, locationByCode, locations);
     });
-
-    const overquotedList = content.querySelector("#cost-overquoted-list");
-    if (summary.overquoted.length === 0) {
-      overquotedList.innerHTML = `<p class="empty-note">No WOMs have excess labor budget right now.</p>`;
-    } else {
-      summary.overquoted.forEach((w) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
-            <span class="wom-code">${escapeHtml(w.code)}</span>
-            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
-            <span class="wom-desc">Est $${formatMoney(w.estimatedPrice)} &middot; Applied $${formatMoney(w.appliedPrice)}</span>
-            <span class="badge badge-approved">$${formatMoney(w.overage)} unused</span>
-          </div>
-        `;
-        overquotedList.appendChild(row);
-      });
-    }
-
-    const appliedNoPoList = content.querySelector("#cost-applied-no-po-list");
-    if (summary.appliedNoPo.length === 0) {
-      appliedNoPoList.innerHTML = `<p class="empty-note">Every WOM with an applied cost has a Toyota PO on file.</p>`;
-    } else {
-      summary.appliedNoPo.forEach((w) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
-            <span class="wom-code">${escapeHtml(w.code)}</span>
-            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
-            <span class="badge badge-draft">${escapeHtml(w.status)}</span>
-            <span class="badge badge-rejected">$${formatMoney(w.appliedPrice)} applied</span>
-          </div>
-        `;
-        appliedNoPoList.appendChild(row);
-      });
-    }
-
-    const laborOverList = content.querySelector("#cost-labor-overcharged-list");
-    if (summary.laborOvercharged.length === 0) {
-      laborOverList.innerHTML = `<p class="empty-note">No WOMs have applied labor over estimate right now.</p>`;
-    } else {
-      summary.laborOvercharged.forEach((w) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
-            <span class="wom-code">${escapeHtml(w.code)}</span>
-            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
-            <span class="wom-desc">Est $${formatMoney(w.estimatedLabor)} &middot; Applied $${formatMoney(w.appliedLabor)}</span>
-            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
-          </div>
-        `;
-        laborOverList.appendChild(row);
-      });
-    }
-
-    const contractedIncList = content.querySelector("#cost-contracted-increased-list");
-    if (summary.contractedIncreased.length === 0) {
-      contractedIncList.innerHTML = `<p class="empty-note">No WOMs have a contracted-services increase right now.</p>`;
-    } else {
-      summary.contractedIncreased.forEach((w) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
-            <span class="wom-code">${escapeHtml(w.code)}</span>
-            <span class="wom-desc">${w.vendorName ? escapeHtml(w.vendorName) : "No vendor matched"}</span>
-            <span class="wom-desc">Est $${formatMoney(w.estimatedContracted)} &middot; Applied $${formatMoney(w.appliedContracted)}</span>
-            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
-          </div>
-        `;
-        contractedIncList.appendChild(row);
-      });
-    }
-
-    for (const cat of summary.categoryOverages) {
-      const list = content.querySelector(`#cost-category-${cat.key}-list`);
-      if (cat.items.length === 0) {
-        list.innerHTML = `<p class="empty-note">No WOMs have a ${escapeHtml(cat.label.toLowerCase())} increase right now.</p>`;
-      } else {
-        cat.items.forEach((w) => {
-          const row = document.createElement("div");
-          row.className = "review-row";
-          row.innerHTML = `
-            <div class="review-row-summary">
-              <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
-              <span class="wom-code">${escapeHtml(w.code)}</span>
-              <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
-              <span class="wom-desc">Est $${formatMoney(w.estimated)} &middot; Applied $${formatMoney(w.applied)}</span>
-              <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
-            </div>
-          `;
-          list.appendChild(row);
-        });
-      }
-    }
-
-    const overToyotaPoList = content.querySelector("#cost-over-toyota-po-list");
-    if (summary.appliedOverToyotaPo.length === 0) {
-      overToyotaPoList.innerHTML = `<p class="empty-note">No WOMs are applied over their Toyota PO value right now.</p>`;
-    } else {
-      summary.appliedOverToyotaPo.forEach((w) => {
-        const row = document.createElement("div");
-        row.className = "review-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(w.description || w.code)}</span>
-            <span class="wom-code">${escapeHtml(w.code)}</span>
-            <span class="wom-desc">${w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</span>
-            <span class="wom-desc">Toyota PO $${formatMoney(w.toyotaPoValue)} &middot; Applied $${formatMoney(w.appliedPrice)}</span>
-            <span class="badge badge-rejected">$${formatMoney(w.overage)} over</span>
-          </div>
-        `;
-        overToyotaPoList.appendChild(row);
-      });
-    }
+    content.querySelector(".cost-search-input").addEventListener("input", (e) => {
+      costSearchQuery = e.target.value;
+      redrawCostBody(content, categories, allWoms, locationByCode, locations);
+    });
+    content.querySelector(".cost-export-btn").addEventListener("click", () => {
+      const cat = categories.find((c) => c.key === costCategoryKey);
+      const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery);
+      const sorted = sortCostItems(filtered, cat.columns, costSortKey, costSortDir);
+      const headers = ["Project", "WOM", "Location", ...cat.columns.map((c) => c.label)];
+      const rows = sorted.map((w) => [
+        w.description || w.code,
+        w.code,
+        w.locationCode || "",
+        ...cat.columns.map((c) => (c.isText ? c.get(w) : formatMoney(c.get(w)))),
+      ]);
+      downloadCsv(`financials-${cat.key}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
+    });
 
     const vendorRepeatList = content.querySelector("#cost-vendor-repeat-list");
     if (vendorRepeatList) {
@@ -4100,6 +4169,116 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         vendorSpendList.appendChild(row);
       });
     }
+  }
+
+  // Re-renders just the category tile strip + selected category's detail
+  // table (not the whole tab) -- keeps the location-filter/search controls
+  // above it from losing focus/scroll position on every keystroke or sort
+  // click, same pattern as refreshWomList for the WOM Projects tab.
+  function redrawCostBody(content, categories, allWoms, locationByCode, locations) {
+    const body = content.querySelector("#cost-body");
+    const cat = categories.find((c) => c.key === costCategoryKey) || categories[0];
+    const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery);
+    const sorted = sortCostItems(filtered, cat.columns, costSortKey, costSortDir);
+    const headlineCol = cat.columns[cat.columns.length - 1];
+    const filteredTotal = filtered.reduce((sum, w) => sum + (Number(headlineCol.get(w)) || 0), 0);
+    const colCount = 3 + cat.columns.length + 1;
+
+    body.innerHTML = `
+      <div class="cost-category-tiles">
+        ${categories
+          .map((c) => {
+            // Tile counts reflect the active location/search filters too --
+            // showing "3" on a tile while its own table (once selected) only
+            // lists 1 filtered row would read as a bug, not a feature.
+            const tileCount = c.key === cat.key ? filtered.length : filterCostItems(c.items, costLocationFilter, costSearchQuery).length;
+            return `
+          <div class="cost-category-tile ${c.key === costCategoryKey ? "cost-category-tile-selected" : ""}" data-key="${escapeHtml(c.key)}">
+            <div class="cost-category-tile-count">${tileCount}</div>
+            <div class="cost-category-tile-label">${escapeHtml(c.tileLabel)}</div>
+          </div>
+        `;
+          })
+          .join("")}
+      </div>
+
+      <div class="cost-detail-header">
+        <div>
+          <h3>${escapeHtml(cat.sectionTitle)}</h3>
+          <p class="review-checklist-hint">${escapeHtml(cat.hint)}</p>
+        </div>
+        <div class="cost-detail-total">
+          <strong>$${formatMoney(filteredTotal)}</strong> ${escapeHtml(cat.totalLabel)} &middot;
+          ${filtered.length} project${filtered.length === 1 ? "" : "s"}
+        </div>
+      </div>
+
+      <table class="detail-table cost-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="project">Project${costSortArrow("project")}</th>
+            <th class="sortable" data-sort="wom">WOM${costSortArrow("wom")}</th>
+            <th class="sortable" data-sort="location">Location${costSortArrow("location")}</th>
+            ${cat.columns.map((c, i) => `<th class="sortable" data-sort="col${i}">${escapeHtml(c.label)}${costSortArrow(`col${i}`)}</th>`).join("")}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            sorted.length === 0
+              ? `<tr><td colspan="${colCount}"><p class="empty-note">${filtered.length === 0 && cat.items.length === 0 ? escapeHtml(cat.emptyNote) : "No projects match these filters."}</p></td></tr>`
+              : sorted
+                  .map(
+                    (w) => `
+            <tr class="cost-row" data-code="${escapeHtml(w.code)}">
+              <td>${escapeHtml(w.description || w.code)}</td>
+              <td class="wom-code">${escapeHtml(w.code)}</td>
+              <td>${w.locationCode ? escapeHtml(w.locationCode) : "—"}</td>
+              ${cat.columns
+                .map((c) => {
+                  const v = c.get(w);
+                  if (c.isText) return `<td>${escapeHtml(v)}</td>`;
+                  const toneClass = c.tone === "ok" ? "cost-amount-ok" : c.tone === "danger" ? "cost-amount-danger" : "";
+                  return `<td class="${toneClass}">$${formatMoney(v)}</td>`;
+                })
+                .join("")}
+              <td class="cost-row-chevron">&rsaquo;</td>
+            </tr>
+          `
+                  )
+                  .join("")
+          }
+        </tbody>
+      </table>
+    `;
+
+    body.querySelectorAll(".cost-category-tile").forEach((tile) => {
+      tile.addEventListener("click", () => {
+        costCategoryKey = tile.dataset.key;
+        costSortKey = null;
+        redrawCostBody(content, categories, allWoms, locationByCode, locations);
+      });
+    });
+
+    body.querySelectorAll("th.sortable").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort;
+        if (costSortKey === key) {
+          costSortDir = costSortDir === "asc" ? "desc" : "asc";
+        } else {
+          costSortKey = key;
+          costSortDir = key === "project" || key === "wom" || key === "location" ? "asc" : "desc";
+        }
+        redrawCostBody(content, categories, allWoms, locationByCode, locations);
+      });
+    });
+
+    body.querySelectorAll("tr.cost-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const wom = allWoms.find((w) => w.code === row.dataset.code);
+        if (wom) openWomProjectModal(wom, content, locationByCode, locations);
+      });
+    });
   }
 
   // "WOM Lookup": pick any WOM and see everything about it in one place --
