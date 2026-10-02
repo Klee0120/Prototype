@@ -5158,7 +5158,7 @@ function getPoReconciliation() {
       `SELECT
          p.id, p.po_number AS poNumber, p.description, p.location_code AS locationCode,
          p.wom_number AS womNumber, p.po_amount AS poAmount, p.object_code AS objectCode,
-         p.subsidiary AS poSubsidiary, p.vendor_name AS vendorName,
+         p.subsidiary AS poSubsidiary, p.vendor_name AS vendorName, p.status AS poStatus,
          COUNT(g.id) AS glLineCount, SUM(g.amount) AS actualPaid
        FROM pos p
        JOIN gl_entries g ON g.matched_po_id = p.id
@@ -5171,6 +5171,8 @@ function getPoReconciliation() {
   for (const line of db.prepare("SELECT * FROM gl_entries WHERE matched_po_id IS NOT NULL").all()) {
     if (!linesByPo.has(line.matched_po_id)) linesByPo.set(line.matched_po_id, []);
     linesByPo.get(line.matched_po_id).push({
+      periodNumber: line.period_number,
+      fiscalYear: line.fiscal_year,
       glDate: line.gl_date,
       documentType: line.document_type,
       documentNumber: line.document_number,
@@ -5183,6 +5185,12 @@ function getPoReconciliation() {
     });
   }
 
+  // Each import only replaces its own period/fiscal year (see
+  // importGlEntries), so gl_entries can hold several imported months at
+  // once -- a PO's matched lines aren't guaranteed to all be from the same
+  // one. "periodLabel" names every period actually represented for that PO
+  // (e.g. "P7/FY26" or "P6/FY26, P7/FY26"), so the table never implies a
+  // single period when the underlying lines span more than one.
   const reconciled = matchedPos.map((p) => {
     const lines = linesByPo.get(p.id) || [];
     const codingMismatch = lines.some(
@@ -5190,6 +5198,7 @@ function getPoReconciliation() {
         (p.poSubsidiary && l.subsidiary && String(l.subsidiary) !== String(p.poSubsidiary)) ||
         (p.objectCode && l.objectAccountCode && String(l.objectAccountCode) !== String(p.objectCode))
     );
+    const periods = [...new Set(lines.map((l) => `P${l.periodNumber}/FY${l.fiscalYear}`))];
     return {
       poId: p.id,
       poNumber: p.poNumber,
@@ -5197,18 +5206,21 @@ function getPoReconciliation() {
       locationCode: p.locationCode,
       womNumber: p.womNumber,
       vendorName: p.vendorName,
+      poStatus: p.poStatus,
       poAmount: p.poAmount,
       actualPaid: p.actualPaid,
       variance: p.actualPaid - (p.poAmount || 0),
       glLineCount: p.glLineCount,
       codingMismatch,
+      periodLabel: periods.join(", "),
       lines,
     };
   });
 
   const unmatchedEntries = db
     .prepare(
-      `SELECT gl_date AS glDate, document_type AS documentType, document_number AS documentNumber,
+      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
+              document_type AS documentType, document_number AS documentNumber,
               object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
               purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber
        FROM gl_entries

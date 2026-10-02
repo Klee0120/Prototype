@@ -56,8 +56,12 @@ export async function renderGlReconciliation(container) {
 
       <h3>PO reconciliation</h3>
       <p class="review-checklist-hint">
-        Approved PO amount vs. what the GL actually shows paid against it. A coding mismatch means at least one
-        GL line posted with a different object code or subsidiary than what's on the PO itself.
+        Approved PO amount vs. what the GL actually shows paid against it, summed across every GL period
+        imported so far -- a PO invoiced across multiple months shows its full running total here, not just
+        the latest one. A variance isn't necessarily a problem by itself: a PO still being invoiced (check its
+        own PO Status column) is just mid-billing, not wrong yet -- it's worth a look once that status shows
+        it's actually done. A coding mismatch means at least one GL line posted with a different object code
+        or subsidiary than what's on the PO itself.
       </p>
       <div class="gl-table-wrap"></div>
 
@@ -103,6 +107,8 @@ export async function renderGlReconciliation(container) {
             <th>Vendor</th>
             <th>Location</th>
             <th>WOM #</th>
+            <th>PO Status</th>
+            <th>GL Period</th>
             <th>Approved</th>
             <th>Actual paid (GL)</th>
             <th>Variance</th>
@@ -119,6 +125,8 @@ export async function renderGlReconciliation(container) {
               <td>${escapeHtml(r.vendorName || "No vendor matched")}</td>
               <td>${escapeHtml(r.locationCode || "—")}</td>
               <td class="wom-code">${escapeHtml(r.womNumber || "—")}</td>
+              <td>${escapeHtml(r.poStatus || "—")}</td>
+              <td>${escapeHtml(r.periodLabel || "—")}</td>
               <td>${formatMoney(r.poAmount)}</td>
               <td>${formatMoney(r.actualPaid)}</td>
               <td class="${r.variance > 0 ? "cost-amount-danger" : r.variance < 0 ? "cost-amount-ok" : ""}">${formatMoney(r.variance)}</td>
@@ -142,6 +150,7 @@ export async function renderGlReconciliation(container) {
       <table class="detail-table gl-table">
         <thead>
           <tr>
+            <th>GL Period</th>
             <th>GL Date</th>
             <th>PO # (per GL)</th>
             <th>Object Account</th>
@@ -155,6 +164,7 @@ export async function renderGlReconciliation(container) {
             .map(
               (e) => `
             <tr>
+              <td>P${escapeHtml(String(e.periodNumber))}/FY${escapeHtml(String(e.fiscalYear))}</td>
               <td>${escapeHtml(e.glDate || "—")}</td>
               <td class="wom-code">${escapeHtml(e.purchaseOrder || "—")}</td>
               <td>${escapeHtml(e.objectAccount || "—")}</td>
@@ -179,18 +189,21 @@ export async function renderGlReconciliation(container) {
           <tbody>
             <tr><th>Vendor</th><td>${escapeHtml(r.vendorName || "No vendor matched")}</td><th>Location</th><td>${escapeHtml(r.locationCode || "—")}</td></tr>
             <tr><th>WOM #</th><td>${escapeHtml(r.womNumber || "—")}</td><th>GL lines</th><td>${r.glLineCount}</td></tr>
+            <tr><th>PO Status</th><td>${escapeHtml(r.poStatus || "—")}</td><th>Coding</th><td>${r.codingMismatch ? "Mismatch" : "Matches"}</td></tr>
+            <tr><th>GL Period</th><td colspan="3">${escapeHtml(r.periodLabel || "—")}</td></tr>
             <tr><th>Approved</th><td>${formatMoney(r.poAmount)}</td><th>Actual paid (GL)</th><td>${formatMoney(r.actualPaid)}</td></tr>
             <tr><th>Variance</th><td colspan="3">${formatMoney(r.variance)}</td></tr>
           </tbody>
         </table>
         <h4>GL lines</h4>
         <table class="detail-table">
-          <thead><tr><th>Date</th><th>Doc Type</th><th>Doc #</th><th>Object Account</th><th>Subsidiary</th><th>Amount</th><th>Invoice #</th></tr></thead>
+          <thead><tr><th>Period</th><th>Date</th><th>Doc Type</th><th>Doc #</th><th>Object Account</th><th>Subsidiary</th><th>Amount</th><th>Invoice #</th></tr></thead>
           <tbody>
             ${r.lines
               .map(
                 (l) => `
               <tr>
+                <td>P${escapeHtml(String(l.periodNumber))}/FY${escapeHtml(String(l.fiscalYear))}</td>
                 <td>${escapeHtml(l.glDate || "—")}</td>
                 <td>${escapeHtml(l.documentType || "—")}</td>
                 <td>${escapeHtml(l.documentNumber || "—")}</td>
