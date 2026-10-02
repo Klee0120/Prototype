@@ -1859,7 +1859,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const todayIso = new Date().toISOString().slice(0, 10);
-    const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
     vendorsCache = vendors; // reuse this fetch if the admin jumps straight to the Vendors tab below
 
     const sorted = [...rows].sort((a, b) => {
@@ -1883,18 +1882,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                   </div>`;
                 })
                 .join("")}
-            </div>`
-      }
-      ${
-        outdatedVendorCount === 0
-          ? ""
-          : `<div class="expiring-forms-banner">
-              <div class="expiring-forms-title">Vendor forms needing attention</div>
-              <div class="expiring-forms-row">
-                <span class="rfm-flag">Outdated</span>
-                <span>${outdatedVendorCount} vendor${outdatedVendorCount === 1 ? "" : "s"} on file ${outdatedVendorCount === 1 ? "has" : "have"} outdated forms.</span>
-                <button class="btn btn-link overview-view-outdated-vendors-btn" type="button">View</button>
-              </div>
             </div>`
       }
       ${
@@ -2021,14 +2008,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         await draw();
       });
     });
-    const viewOutdatedVendorsBtn = content.querySelector(".overview-view-outdated-vendors-btn");
-    if (viewOutdatedVendorsBtn) {
-      viewOutdatedVendorsBtn.addEventListener("click", async () => {
-        vendorFilters.formsStatus = "outdated";
-        activeTab = "vendors";
-        await draw();
-      });
-    }
     content.querySelectorAll(".weekend-addendum-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         // Weekly Review now has its own inline weekend-hours editor right
