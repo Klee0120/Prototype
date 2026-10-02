@@ -204,10 +204,15 @@ router.get("/", requireAuth, (req, res) => {
 
 router.get("/summary", requireAuth, (req, res) => {
   catchUpTasks();
-  const isAdmin = req.user.role === "admin";
   const roles = rolesForViewer(req.user);
-  const filters = { status: db.OPEN_TASK_STATUSES };
-  if (!isAdmin) filters.forViewer = { id: req.user.id, roles };
+  // These 4 tiles are a personal at-a-glance ("what's on my plate"), not a
+  // team-wide count -- same forViewer scope (assigned to me by name, plus
+  // any unclaimed task for my role) the My Work list itself uses, for admin
+  // and technician alike. Previously only applied for non-admins, so an
+  // admin's tiles always showed the whole company's open-task counts no
+  // matter which tab was selected -- e.g. "162 High Priority" while My Work
+  // itself only had a handful.
+  const filters = { status: db.OPEN_TASK_STATUSES, forViewer: { id: req.user.id, roles } };
 
   const openTasks = db.listTasks(filters);
   const now = Date.now();

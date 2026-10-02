@@ -210,7 +210,13 @@ test("task engine: manual tasks, statuses, comments, and role scoping", async (t
 
   await t.test("an emergency-priority task always reads as the top urgency tier and counts as high priority", async () => {
     const before = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
-    const res = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Urgent PO entered", priority: "emergency" } });
+    // The summary's tiles are scoped to the viewer (assigned to them, or
+    // unclaimed for their role) -- assign it to ADMIN explicitly so it's
+    // actually counted, same as a real self-assigned task would be.
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Urgent PO entered", priority: "emergency", assignedTo: "ADMIN" },
+    });
     assert.equal(res.status, 201);
     assert.equal(res.body.priority, "emergency");
     assert.equal(res.body.urgency, "emergency");

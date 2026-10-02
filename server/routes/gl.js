@@ -118,7 +118,12 @@ router.post("/preview", upload.single("file"), (req, res) => {
   } catch (err) {
     return res.status(err.status || 400).json({ error: err.message });
   }
-  res.json({ periodNumber: parsed.periodNumber, fiscalYear: parsed.fiscalYear, rowCount: parsed.rows.length });
+  res.json({
+    periodNumber: parsed.periodNumber,
+    fiscalYear: parsed.fiscalYear,
+    rowCount: parsed.rows.length,
+    existingImport: db.findGlImportByPeriod(parsed.periodNumber, parsed.fiscalYear),
+  });
 });
 
 router.post("/import", upload.single("file"), (req, res) => {

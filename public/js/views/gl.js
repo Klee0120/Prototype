@@ -276,11 +276,18 @@ export async function renderGlReconciliation(container) {
     // Confirm the period before committing -- a GL extract only says which
     // month it covers via these two columns, and importing it under the
     // wrong assumption would silently overwrite the wrong period's numbers.
+    const existing = preview.existingImport;
     body.innerHTML = `
       <p class="review-checklist-hint">
         This file reads as <strong>${escapeHtml(monthName(preview.periodNumber))} 20${preview.fiscalYear}</strong>
         (Period ${preview.periodNumber}/FY${preview.fiscalYear}), ${preview.rowCount} GL line${preview.rowCount === 1 ? "" : "s"}.
-        Importing will replace any GL data already on file for that exact period -- confirm that's the report you meant to drop in.
+        ${
+          existing
+            ? `An import already exists for this exact period -- <strong>${existing.rowCount} GL line${existing.rowCount === 1 ? "" : "s"}</strong>,
+               imported ${new Date(existing.createdAt).toLocaleString()} (${existing.sourceFileName ? escapeHtml(existing.sourceFileName) : "no file name on record"}).
+               Importing this file will <strong>replace it entirely</strong> -- confirm that's what you meant to do.`
+            : `Importing will replace any GL data already on file for that exact period -- confirm that's the report you meant to drop in.`
+        }
       </p>
       <div class="modal-form-actions">
         <button type="button" class="btn btn-secondary gl-import-cancel">Cancel</button>

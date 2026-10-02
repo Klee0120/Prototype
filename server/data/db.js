@@ -5194,6 +5194,16 @@ function findGlImport(id) {
   return presentGlImport(db.prepare("SELECT * FROM gl_imports WHERE id = ?").get(id));
 }
 
+// Whether this exact period already has an import on file -- surfaced on
+// /preview so uploading a second GL report for the same month tells the
+// admin up front that it'll replace the first one, rather than them finding
+// out only after confirming.
+function findGlImportByPeriod(periodNumber, fiscalYear) {
+  return presentGlImport(
+    db.prepare("SELECT * FROM gl_imports WHERE period_number = ? AND fiscal_year = ? ORDER BY created_at DESC LIMIT 1").get(periodNumber, fiscalYear)
+  );
+}
+
 function listGlImports() {
   return db.prepare("SELECT * FROM gl_imports ORDER BY created_at DESC").all().map(presentGlImport);
 }
@@ -5475,6 +5485,7 @@ module.exports = {
   importGlEntries,
   listGlImports,
   findGlImport,
+  findGlImportByPeriod,
   getPoReconciliation,
   getGlImportStatus,
 };
