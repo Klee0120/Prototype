@@ -2409,6 +2409,10 @@ h1, h2, h3, h4 {
 .gl-table tbody tr.gl-row:hover {
   background: var(--neutral-bg);
 }
+.gl-lines-total-row td {
+  border-top: 2px solid var(--border);
+  background: var(--neutral-bg);
+}
 .po-desc-cell {
   max-width: 320px;
 }

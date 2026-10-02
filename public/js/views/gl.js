@@ -218,6 +218,11 @@ export async function renderGlReconciliation(container) {
             `
               )
               .join("")}
+            <tr class="gl-lines-total-row">
+              <td colspan="6" style="text-align: right;"><strong>Total (actual paid)</strong></td>
+              <td><strong>${formatMoney(r.actualPaid)}</strong></td>
+              <td></td>
+            </tr>
           </tbody>
         </table>
       `,
