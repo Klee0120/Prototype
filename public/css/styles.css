@@ -387,7 +387,7 @@ h1, h2, h3, h4 {
 }
 
 .content {
-  padding: 24px 28px;
+  padding: 24px 40px;
 }
 
 /* ---- Buttons ---- */
@@ -2229,6 +2229,323 @@ h1, h2, h3, h4 {
   color: var(--muted);
   margin-left: 8px;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+/* ---- Page header: big title + subtitle + top-right actions, used by the
+   WOM Projects and Task Manager style of tab ---- */
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.page-header-title {
+  font-size: 26px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.page-header-subtitle {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 4px 0 0;
+}
+
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn-outline {
+  background: var(--card);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.btn-outline:hover {
+  background: var(--accent-bg);
+}
+
+/* ---- WOM Projects: Smartsheet sync card ---- */
+
+.wom-sync-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+
+.wom-sync-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wom-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wom-sync-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.status-dot-ok { background: var(--ok); }
+.status-dot-off { background: var(--danger); }
+
+.wom-sync-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.smartsheet-last-sync {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ---- WOM Projects: search/filter bar + Active/Closed pill toggle ---- */
+
+.wom-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.search-field {
+  flex: 1 1 260px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+}
+.search-field-icon {
+  opacity: 0.6;
+  font-size: 13px;
+}
+.search-field input {
+  border: none;
+  outline: none;
+  flex: 1;
+  font-size: 14px;
+  background: transparent;
+  font-family: var(--font-sans);
+}
+
+.wom-filter-bar select {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  font-size: 14px;
+  font-family: var(--font-sans);
+}
+
+.pill-toggle-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.pill-toggle-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.pill-toggle-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ---- WOM Projects: redesigned project card ---- */
+
+.wom-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+}
+
+.wom-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.wom-card-title-group {
+  min-width: 0;
+}
+
+.wom-card-title {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.chip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--neutral-bg);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.chip-muted {
+  color: var(--muted);
+  font-style: italic;
+}
+.chip-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  font-weight: 600;
+}
+.chip-code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  color: var(--muted);
+}
+
+.wom-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wom-card-actions .wom-status-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+
+.wom-card-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.wom-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wom-meta-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.wom-meta-value {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.wom-modal-documents {
+  margin-top: 16px;
+}
+
+/* ---- Small "..." row menu (Smartsheet detail / Open in Smartsheet /
+   Delete) -- a lightweight dropdown panel anchored under its toggle. ---- */
+
+.row-menu {
+  position: relative;
+}
+
+.row-menu-toggle {
+  font-size: 18px;
+  line-height: 1;
+  padding: 6px 10px;
+}
+
+.row-menu-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+.row-menu-panel[hidden] {
+  display: none;
+}
+
+.row-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--ink);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.row-menu-item:hover {
+  background: var(--neutral-bg);
+}
+.row-menu-item-danger {
+  color: var(--danger);
 }
 
 .wom-lookup-select {

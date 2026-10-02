@@ -154,10 +154,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // never be shown after something changes it elsewhere (Tech Allocation,
   // another tab, etc.). Detail is always fetched fresh when rendering.
   const expanded = new Set();
-  const womsExpanded = new Set();
-  const womEditing = new Set();
+  const womEditing = new Set(); // one-shot: code to jump straight to in the Open Project modal
   const locationEditing = new Set();
   let womTerritoryFilter = ""; // "" = all territories, so a single-territory shop sees no filter UI noise by default
+  let locationTerritoryFilter = ""; // "" = all territories
+  let womGroupFilter = "active"; // "active" | "closed" -- the pill toggle above the WOM list
+  let womLocationFilter = ""; // "" = all locations
+  let womStatusFilter = ""; // "" = all statuses
+  let womSearchQuery = "";
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   let laborReportMonth = currentMonthISO();
   let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
@@ -2649,17 +2653,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   function renderLastSyncLine(lastSync) {
     if (!lastSync) return `<p class="empty-note">No sync has been run yet.</p>`;
     const when = new Date(lastSync.synced_at).toLocaleString();
+    const exceptions = lastSync.exceptions_flagged;
     return `
-      <p class="smartsheet-last-sync">
-        Last sync: <strong>${escapeHtml(when)}</strong> —
-        ${lastSync.woms_created + lastSync.woms_promoted + lastSync.woms_updated} WOM${
+      <div class="wom-sync-meta-row">
+        <span class="smartsheet-last-sync">
+          Last sync <strong>${escapeHtml(when)}</strong> &middot;
+          ${lastSync.woms_created + lastSync.woms_promoted + lastSync.woms_updated} WOM${
       lastSync.woms_created + lastSync.woms_promoted + lastSync.woms_updated === 1 ? "" : "s"
     } updated,
-        ${lastSync.tasks_created} task${lastSync.tasks_created === 1 ? "" : "s"} created,
-        ${lastSync.tasks_completed} task${lastSync.tasks_completed === 1 ? "" : "s"} completed,
-        ${lastSync.exceptions_flagged} workflow exception${lastSync.exceptions_flagged === 1 ? "" : "s"}
-        <button class="btn btn-link smartsheet-sync-details-btn" type="button">View Sync Details</button>
-      </p>
+          ${lastSync.tasks_created} task${lastSync.tasks_created === 1 ? "" : "s"} created,
+          ${lastSync.tasks_completed} task${lastSync.tasks_completed === 1 ? "" : "s"} completed
+          &middot; ${exceptions === 0 ? "No exceptions" : `${exceptions} workflow exception${exceptions === 1 ? "" : "s"}`}
+        </span>
+        <button class="btn btn-link smartsheet-sync-details-btn" type="button">Sync details</button>
+      </div>
       <div class="smartsheet-sync-details" hidden>
         <ul>
           <li>${lastSync.woms_created} new WOM(s) added (open or pending)</li>
@@ -2704,7 +2711,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       const hidden = details.hasAttribute("hidden");
       if (hidden) details.removeAttribute("hidden");
       else details.setAttribute("hidden", "");
-      btn.textContent = hidden ? "Hide Sync Details" : "View Sync Details";
+      btn.textContent = hidden ? "Hide details" : "Sync details";
     });
   }
 
@@ -2723,19 +2730,28 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     if (!status.connected) {
       container.innerHTML = `
-        <div class="smartsheet-status smartsheet-status-off">
-          <strong>Not connected.</strong> Needs SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID set on the server,
-          then a restart.
+        <div class="wom-sync-row">
+          <div class="wom-sync-status">
+            <span class="status-dot status-dot-off"></span>
+            <strong>Smartsheet not connected</strong>
+          </div>
         </div>
+        <p class="empty-note">Needs SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID set on the server, then a restart.</p>
       `;
       return;
     }
 
     container.innerHTML = `
-      <div class="smartsheet-status smartsheet-status-on">
-        <strong>Connected.</strong>
-        <button class="btn btn-link smartsheet-preview-btn" type="button">Preview data</button>
-        <button class="btn btn-secondary smartsheet-sync-btn" type="button">Sync WOMs from Smartsheet</button>
+      <div class="wom-sync-row">
+        <div class="wom-sync-status">
+          <span class="status-dot status-dot-ok"></span>
+          <strong>Smartsheet connected</strong>
+          <span class="chip chip-muted">Read-only</span>
+        </div>
+        <div class="wom-sync-row-actions">
+          <button class="btn btn-outline smartsheet-sync-btn" type="button">&#8635; Sync WOMs</button>
+          <button class="btn btn-link smartsheet-preview-btn" type="button">Preview data</button>
+        </div>
       </div>
       <div class="smartsheet-sync-result">${renderLastSyncLine(status.lastSync)}</div>
       <div class="smartsheet-preview"></div>
@@ -2827,9 +2843,23 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   async function drawLocations(content) {
     const locations = await api.get("/api/locations");
     const efSubsidiary = locations[0] ? locations[0].efSubsidiaryCode : "20920000";
+    const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
+    const filtered = locationTerritoryFilter
+      ? locations.filter((l) => (l.territory || "Midwest") === locationTerritoryFilter)
+      : locations;
 
     content.innerHTML = `
-      <h3>Locations</h3>
+      <div class="review-actions">
+        <h3 style="margin: 0;">Locations</h3>
+        <button type="button" class="btn btn-primary" id="add-location-btn">Add location</button>
+        <label class="roster-filter-field">
+          <span>Territory</span>
+          <select class="location-territory-filter">
+            <option value="">All territories</option>
+            ${territoriesInUse.map((t) => `<option value="${escapeHtml(t)}" ${locationTerritoryFilter === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
       <p class="review-checklist-hint">
         Each location has its own E&amp;F Contract Job Number and WOM Job Number (from the JDE lookup). E&amp;F time
         always uses the standard subsidiary code <strong>${escapeHtml(efSubsidiary)}</strong> at every location —
@@ -2837,27 +2867,54 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         (WOM tab). Region is used to match this location up against the monthly labor report.
       </p>
       <div class="review-list" id="location-list"></div>
-      <form id="add-location-form" class="add-wom-form">
-        <input name="code" placeholder="Location code" required />
-        <input name="name" placeholder="Location name" required />
-        <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" />
-        <input name="womJobNumber" placeholder="WOM Job Number" />
-        <input name="region" placeholder="Region (e.g. Southeast)" />
-        <select name="territory">${renderTerritorySelect("Midwest")}</select>
-        <button type="submit" class="btn btn-primary">Add location</button>
-        <span class="save-message" id="location-message"></span>
-      </form>
     `;
 
     const locationList = content.querySelector("#location-list");
-    for (const l of locations) {
-      locationList.appendChild(renderLocationRow(l, content));
+    if (filtered.length === 0) {
+      locationList.innerHTML = `<p class="empty-note">No locations match this filter.</p>`;
+    } else {
+      for (const l of filtered) {
+        locationList.appendChild(renderLocationRow(l, content));
+      }
     }
 
-    content.querySelector("#add-location-form").addEventListener("submit", async (e) => {
+    const territorySelect = content.querySelector(".location-territory-filter");
+    if (territorySelect) {
+      territorySelect.addEventListener("change", (e) => {
+        locationTerritoryFilter = e.target.value;
+        drawLocations(content);
+      });
+    }
+
+    content.querySelector("#add-location-btn").addEventListener("click", () => {
+      openAddLocationModal(content);
+    });
+  }
+
+  function openAddLocationModal(content) {
+    const { body, close } = openModal({
+      title: "Add Location",
+      bodyHtml: `
+        <form class="add-location-form modal-form">
+          <div class="add-tech-grid">
+            <input name="code" placeholder="Location code" required />
+            <input name="name" placeholder="Location name" required />
+            <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" />
+            <input name="womJobNumber" placeholder="WOM Job Number" />
+            <input name="region" placeholder="Region (e.g. Southeast)" />
+            <select name="territory">${renderTerritorySelect("Midwest")}</select>
+          </div>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Add location</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".add-location-form");
+    form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const form = e.target;
-      const msg = content.querySelector("#location-message");
+      const msg = body.querySelector(".save-message");
       try {
         await api.post("/api/locations", {
           code: form.code.value.trim(),
@@ -2867,6 +2924,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           region: form.region.value.trim() || null,
           territory: form.territory.value,
         });
+        close();
         await drawLocations(content);
       } catch (err) {
         msg.textContent = err.message;
@@ -2874,26 +2932,50 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
   }
 
+  // active = everything still in play (or not yet real); closed = invoiced,
+  // closed, and cancelled all together, since all three just mean "this job
+  // is done, one way or another" -- each row still shows its own status
+  // badge, so an invoice vs. a cancellation still reads differently at a
+  // glance even grouped into one list.
+  const WOM_CLOSED_STATUSES = ["invoiced", "closed", "cancelled"];
+
   async function drawWoms(content) {
     const [allWoms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
-    const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
     const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
     const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
-    const woms = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
+    const locationsInUse = [...new Set(allWoms.map((w) => w.locationCode).filter(Boolean))]
+      .map((code) => locationByCode[code])
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     content.innerHTML = `
-      <h3>Smartsheet Connection</h3>
-      <p class="review-checklist-hint">
-        A one-way, read-only link to your WOM tracker in Smartsheet -- this app only ever reads from it, never
-        writes back. Preview the connection here before any column gets mapped to a WOM field.
-      </p>
-      <div id="smartsheet-panel"></div>
+      <div class="page-header">
+        <div>
+          <h1 class="page-header-title">WOM Projects</h1>
+          <p class="page-header-subtitle">Track project status, costs and requests.</p>
+        </div>
+        <div class="page-header-actions">
+          <a class="btn btn-primary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">+ Request WOM</a>
+          <a class="btn btn-outline" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request C&amp;W PO ↗</a>
+        </div>
+      </div>
 
-      <h3>WOM Projects</h3>
-      <div class="review-actions">
-        <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
-        <a class="btn btn-secondary" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a C&amp;W PO ↗</a>
+      <div class="wom-sync-card" id="smartsheet-panel"></div>
+
+      <div class="wom-filter-bar">
+        <label class="search-field">
+          <span class="search-field-icon">&#128269;</span>
+          <input type="search" class="wom-search-input" placeholder="Search WOM projects..." value="${escapeHtml(womSearchQuery)}" />
+        </label>
+        <select class="wom-location-filter">
+          <option value="">All locations</option>
+          ${locationsInUse.map((l) => `<option value="${escapeHtml(l.code)}" ${womLocationFilter === l.code ? "selected" : ""}>${escapeHtml(l.name)}</option>`).join("")}
+        </select>
+        <select class="wom-status-filter">
+          <option value="">All statuses</option>
+          ${WOM_STATUSES.map((s) => `<option value="${s}" ${womStatusFilter === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`).join("")}
+        </select>
         ${
           territoriesInUse.length > 1
             ? `<label class="roster-filter-field">
@@ -2906,55 +2988,73 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             : ""
         }
       </div>
-      <p class="review-checklist-hint">
-        Same Smartsheet request forms technicians use -- a quick way to request a new WOM or a
-        C&amp;W PO (an internal purchase order, separate from the Toyota PO on the WOM lifecycle
-        checklist below) without leaving this tab to go find the link elsewhere.
-      </p>
-      <div class="review-section-title">Active</div>
-      <div class="review-list" id="wom-list-active"></div>
-      <div class="review-section-title">Invoiced</div>
-      <div class="review-list" id="wom-list-invoiced"></div>
-      <div class="review-section-title">Cancelled</div>
-      <div class="review-list" id="wom-list-cancelled"></div>
-      <form id="add-wom-form" class="add-wom-form">
-        <input name="code" placeholder="WOM code" required />
-        <input name="description" placeholder="Description" required />
-        <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
-        <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs (optional)" />
-        <input name="subsidiaryCode" placeholder="Subsidiary code" />
-        <input name="maximoNumber" placeholder="Maximo #" />
-        <button type="submit" class="btn btn-primary">Add WOM</button>
-        <span class="save-message" id="wom-message"></span>
-      </form>
+
+      <div class="pill-toggle-group">
+        <button type="button" class="pill-toggle-btn ${womGroupFilter === "active" ? "active" : ""}" data-group="active">Active</button>
+        <button type="button" class="pill-toggle-btn ${womGroupFilter === "closed" ? "active" : ""}" data-group="closed">Closed</button>
+      </div>
+
+      <div class="review-list" id="wom-list"></div>
     `;
 
     await renderSmartsheetPanel(content.querySelector("#smartsheet-panel"), content);
 
-    // Active is everything still in play (or not yet real); Invoiced groups
-    // "invoiced" and "closed" together since both mean the job was billed,
-    // just at different closeout points; Cancelled is its own section so a
-    // dropped job never reads as billed revenue. Keeps the day-to-day list
-    // from being cluttered with jobs that are already done one way or
-    // another.
-    const activeList = content.querySelector("#wom-list-active");
-    const invoicedList = content.querySelector("#wom-list-invoiced");
-    const cancelledList = content.querySelector("#wom-list-cancelled");
-    const activeWoms = woms.filter((w) => !["invoiced", "closed", "cancelled"].includes(w.status));
-    const invoicedWoms = woms.filter((w) => w.status === "invoiced" || w.status === "closed");
-    const cancelledWoms = woms.filter((w) => w.status === "cancelled");
-    for (const w of activeWoms) {
-      activeList.appendChild(await renderWomRow(w, content, locationByCode, locations));
+    const territoryFiltered = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
+    const groupFiltered = territoryFiltered.filter((w) =>
+      womGroupFilter === "closed" ? WOM_CLOSED_STATUSES.includes(w.status) : !WOM_CLOSED_STATUSES.includes(w.status)
+    );
+    const locationFiltered = womLocationFilter ? groupFiltered.filter((w) => w.locationCode === womLocationFilter) : groupFiltered;
+    const statusFiltered = womStatusFilter ? locationFiltered.filter((w) => w.status === womStatusFilter) : locationFiltered;
+    const query = womSearchQuery.trim().toLowerCase();
+    const woms = query
+      ? statusFiltered.filter((w) => w.description.toLowerCase().includes(query) || w.code.toLowerCase().includes(query))
+      : statusFiltered;
+
+    const list = content.querySelector("#wom-list");
+    for (const w of woms) {
+      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
     }
-    if (activeWoms.length === 0) activeList.innerHTML = `<p class="empty-note">No active WOM projects right now.</p>`;
-    for (const w of invoicedWoms) {
-      invoicedList.appendChild(await renderWomRow(w, content, locationByCode, locations));
+    if (woms.length === 0) {
+      list.innerHTML = `<p class="empty-note">No WOM projects match these filters.</p>`;
     }
-    if (invoicedWoms.length === 0) invoicedList.innerHTML = `<p class="empty-note">Nothing invoiced or closed yet.</p>`;
-    for (const w of cancelledWoms) {
-      cancelledList.appendChild(await renderWomRow(w, content, locationByCode, locations));
+
+    // One-shot deep link from a Priorities task card ("this WOM needs a
+    // Maximo #", etc.) -- jump straight to its Open Project modal regardless
+    // of whatever filters/group toggle happen to be active right now.
+    if (womEditing.size > 0) {
+      const codeToOpen = [...womEditing][0];
+      womEditing.clear();
+      const target = allWoms.find((x) => x.code === codeToOpen);
+      if (target) openWomProjectModal(target, content, locationByCode, locations);
     }
-    if (cancelledWoms.length === 0) cancelledList.innerHTML = `<p class="empty-note">No cancelled WOM projects.</p>`;
+
+    if (!content.dataset.rowMenuBound) {
+      content.dataset.rowMenuBound = "1";
+      content.addEventListener("click", (e) => {
+        if (!e.target.closest(".row-menu")) {
+          content.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
+        }
+      });
+    }
+
+    content.querySelectorAll(".pill-toggle-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        womGroupFilter = btn.dataset.group;
+        drawWoms(content);
+      });
+    });
+    content.querySelector(".wom-location-filter").addEventListener("change", (e) => {
+      womLocationFilter = e.target.value;
+      drawWoms(content);
+    });
+    content.querySelector(".wom-status-filter").addEventListener("change", (e) => {
+      womStatusFilter = e.target.value;
+      drawWoms(content);
+    });
+    content.querySelector(".wom-search-input").addEventListener("input", (e) => {
+      womSearchQuery = e.target.value;
+      refreshWomList(content, locationByCode, locations);
+    });
 
     const womTerritorySelect = content.querySelector(".wom-territory-filter");
     if (womTerritorySelect) {
@@ -2963,25 +3063,32 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         drawWoms(content);
       });
     }
+  }
 
-    content.querySelector("#add-wom-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const form = e.target;
-      const msg = content.querySelector("#wom-message");
-      try {
-        await api.post("/api/woms", {
-          code: form.code.value.trim(),
-          description: form.description.value.trim(),
-          locationCode: form.locationCode.value || null,
-          budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
-          subsidiaryCode: form.subsidiaryCode.value.trim() || null,
-          maximoNumber: form.maximoNumber.value.trim() || null,
-        });
-        await drawWoms(content);
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    });
+  // Re-filters and redraws just the WOM list (not the whole tab, which would
+  // steal focus out of the search box on every keystroke).
+  async function refreshWomList(content, locationByCode, locations) {
+    const allWoms = await api.get("/api/woms");
+    const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
+    const territoryFiltered = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
+    const groupFiltered = territoryFiltered.filter((w) =>
+      womGroupFilter === "closed" ? WOM_CLOSED_STATUSES.includes(w.status) : !WOM_CLOSED_STATUSES.includes(w.status)
+    );
+    const locationFiltered = womLocationFilter ? groupFiltered.filter((w) => w.locationCode === womLocationFilter) : groupFiltered;
+    const statusFiltered = womStatusFilter ? locationFiltered.filter((w) => w.status === womStatusFilter) : locationFiltered;
+    const query = womSearchQuery.trim().toLowerCase();
+    const woms = query
+      ? statusFiltered.filter((w) => w.description.toLowerCase().includes(query) || w.code.toLowerCase().includes(query))
+      : statusFiltered;
+
+    const list = content.querySelector("#wom-list");
+    list.innerHTML = "";
+    for (const w of woms) {
+      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
+    }
+    if (woms.length === 0) {
+      list.innerHTML = `<p class="empty-note">No WOM projects match these filters.</p>`;
+    }
   }
 
   function renderTerritorySelect(currentValue) {
@@ -3063,60 +3170,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function renderWomRow(w, content, locationByCode, locations) {
     const el = document.createElement("div");
-    el.className = "review-row";
+    el.className = "wom-card";
     const loc = locationByCode[w.locationCode];
-    const metaParts = [];
-    if (w.budgetHours != null) metaParts.push(`${w.remainingHours}h left of ${w.budgetHours}h`);
-    metaParts.push(w.subsidiaryCode ? `Subsidiary ${escapeHtml(w.subsidiaryCode)}` : "No subsidiary code on file");
-    metaParts.push(w.maximoNumber ? `Maximo #${escapeHtml(w.maximoNumber)}` : "No Maximo # on file");
-    if (w.estimatedPrice != null || w.appliedPrice != null) {
-      metaParts.push(
-        `Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}${w.smartsheetSyncedAt ? " (Smartsheet)" : ""}`
-      );
-    }
-    const metaLine = metaParts.join(" &middot; ");
 
-    if (womEditing.has(w.code)) {
-      const locationOptions = locations
-        .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === w.locationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
-        .join("");
-      el.innerHTML = `
-        <form class="edit-wom-form review-row-summary">
-          <span class="review-row-name">${escapeHtml(w.description)} <span class="wom-code">${escapeHtml(w.code)}</span></span>
-          <input name="description" value="${escapeHtml(w.description)}" required />
-          <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
-          <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
-          <input name="subsidiaryCode" placeholder="Subsidiary code" value="${escapeHtml(w.subsidiaryCode || "")}" />
-          <input name="maximoNumber" placeholder="Maximo #" value="${escapeHtml(w.maximoNumber || "")}" />
-          <button type="submit" class="btn btn-primary">Save</button>
-          <button type="button" class="btn btn-link cancel-edit">Cancel</button>
-          <span class="save-message"></span>
-        </form>
-      `;
-      el.querySelector(".cancel-edit").addEventListener("click", async () => {
-        womEditing.delete(w.code);
-        await drawWoms(content);
-      });
-      el.querySelector(".edit-wom-form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const form = e.target;
-        const msg = el.querySelector(".save-message");
-        try {
-          await api.patch(`/api/woms/${encodeURIComponent(w.code)}/details`, {
-            description: form.description.value.trim(),
-            locationCode: form.locationCode.value || null,
-            budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
-            subsidiaryCode: form.subsidiaryCode.value.trim() || null,
-            maximoNumber: form.maximoNumber.value.trim() || null,
-          });
-          womEditing.delete(w.code);
-          await drawWoms(content);
-        } catch (err) {
-          msg.textContent = err.message;
-        }
-      });
-      return el;
-    }
+    const metaItems = [
+      { label: "Subsidiary", value: w.subsidiaryCode ? escapeHtml(w.subsidiaryCode) : "—" },
+      { label: "Maximo #", value: w.maximoNumber ? escapeHtml(w.maximoNumber) : "—" },
+      { label: "Estimated cost", value: w.estimatedPrice != null ? `$${formatMoney(w.estimatedPrice)}` : "—" },
+      { label: "Applied cost", value: w.appliedPrice != null ? `$${formatMoney(w.appliedPrice)}` : "—" },
+    ];
+    if (w.budgetHours != null) metaItems.push({ label: "Hours remaining", value: `${w.remainingHours}h of ${w.budgetHours}h` });
 
     const statusBadgeClass = womStatusBadgeClass(w.status);
     const statusOptions = WOM_STATUSES.map(
@@ -3124,43 +3187,61 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     ).join("");
     // The project name is the thing people actually recognize; the WOM code
     // is only there for whoever needs to key it into JDE/UKG, so it's a
-    // small, secondary tag next to the location rather than the headline.
-    const locationTag = loc
-      ? `<span class="wom-location">${escapeHtml(loc.name)}</span>`
-      : `<span class="wom-location wom-location-missing">No location on file</span>`;
+    // small, secondary chip rather than the headline.
+    const locationChip = loc
+      ? `<span class="chip">${escapeHtml(loc.name)}</span>`
+      : `<span class="chip chip-muted">No location on file</span>`;
     // A WOM a Smartsheet sync has never touched (created by hand here, or
     // left over from testing) has no smartsheetSyncedAt at all -- flagging
     // that distinguishes "real WOMs not synced yet" from "we never actually
     // imported this one" at a glance, since those are exactly the ones
     // worth reviewing for deletion.
-    const sourceTag = w.smartsheetSyncedAt == null ? `<span class="wom-source-tag">Not imported from Smartsheet</span>` : "";
+    const sourceChip = w.smartsheetSyncedAt == null ? `<span class="chip chip-warn">Not imported from Smartsheet</span>` : "";
     // The Smartsheet grid's own row number -- much easier to actually find
     // and identify a request by (especially one still missing a real WOM #
     // and description) than the WOM code alone, which for those is just a
     // generated PENDING-<opaque id> placeholder.
-    const lineTag = w.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(w.smartsheetLineNumber))}</span>` : "";
+    const lineChip = w.smartsheetLineNumber ? `<span class="chip">Line ${escapeHtml(String(w.smartsheetLineNumber))}</span>` : "";
 
     el.innerHTML = `
-      <div class="review-row-summary">
-        <div class="review-row-name">
-          ${escapeHtml(w.description)}${locationTag}${lineTag}${sourceTag}
-          <span class="wom-code">${escapeHtml(w.code)}</span>
+      <div class="wom-card-top">
+        <div class="wom-card-title-group">
+          <div class="wom-card-title">${escapeHtml(w.description)}</div>
+          <div class="chip-row">
+            ${locationChip}
+            <span class="chip chip-code">WOM ${escapeHtml(w.code)}</span>
+            <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
+            ${lineChip}${sourceChip}
+          </div>
         </div>
-        <span class="badge badge-${statusBadgeClass}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
-        <select class="wom-status-select">${statusOptions}</select>
-        <button class="btn btn-link edit-wom-btn" type="button">Edit</button>
-        <button class="btn btn-link expand-btn" type="button">${womsExpanded.has(w.code) ? "Hide" : "Documents"}</button>
-        ${w.smartsheetData ? `<button class="btn btn-link smartsheet-detail-btn" type="button">Smartsheet detail</button>` : ""}
-        ${w.smartsheetLink ? `<a class="btn btn-link" href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""}
-        <button class="btn btn-link delete-wom-btn" type="button">Delete</button>
+        <div class="wom-card-actions">
+          <select class="wom-status-select">${statusOptions}</select>
+          <button class="btn btn-primary wom-open-btn" type="button">Open project</button>
+          <div class="row-menu">
+            <button class="btn btn-ghost row-menu-toggle" type="button" aria-label="More actions">&#8943;</button>
+            <div class="row-menu-panel" hidden>
+              ${w.smartsheetData ? `<button class="row-menu-item smartsheet-detail-btn" type="button">Smartsheet detail</button>` : ""}
+              ${w.smartsheetLink ? `<a class="row-menu-item" href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""}
+              <button class="row-menu-item row-menu-item-danger delete-wom-btn" type="button">Delete</button>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="wom-desc">${metaLine}</div>
-      <div class="review-row-detail wom-documents-detail"></div>
+      <div class="wom-card-meta">
+        ${metaItems.map((m) => `<div class="wom-meta-item"><span class="wom-meta-label">${m.label}</span><span class="wom-meta-value">${m.value}</span></div>`).join("")}
+      </div>
     `;
 
-    el.querySelector(".edit-wom-btn").addEventListener("click", async () => {
-      womEditing.add(w.code);
-      await drawWoms(content);
+    el.querySelector(".wom-open-btn").addEventListener("click", () => {
+      openWomProjectModal(w, content, locationByCode, locations);
+    });
+
+    el.querySelector(".row-menu-toggle").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const panel = el.querySelector(".row-menu-panel");
+      const isHidden = panel.hasAttribute("hidden");
+      content.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
+      if (isHidden) panel.removeAttribute("hidden");
     });
 
     // A WOM created by mistake (a test entry, a typo) should just go away.
@@ -3170,7 +3251,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (!window.confirm(`Delete "${w.description}" (${w.code})? This can't be undone.`)) return;
       try {
         await api.delete(`/api/woms/${encodeURIComponent(w.code)}`);
-        await drawWoms(content);
+        await refreshWomList(content, locationByCode, locations);
       } catch (err) {
         if (err.status === 409 && err.payload && err.payload.allocatedHours != null) {
           const forceConfirmed = window.confirm(
@@ -3179,7 +3260,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           if (!forceConfirmed) return;
           try {
             await api.delete(`/api/woms/${encodeURIComponent(w.code)}`, { force: true });
-            await drawWoms(content);
+            await refreshWomList(content, locationByCode, locations);
           } catch (err2) {
             window.alert(`Could not delete ${w.code}: ${err2.message}`);
           }
@@ -3196,90 +3277,131 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       const nextStatus = e.target.value;
       try {
         await api.patch(`/api/woms/${encodeURIComponent(w.code)}`, { status: nextStatus });
-        await drawWoms(content);
+        await refreshWomList(content, locationByCode, locations);
       } catch (err) {
         window.alert(`Could not update ${w.code}: ${err.message}`);
         e.target.value = w.status;
       }
     });
 
-    el.querySelector(".expand-btn").addEventListener("click", async () => {
-      if (womsExpanded.has(w.code)) womsExpanded.delete(w.code);
-      else womsExpanded.add(w.code);
-      await drawWoms(content);
-    });
-
-    if (womsExpanded.has(w.code)) {
-      await renderAttachments(el.querySelector(".wom-documents-detail"), {
-        title: "Documents & Photos",
-        relatedType: "wom",
-        relatedId: w.code,
-        categories: [{ value: "wom_doc", label: "Document / Photo" }],
-        canUpload: true,
-        emptyText: "No documents attached yet.",
-      });
-    }
-
-    // Every column from the tracker's own row, verbatim -- not just the
-    // handful this app's own logic reads directly (pricing, Maximo #,
-    // subsidiary code, location). Covers every estimate/applied line item,
-    // PO/invoice/batch tracking, RFM/PSE approval flags, whatever else is on
-    // the sheet, without a dedicated field or a code change every time the
-    // sheet grows a column. A pop-up (not another inline panel pushing the
-    // rest of the list down) since it's a genuinely large table.
     const smartsheetDetailBtn = el.querySelector(".smartsheet-detail-btn");
     if (smartsheetDetailBtn) {
-      smartsheetDetailBtn.addEventListener("click", () => {
-        const rows = Object.entries(w.smartsheetData)
-          .filter(([key]) => key !== "__smartsheetRowId")
-          .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(value == null || value === "" ? "—" : String(value))}</td></tr>`)
-          .join("");
-        const { body } = openModal({
-          title: `Smartsheet Detail — ${w.code}`,
-          size: "large",
-          bodyHtml: `
-            <div class="review-actions">
-              <button type="button" class="btn btn-secondary wom-sync-history-btn">Sync History</button>
-            </div>
-            <div class="wom-sync-history-panel"></div>
-            <table class="detail-table wom-smartsheet-table">
-              <thead><tr><th>Column</th><th>Value</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          `,
-        });
-        // What got changed on this specific WOM, sync by sync, pulled from
-        // each past sync run's own changed_woms_json -- the answer to "why
-        // does this keep showing as changed every time I sync," which the
-        // main sync panel's "Last sync" summary alone can't answer since it
-        // only ever shows the latest run.
-        body.querySelector(".wom-sync-history-btn").addEventListener("click", async () => {
-          const panel = body.querySelector(".wom-sync-history-panel");
-          panel.innerHTML = `<p class="empty-note">Loading…</p>`;
-          try {
-            const history = await api.get(`/api/woms/${encodeURIComponent(w.code)}/sync-history`);
-            if (history.length === 0) {
-              panel.innerHTML = `<p class="empty-note">No sync has changed this WOM yet.</p>`;
-              return;
-            }
-            panel.innerHTML = `
-              <table class="detail-table wom-sync-history-table">
-                <thead><tr><th>Synced</th><th>What changed</th></tr></thead>
-                <tbody>
-                  ${history
-                    .map((h) => `<tr><td>${new Date(h.syncedAt).toLocaleString()}</td><td>${escapeHtml(h.fields.join(", "))}</td></tr>`)
-                    .join("")}
-                </tbody>
-              </table>
-            `;
-          } catch (err) {
-            panel.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
-          }
-        });
-      });
+      smartsheetDetailBtn.addEventListener("click", () => openSmartsheetDetailModal(w));
     }
 
     return el;
+  }
+
+  // Every column from the tracker's own row, verbatim -- not just the
+  // handful this app's own logic reads directly (pricing, Maximo #,
+  // subsidiary code, location). Covers every estimate/applied line item,
+  // PO/invoice/batch tracking, RFM/PSE approval flags, whatever else is on
+  // the sheet, without a dedicated field or a code change every time the
+  // sheet grows a column. A pop-up (not another inline panel pushing the
+  // rest of the list down) since it's a genuinely large table.
+  function openSmartsheetDetailModal(w) {
+    const rows = Object.entries(w.smartsheetData)
+      .filter(([key]) => key !== "__smartsheetRowId")
+      .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(value == null || value === "" ? "—" : String(value))}</td></tr>`)
+      .join("");
+    const { body } = openModal({
+      title: `Smartsheet Detail — ${w.code}`,
+      size: "large",
+      bodyHtml: `
+        <div class="review-actions">
+          <button type="button" class="btn btn-secondary wom-sync-history-btn">Sync History</button>
+        </div>
+        <div class="wom-sync-history-panel"></div>
+        <table class="detail-table wom-smartsheet-table">
+          <thead><tr><th>Column</th><th>Value</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `,
+    });
+    // What got changed on this specific WOM, sync by sync, pulled from
+    // each past sync run's own changed_woms_json -- the answer to "why
+    // does this keep showing as changed every time I sync," which the
+    // main sync panel's "Last sync" summary alone can't answer since it
+    // only ever shows the latest run.
+    body.querySelector(".wom-sync-history-btn").addEventListener("click", async () => {
+      const panel = body.querySelector(".wom-sync-history-panel");
+      panel.innerHTML = `<p class="empty-note">Loading…</p>`;
+      try {
+        const history = await api.get(`/api/woms/${encodeURIComponent(w.code)}/sync-history`);
+        if (history.length === 0) {
+          panel.innerHTML = `<p class="empty-note">No sync has changed this WOM yet.</p>`;
+          return;
+        }
+        panel.innerHTML = `
+          <table class="detail-table wom-sync-history-table">
+            <thead><tr><th>Synced</th><th>What changed</th></tr></thead>
+            <tbody>
+              ${history
+                .map((h) => `<tr><td>${new Date(h.syncedAt).toLocaleString()}</td><td>${escapeHtml(h.fields.join(", "))}</td></tr>`)
+                .join("")}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        panel.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
+  }
+
+  // "Open project" is the one place to both edit a WOM's own fields and see
+  // its documents -- replaces the old separate inline Edit row and
+  // Documents expand-toggle with a single modal, matching the Add
+  // Vendor/Add Location pattern used everywhere else in the app.
+  function openWomProjectModal(w, content, locationByCode, locations) {
+    const locationOptions = locations
+      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === w.locationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
+      .join("");
+    const { body, close } = openModal({
+      title: w.description,
+      size: "large",
+      bodyHtml: `
+        <form class="edit-wom-form modal-form">
+          <div class="add-tech-grid">
+            <input name="description" value="${escapeHtml(w.description)}" required placeholder="Description" />
+            <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
+            <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
+            <input name="subsidiaryCode" placeholder="Subsidiary code" value="${escapeHtml(w.subsidiaryCode || "")}" />
+            <input name="maximoNumber" placeholder="Maximo #" value="${escapeHtml(w.maximoNumber || "")}" />
+          </div>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+        <div class="wom-modal-documents"></div>
+      `,
+    });
+    body.querySelector(".edit-wom-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const msg = body.querySelector(".save-message");
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(w.code)}/details`, {
+          description: form.description.value.trim(),
+          locationCode: form.locationCode.value || null,
+          budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
+          subsidiaryCode: form.subsidiaryCode.value.trim() || null,
+          maximoNumber: form.maximoNumber.value.trim() || null,
+        });
+        close();
+        await refreshWomList(content, locationByCode, locations);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+    renderAttachments(body.querySelector(".wom-modal-documents"), {
+      title: "Documents & Photos",
+      relatedType: "wom",
+      relatedId: w.code,
+      categories: [{ value: "wom_doc", label: "Document / Photo" }],
+      canUpload: true,
+      emptyText: "No documents attached yet.",
+    });
   }
 
   // Financials-wide estimated-vs-applied picture -- every non-cancelled
