@@ -2713,6 +2713,66 @@ h1, h2, h3, h4 {
   margin-bottom: 16px;
 }
 
+.vendor-preferred-star {
+  background: none;
+  border: none;
+  font-size: 1em;
+  line-height: 1;
+  color: var(--border);
+  padding: 0;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.vendor-preferred-star.is-preferred {
+  color: #e0a526;
+}
+button.vendor-preferred-star {
+  cursor: pointer;
+}
+button.vendor-preferred-star:hover {
+  color: #e0a526;
+}
+
+.vendor-remarks-card {
+  margin-top: 16px;
+}
+.vendor-remark-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.vendor-remark-form textarea {
+  flex: 1;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  resize: vertical;
+}
+.vendor-remarks-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vendor-remark {
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 10px;
+}
+.vendor-remark:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.vendor-remark-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.vendor-remark-body {
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
 .wom-lookup-select {
   padding: 9px 10px;
   border: 1px solid var(--border);

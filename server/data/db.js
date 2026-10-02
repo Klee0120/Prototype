@@ -220,6 +220,18 @@ db.exec(`
     requested_at TEXT NOT NULL
   );
 
+  -- A running, dated log of free-form remarks about a vendor -- distinct
+  -- from vendors.notes (one overwritable field) so several people adding
+  -- notes over time never erase each other's; same pattern as task_comments.
+  CREATE TABLE IF NOT EXISTS vendor_remarks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id INTEGER NOT NULL,
+    author_id TEXT NOT NULL,
+    author_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
   -- The generic task/workflow engine: "states create tasks, tasks create
   -- timestamps, timestamps create analytics." A task is always the record
   -- of something a person needs to do -- generated automatically off a WOM
@@ -896,6 +908,12 @@ if (!hasColumn("vendors", "onboarding_stage")) {
 if (!hasColumn("vendors", "denied_reason")) {
   db.exec("ALTER TABLE vendors ADD COLUMN denied_reason TEXT DEFAULT ''");
 }
+// Krista's own "this is who we go to first" flag for a vendor -- distinct
+// from C&W/Toyota approval status (which is about whether they're allowed
+// to work at all, not whether they're who she'd pick first).
+if (!hasColumn("vendors", "preferred")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0");
+}
 // Case-log entries need their own updated_at too -- the real signal for
 // "has anyone touched this vendor in the last 7 days" is the most recent
 // touch to *either* the vendor record or one of its case-log entries, not
@@ -1454,6 +1472,7 @@ function presentVendorRow(v) {
     w9InvoiceStale,
     onboardingStage: v.onboarding_stage,
     deniedReason: v.denied_reason || "",
+    preferred: Boolean(v.preferred),
     createdAt: v.created_at,
     updatedAt: v.updated_at,
     openTaskCount: countOpenVendorTasks(v.id),
@@ -1629,9 +1648,34 @@ function deleteVendor(id) {
   const taskIds = db.prepare("SELECT id FROM tasks WHERE related_vendor_id = ?").all(Number(id)).map((r) => r.id);
   for (const taskId of taskIds) deleteTask(taskId);
   db.prepare("DELETE FROM vendor_requests WHERE vendor_id = ?").run(Number(id));
+  db.prepare("DELETE FROM vendor_remarks WHERE vendor_id = ?").run(Number(id));
   db.prepare("DELETE FROM files WHERE related_type = 'vendor' AND related_id = ?").run(String(id));
   db.prepare("DELETE FROM vendors WHERE id = ?").run(Number(id));
   return { ok: true, vendor };
+}
+
+function setVendorPreferred(id, preferred) {
+  db.prepare("UPDATE vendors SET preferred = ?, updated_at = ? WHERE id = ?").run(
+    preferred ? 1 : 0,
+    new Date().toISOString(),
+    Number(id)
+  );
+  return findVendor(id);
+}
+
+function addVendorRemark(vendorId, authorId, authorName, body) {
+  db.prepare("INSERT INTO vendor_remarks (vendor_id, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)").run(
+    Number(vendorId),
+    authorId,
+    authorName,
+    body,
+    new Date().toISOString()
+  );
+  return listVendorRemarks(vendorId);
+}
+
+function listVendorRemarks(vendorId) {
+  return db.prepare("SELECT * FROM vendor_remarks WHERE vendor_id = ? ORDER BY id DESC").all(Number(vendorId));
 }
 
 // A vendor onboarding/compliance case (e.g. a ServiceEdge COI Case, Toyota
@@ -4609,6 +4653,9 @@ module.exports = {
   createVendor,
   updateVendor,
   deleteVendor,
+  setVendorPreferred,
+  addVendorRemark,
+  listVendorRemarks,
   VENDOR_COI_FIELDS,
   listVendorRequests,
   addVendorRequest,

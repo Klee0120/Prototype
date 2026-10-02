@@ -1223,6 +1223,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     el.innerHTML = `
       <div class="review-row-summary vendor-summary">
         <span class="review-row-name">
+          ${v.preferred ? `<span class="vendor-preferred-star is-preferred" title="Preferred vendor">★</span>` : ""}
           ${escapeHtml(v.name)}
           ${v.services ? `<span class="wom-desc"> — ${escapeHtml(formatServicesList(v.services))}</span>` : ""}
         </span>
@@ -1265,10 +1266,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <button type="button" class="btn btn-link vendor-back-btn">&larr; Vendor Directory</button>
       <div class="page-header">
         <div>
-          <h1 class="page-header-title">${escapeHtml(v.name)}</h1>
+          <h1 class="page-header-title">
+            <button type="button" class="vendor-preferred-star ${v.preferred ? "is-preferred" : ""}" title="${v.preferred ? "Preferred vendor -- click to unmark" : "Mark as preferred vendor"}">${v.preferred ? "★" : "☆"}</button>
+            ${escapeHtml(v.name)}
+          </h1>
           <p class="page-header-subtitle">
             <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
             <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
+            ${v.preferred ? `<span class="badge badge-approved">Preferred</span>` : ""}
           </p>
         </div>
         <div class="page-header-actions">
@@ -1288,6 +1293,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
     content.querySelector(".vendor-edit-btn").addEventListener("click", () => {
       openVendorEditFormModal(v, content);
+    });
+    content.querySelector(".vendor-preferred-star").addEventListener("click", async () => {
+      await api.patch(`/api/admin/vendors/${v.id}/preferred`, { preferred: !v.preferred });
+      invalidateVendorsCache();
+      renderVendorProfile(content, { ...v, preferred: !v.preferred });
     });
     content.querySelector(".vendor-delete-btn").addEventListener("click", async () => {
       if (!window.confirm(`Delete ${v.name}? This removes its profile, case log, tasks, and documents. This can't be undone.`)) return;
@@ -1316,7 +1326,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else await renderVendorOverviewTab(body, v);
   }
 
-  function renderVendorOverviewTab(host, v) {
+  async function renderVendorOverviewTab(host, v) {
     const nextAction =
       v.onboardingStage !== "onboarded"
         ? "Continue onboarding -- see the Onboarding & Compliance tab."
@@ -1349,7 +1359,52 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           </p>
         </div>
       </div>
+      <div class="vendor-overview-card vendor-remarks-card">
+        <h4>Remarks</h4>
+        <p class="review-checklist-hint">A running, dated log -- separate from Notes above, nothing here gets overwritten.</p>
+        <form class="vendor-remark-form">
+          <textarea name="body" rows="2" placeholder="Add a remark..." required></textarea>
+          <button type="submit" class="btn btn-secondary">Add remark</button>
+        </form>
+        <div class="vendor-remarks-list"></div>
+      </div>
     `;
+
+    const remarkForm = host.querySelector(".vendor-remark-form");
+    const remarksList = host.querySelector(".vendor-remarks-list");
+
+    async function refreshRemarks() {
+      let remarks;
+      try {
+        remarks = await api.get(`/api/admin/vendors/${v.id}/remarks`);
+      } catch (err) {
+        remarksList.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        return;
+      }
+      remarksList.innerHTML =
+        remarks.length === 0
+          ? `<p class="empty-note">No remarks yet.</p>`
+          : remarks
+              .map(
+                (r) => `
+            <div class="vendor-remark">
+              <div class="vendor-remark-meta">${escapeHtml(r.author_name)} &mdash; ${new Date(r.created_at).toLocaleString()}</div>
+              <div class="vendor-remark-body">${escapeHtml(r.body)}</div>
+            </div>`
+              )
+              .join("");
+    }
+
+    remarkForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = remarkForm.body.value.trim();
+      if (!body) return;
+      await api.post(`/api/admin/vendors/${v.id}/remarks`, { body });
+      remarkForm.body.value = "";
+      await refreshRemarks();
+    });
+
+    await refreshRemarks();
   }
 
   async function renderVendorOnboardingTab(host, v) {

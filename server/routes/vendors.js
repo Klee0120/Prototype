@@ -89,6 +89,39 @@ router.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
+// Krista's own "go to this vendor first" flag -- separate from C&W/Toyota
+// approval status, which is about whether a vendor's allowed to work at
+// all, not whether they're preferred.
+router.patch("/:id/preferred", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const preferred = Boolean((req.body || {}).preferred);
+  const updated = db.setVendorPreferred(vendor.id, preferred);
+  db.addAudit(
+    req.user.id,
+    "VENDOR_PREFERRED_CHANGED",
+    `${req.user.name} ${preferred ? "marked" : "unmarked"} ${vendor.name} as a preferred vendor`
+  );
+  res.json(updated);
+});
+
+// A running, dated log of free-form remarks -- distinct from the vendor's
+// single overwritable Notes field (see vendor_remarks table comment).
+router.get("/:id/remarks", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.listVendorRemarks(vendor.id));
+});
+
+router.post("/:id/remarks", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const body = (req.body && req.body.body ? String(req.body.body) : "").trim();
+  if (!body) return res.status(400).json({ error: "body is required" });
+  const remarks = db.addVendorRemark(vendor.id, req.user.id, req.user.name, body);
+  res.status(201).json(remarks);
+});
+
 // Onboarding/compliance case log (e.g. a ServiceEdge COI Case, Toyota
 // Onboarding Case, Payment Details Case) -- same request-type +
 // reference-number pattern as a technician's device IT requests, but with
