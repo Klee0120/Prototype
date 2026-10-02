@@ -7,6 +7,24 @@ function formatMoney(n) {
   return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+function monthName(periodNumber) {
+  return MONTH_NAMES[periodNumber - 1] || `Period ${periodNumber}`;
+}
+
 // GL Reconciliation -- matches a monthly GL extract against the Budget PO
 // Tracker by PO number (see server/routes/gl.js), to show what actually got
 // paid against each PO vs. what it was approved for, and whether the GL
@@ -16,13 +34,18 @@ function formatMoney(n) {
 export async function renderGlReconciliation(container) {
   let data = null;
   let imports = [];
+  let status = null;
 
   await draw();
 
   async function draw() {
     container.innerHTML = `<p class="empty-note">Loading…</p>`;
     try {
-      [data, imports] = await Promise.all([api.get("/api/admin/gl/reconciliation"), api.get("/api/admin/gl/imports")]);
+      [data, imports, status] = await Promise.all([
+        api.get("/api/admin/gl/reconciliation"),
+        api.get("/api/admin/gl/imports"),
+        api.get("/api/admin/gl/status"),
+      ]);
     } catch (err) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
@@ -38,6 +61,17 @@ export async function renderGlReconciliation(container) {
         <button type="button" class="btn btn-primary gl-import-btn">Import GL Report</button>
         <input type="file" class="gl-import-file" accept=".xlsx,.xls" hidden />
       </div>
+      ${
+        status && status.overdue
+          ? `
+      <p class="attachments-error">
+        Waiting on the <strong>${escapeHtml(status.expectedPeriod.monthName)} ${2000 + status.expectedPeriod.fiscalYear}</strong>
+        GL report (Period ${status.expectedPeriod.periodNumber}/FY${status.expectedPeriod.fiscalYear}) -- that month's GL closed
+        on ${escapeHtml(status.expectedPeriod.closedDate)} and hasn't been imported yet.
+      </p>
+      `
+          : ""
+      }
       <p class="review-checklist-hint">
         ${
           lastImport
@@ -230,25 +264,51 @@ export async function renderGlReconciliation(container) {
   }
 
   async function runImport(file) {
-    const { body, close } = openModal({ title: "Import GL Report", bodyHtml: `<p class="empty-note">Importing…</p>` });
+    const { body, close } = openModal({ title: "Import GL Report", bodyHtml: `<p class="empty-note">Reading file…</p>` });
+    let preview;
     try {
-      const result = await api.uploadRawFile("/api/admin/gl/import", file);
-      body.innerHTML = `
-        <p class="review-checklist-hint">
-          Imported <strong>${result.rowCount}</strong> GL line${result.rowCount === 1 ? "" : "s"} for Period
-          ${result.periodNumber}/FY${result.fiscalYear} -- ${result.matchedCount} matched to a PO on file,
-          ${result.unmatchedCount} named a PO # that isn't in the Budget PO Tracker.
-        </p>
-        <div class="modal-form-actions">
-          <button type="button" class="btn btn-primary gl-import-close">Done</button>
-        </div>
-      `;
-      body.querySelector(".gl-import-close").addEventListener("click", async () => {
-        close();
-        await draw();
-      });
+      preview = await api.uploadRawFile("/api/admin/gl/preview", file);
     } catch (err) {
       body.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
     }
+
+    // Confirm the period before committing -- a GL extract only says which
+    // month it covers via these two columns, and importing it under the
+    // wrong assumption would silently overwrite the wrong period's numbers.
+    body.innerHTML = `
+      <p class="review-checklist-hint">
+        This file reads as <strong>${escapeHtml(monthName(preview.periodNumber))} 20${preview.fiscalYear}</strong>
+        (Period ${preview.periodNumber}/FY${preview.fiscalYear}), ${preview.rowCount} GL line${preview.rowCount === 1 ? "" : "s"}.
+        Importing will replace any GL data already on file for that exact period -- confirm that's the report you meant to drop in.
+      </p>
+      <div class="modal-form-actions">
+        <button type="button" class="btn btn-secondary gl-import-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary gl-import-confirm">Yes, import it</button>
+      </div>
+    `;
+    body.querySelector(".gl-import-cancel").addEventListener("click", close);
+    body.querySelector(".gl-import-confirm").addEventListener("click", async () => {
+      body.innerHTML = `<p class="empty-note">Importing…</p>`;
+      try {
+        const result = await api.uploadRawFile("/api/admin/gl/import", file);
+        body.innerHTML = `
+          <p class="review-checklist-hint">
+            Imported <strong>${result.rowCount}</strong> GL line${result.rowCount === 1 ? "" : "s"} for Period
+            ${result.periodNumber}/FY${result.fiscalYear} -- ${result.matchedCount} matched to a PO on file,
+            ${result.unmatchedCount} named a PO # that isn't in the Budget PO Tracker.
+          </p>
+          <div class="modal-form-actions">
+            <button type="button" class="btn btn-primary gl-import-close">Done</button>
+          </div>
+        `;
+        body.querySelector(".gl-import-close").addEventListener("click", async () => {
+          close();
+          await draw();
+        });
+      } catch (err) {
+        body.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      }
+    });
   }
 }

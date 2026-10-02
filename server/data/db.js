@@ -5055,6 +5055,56 @@ function parseObjectAccountCode(raw) {
   return match ? match[1] : null;
 }
 
+// Krista's real 2026 Monthly Close Calendar -- period number lines up
+// exactly with the calendar month (period 7 = July, fiscal year 26 = 2026),
+// confirmed against her real GL files. hfmCorporateLoad is the last close
+// milestone for that period (HFM/Corporate Load EOD) -- the point at which
+// that month's GL is genuinely final, not just "month-end passed." Only
+// 2026 is seeded; once 2027's calendar exists this needs the same rows
+// added, not a new mechanism.
+const GL_FISCAL_CALENDAR_2026 = [
+  { periodNumber: 1, fiscalYear: 26, monthName: "January", hfmCorporateLoad: "2026-02-05" },
+  { periodNumber: 2, fiscalYear: 26, monthName: "February", hfmCorporateLoad: "2026-03-05" },
+  { periodNumber: 3, fiscalYear: 26, monthName: "March", hfmCorporateLoad: "2026-04-06" },
+  { periodNumber: 4, fiscalYear: 26, monthName: "April", hfmCorporateLoad: "2026-05-06" },
+  { periodNumber: 5, fiscalYear: 26, monthName: "May", hfmCorporateLoad: "2026-06-04" },
+  { periodNumber: 6, fiscalYear: 26, monthName: "June", hfmCorporateLoad: "2026-07-07" },
+  { periodNumber: 7, fiscalYear: 26, monthName: "July", hfmCorporateLoad: "2026-08-06" },
+  { periodNumber: 8, fiscalYear: 26, monthName: "August", hfmCorporateLoad: "2026-09-04" },
+  { periodNumber: 9, fiscalYear: 26, monthName: "September", hfmCorporateLoad: "2026-10-06" },
+  { periodNumber: 10, fiscalYear: 26, monthName: "October", hfmCorporateLoad: "2026-11-05" },
+  { periodNumber: 11, fiscalYear: 26, monthName: "November", hfmCorporateLoad: "2026-12-04" },
+  { periodNumber: 12, fiscalYear: 26, monthName: "December", hfmCorporateLoad: "2027-01-07" },
+];
+
+// Whether the most recently-closed GL period (per the real close calendar,
+// not a guessed "percent through the month") has a report imported yet.
+// null expectedPeriod means no period has even closed yet under this
+// calendar (too early in 2026, or past the last period this calendar
+// covers) -- genuinely nothing to expect yet, not an error.
+function getGlImportStatus() {
+  const today = new Date().toISOString().slice(0, 10);
+  let expected = null;
+  for (const period of GL_FISCAL_CALENDAR_2026) {
+    if (period.hfmCorporateLoad <= today && (!expected || period.hfmCorporateLoad > expected.hfmCorporateLoad)) {
+      expected = period;
+    }
+  }
+  if (!expected) return { expectedPeriod: null, overdue: false };
+  const imported = db
+    .prepare("SELECT 1 FROM gl_imports WHERE period_number = ? AND fiscal_year = ? LIMIT 1")
+    .get(expected.periodNumber, expected.fiscalYear);
+  return {
+    expectedPeriod: {
+      periodNumber: expected.periodNumber,
+      fiscalYear: expected.fiscalYear,
+      monthName: expected.monthName,
+      closedDate: expected.hfmCorporateLoad,
+    },
+    overdue: !imported,
+  };
+}
+
 function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileName) {
   const now = new Date().toISOString();
   db.prepare("DELETE FROM gl_entries WHERE period_number = ? AND fiscal_year = ?").run(periodNumber, fiscalYear);
@@ -5426,4 +5476,5 @@ module.exports = {
   listGlImports,
   findGlImport,
   getPoReconciliation,
+  getGlImportStatus,
 };

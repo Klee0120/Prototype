@@ -1,5 +1,8 @@
 const express = require("express");
 const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const XLSX = require("xlsx");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
@@ -103,6 +106,21 @@ function parseWorkbook(buffer) {
   return { rows, periodNumber, fiscalYear };
 }
 
+// Parses the file and reports what period it covers, without committing
+// anything -- lets the frontend show "this looks like Period 8/FY26, 1,204
+// rows" and have the admin confirm that's actually the report they meant to
+// drop in before it overwrites anything for that period.
+router.post("/preview", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  let parsed;
+  try {
+    parsed = parseWorkbook(req.file.buffer);
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  res.json({ periodNumber: parsed.periodNumber, fiscalYear: parsed.fiscalYear, rowCount: parsed.rows.length });
+});
+
 router.post("/import", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   let parsed;
@@ -112,6 +130,31 @@ router.post("/import", upload.single("file"), (req, res) => {
     return res.status(err.status || 400).json({ error: err.message });
   }
   const glImport = db.importGlEntries(parsed.rows, parsed.periodNumber, parsed.fiscalYear, req.user.id, req.file.originalname);
+
+  // File it the same way a Reports-tab labor report upload is filed, so it
+  // shows up there automatically -- the Reports tab already has a
+  // "gl_report" category slot keyed by "YYYY-MM", it's just never had
+  // anything land in it from this screen before.
+  const relatedId = `20${parsed.fiscalYear}-${String(parsed.periodNumber).padStart(2, "0")}`;
+  const id = crypto.randomUUID();
+  const ext = path.extname(req.file.originalname || "").slice(0, 10);
+  const storedName = `${id}${ext}`;
+  fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), req.file.buffer);
+  db.insertFile({
+    id,
+    relatedType: "labor_report",
+    relatedId,
+    category: "gl_report",
+    originalName: req.file.originalname,
+    storedName,
+    mimeType: req.file.mimetype,
+    size: req.file.size,
+    uploadedBy: req.user.id,
+    uploadedAt: new Date().toISOString(),
+    formType: null,
+    expiresAt: null,
+  });
+
   db.addAudit(
     req.user.id,
     "GL_IMPORTED",
@@ -123,6 +166,10 @@ router.post("/import", upload.single("file"), (req, res) => {
 
 router.get("/imports", (req, res) => {
   res.json(db.listGlImports());
+});
+
+router.get("/status", (req, res) => {
+  res.json(db.getGlImportStatus());
 });
 
 router.get("/reconciliation", (req, res) => {
