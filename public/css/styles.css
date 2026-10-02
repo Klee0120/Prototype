@@ -3127,10 +3127,15 @@ h1, h2, h3, h4 {
 }
 
 .basic-info-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-width: 360px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px 24px;
+  align-items: start;
+}
+
+.basic-info-form .profile-field-note,
+.basic-info-form > button {
+  grid-column: 1 / -1;
 }
 
 .profile-field {
