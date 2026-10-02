@@ -84,10 +84,10 @@ const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboarding", "i
 // turning into yet another tab to click through. Order here is the order
 // sections render in; a category not listed anywhere falls into "general".
 const TASK_SECTIONS = [
+  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow"] },
   { key: "compliance", label: "Compliance Items", colorClass: "task-section-compliance", categories: ["vendor_compliance"] },
   { key: "onboarding", label: "Onboarding", colorClass: "task-section-onboarding", categories: ["onboarding"] },
   { key: "it", label: "IT Requests", colorClass: "task-section-it", categories: ["it_request"] },
-  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow"] },
   { key: "recurring", label: "Recurring", colorClass: "task-section-recurring", categories: ["recurring"] },
   { key: "general", label: "General", colorClass: "task-section-general", categories: ["manual"] },
 ];
