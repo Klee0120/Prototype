@@ -17,6 +17,7 @@ const CATEGORY_LABELS = {
   ach: "ACH / Bank Letter",
   vpo_waiver: "VPO Waiver",
   vendor_other: "Other Vendor Document",
+  po_doc: "PO Document",
 };
 
 function formatSize(bytes) {

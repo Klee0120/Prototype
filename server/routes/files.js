@@ -28,6 +28,9 @@ const CATEGORY_BY_RELATED = {
   // `vendor` above, so filing it onto the real vendor record later is a
   // straight re-upload with no re-labeling.
   task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document"]),
+  // Budget PO Tracker records -- admin-only, same reasoning as vendor/task
+  // compliance documents below.
+  po: new Set(["po_doc", "document"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -42,7 +45,7 @@ function canRead(user, relatedType, relatedId) {
   // narrower read-only endpoint that never touches this files system.
   // Task attachments follow the same rule -- they're the same kind of
   // compliance document, just not filed against a vendor yet.
-  if (relatedType === "vendor" || relatedType === "task") return false;
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
@@ -55,7 +58,7 @@ function canRead(user, relatedType, relatedId) {
 function canWrite(user, relatedType, relatedId, category) {
   if (user.role === "admin") return true;
   if (category === "tech_form") return false;
-  if (relatedType === "vendor" || relatedType === "task") return false;
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   return false;
@@ -66,6 +69,7 @@ function relatedRecordExists(relatedType, relatedId) {
   if (relatedType === "technician") return Boolean(db.findTechnician(relatedId));
   if (relatedType === "vendor") return Boolean(db.findVendor(relatedId));
   if (relatedType === "task") return Boolean(db.findTask(relatedId));
+  if (relatedType === "po") return Boolean(db.findPo(relatedId));
   if (relatedType === "week") return Boolean(db.findTechnician(parseWeekRelatedId(relatedId).techId));
   // Labor reports aren't tied to a record that already exists elsewhere --
   // they're just an admin-only monthly archive, keyed by "YYYY-MM".

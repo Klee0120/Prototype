@@ -1,4 +1,5 @@
 const express = require("express");
+const helmet = require("helmet");
 const path = require("path");
 
 const { currentWeekMonday } = require("./utils/week");
@@ -17,6 +18,13 @@ const poRoutes = require("./routes/pos");
 
 function createApp() {
   const app = express();
+
+  // Baseline security response headers (CSP, X-Content-Type-Options,
+  // X-Frame-Options, etc.) -- defaults work as-is since this app only ever
+  // loads its own same-origin JS/CSS plus the one Google Fonts stylesheet
+  // already in index.html. Doesn't touch the actual gap (no TLS yet --
+  // see README "Where this stands"), just closes off the cheap stuff.
+  app.use(helmet());
 
   app.use(express.json());
 

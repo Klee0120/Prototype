@@ -82,6 +82,36 @@ async function uploadFile(relatedType, relatedId, category, file, extra) {
   return data;
 }
 
+// A plain "upload this one file to this one endpoint" helper -- unlike
+// uploadFile above, not tied to the /api/files relatedType/relatedId/
+// category shape (used by the PO Tracker's Excel import, which posts
+// straight to /api/admin/pos/import with just a dryRun flag).
+async function uploadRawFile(path, file, fields) {
+  const form = new FormData();
+  form.append("file", file);
+  if (fields) {
+    for (const [key, value] of Object.entries(fields)) {
+      if (value != null) form.append(key, value);
+    }
+  }
+  const headers = {};
+  const token = currentSessionToken();
+  if (token) headers["x-session-token"] = token;
+
+  const res = await fetch(path, { method: "POST", headers, body: form });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  if (!res.ok) {
+    reportIfSessionExpired(res.status, token);
+    throw new Error((data && data.error) || `Upload failed (${res.status})`);
+  }
+  return data;
+}
+
 async function fetchFileBlob(id) {
   const headers = {};
   const token = currentSessionToken();
@@ -120,6 +150,7 @@ export const api = {
   patch: (path, body) => request("PATCH", path, body),
   delete: (path, body) => request("DELETE", path, body),
   uploadFile,
+  uploadRawFile,
   downloadFile,
   fetchFileBlob,
 };

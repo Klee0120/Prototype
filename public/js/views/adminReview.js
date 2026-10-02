@@ -7,6 +7,7 @@ import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
+import { renderPos } from "./pos.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 
@@ -69,6 +70,7 @@ const NAV_SECTIONS = [
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
+  { key: "pos", label: "POs", tabs: ["pos"] },
   { key: "financials", label: "Financials", tabs: ["costanalysis", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
@@ -88,6 +90,7 @@ const TAB_LABELS = {
   locations: "Locations",
   woms: "WOM Projects",
   womlookup: "WOM Lookup",
+  pos: "Budget PO Tracker",
   audit: "Audit Trail",
 };
 
@@ -178,6 +181,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // the Vendors tab, same pattern jumpToTech already uses for Technicians.
   let vendorProfileId = null;
   let vendorProfileTab = "overview";
+  const auditFilters = { search: "", action: "", range: "" };
   function openVendorProfile(vendorId, tab) {
     vendorProfileId = vendorId;
     vendorProfileTab = tab || "overview";
@@ -263,6 +267,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
+    else if (activeTab === "pos") await renderPos(content);
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
@@ -1335,9 +1340,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function renderVendorCostsTab(host, v) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
-    let woms;
+    let woms, pos;
     try {
-      woms = (await api.get("/api/woms")).filter((w) => w.vendorId === v.id);
+      [woms, pos] = await Promise.all([
+        api.get("/api/woms").then((all) => all.filter((w) => w.vendorId === v.id)),
+        // Only Active POs ever surface here -- a Needs Organization record
+        // is only visible through the POs tab itself until it's moved to
+        // Active, same rule as Task Manager.
+        api.get(`/api/admin/pos?${new URLSearchParams({ vendorId: v.id, lifecycleStatus: "active" })}`),
+      ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
@@ -1351,6 +1362,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <p class="review-checklist-hint">See Financials &rarr; Cost Analysis for the full cross-vendor cost breakdown.</p>
       <h4>WOM Projects (${woms.length})</h4>
       <div class="review-list" id="vendor-cost-wom-list"></div>
+      <h4>Budget POs (${pos.length})</h4>
+      <div class="review-list" id="vendor-cost-po-list"></div>
     `;
     const list = host.querySelector("#vendor-cost-wom-list");
     if (woms.length === 0) {
@@ -1365,6 +1378,23 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <span class="badge badge-${womStatusBadgeClass(w.status)}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
           </div>
           <div class="wom-desc">Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}</div>
+        </div>`
+        )
+        .join("");
+    }
+    const poList = host.querySelector("#vendor-cost-po-list");
+    if (pos.length === 0) {
+      poList.innerHTML = `<p class="empty-note">No active Budget POs linked to this vendor yet.</p>`;
+    } else {
+      poList.innerHTML = pos
+        .map(
+          (p) => `
+        <div class="review-row">
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(p.description || "PO record")} ${p.poNumber ? `<span class="wom-code">PO ${escapeHtml(p.poNumber)}</span>` : ""}</span>
+            <span class="badge badge-draft">${escapeHtml(p.status || "—")}</span>
+          </div>
+          <div class="wom-desc">$${formatMoney(p.poAmount || 0)} &mdash; ${escapeHtml(p.locationName || "Unclassified")}</div>
         </div>`
         )
         .join("");
@@ -4013,25 +4043,90 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
   }
 
+  function auditActionLabel(action) {
+    return action
+      .toLowerCase()
+      .split("_")
+      .map((w) => w[0].toUpperCase() + w.slice(1))
+      .join(" ");
+  }
+
+  function auditRangeCutoff(range) {
+    if (!range) return null;
+    const days = { "1": 1, "7": 7, "30": 30, "90": 90 }[range];
+    if (!days) return null;
+    return Date.now() - days * 24 * 60 * 60 * 1000;
+  }
+
   async function drawAudit(content) {
     const entries = await api.get("/api/audit");
+    const actions = [...new Set(entries.map((e) => e.action))].sort();
+
     content.innerHTML = `
-      <table class="detail-table audit-table">
-        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead>
-        <tbody>
-          ${entries
-            .map(
-              (e) => `
-            <tr>
-              <td>${new Date(e.timestamp).toLocaleString()}</td>
-              <td>${escapeHtml(e.actor)}</td>
-              <td>${escapeHtml(e.action)}</td>
-              <td>${escapeHtml(e.details)}</td>
-            </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
+      <div class="wom-filter-bar audit-filter-bar">
+        <div class="search-field">
+          <span class="search-field-icon">&#128269;</span>
+          <input type="text" class="audit-search" placeholder="Search actor, action, or details" value="${escapeHtml(auditFilters.search)}" />
+        </div>
+        <select class="audit-action-filter">
+          <option value="">All actions</option>
+          ${actions.map((a) => `<option value="${escapeHtml(a)}" ${auditFilters.action === a ? "selected" : ""}>${escapeHtml(auditActionLabel(a))}</option>`).join("")}
+        </select>
+        <select class="audit-range-filter">
+          <option value="">All time</option>
+          <option value="1" ${auditFilters.range === "1" ? "selected" : ""}>Last 24 hours</option>
+          <option value="7" ${auditFilters.range === "7" ? "selected" : ""}>Last 7 days</option>
+          <option value="30" ${auditFilters.range === "30" ? "selected" : ""}>Last 30 days</option>
+          <option value="90" ${auditFilters.range === "90" ? "selected" : ""}>Last 90 days</option>
+        </select>
+      </div>
+      <p class="audit-count"></p>
+      <div id="audit-table-wrap"></div>
     `;
+
+    function refresh() {
+      const search = auditFilters.search.toLowerCase();
+      const cutoff = auditRangeCutoff(auditFilters.range);
+      const filtered = entries.filter((e) => {
+        if (auditFilters.action && e.action !== auditFilters.action) return false;
+        if (cutoff && new Date(e.timestamp).getTime() < cutoff) return false;
+        if (search && !`${e.actor} ${e.action} ${e.details}`.toLowerCase().includes(search)) return false;
+        return true;
+      });
+      content.querySelector(".audit-count").textContent = `${filtered.length} of ${entries.length} entries.`;
+      content.querySelector("#audit-table-wrap").innerHTML = `
+        <table class="detail-table audit-table">
+          <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead>
+          <tbody>
+            ${filtered
+              .map(
+                (e) => `
+              <tr>
+                <td>${new Date(e.timestamp).toLocaleString()}</td>
+                <td>${escapeHtml(e.actor)}</td>
+                <td>${escapeHtml(auditActionLabel(e.action))}</td>
+                <td>${escapeHtml(e.details)}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    content.querySelector(".audit-search").addEventListener("input", (e) => {
+      auditFilters.search = e.target.value;
+      refresh();
+    });
+    content.querySelector(".audit-action-filter").addEventListener("change", (e) => {
+      auditFilters.action = e.target.value;
+      refresh();
+    });
+    content.querySelector(".audit-range-filter").addEventListener("change", (e) => {
+      auditFilters.range = e.target.value;
+      refresh();
+    });
+
+    refresh();
   }
 }

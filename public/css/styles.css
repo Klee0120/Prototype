@@ -153,7 +153,15 @@ h1, h2, h3, h4 {
   color: var(--sidebar-text);
   position: sticky;
   top: 0;
+  /* 100vh on a phone browser is measured against the viewport with its
+     address bar collapsed -- taller than what's actually visible while
+     the bar is still showing. That mismatch is what shows up as a blank
+     gap between the nav and the Log out footer: this sticky box is
+     momentarily taller than the real visible area. 100dvh tracks the
+     actual visible viewport as the browser chrome shows/hides; 100vh
+     stays as the fallback for a browser that doesn't support it. */
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
 }
 
@@ -2197,6 +2205,54 @@ h1, h2, h3, h4 {
 
 .overview-table .warn { color: var(--warn); }
 .overview-table .danger { color: var(--danger); font-weight: 600; }
+
+.po-filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink);
+}
+.po-filter-checkbox input { margin: 0; }
+
+.po-table tbody tr.po-row {
+  cursor: pointer;
+}
+.po-table tbody tr.po-row:hover {
+  background: var(--neutral-bg);
+}
+.po-desc-cell {
+  max-width: 320px;
+}
+
+.po-region-edit,
+.po-vendor-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.po-vendor-picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 10px;
+}
+.po-vendor-picker-row {
+  cursor: pointer;
+}
+.po-vendor-picker-row:hover {
+  background: var(--neutral-bg);
+}
+
+.po-add-task-form {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 20px;
+}
+.po-add-task-form input {
+  flex: 1;
+}
 
 .overview-row-flagged {
   background: var(--danger-bg);
