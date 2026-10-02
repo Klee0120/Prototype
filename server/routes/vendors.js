@@ -94,6 +94,30 @@ router.get("/:id/compliance-tasks", (req, res) => {
   res.json(db.listVendorComplianceTasks(vendor.id));
 });
 
+// Every task tied to this vendor regardless of category/status/assignee --
+// the Vendor Profile's Tasks tab. Unlike the main Task Manager's own
+// queries, this is never scoped to "my work"/a view -- it's always the
+// vendor's complete task history, same underlying rows Task Manager and
+// this vendor's own profile both read from.
+router.get("/:id/tasks", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+
+  const tasks = db.listTasks({ relatedVendorId: vendor.id }).map((t) => {
+    const assignee = t.assigned_to ? db.findTechnician(t.assigned_to) : null;
+    return {
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      dueAt: t.due_at,
+      createdAt: t.created_at,
+      assignedToName: assignee ? assignee.name : t.assigned_role ? `Unclaimed — ${t.assigned_role}` : "Unassigned",
+    };
+  });
+  res.json(tasks);
+});
+
 // addVendorRequest/updateVendorRequest/deleteVendorRequest each re-derive
 // the vendor's onboardingStage from the latest case of each required type
 // (see db.js) -- comparing before/after here lets a stage change that

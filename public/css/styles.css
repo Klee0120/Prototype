@@ -2598,6 +2598,66 @@ h1, h2, h3, h4 {
   color: var(--danger);
 }
 
+/* ---- Vendor Directory + Vendor Profile ---- */
+
+.vendor-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.vendor-overview-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+}
+.vendor-overview-card h4 {
+  margin: 0 0 12px;
+}
+.vendor-overview-card h4:not(:first-child) {
+  margin-top: 16px;
+}
+
+.vendor-overview-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.vendor-overview-fields > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 6px;
+}
+.vendor-overview-fields dt {
+  color: var(--muted);
+}
+.vendor-overview-fields dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 500;
+}
+
+.vendor-overview-notes {
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.vendor-next-action {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.vendor-profile-tabs {
+  margin-bottom: 16px;
+}
+
 .wom-lookup-select {
   padding: 9px 10px;
   border: 1px solid var(--border);

@@ -83,7 +83,7 @@ const TAB_LABELS = {
   costanalysis: "Cost Analysis",
   laborreports: "Reports",
   technicians: "Technicians",
-  vendors: "Vendors",
+  vendors: "Vendor Directory",
   onboarding: "Onboarding",
   locations: "Locations",
   woms: "WOM Projects",
@@ -171,8 +171,18 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // every keystroke would just be wasted network, not a real cache concern).
   let vendorsCache = null;
   const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "" };
-  const vendorExpanded = new Set();
   const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
+  // Which vendor's full profile page is open (null = showing the directory
+  // list instead), and which of its tabs -- a one-shot deep link (from the
+  // Onboarding board, or a Priorities follow-up) just sets both and jumps to
+  // the Vendors tab, same pattern jumpToTech already uses for Technicians.
+  let vendorProfileId = null;
+  let vendorProfileTab = "overview";
+  function openVendorProfile(vendorId, tab) {
+    vendorProfileId = vendorId;
+    vendorProfileTab = tab || "overview";
+    goTo("vendors");
+  }
 
   // Remembers which sub-tab was last open within each multi-tab section, so
   // clicking back into e.g. Timekeeping returns to where you left off
@@ -187,10 +197,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   let drawGeneration = 0;
 
   function goTo(tab) {
-    // Coming back to Vendors from somewhere else should start collapsed
-    // again -- an "Open" row is a within-visit convenience, not state that
-    // should survive switching away and back.
-    if (activeTab === "vendors" && tab !== "vendors") vendorExpanded.clear();
+    // Coming back to Vendors from somewhere else should start at the
+    // directory list again -- an open profile is a within-visit
+    // convenience, not state that should survive switching away and back.
+    if (activeTab === "vendors" && tab !== "vendors") vendorProfileId = null;
     activeTab = tab;
     sectionLastTab[sectionForTab(tab).key] = tab;
     draw();
@@ -330,6 +340,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function drawVendors(content) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    if (vendorProfileId) {
+      const v = vendorsCache.find((x) => x.id === vendorProfileId);
+      if (v) {
+        await renderVendorProfile(content, v);
+        return;
+      }
+      vendorProfileId = null;
+    }
     renderVendorsUI(content);
   }
 
@@ -582,7 +600,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       </div>
     `;
     el.querySelector(".onboarding-review-compliance-btn").addEventListener("click", () => {
-      openVendorOnboardingComplianceModal(v, content);
+      openVendorProfile(v.id, "onboarding");
     });
     return el;
   }
@@ -618,8 +636,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
 
     el.querySelector(".onboarding-open-vendor-btn").addEventListener("click", () => {
-      vendorExpanded.add(v.id);
-      goTo("vendors");
+      openVendorProfile(v.id, "onboarding");
     });
     wireWelcomeEmailLine(el, v, () => drawVendorOnboarding(content));
 
@@ -860,7 +877,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const outdatedCount = vendorsCache.filter((v) => v.formsStatus === "outdated").length;
 
     content.innerHTML = `
-      <h3>Vendors</h3>
+      <h3>Vendor Directory</h3>
       <p class="review-checklist-hint">
         Vendor onboarding/compliance tracker -- C&amp;W approval, Toyota approval, and forms
         currency per vendor. Click a vendor to expand and edit.
@@ -937,15 +954,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     } else {
       filtered.forEach((v) => list.appendChild(renderVendorRow(v, content)));
     }
-    // vendorExpanded is now a one-shot deep-link queue (set by the
-    // Onboarding board's "Open vendor" button and the Priorities
-    // outdated-forms jump) rather than persistent expanded-row state --
-    // consume it by opening that vendor's modal, then clear it.
-    if (vendorExpanded.size > 0) {
-      const toOpen = filtered.find((v) => vendorExpanded.has(v.id));
-      vendorExpanded.clear();
-      if (toOpen) openVendorEditModal(toOpen, content);
-    }
   }
 
   function openAddVendorModal(content) {
@@ -984,7 +992,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       e.preventDefault();
       const msg = addForm.querySelector(".save-message");
       try {
-        await api.post("/api/admin/vendors", {
+        const created = await api.post("/api/admin/vendors", {
           name: addForm.name.value.trim(),
           jdeVendorNumber: addForm.jdeVendorNumber.value.trim(),
           cwStatus: addForm.cwStatus.value,
@@ -993,7 +1001,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         });
         vendorsCache = null;
         close();
-        await drawVendors(content);
+        // Straight into the new vendor's own profile -- Add vendor -> Open
+        // profile -> Start onboarding is the whole flow, not three separate
+        // trips back to the directory list.
+        openVendorProfile(created.id);
       } catch (err) {
         msg.textContent = err.message;
       }
@@ -1056,33 +1067,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
   }
 
-  function openVendorEditModal(v, content) {
+  // The profile's "Edit vendor" button -- just the editable fields, in a
+  // focused modal, rather than a giant form embedded in the page itself.
+  // Onboarding/cost-history/documents each have their own profile tab now,
+  // so they're not part of this form anymore.
+  function openVendorEditFormModal(v, content) {
     const { body, close } = openModal({
-      title: v.name,
+      title: `Edit ${v.name}`,
       size: "large",
-      bodyHtml: renderVendorEditForm(v),
+      bodyHtml: renderVendorEditFormFields(v),
     });
-    const documentsPanel = body.querySelector(".vendor-documents-panel");
-    const refreshDocumentsPanel = () =>
-      renderAttachments(documentsPanel, {
-        title: "Vendor Documents",
-        relatedType: "vendor",
-        relatedId: v.id,
-        categories: VENDOR_DOC_CATEGORIES,
-        canUpload: true,
-        groupByCategory: true,
-        trackExpiration: true,
-        emptyText: "No documents on file yet.",
-      });
-    refreshDocumentsPanel();
-    const assignHost = document.createElement("div");
-    assignHost.className = "vendor-assign-task-doc-host";
-    documentsPanel.after(assignHost);
-    renderAssignTaskDocumentControl(assignHost, v, refreshDocumentsPanel);
-    body.querySelector(".vendor-open-onboarding-btn").addEventListener("click", () => {
-      openVendorOnboardingComplianceModal(v, content);
-    });
-
     const form = body.querySelector(".vendor-edit-form");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -1124,6 +1118,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       try {
         await api.delete(`/api/admin/vendors/${v.id}`);
         vendorsCache = null;
+        vendorProfileId = null;
         close();
         await drawVendors(content);
       } catch (err) {
@@ -1138,7 +1133,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     el.innerHTML = `
       <div class="review-row-summary vendor-summary">
-        <span class="review-row-name">${escapeHtml(v.name)}</span>
+        <span class="review-row-name">
+          ${escapeHtml(v.name)}
+          ${v.services ? `<span class="wom-desc"> — ${escapeHtml(v.services)}</span>` : ""}
+        </span>
         <span class="vendor-jde">${escapeHtml(v.jdeVendorNumber || "No JDE #")}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
@@ -1146,13 +1144,263 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${!v.formChecksComplete || v.w9InvoiceStale ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
         ${v.onboardingStage === "in_progress" ? `<span class="badge badge-draft">Onboarding: In Progress</span>` : ""}
         ${v.onboardingStage === "denied" ? `<span class="badge badge-rejected">Onboarding: Denied</span>` : ""}
+        ${v.openTaskCount > 0 ? `<span class="chip">${v.openTaskCount} open task${v.openTaskCount === 1 ? "" : "s"}</span>` : ""}
         <button class="btn btn-secondary vendor-open-btn" type="button">Open</button>
       </div>
     `;
     el.querySelector(".vendor-open-btn").addEventListener("click", () => {
-      openVendorEditModal(v, content);
+      openVendorProfile(v.id);
     });
     return el;
+  }
+
+  const VENDOR_PROFILE_TABS = [
+    { key: "overview", label: "Overview" },
+    { key: "onboarding", label: "Onboarding & Compliance" },
+    { key: "tasks", label: "Tasks" },
+    { key: "documents", label: "Documents" },
+    { key: "costs", label: "Work & Costs" },
+    { key: "activity", label: "Activity" },
+  ];
+  const ONBOARDING_STAGE_LABELS = { not_started: "Not Started", in_progress: "In Progress", denied: "Denied", onboarded: "Onboarded" };
+  const ONBOARDING_STAGE_BADGE_CLASS = { not_started: "draft", in_progress: "draft", denied: "rejected", onboarded: "approved" };
+
+  // The full vendor profile page -- replaces the old single long edit
+  // modal. Read-only Overview by default; Edit vendor opens just the
+  // editable fields in a focused modal. Every other tab reuses the exact
+  // same render/wire functions the Onboarding board and Task Manager
+  // already use against the same underlying records, so updating a case,
+  // task, or document from here updates it everywhere else too.
+  async function renderVendorProfile(content, v) {
+    content.innerHTML = `
+      <button type="button" class="btn btn-link vendor-back-btn">&larr; Vendor Directory</button>
+      <div class="page-header">
+        <div>
+          <h1 class="page-header-title">${escapeHtml(v.name)}</h1>
+          <p class="page-header-subtitle">
+            <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
+            <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
+          </p>
+        </div>
+        <div class="page-header-actions">
+          <button type="button" class="btn btn-outline vendor-edit-btn">Edit vendor</button>
+        </div>
+      </div>
+      <div class="tabs vendor-profile-tabs">
+        ${VENDOR_PROFILE_TABS.map((t) => `<button class="tab ${vendorProfileTab === t.key ? "active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
+      </div>
+      <div class="vendor-profile-body"></div>
+    `;
+
+    content.querySelector(".vendor-back-btn").addEventListener("click", () => {
+      vendorProfileId = null;
+      drawVendors(content);
+    });
+    content.querySelector(".vendor-edit-btn").addEventListener("click", () => {
+      openVendorEditFormModal(v, content);
+    });
+    content.querySelectorAll(".vendor-profile-tabs .tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        vendorProfileTab = btn.dataset.tab;
+        renderVendorProfile(content, v);
+      });
+    });
+
+    const body = content.querySelector(".vendor-profile-body");
+    if (vendorProfileTab === "onboarding") await renderVendorOnboardingTab(body, v);
+    else if (vendorProfileTab === "tasks") await renderVendorTasksTab(body, v);
+    else if (vendorProfileTab === "documents") await renderVendorDocumentsTab(body, v);
+    else if (vendorProfileTab === "costs") await renderVendorCostsTab(body, v);
+    else if (vendorProfileTab === "activity") await renderVendorActivityTab(body, v);
+    else await renderVendorOverviewTab(body, v);
+  }
+
+  function renderVendorOverviewTab(host, v) {
+    const nextAction =
+      v.onboardingStage !== "onboarded"
+        ? "Continue onboarding -- see the Onboarding & Compliance tab."
+        : !v.formChecksComplete || v.formsStatus === "outdated" || v.w9InvoiceStale
+          ? "Update compliance documents -- see the Onboarding & Compliance tab."
+          : "No action needed -- this vendor is in good standing.";
+    host.innerHTML = `
+      <div class="vendor-overview-grid">
+        <div class="vendor-overview-card">
+          <h4>Contact &amp; Services</h4>
+          <dl class="vendor-overview-fields">
+            <div><dt>Contact phone</dt><dd>${v.phone ? escapeHtml(v.phone) : "Not provided"}</dd></div>
+            <div><dt>Email</dt><dd>${v.email ? escapeHtml(v.email) : "Not provided"}</dd></div>
+            <div><dt>PO email</dt><dd>${v.poEmail ? escapeHtml(v.poEmail) : "Not provided"}</dd></div>
+            <div><dt>JDE Vendor #</dt><dd>${v.jdeVendorNumber ? escapeHtml(v.jdeVendorNumber) : "Not on file"}</dd></div>
+            <div><dt>Services</dt><dd>${v.services ? escapeHtml(v.services) : "Not set"}</dd></div>
+            <div><dt>Coverage outside Midwest</dt><dd>${v.coverageOutsideMidwest ? escapeHtml(v.coverageOutsideMidwest) : "Not confirmed"}</dd></div>
+            <div><dt>Midwest sites seen</dt><dd>${v.midwestSitesSeen ? escapeHtml(v.midwestSitesSeen) : "None on file"}</dd></div>
+          </dl>
+          ${v.notes ? `<h4>Notes</h4><p class="vendor-overview-notes">${escapeHtml(v.notes)}</p>` : ""}
+        </div>
+        <div class="vendor-overview-card">
+          <h4>Onboarding summary</h4>
+          <p><span class="badge badge-${ONBOARDING_STAGE_BADGE_CLASS[v.onboardingStage] || "draft"}">${escapeHtml(ONBOARDING_STAGE_LABELS[v.onboardingStage] || v.onboardingStage)}</span></p>
+          <p class="vendor-next-action">${escapeHtml(nextAction)}</p>
+          <p class="review-checklist-hint">
+            $${formatMoney(v.totalContractedApplied || 0)} in contracted services applied across
+            ${v.contractedWomCount || 0} WOM${v.contractedWomCount === 1 ? "" : "s"}. Last invoiced
+            ${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "never yet"}.
+          </p>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderVendorOnboardingTab(host, v) {
+    host.innerHTML = `
+      <h4>Onboarding cases</h4>
+      <div class="vendor-cases-section"></div>
+      <h4>Document Compliance</h4>
+      <div class="vendor-doc-checks-host"></div>
+      <h4>Compliance Follow-up</h4>
+      <p class="review-checklist-hint">
+        A follow-up task is generated automatically whenever this vendor needs attention (an
+        unconfirmed document check, outdated forms, a stale W-9 invoice, or an expired COI/W-9/ACH
+        upload) -- work it, snooze it, or comment on it from Task Manager like any other task. It
+        closes on its own once the actual gap is fixed; notes logged on it stay visible here even
+        after it's done.
+      </p>
+      <div class="vendor-compliance-tasks-host"></div>
+    `;
+    renderVendorCasesSection(host.querySelector(".vendor-cases-section"), v);
+    const docChecksHost = host.querySelector(".vendor-doc-checks-host");
+    function attachDocChecksForm() {
+      docChecksHost.innerHTML = renderVendorDocChecksForm(v);
+      wireVendorDocChecksForm(docChecksHost.querySelector(".vendor-doc-checks-form"), v, (updated) => {
+        Object.assign(v, updated);
+        vendorsCache = null;
+        attachDocChecksForm();
+      });
+    }
+    attachDocChecksForm();
+    await renderVendorComplianceTasks(host.querySelector(".vendor-compliance-tasks-host"), v);
+  }
+
+  async function renderVendorTasksTab(host, v) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let tasks;
+    try {
+      tasks = await api.get(`/api/admin/vendors/${v.id}/tasks`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    if (tasks.length === 0) {
+      host.innerHTML = `<p class="empty-note">No tasks linked to this vendor.</p>`;
+      return;
+    }
+    const taskStatusBadgeClass = { completed: "approved", cancelled: "rejected", waiting: "warn" };
+    host.innerHTML = `
+      <table class="detail-table">
+        <thead><tr><th>Task</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th></tr></thead>
+        <tbody>
+          ${tasks
+            .map(
+              (t) => `<tr>
+            <td>${escapeHtml(t.title)}</td>
+            <td>${escapeHtml(t.assignedToName)}</td>
+            <td>${escapeHtml(t.priority)}</td>
+            <td><span class="badge badge-${taskStatusBadgeClass[t.status] || "draft"}">${escapeHtml(t.status)}</span></td>
+            <td>${t.dueAt ? new Date(t.dueAt).toLocaleDateString() : "—"}</td>
+          </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  async function renderVendorDocumentsTab(host, v) {
+    host.innerHTML = `<div class="vendor-documents-panel"></div><div class="vendor-assign-task-doc-host"></div>`;
+    const documentsPanel = host.querySelector(".vendor-documents-panel");
+    const refreshDocumentsPanel = () =>
+      renderAttachments(documentsPanel, {
+        title: "Vendor Documents",
+        relatedType: "vendor",
+        relatedId: v.id,
+        categories: VENDOR_DOC_CATEGORIES,
+        canUpload: true,
+        groupByCategory: true,
+        trackExpiration: true,
+        emptyText: "No documents on file yet.",
+      });
+    await refreshDocumentsPanel();
+    await renderAssignTaskDocumentControl(host.querySelector(".vendor-assign-task-doc-host"), v, refreshDocumentsPanel);
+  }
+
+  async function renderVendorCostsTab(host, v) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let woms;
+    try {
+      woms = (await api.get("/api/woms")).filter((w) => w.vendorId === v.id);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    host.innerHTML = `
+      <div class="task-tiles">
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(v.totalContractedApplied || 0)}</div><div class="task-tile-label">Contracted Services Applied</div></div>
+        <div class="task-tile"><div class="task-tile-count">${v.contractedWomCount || 0}</div><div class="task-tile-label">WOMs With Contracted Spend</div></div>
+        <div class="task-tile"><div class="task-tile-count">${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "Never"}</div><div class="task-tile-label">Last Invoiced</div></div>
+      </div>
+      <p class="review-checklist-hint">See Financials &rarr; Cost Analysis for the full cross-vendor cost breakdown.</p>
+      <h4>WOM Projects (${woms.length})</h4>
+      <div class="review-list" id="vendor-cost-wom-list"></div>
+    `;
+    const list = host.querySelector("#vendor-cost-wom-list");
+    if (woms.length === 0) {
+      list.innerHTML = `<p class="empty-note">No WOM projects linked to this vendor yet.</p>`;
+    } else {
+      list.innerHTML = woms
+        .map(
+          (w) => `
+        <div class="review-row">
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.description)} <span class="wom-code">${escapeHtml(w.code)}</span></span>
+            <span class="badge badge-${womStatusBadgeClass(w.status)}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
+          </div>
+          <div class="wom-desc">Est. $${formatMoney(w.estimatedPrice)} / Applied $${formatMoney(w.appliedPrice)}</div>
+        </div>`
+        )
+        .join("");
+    }
+  }
+
+  async function renderVendorActivityTab(host, v) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let requests;
+    try {
+      requests = await api.get(`/api/admin/vendors/${v.id}/requests`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    if (requests.length === 0) {
+      host.innerHTML = `<p class="empty-note">No activity logged for this vendor yet.</p>`;
+      return;
+    }
+    host.innerHTML = `
+      <table class="detail-table">
+        <thead><tr><th>When</th><th>Case</th><th>Status</th><th>Note</th></tr></thead>
+        <tbody>
+          ${requests
+            .map(
+              (r) => `<tr>
+            <td>${new Date(r.updatedAt).toLocaleString()}</td>
+            <td>${escapeHtml(r.requestType)}${r.referenceNumber ? ` #${escapeHtml(r.referenceNumber)}` : ""}</td>
+            <td>${escapeHtml(r.status || "—")}</td>
+            <td>${escapeHtml(r.note || "")}</td>
+          </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
   }
 
   const COI_LIMIT_LABELS = {
@@ -1403,7 +1651,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
   }
 
-  function renderVendorEditForm(v) {
+  function renderVendorEditFormFields(v) {
     const cwSelect = ["unknown", "active", "inactive"]
       .map((s) => `<option value="${s}" ${v.cwStatus === s ? "selected" : ""}>${escapeHtml(CW_STATUS_LABELS[s])}</option>`)
       .join("");
@@ -1415,32 +1663,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       .join("");
 
     return `
-      <div class="review-actions">
-        <button type="button" class="btn btn-secondary vendor-open-onboarding-btn">Onboarding &amp; Compliance &rarr;</button>
-      </div>
-      <p class="review-checklist-hint">
-        Onboarding case status (has ServiceEdge approved the COI/W-9/Payment case) and document
-        compliance checks (does the uploaded COI/W-9/ACH actually meet requirements) live together
-        there now, reachable for this vendor any time regardless of where it stands on the
-        Onboarding board.
-      </p>
-
-      <h4>Cost history</h4>
-      <p class="review-checklist-hint">
-        $${formatMoney(v.totalContractedApplied || 0)} in contracted services applied across
-        ${v.contractedWomCount || 0} WOM${v.contractedWomCount === 1 ? "" : "s"} on file with this vendor.
-        Last invoiced: ${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "never yet"}.
-        See Financials &rarr; Cost Analysis for the full vendor cost breakdown.
-      </p>
-
-      <h4>Documents</h4>
-      <div class="vendor-documents-panel"></div>
-      <p class="review-checklist-hint">
-        These are the vendor's actual documents on file -- separate from onboarding case status and
-        document compliance checks (Onboarding &amp; Compliance, above).
-      </p>
-
-      <h4>Vendor Info</h4>
       <form class="vendor-edit-form">
         <div class="vendor-edit-grid">
           <label class="profile-field"><span>Vendor name</span><input name="name" value="${escapeHtml(v.name)}" required /></label>
@@ -1741,9 +1963,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         const { kind, tech, week, month, vendor, wom } = btn.dataset;
         if (kind === "vendor") {
           vendorFilters.formsStatus = "outdated";
+          vendorProfileId = null;
           activeTab = "vendors";
         } else if (kind === "vendor-doc") {
-          vendorExpanded.add(Number(vendor));
+          vendorProfileId = Number(vendor);
+          vendorProfileTab = "documents";
           activeTab = "vendors";
         } else if (kind === "tech-forms") {
           jumpToTech = { techId: tech, subTab: "forms" };

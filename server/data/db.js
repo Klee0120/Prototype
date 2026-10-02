@@ -1306,6 +1306,18 @@ function getVendorContractedSummary(vendorId) {
   };
 }
 
+// Every open (not completed/cancelled) task tied to this vendor, regardless
+// of category or who it's assigned to -- the Vendor Directory's at-a-glance
+// "N open tasks" count.
+function countOpenVendorTasks(vendorId) {
+  const { total } = db
+    .prepare(
+      `SELECT COUNT(*) as total FROM tasks WHERE related_vendor_id = ? AND status IN ('open', 'in_progress', 'waiting')`
+    )
+    .get(vendorId);
+  return total;
+}
+
 function presentVendorRow(v) {
   const coiLimits = {};
   for (const [key, col] of VENDOR_COI_FIELDS) coiLimits[key] = v[col] || "";
@@ -1352,6 +1364,7 @@ function presentVendorRow(v) {
     deniedReason: v.denied_reason || "",
     createdAt: v.created_at,
     updatedAt: v.updated_at,
+    openTaskCount: countOpenVendorTasks(v.id),
     ...getVendorContractedSummary(v.id),
   };
 }
