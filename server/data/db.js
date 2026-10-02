@@ -513,6 +513,51 @@ db.exec(`
     missing_count INTEGER NOT NULL DEFAULT 0,
     invalid_count INTEGER NOT NULL DEFAULT 0
   );
+
+  -- GL import: Krista's monthly "GL Report" extract, matched against the
+  -- Budget PO Tracker by PO number -- real $ actually paid (per the GL),
+  -- compared against what the PO was approved for, plus whether the GL
+  -- posting's own object/subsidiary code matches what's on the PO itself
+  -- (a real coding-mismatch check, not a guess, since the PO Tracker already
+  -- stores its own object_code/subsidiary per PO). One import replaces
+  -- whatever was previously imported for that exact period/fiscal year --
+  -- a closed GL period's extract is the authoritative full pull for that
+  -- period, not something that gets merged row by row.
+  CREATE TABLE IF NOT EXISTS gl_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_number INTEGER,
+    fiscal_year INTEGER,
+    row_count INTEGER NOT NULL DEFAULT 0,
+    matched_count INTEGER NOT NULL DEFAULT 0,
+    unmatched_count INTEGER NOT NULL DEFAULT 0,
+    source_file_name TEXT,
+    imported_by TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS gl_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_id INTEGER,
+    period_number INTEGER,
+    fiscal_year INTEGER,
+    gl_date TEXT,
+    document_type TEXT,
+    document_number TEXT,
+    journal_entry_line_number INTEGER,
+    business_unit TEXT,
+    object_account TEXT,
+    object_account_code TEXT,
+    subsidiary TEXT,
+    amount REAL,
+    batch_number TEXT,
+    supplier_invoice_number TEXT,
+    invoice_date TEXT,
+    location_code TEXT,
+    remark TEXT,
+    purchase_order TEXT,
+    matched_po_id INTEGER,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // A sync's actual per-WOM changes (code/description/which fields differed),
@@ -4987,6 +5032,200 @@ function listUnregisteredPoVendors() {
     .all();
 }
 
+// ---- GL import / PO reconciliation ----
+//
+// Matches a monthly GL extract against the Budget PO Tracker by PO number
+// (the GL's own "Purchase Order" column -- a real JDE field, not inferred),
+// to answer the two things the PO Tracker alone can't: what actually got
+// paid against a PO (vs. what it was approved for), and whether the GL
+// posting used the same object/subsidiary code the PO itself specifies.
+
+function normalizePoNumber(raw) {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isNaN(n) && String(raw).trim() !== "") return String(Math.trunc(n));
+  return String(raw).trim() || null;
+}
+
+// "601000 - Events~Labor" -> "601000" -- the numeric object code prefix,
+// comparable against the PO Tracker's own object_code field.
+function parseObjectAccountCode(raw) {
+  if (raw == null) return null;
+  const match = String(raw).match(/^\s*(\d+)/);
+  return match ? match[1] : null;
+}
+
+function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileName) {
+  const now = new Date().toISOString();
+  db.prepare("DELETE FROM gl_entries WHERE period_number = ? AND fiscal_year = ?").run(periodNumber, fiscalYear);
+
+  const insert = db.prepare(`
+    INSERT INTO gl_entries
+      (import_id, period_number, fiscal_year, gl_date, document_type, document_number,
+       journal_entry_line_number, business_unit, object_account, object_account_code, subsidiary,
+       amount, batch_number, supplier_invoice_number, invoice_date, location_code, remark,
+       purchase_order, matched_po_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const findPoByNumber = db.prepare("SELECT id FROM pos WHERE po_number = ? LIMIT 1");
+  const poNumberCache = new Map();
+  const lookupPoId = (poNumber) => {
+    if (!poNumberCache.has(poNumber)) {
+      const row = findPoByNumber.get(poNumber);
+      poNumberCache.set(poNumber, row ? row.id : null);
+    }
+    return poNumberCache.get(poNumber);
+  };
+
+  const importRow = db.prepare(
+    `INSERT INTO gl_imports
+      (period_number, fiscal_year, row_count, matched_count, unmatched_count, source_file_name, imported_by, created_at)
+     VALUES (?, ?, 0, 0, 0, ?, ?, ?)`
+  ).run(periodNumber, fiscalYear, sourceFileName, importedBy, now);
+  const importId = Number(importRow.lastInsertRowid);
+
+  let matchedCount = 0;
+  let unmatchedCount = 0;
+  for (const r of rows) {
+    const poNumber = normalizePoNumber(r.purchaseOrder);
+    const matchedPoId = poNumber ? lookupPoId(poNumber) : null;
+    if (poNumber) {
+      if (matchedPoId) matchedCount++;
+      else unmatchedCount++;
+    }
+    insert.run(
+      importId,
+      periodNumber,
+      fiscalYear,
+      r.glDate || null,
+      r.documentType || null,
+      r.documentNumber || null,
+      r.journalEntryLineNumber ?? null,
+      r.businessUnit || null,
+      r.objectAccount || null,
+      parseObjectAccountCode(r.objectAccount),
+      r.subsidiary || null,
+      r.amount ?? null,
+      r.batchNumber || null,
+      r.supplierInvoiceNumber || null,
+      r.invoiceDate || null,
+      r.locationCode || null,
+      r.remark || null,
+      poNumber,
+      matchedPoId,
+      now
+    );
+  }
+  db.prepare("UPDATE gl_imports SET row_count = ?, matched_count = ?, unmatched_count = ? WHERE id = ?").run(
+    rows.length,
+    matchedCount,
+    unmatchedCount,
+    importId
+  );
+  return findGlImport(importId);
+}
+
+function presentGlImport(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    periodNumber: row.period_number,
+    fiscalYear: row.fiscal_year,
+    rowCount: row.row_count,
+    matchedCount: row.matched_count,
+    unmatchedCount: row.unmatched_count,
+    sourceFileName: row.source_file_name,
+    importedBy: row.imported_by,
+    createdAt: row.created_at,
+  };
+}
+
+function findGlImport(id) {
+  return presentGlImport(db.prepare("SELECT * FROM gl_imports WHERE id = ?").get(id));
+}
+
+function listGlImports() {
+  return db.prepare("SELECT * FROM gl_imports ORDER BY created_at DESC").all().map(presentGlImport);
+}
+
+// Per-PO reconciliation: what the PO was approved for vs. what the GL shows
+// actually paid against it (summed across every matched GL line, which can
+// span more than one invoice/batch), plus whether any matched line's own
+// object/subsidiary code differs from what the PO itself specifies.
+function getPoReconciliation() {
+  const matchedPos = db
+    .prepare(
+      `SELECT
+         p.id, p.po_number AS poNumber, p.description, p.location_code AS locationCode,
+         p.wom_number AS womNumber, p.po_amount AS poAmount, p.object_code AS objectCode,
+         p.subsidiary AS poSubsidiary, p.vendor_name AS vendorName,
+         COUNT(g.id) AS glLineCount, SUM(g.amount) AS actualPaid
+       FROM pos p
+       JOIN gl_entries g ON g.matched_po_id = p.id
+       GROUP BY p.id
+       ORDER BY ABS(SUM(g.amount) - p.po_amount) DESC`
+    )
+    .all();
+
+  const linesByPo = new Map();
+  for (const line of db.prepare("SELECT * FROM gl_entries WHERE matched_po_id IS NOT NULL").all()) {
+    if (!linesByPo.has(line.matched_po_id)) linesByPo.set(line.matched_po_id, []);
+    linesByPo.get(line.matched_po_id).push({
+      glDate: line.gl_date,
+      documentType: line.document_type,
+      documentNumber: line.document_number,
+      objectAccount: line.object_account,
+      objectAccountCode: line.object_account_code,
+      subsidiary: line.subsidiary,
+      amount: line.amount,
+      supplierInvoiceNumber: line.supplier_invoice_number,
+      invoiceDate: line.invoice_date,
+    });
+  }
+
+  const reconciled = matchedPos.map((p) => {
+    const lines = linesByPo.get(p.id) || [];
+    const codingMismatch = lines.some(
+      (l) =>
+        (p.poSubsidiary && l.subsidiary && String(l.subsidiary) !== String(p.poSubsidiary)) ||
+        (p.objectCode && l.objectAccountCode && String(l.objectAccountCode) !== String(p.objectCode))
+    );
+    return {
+      poId: p.id,
+      poNumber: p.poNumber,
+      description: p.description,
+      locationCode: p.locationCode,
+      womNumber: p.womNumber,
+      vendorName: p.vendorName,
+      poAmount: p.poAmount,
+      actualPaid: p.actualPaid,
+      variance: p.actualPaid - (p.poAmount || 0),
+      glLineCount: p.glLineCount,
+      codingMismatch,
+      lines,
+    };
+  });
+
+  const unmatchedEntries = db
+    .prepare(
+      `SELECT gl_date AS glDate, document_type AS documentType, document_number AS documentNumber,
+              object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
+              purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber
+       FROM gl_entries
+       WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL
+       ORDER BY ABS(amount) DESC`
+    )
+    .all();
+
+  return {
+    reconciled,
+    reconciledTotal: reconciled.reduce((sum, r) => sum + r.variance, 0),
+    codingMismatchCount: reconciled.filter((r) => r.codingMismatch).length,
+    unmatchedEntries,
+    unmatchedTotal: unmatchedEntries.reduce((sum, e) => sum + (e.amount || 0), 0),
+  };
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -5159,4 +5398,8 @@ module.exports = {
   bulkMovePoToActive,
   listPoTasks,
   listUnregisteredPoVendors,
+  importGlEntries,
+  listGlImports,
+  findGlImport,
+  getPoReconciliation,
 };
