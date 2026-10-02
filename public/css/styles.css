@@ -1660,6 +1660,7 @@ h1, h2, h3, h4 {
 .cost-kpi-text {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 .cost-kpi-label {
   font-size: 13px;
@@ -1668,6 +1669,7 @@ h1, h2, h3, h4 {
 .cost-kpi-value {
   font-size: 24px;
   font-weight: 800;
+  overflow-wrap: break-word;
 }
 .cost-kpi-sub {
   font-size: 12px;
@@ -1751,6 +1753,21 @@ h1, h2, h3, h4 {
 .cost-amount-danger {
   color: var(--danger);
   font-weight: 600;
+}
+.cost-table tbody tr.cost-vendor-group-row {
+  cursor: pointer;
+  font-weight: 600;
+  background: var(--neutral-bg);
+}
+.cost-table tbody tr.cost-vendor-group-row:hover {
+  background: var(--border);
+}
+.cost-table tbody tr.cost-row-nested {
+  font-weight: 400;
+}
+.cost-table tbody tr.cost-row-nested .cost-nested-project {
+  padding-left: 32px;
+  color: var(--muted);
 }
 
 .task-secondary-stats {

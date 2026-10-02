@@ -25,12 +25,16 @@ const STATUS_BADGE_CLASS = {
 // never changes any posted-actuals figure anywhere else in the app; it's
 // tracked as pending until she marks it Confirmed Posted once a later GL
 // report shows the correction actually landed.
-export async function renderReclasses(container) {
+export async function renderReclasses(container, options = {}) {
   let statusFilter = "";
   let sourceFilter = "";
   let meta = null;
   let itemsCache = null;
   let lastBatch = null;
+  // One-shot deep link from Financials -> Cost Analysis's "Reclassed" link
+  // (see adminReview.js's reclassItemToOpen) -- opens straight to that
+  // item's detail the first time this tab draws, regardless of filters.
+  let openItemId = options.openItemId || null;
 
   draw();
 
@@ -55,6 +59,13 @@ export async function renderReclasses(container) {
       return;
     }
     drawList();
+
+    if (openItemId) {
+      const id = openItemId;
+      openItemId = null;
+      const item = itemsCache.find((r) => r.id === id);
+      if (item) openReclassDetailModal(item);
+    }
   }
 
   function drawList() {

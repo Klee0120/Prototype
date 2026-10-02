@@ -176,6 +176,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   let costSearchQuery = "";
   let costSortKey = null; // "project" | "wom" | "location" | "col<N>" | null (server's own default order)
   let costSortDir = "asc";
+  // One-shot: a reclass item id to auto-open in the Reclasses tab, set when
+  // a "Reclassed" link is clicked from the Applied-over-PO category table.
+  let reclassItemToOpen = null;
+  // Contracted Services Increased groups its rows by vendor (Krista: one
+  // vendor name + total, drilling down to the specifics, same idea as the
+  // Vendor cost analysis section lower on the page) -- which vendor groups
+  // are currently expanded.
+  const expandedCostVendors = new Set();
   const justSavedUkg = new Set(); // techId -> UKG hours were just saved, show a confirmation
   let laborReportMonth = currentMonthISO();
   let jumpToTech = null; // one-shot deep link into the Technicians tab (e.g. from the expiring-forms banner)
@@ -290,7 +298,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "pos") await renderPos(content);
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
-    else if (activeTab === "reclasses") await renderReclasses(content);
+    else if (activeTab === "reclasses") {
+      const openItemId = reclassItemToOpen;
+      reclassItemToOpen = null;
+      await renderReclasses(content, { openItemId });
+    }
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else await drawAudit(content);
 
@@ -3657,7 +3669,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <button class="btn btn-ghost row-menu-toggle" type="button" aria-label="More actions">&#8943;</button>
             <div class="row-menu-panel" hidden>
               ${w.smartsheetData ? `<button class="row-menu-item smartsheet-detail-btn" type="button">Smartsheet detail</button>` : ""}
-              ${w.smartsheetLink ? `<a class="row-menu-item" href="${escapeHtml(w.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""}
               <button class="row-menu-item row-menu-item-danger delete-wom-btn" type="button">Delete</button>
             </div>
           </div>
@@ -3854,7 +3865,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // entry is always the category's own headline $ figure (remaining
   // estimate, or over-quote amount) -- used for both the table's last
   // column and the detail header's total.
-  function buildCostCategories(summary) {
+  function buildCostCategories(summary, reclassItemsByWom) {
     const categories = [
       {
         key: "overquoted",
@@ -3914,32 +3925,38 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         total: summary.contractedIncreasedTotal,
         totalLabel: "total over",
         sectionTitle: "Contracted services increased",
-        hint: "Each row names the vendor whose charge came in over their own quote.",
+        hint: "Grouped by vendor -- open a vendor to see which of their projects ran over quote.",
         emptyNote: "No WOMs have a contracted-services increase right now.",
         items: summary.contractedIncreased,
+        groupByVendor: true,
         columns: [
-          { label: "Vendor", get: (w) => w.vendorName || "No vendor matched", isText: true },
           { label: "Estimated contracted", get: (w) => w.estimatedContracted },
           { label: "Applied contracted", get: (w) => w.appliedContracted },
           { label: "Over amount", get: (w) => w.overage, tone: "danger" },
         ],
       },
-      ...summary.categoryOverages.map((cat) => ({
-        key: `category-${cat.key}`,
-        tileLabel: cat.label,
-        count: cat.count,
-        total: cat.total,
-        totalLabel: "total over",
-        sectionTitle: `${cat.label} applied over estimate`,
-        hint: `Applied ${cat.label.toLowerCase()} cost came in higher than what was estimated.`,
-        emptyNote: `No WOMs have a ${cat.label.toLowerCase()} increase right now.`,
-        items: cat.items,
-        columns: [
-          { label: "Estimated", get: (w) => w.estimated },
-          { label: "Applied", get: (w) => w.applied },
-          { label: "Over amount", get: (w) => w.overage, tone: "danger" },
-        ],
-      })),
+      // "Other Direct Costs" is excluded here on purpose (Krista: it's ~5% of
+      // the other categories either way, not worth its own tile/table) --
+      // db.js still computes it in case that changes later, this just
+      // doesn't surface it.
+      ...summary.categoryOverages
+        .filter((cat) => cat.key !== "otherDirect")
+        .map((cat) => ({
+          key: `category-${cat.key}`,
+          tileLabel: cat.label,
+          count: cat.count,
+          total: cat.total,
+          totalLabel: "total over",
+          sectionTitle: `${cat.label} applied over estimate`,
+          hint: `Applied ${cat.label.toLowerCase()} cost came in higher than what was estimated.`,
+          emptyNote: `No WOMs have a ${cat.label.toLowerCase()} increase right now.`,
+          items: cat.items,
+          columns: [
+            { label: "Estimated", get: (w) => w.estimated },
+            { label: "Applied", get: (w) => w.applied },
+            { label: "Over amount", get: (w) => w.overage, tone: "danger" },
+          ],
+        })),
       {
         key: "appliedOverToyotaPo",
         tileLabel: "Applied over PO",
@@ -3949,13 +3966,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         sectionTitle: "Applied over Toyota PO value",
         hint:
           "Checks against what Toyota actually approved, not just against this app's own estimate -- see the " +
-          "other categories above for estimate-vs-applied by category.",
+          "other categories above for estimate-vs-applied by category. “Reclassed” means a reclass " +
+          "referencing this WOM # is on file; “Unknown” just means none was found by WOM # -- it " +
+          "doesn't rule one out.",
         emptyNote: "No WOMs are applied over their Toyota PO value right now.",
         items: summary.appliedOverToyotaPo,
         columns: [
           { label: "Toyota PO value", get: (w) => w.toyotaPoValue },
           { label: "Reported applied", get: (w) => w.appliedPrice },
           { label: "Over amount", get: (w) => w.overage, tone: "danger" },
+          {
+            label: "Reclass",
+            type: "reclass",
+            get: (w) => (reclassItemsByWom[w.code] && reclassItemsByWom[w.code][0]) || null,
+          },
         ],
       },
     ];
@@ -3978,7 +4002,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (sortKey === "location") getter = (w) => (w.locationCode || "").toLowerCase();
     else {
       const col = columns[Number(sortKey.slice(3))];
-      getter = col.isText ? (w) => String(col.get(w) || "").toLowerCase() : (w) => Number(col.get(w)) || 0;
+      if (col.type === "reclass") getter = (w) => (col.get(w) ? 1 : 0);
+      else if (col.isText) getter = (w) => String(col.get(w) || "").toLowerCase();
+      else getter = (w) => Number(col.get(w)) || 0;
     }
     const sorted = [...items];
     sorted.sort((a, b) => {
@@ -3989,6 +4015,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       return 0;
     });
     return sorted;
+  }
+
+  // The $ column a category's header total and vendor-group sort key off
+  // of -- normally just the last column, but a trailing non-money column
+  // (the Reclass flag on Applied-over-PO) would otherwise get treated as
+  // the headline figure and silently zero out the total.
+  function headlineColumnOf(cat) {
+    for (let i = cat.columns.length - 1; i >= 0; i--) {
+      if (cat.columns[i].type !== "reclass") return cat.columns[i];
+    }
+    return cat.columns[cat.columns.length - 1];
   }
 
   function costSortArrow(key) {
@@ -4014,13 +4051,27 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   async function drawCostAnalysis(content) {
-    const [summary, allWoms, locations] = await Promise.all([
+    const [summary, allWoms, locations, reclassItems] = await Promise.all([
       api.get("/api/woms/cost-summary"),
       api.get("/api/woms"),
       api.get("/api/locations"),
+      api.get("/api/admin/reclasses/items"),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
-    const categories = buildCostCategories(summary);
+    // Cross-references the Applied-over-PO category against reclass items by
+    // WOM # (either side of the reclass) -- a best-effort signal, not proof:
+    // a reclass item with no WOM # on file at all (common when the WOM # was
+    // itself the thing being corrected) won't match here. See the note
+    // Krista and I worked through on WOM Sync columns that would make this
+    // exact, instead of inferred.
+    const reclassItemsByWom = {};
+    for (const item of reclassItems) {
+      for (const wom of [item.fromWomNumber, item.toWomNumber]) {
+        if (!wom) continue;
+        (reclassItemsByWom[wom] = reclassItemsByWom[wom] || []).push(item);
+      }
+    }
+    const categories = buildCostCategories(summary, reclassItemsByWom);
     if (!costCategoryKey || !categories.some((c) => c.key === costCategoryKey)) {
       costCategoryKey = categories[0].key;
     }
@@ -4131,7 +4182,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         w.description || w.code,
         w.code,
         w.locationCode || "",
-        ...cat.columns.map((c) => (c.isText ? c.get(w) : formatMoney(c.get(w)))),
+        ...cat.columns.map((c) => {
+          if (c.type === "reclass") return c.get(w) ? `Reclassed (#${c.get(w).id})` : "Unknown";
+          return c.isText ? c.get(w) : formatMoney(c.get(w));
+        }),
       ]);
       downloadCsv(`financials-${cat.key}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
     });
@@ -4180,7 +4234,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const cat = categories.find((c) => c.key === costCategoryKey) || categories[0];
     const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery);
     const sorted = sortCostItems(filtered, cat.columns, costSortKey, costSortDir);
-    const headlineCol = cat.columns[cat.columns.length - 1];
+    const headlineCol = headlineColumnOf(cat);
     const filteredTotal = filtered.reduce((sum, w) => sum + (Number(headlineCol.get(w)) || 0), 0);
     const colCount = 3 + cat.columns.length + 1;
 
@@ -4213,43 +4267,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>
       </div>
 
-      <table class="detail-table cost-table">
-        <thead>
-          <tr>
-            <th class="sortable" data-sort="project">Project${costSortArrow("project")}</th>
-            <th class="sortable" data-sort="wom">WOM${costSortArrow("wom")}</th>
-            <th class="sortable" data-sort="location">Location${costSortArrow("location")}</th>
-            ${cat.columns.map((c, i) => `<th class="sortable" data-sort="col${i}">${escapeHtml(c.label)}${costSortArrow(`col${i}`)}</th>`).join("")}
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${
-            sorted.length === 0
-              ? `<tr><td colspan="${colCount}"><p class="empty-note">${filtered.length === 0 && cat.items.length === 0 ? escapeHtml(cat.emptyNote) : "No projects match these filters."}</p></td></tr>`
-              : sorted
-                  .map(
-                    (w) => `
-            <tr class="cost-row" data-code="${escapeHtml(w.code)}">
-              <td>${escapeHtml(w.description || w.code)}</td>
-              <td class="wom-code">${escapeHtml(w.code)}</td>
-              <td>${w.locationCode ? escapeHtml(w.locationCode) : "—"}</td>
-              ${cat.columns
-                .map((c) => {
-                  const v = c.get(w);
-                  if (c.isText) return `<td>${escapeHtml(v)}</td>`;
-                  const toneClass = c.tone === "ok" ? "cost-amount-ok" : c.tone === "danger" ? "cost-amount-danger" : "";
-                  return `<td class="${toneClass}">$${formatMoney(v)}</td>`;
-                })
-                .join("")}
-              <td class="cost-row-chevron">&rsaquo;</td>
-            </tr>
-          `
-                  )
-                  .join("")
-          }
-        </tbody>
-      </table>
+      ${cat.groupByVendor ? renderVendorGroupedTable(cat, sorted) : renderFlatCostTable(cat, sorted, colCount)}
     `;
 
     body.querySelectorAll(".cost-category-tile").forEach((tile) => {
@@ -4274,10 +4292,177 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
 
     body.querySelectorAll("tr.cost-row").forEach((row) => {
-      row.addEventListener("click", () => {
-        const wom = allWoms.find((w) => w.code === row.dataset.code);
-        if (wom) openWomProjectModal(wom, content, locationByCode, locations);
+      row.addEventListener("click", (e) => {
+        if (e.target.closest(".cost-reclass-link")) return;
+        const w = sorted.find((item) => item.code === row.dataset.code);
+        if (w) openCostDetailModal(w, cat, locationByCode);
       });
+    });
+
+    body.querySelectorAll(".cost-vendor-group-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        const key = row.dataset.vendorKey;
+        if (expandedCostVendors.has(key)) expandedCostVendors.delete(key);
+        else expandedCostVendors.add(key);
+        redrawCostBody(content, categories, allWoms, locationByCode, locations);
+      });
+    });
+
+    body.querySelectorAll(".cost-reclass-link").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        reclassItemToOpen = Number(btn.dataset.reclassId);
+        activeTab = "reclasses";
+        draw();
+      });
+    });
+  }
+
+  function renderCostColumnCell(c, w) {
+    const v = c.get(w);
+    if (c.type === "reclass") {
+      return v
+        ? `<td><button type="button" class="btn-link cost-reclass-link" data-reclass-id="${v.id}">Reclassed</button></td>`
+        : `<td><span class="badge badge-draft">Unknown</span></td>`;
+    }
+    if (c.isText) return `<td>${escapeHtml(v)}</td>`;
+    const toneClass = c.tone === "ok" ? "cost-amount-ok" : c.tone === "danger" ? "cost-amount-danger" : "";
+    return `<td class="${toneClass}">$${formatMoney(v)}</td>`;
+  }
+
+  function renderFlatCostTable(cat, sorted, colCount) {
+    return `
+      <table class="detail-table cost-table">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="project">Project${costSortArrow("project")}</th>
+            <th class="sortable" data-sort="wom">WOM${costSortArrow("wom")}</th>
+            <th class="sortable" data-sort="location">Location${costSortArrow("location")}</th>
+            ${cat.columns.map((c, i) => `<th class="sortable" data-sort="col${i}">${escapeHtml(c.label)}${costSortArrow(`col${i}`)}</th>`).join("")}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            sorted.length === 0
+              ? `<tr><td colspan="${colCount}"><p class="empty-note">${sorted.length === 0 && cat.items.length === 0 ? escapeHtml(cat.emptyNote) : "No projects match these filters."}</p></td></tr>`
+              : sorted
+                  .map(
+                    (w) => `
+            <tr class="cost-row" data-code="${escapeHtml(w.code)}">
+              <td>${escapeHtml(w.description || w.code)}</td>
+              <td class="wom-code">${escapeHtml(w.code)}</td>
+              <td>${w.locationCode ? escapeHtml(w.locationCode) : "—"}</td>
+              ${cat.columns.map((c) => renderCostColumnCell(c, w)).join("")}
+              <td class="cost-row-chevron">&rsaquo;</td>
+            </tr>
+          `
+                  )
+                  .join("")
+          }
+        </tbody>
+      </table>
+    `;
+  }
+
+  // Groups a category's items by vendor -- vendor name + project count +
+  // summed Estimated/Applied/Over amount as the primary row, expanding to
+  // the individual projects underneath (Krista: same drill-down idea the
+  // Vendor cost analysis section already uses, but inline on this table).
+  function renderVendorGroupedTable(cat, sorted) {
+    const groups = new Map();
+    for (const w of sorted) {
+      const key = w.vendorName || "No vendor matched";
+      if (!groups.has(key)) groups.set(key, { vendorName: key, items: [] });
+      groups.get(key).items.push(w);
+    }
+    const groupList = [...groups.values()]
+      .map((g) => ({
+        ...g,
+        totals: cat.columns.map((c) => g.items.reduce((sum, w) => sum + (Number(c.get(w)) || 0), 0)),
+      }))
+      .sort((a, b) => b.totals[cat.columns.length - 1] - a.totals[cat.columns.length - 1]);
+
+    if (groupList.length === 0) {
+      return `<table class="detail-table cost-table"><tbody><tr><td><p class="empty-note">${escapeHtml(cat.emptyNote)}</p></td></tr></tbody></table>`;
+    }
+
+    return `
+      <table class="detail-table cost-table">
+        <thead>
+          <tr>
+            <th>Vendor</th>
+            <th># Projects</th>
+            ${cat.columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("")}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${groupList
+            .map((g) => {
+              const expanded = expandedCostVendors.has(g.vendorName);
+              const groupRow = `
+                <tr class="cost-vendor-group-row" data-vendor-key="${escapeHtml(g.vendorName)}">
+                  <td>${escapeHtml(g.vendorName)}</td>
+                  <td>${g.items.length}</td>
+                  ${cat.columns
+                    .map((c, i) => {
+                      const toneClass = c.tone === "ok" ? "cost-amount-ok" : c.tone === "danger" ? "cost-amount-danger" : "";
+                      return `<td class="${toneClass}">$${formatMoney(g.totals[i])}</td>`;
+                    })
+                    .join("")}
+                  <td class="cost-row-chevron">${expanded ? "▼" : "▶"}</td>
+                </tr>
+              `;
+              const childRows = expanded
+                ? g.items
+                    .map(
+                      (w) => `
+                <tr class="cost-row cost-row-nested" data-code="${escapeHtml(w.code)}">
+                  <td class="cost-nested-project">${escapeHtml(w.description || w.code)}</td>
+                  <td class="wom-code">${escapeHtml(w.code)}</td>
+                  ${cat.columns.map((c) => renderCostColumnCell(c, w)).join("")}
+                  <td class="cost-row-chevron">&rsaquo;</td>
+                </tr>
+              `
+                    )
+                    .join("")
+                : "";
+              return groupRow + childRows;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // Financials row click -> a read-only summary (WOM #, location, this
+  // category's own estimated/applied/over-or-remaining figures) -- not the
+  // full editable "Open Project" form. Krista: Financials should only ever
+  // reflect numbers, never double as a place to edit project info.
+  function openCostDetailModal(w, cat, locationByCode) {
+    const location = w.locationCode ? locationByCode[w.locationCode] : null;
+    const rows = cat.columns
+      .map((c) => {
+        const v = c.get(w);
+        if (c.type === "reclass") {
+          return `<tr><th>${escapeHtml(c.label)}</th><td>${v ? `Reclassed (#${v.id})` : "Unknown"}</td></tr>`;
+        }
+        if (c.isText) return `<tr><th>${escapeHtml(c.label)}</th><td>${escapeHtml(v)}</td></tr>`;
+        return `<tr><th>${escapeHtml(c.label)}</th><td>$${formatMoney(v)}</td></tr>`;
+      })
+      .join("");
+    openModal({
+      title: w.description || w.code,
+      bodyHtml: `
+        <table class="detail-table">
+          <tbody>
+            <tr><th>WOM #</th><td>${escapeHtml(w.code)}</td></tr>
+            <tr><th>Location</th><td>${location ? escapeHtml(location.name) : w.locationCode ? escapeHtml(w.locationCode) : "No location on file"}</td></tr>
+            ${rows}
+          </tbody>
+        </table>
+      `,
     });
   }
 
@@ -4384,7 +4569,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <strong>${escapeHtml(wom.description)}</strong>
           <span class="badge badge-${womStatusBadgeClass(wom.status)}">${escapeHtml(WOM_STATUS_LABELS[wom.status] || wom.status)}</span>
           ${wom.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(wom.smartsheetLineNumber))}</span>` : ""}
-          ${wom.smartsheetLink ? `<a class="btn btn-link" href="${escapeHtml(wom.smartsheetLink)}" target="_blank" rel="noopener">Open in Smartsheet ↗</a>` : ""}
         </div>
         <div class="wom-lookup-stats">
           <div><span class="wom-lookup-stat-label">Location</span>${escapeHtml(wom.locationCode || "—")}</div>
