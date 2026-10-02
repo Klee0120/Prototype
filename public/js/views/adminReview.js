@@ -3850,21 +3850,22 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(summary.appliedVsToyotaPoDelta)}</div><div class="task-tile-label">Applied &minus; Toyota PO Value</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-overquoted-list"><div class="task-tile-count">${summary.overquotedCount}</div><div class="task-tile-label">Excess Labor Budget</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-applied-no-po-list"><div class="task-tile-count">${summary.appliedNoPoCount}</div><div class="task-tile-label">Applied, No Toyota PO Yet</div></div>
-        <div class="task-tile task-tile-clickable" data-target="cost-labor-overcharged-list"><div class="task-tile-count">${summary.laborOverchargedCount}</div><div class="task-tile-label">Labor Overcharged</div></div>
+        <div class="task-tile task-tile-clickable" data-target="cost-labor-overcharged-list"><div class="task-tile-count">${summary.laborOverchargedCount}</div><div class="task-tile-label">Labor Applied Over Estimate</div></div>
         <div class="task-tile task-tile-clickable" data-target="cost-contracted-increased-list"><div class="task-tile-count">${summary.contractedIncreasedCount}</div><div class="task-tile-label">Contracted Services Increased</div></div>
         ${summary.categoryOverages
           .map(
             (cat) =>
-              `<div class="task-tile task-tile-clickable" data-target="cost-category-${cat.key}-list"><div class="task-tile-count">${cat.count}</div><div class="task-tile-label">${escapeHtml(cat.label)} Overcharged</div></div>`
+              `<div class="task-tile task-tile-clickable" data-target="cost-category-${cat.key}-list"><div class="task-tile-count">${cat.count}</div><div class="task-tile-label">${escapeHtml(cat.label)} Applied Over Estimate</div></div>`
           )
           .join("")}
         <div class="task-tile task-tile-clickable" data-target="cost-over-toyota-po-list"><div class="task-tile-count">${summary.appliedOverToyotaPoCount}</div><div class="task-tile-label">Applied Over Toyota PO Value</div></div>
       </div>
 
-      <h3>Excess labor budget (${summary.overquotedCount})</h3>
+      <h3>Remaining estimate -- labor (${summary.overquotedCount})</h3>
       <p class="review-checklist-hint">
         Estimated price came in higher than what was actually applied -- $${formatMoney(summary.overquotedTotal)} in labor quoted
-        that was never used, across these WOMs. This is unused budget, not an overcharge.
+        that hasn't been used (yet, or at all). This is remaining estimate, not confirmed savings --
+        it's only accurate once the project is complete and costs are reconciled.
       </p>
       <div class="review-list" id="cost-overquoted-list"></div>
 
@@ -3875,10 +3876,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       </p>
       <div class="review-list" id="cost-applied-no-po-list"></div>
 
-      <h3>Labor overcharged (${summary.laborOverchargedCount})</h3>
+      <h3>Labor applied over estimate (${summary.laborOverchargedCount})</h3>
       <p class="review-checklist-hint">
         Applied labor cost came in higher than what was estimated -- $${formatMoney(summary.laborOverchargedTotal)} over quote,
-        across these WOMs.
+        across these WOMs. This compares against this app's own estimate, not a confirmed GL actual --
+        see Reconciliation once a GL import is available for that comparison.
       </p>
       <div class="review-list" id="cost-labor-overcharged-list"></div>
 
@@ -3892,7 +3894,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       ${summary.categoryOverages
         .map(
           (cat) => `
-      <h3>${escapeHtml(cat.label)} overcharged (${cat.count})</h3>
+      <h3>${escapeHtml(cat.label)} applied over estimate (${cat.count})</h3>
       <p class="review-checklist-hint">
         Applied ${escapeHtml(cat.label.toLowerCase())} cost came in higher than what was estimated -- $${formatMoney(cat.total)}
         over quote, across these WOMs.
@@ -3906,18 +3908,19 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <p class="review-checklist-hint">
         Applied project total came in higher than the actual Toyota-approved PO amount -- $${formatMoney(summary.appliedOverToyotaPoTotal)}
         over the approved ceiling, across these WOMs. This checks against what Toyota actually approved, not
-        just against this app's own estimate (see Excess Labor Budget/Labor Overcharged/Contracted Services
-        Increased above for estimate-vs-applied by category).
+        just against this app's own estimate (see Remaining Estimate/Labor Applied Over Estimate/Contracted
+        Services Increased above for estimate-vs-applied by category).
       </p>
       <div class="review-list" id="cost-over-toyota-po-list"></div>
 
       ${
         summary.vendorsOverchargingRepeatedly.length > 0
           ? `
-      <h3>Vendors reoccuringly over quote</h3>
+      <h3>Vendors repeatedly over quote</h3>
       <p class="review-checklist-hint">
-        Vendors who've come in over their own contracted-services quote on more than one WOM -- worth a
-        conversation about why their estimates keep running short.
+        Vendors whose contracted-services charge has come in over their own quote on more than one WOM --
+        worth a conversation about why their estimates keep running short. Compared against this app's own
+        estimate, not a confirmed GL actual.
       </p>
       <div class="review-list" id="cost-vendor-repeat-list"></div>
       `
@@ -3981,7 +3984,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     const laborOverList = content.querySelector("#cost-labor-overcharged-list");
     if (summary.laborOvercharged.length === 0) {
-      laborOverList.innerHTML = `<p class="empty-note">No WOMs are overcharged on labor right now.</p>`;
+      laborOverList.innerHTML = `<p class="empty-note">No WOMs have applied labor over estimate right now.</p>`;
     } else {
       summary.laborOvercharged.forEach((w) => {
         const row = document.createElement("div");
