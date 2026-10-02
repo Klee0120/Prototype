@@ -3886,6 +3886,26 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ],
       },
       {
+        key: "remainingToyotaPo",
+        tileLabel: "Remaining Toyota PO",
+        count: summary.remainingToyotaPoCount,
+        total: summary.remainingToyotaPoTotal,
+        totalLabel: "total remaining",
+        sectionTitle: "Remaining Toyota PO",
+        hint:
+          "Real PO Tracker amounts summed by WOM # (not the single synced “TOY Value” cell, and not this " +
+          "app's own estimate) minus reported applied. Open a row for each PO's own status, exactly as tracked " +
+          "— the app doesn't guess at whether Toyota has closed one out.",
+        emptyNote: "No WOMs have remaining Toyota PO budget right now.",
+        items: summary.remainingToyotaPo,
+        columns: [
+          { label: "# POs", get: (w) => w.pos.length, type: "number" },
+          { label: "Toyota PO total", get: (w) => w.poTotal },
+          { label: "Reported applied", get: (w) => w.appliedPrice },
+          { label: "Remaining", get: (w) => w.overage, tone: "ok" },
+        ],
+      },
+      {
         key: "appliedNoPo",
         tileLabel: "No Toyota PO",
         count: summary.appliedNoPoCount,
@@ -4023,7 +4043,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // the headline figure and silently zero out the total.
   function headlineColumnOf(cat) {
     for (let i = cat.columns.length - 1; i >= 0; i--) {
-      if (cat.columns[i].type !== "reclass") return cat.columns[i];
+      if (!cat.columns[i].isText && cat.columns[i].type !== "reclass") return cat.columns[i];
     }
     return cat.columns[cat.columns.length - 1];
   }
@@ -4184,7 +4204,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         w.locationCode || "",
         ...cat.columns.map((c) => {
           if (c.type === "reclass") return c.get(w) ? `Reclassed (#${c.get(w).id})` : "Unknown";
-          return c.isText ? c.get(w) : formatMoney(c.get(w));
+          return c.isText || c.type === "number" ? c.get(w) : formatMoney(c.get(w));
         }),
       ]);
       downloadCsv(`financials-${cat.key}-${new Date().toISOString().slice(0, 10)}.csv`, headers, rows);
@@ -4325,7 +4345,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ? `<td><button type="button" class="btn-link cost-reclass-link" data-reclass-id="${v.id}">Reclassed</button></td>`
         : `<td><span class="badge badge-draft">Unknown</span></td>`;
     }
-    if (c.isText) return `<td>${escapeHtml(v)}</td>`;
+    if (c.isText || c.type === "number") return `<td>${escapeHtml(v)}</td>`;
     const toneClass = c.tone === "ok" ? "cost-amount-ok" : c.tone === "danger" ? "cost-amount-danger" : "";
     return `<td class="${toneClass}">$${formatMoney(v)}</td>`;
   }
@@ -4448,10 +4468,28 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         if (c.type === "reclass") {
           return `<tr><th>${escapeHtml(c.label)}</th><td>${v ? `Reclassed (#${v.id})` : "Unknown"}</td></tr>`;
         }
-        if (c.isText) return `<tr><th>${escapeHtml(c.label)}</th><td>${escapeHtml(v)}</td></tr>`;
+        if (c.isText || c.type === "number") return `<tr><th>${escapeHtml(c.label)}</th><td>${escapeHtml(v)}</td></tr>`;
         return `<tr><th>${escapeHtml(c.label)}</th><td>$${formatMoney(v)}</td></tr>`;
       })
       .join("");
+    // Remaining Toyota PO is the one category whose row can represent more
+    // than one real PO -- list each one's own number/amount/status exactly
+    // as tracked, rather than collapsing them into the single summed total
+    // above (which is all the main row has room for).
+    const poListHtml =
+      Array.isArray(w.pos) && w.pos.length > 0
+        ? `
+        <h4>Toyota POs</h4>
+        <table class="detail-table">
+          <thead><tr><th>PO #</th><th>Amount</th><th>Status</th></tr></thead>
+          <tbody>
+            ${w.pos
+              .map((p) => `<tr><td>${escapeHtml(p.poNumber || "—")}</td><td>$${formatMoney(p.amount)}</td><td>${escapeHtml(p.status || "—")}</td></tr>`)
+              .join("")}
+          </tbody>
+        </table>
+      `
+        : "";
     openModal({
       title: w.description || w.code,
       bodyHtml: `
@@ -4462,6 +4500,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             ${rows}
           </tbody>
         </table>
+        ${poListHtml}
       `,
     });
   }

@@ -2927,6 +2927,41 @@ function getWomCostSummary() {
     return { key: cat.key, label: cat.label, count: items.length, total: items.reduce((sum, o) => sum + o.overage, 0), items };
   });
 
+  // Remaining Toyota PO -- same "budget quoted but not yet used" shape as
+  // Remaining Estimate, but against the REAL $ total of this WOM's actual
+  // Toyota PO(s) (Budget PO Tracker's own po_amount, summed by WOM #) rather
+  // than the single synced "TOY Value" sheet cell or this app's own
+  // estimate. Only counts "active" PO Tracker rows (a still-
+  // needs_organization row hasn't been confirmed to even have a real PO #
+  // yet). A WOM can have more than one PO/change order over its life, so
+  // this sums all of them and keeps each one's own raw status text (never
+  // interpreted as open/closed -- see the Financials UI comment on why).
+  const poRows = db
+    .prepare("SELECT wom_number, po_number, po_amount, status FROM pos WHERE lifecycle_status = 'active' AND wom_number IS NOT NULL AND po_amount IS NOT NULL")
+    .all();
+  const poGroupsByWom = new Map();
+  for (const p of poRows) {
+    const group = poGroupsByWom.get(p.wom_number) || { total: 0, pos: [] };
+    group.total += p.po_amount;
+    group.pos.push({ poNumber: p.po_number, amount: p.po_amount, status: p.status });
+    poGroupsByWom.set(p.wom_number, group);
+  }
+  const remainingToyotaPo = [];
+  for (const w of rows) {
+    const group = poGroupsByWom.get(w.code);
+    if (!group || w.applied_price == null || group.total <= w.applied_price) continue;
+    remainingToyotaPo.push({
+      code: w.code,
+      description: w.description,
+      locationCode: w.location_code,
+      poTotal: group.total,
+      appliedPrice: w.applied_price,
+      overage: group.total - w.applied_price,
+      pos: group.pos,
+    });
+  }
+  remainingToyotaPo.sort((a, b) => b.overage - a.overage);
+
   return {
     totalWoms: rows.length,
     estimatedCount,
@@ -2955,6 +2990,9 @@ function getWomCostSummary() {
     vendorsOverchargingRepeatedly,
     vendorContractedSpend,
     categoryOverages,
+    remainingToyotaPoCount: remainingToyotaPo.length,
+    remainingToyotaPoTotal: remainingToyotaPo.reduce((sum, o) => sum + o.overage, 0),
+    remainingToyotaPo,
   };
 }
 
