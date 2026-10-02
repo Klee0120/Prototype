@@ -11,7 +11,7 @@ const PROFILE_TABS = [
   { key: "onboarding", label: "Onboarding" },
   { key: "devices", label: "Devices" },
   { key: "forms", label: "Forms on File" },
-  { key: "documents", label: "Documents" },
+  { key: "remarks", label: "Manager Remarks" },
 ];
 
 const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
@@ -669,7 +669,7 @@ export function renderTechniciansTab(content, openTo) {
     else if (profileSubTab === "onboarding") await drawOnboarding(tabContent, tech);
     else if (profileSubTab === "devices") await drawDevices(tabContent, tech);
     else if (profileSubTab === "forms") await drawForms(tabContent, tech);
-    else await drawDocuments(tabContent, tech);
+    else await drawRemarks(tabContent, tech);
   }
 
   async function drawBasicInfo(tabContent, tech) {
@@ -887,7 +887,6 @@ export function renderTechniciansTab(content, openTo) {
           <option value="laptop">Laptop</option>
         </select>
         <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" required />
-        <input name="plan" placeholder="Plan (optional, e.g. carrier plan)" />
         <input name="notes" placeholder="Notes (optional)" />
         <button type="submit" class="btn btn-secondary">Assign device</button>
       </form>
@@ -921,8 +920,13 @@ export function renderTechniciansTab(content, openTo) {
             <div>
               <span class="device-type-badge">${escapeHtml(DEVICE_TYPE_LABELS[d.deviceType] || d.deviceType)}</span>
               <span class="device-name">${escapeHtml(d.deviceName)}</span>
-              ${d.plan ? `<span class="device-plan">${escapeHtml(d.plan)}</span>` : ""}
               <div class="device-meta">${escapeHtml(d.notes || "")}${d.notes ? " &middot; " : ""}assigned ${new Date(d.assignedAt).toLocaleDateString()}</div>
+              <div class="device-upgrade-field">
+                <label>Upgrade date
+                  <input type="date" class="device-upgrade-input" data-device-id="${d.id}" value="${d.upgradeDate || ""}" />
+                </label>
+                <button class="btn btn-link device-upgrade-save" type="button" data-device-id="${d.id}">Save</button>
+              </div>
             </div>
             <button class="btn btn-link danger-link remove-device" data-id="${d.id}" type="button">Remove</button>
           </div>
@@ -946,6 +950,19 @@ export function renderTechniciansTab(content, openTo) {
 
     tabContent.querySelector('select[name="deviceType"]').addEventListener("change", (e) => {
       tabContent.querySelector('input[name="deviceName"]').placeholder = DEVICE_IDENTIFIER_PLACEHOLDER[e.target.value];
+    });
+
+    tabContent.querySelectorAll(".device-upgrade-save").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const input = tabContent.querySelector(`.device-upgrade-input[data-device-id="${btn.dataset.deviceId}"]`);
+        try {
+          await api.patch(`/api/admin/technicians/${tech.id}/devices/${btn.dataset.deviceId}`, { upgradeDate: input.value || null });
+          await drawDevices(tabContent, tech);
+        } catch (err) {
+          errorEl.textContent = `Could not save: ${err.message}`;
+          errorEl.hidden = false;
+        }
+      });
     });
 
     tabContent.querySelectorAll(".remove-device").forEach((btn) => {
@@ -1029,7 +1046,6 @@ export function renderTechniciansTab(content, openTo) {
         await api.post(`/api/admin/technicians/${tech.id}/devices`, {
           deviceType: form.deviceType.value,
           deviceName: form.deviceName.value.trim(),
-          plan: form.plan.value.trim(),
           notes: form.notes.value.trim(),
         });
         await drawDevices(tabContent, tech);
@@ -1052,14 +1068,61 @@ export function renderTechniciansTab(content, openTo) {
     });
   }
 
-  async function drawDocuments(tabContent, tech) {
-    await renderAttachments(tabContent, {
-      title: "Documents",
-      relatedType: "technician",
-      relatedId: tech.id,
-      categories: [{ value: "document", label: "Document" }],
-      canUpload: true,
-      emptyText: "No documents on file.",
+  async function drawRemarks(tabContent, tech) {
+    const remarks = await api.get(`/api/admin/technicians/${tech.id}/remarks`);
+    tabContent.innerHTML = `
+      <p class="review-checklist-hint">Dated notes from an RFM/manager about this technician -- not a file, just a log.</p>
+      <p class="remark-error" hidden></p>
+      <div class="remark-list">
+        ${
+          remarks.length === 0
+            ? `<p class="empty-note">No remarks yet.</p>`
+            : remarks
+                .map(
+                  (r) => `
+              <div class="remark-row">
+                <div class="remark-meta">
+                  <span class="remark-author">${escapeHtml(r.authorName)}</span>
+                  <span>${new Date(r.createdAt).toLocaleString()}</span>
+                  <button class="btn btn-link danger-link remark-delete" type="button" data-id="${r.id}">Delete</button>
+                </div>
+                <div class="remark-body">${escapeHtml(r.body)}</div>
+              </div>`
+                )
+                .join("")
+        }
+      </div>
+      <form class="add-remark-form">
+        <textarea name="body" placeholder="Add a remark..." rows="3" required></textarea>
+        <button type="submit" class="btn btn-secondary">Add remark</button>
+      </form>
+    `;
+
+    const errorEl = tabContent.querySelector(".remark-error");
+
+    tabContent.querySelectorAll(".remark-delete").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!window.confirm("Delete this remark? This can't be undone.")) return;
+        try {
+          await api.delete(`/api/admin/technicians/${tech.id}/remarks/${btn.dataset.id}`);
+          await drawRemarks(tabContent, tech);
+        } catch (err) {
+          errorEl.textContent = `Could not delete: ${err.message}`;
+          errorEl.hidden = false;
+        }
+      });
+    });
+
+    tabContent.querySelector(".add-remark-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      try {
+        await api.post(`/api/admin/technicians/${tech.id}/remarks`, { body: form.body.value.trim() });
+        await drawRemarks(tabContent, tech);
+      } catch (err) {
+        errorEl.textContent = `Not saved: ${err.message}`;
+        errorEl.hidden = false;
+      }
     });
   }
 }

@@ -3552,6 +3552,27 @@ h1, h2, h3, h4 {
   color: var(--muted);
 }
 
+.device-upgrade-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.device-upgrade-field label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.device-upgrade-input {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+}
+
 .device-requests {
   margin-top: 10px;
   padding-top: 10px;
@@ -3603,6 +3624,59 @@ h1, h2, h3, h4 {
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+/* ---- Technician profile: Manager Remarks tab ---- */
+
+.remark-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.remark-row {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.remark-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.remark-author {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.remark-body {
+  font-size: 14px;
+  white-space: pre-wrap;
+}
+
+.add-remark-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.add-remark-form textarea {
+  width: 100%;
+  max-width: 640px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  resize: vertical;
 }
 
 /* ---- Mobile ---- */

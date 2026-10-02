@@ -260,6 +260,16 @@ router.delete("/technicians/:id/devices/:deviceId", (req, res) => {
   res.json(devices);
 });
 
+router.patch("/technicians/:id/devices/:deviceId", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  const device = db.findDevice(tech.id, Number(req.params.deviceId));
+  if (!device) return res.status(404).json({ error: "Device not found" });
+
+  const devices = db.setDeviceUpgradeDate(tech.id, device.id, req.body ? req.body.upgradeDate : null);
+  res.json(devices);
+});
+
 // Tracks an IT/vendor request against a device (Calero line cancellation,
 // etc.) with a reference number to follow up on until it's marked done.
 router.post("/technicians/:id/devices/:deviceId/requests", (req, res) => {
@@ -309,6 +319,30 @@ router.patch("/technicians/:id/devices/:deviceId/requests/:requestId", (req, res
     `${req.user.name} marked a device request ${completed ? "complete" : "not complete"} for ${tech.name}`
   );
   res.json(requests);
+});
+
+// RFM/manager remarks about a technician -- a dated log, not a file upload.
+router.get("/technicians/:id/remarks", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  res.json(db.listTechRemarks(tech.id));
+});
+
+router.post("/technicians/:id/remarks", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  const body = (req.body && req.body.body ? String(req.body.body) : "").trim();
+  if (!body) return res.status(400).json({ error: "Remark text is required" });
+
+  const remarks = db.addTechRemark(tech.id, req.user.id, req.user.name, body);
+  res.status(201).json(remarks);
+});
+
+router.delete("/technicians/:id/remarks/:remarkId", (req, res) => {
+  const tech = db.findTechnician(req.params.id);
+  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  const remarks = db.deleteTechRemark(tech.id, Number(req.params.remarkId));
+  res.json(remarks);
 });
 
 const FORM_EXPIRY_WARNING_DAYS = 30;

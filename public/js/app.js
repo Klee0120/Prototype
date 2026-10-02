@@ -134,8 +134,8 @@ function renderTopBar() {
   bar.className = "app-topbar";
   bar.innerHTML = `
     <div class="topbar-brand-text">
-      <span class="topbar-brand-name">Labor Allocation</span>
-      <span class="topbar-brand-sub">Allocate technician time and match to work orders, locations and financials.</span>
+      <span class="topbar-brand-name">ServiceWorks</span>
+      <span class="topbar-brand-sub">Toyota Operations &amp; Financial Management</span>
     </div>
     <div class="topbar-context" id="topbar-context"></div>
   `;

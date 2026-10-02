@@ -6,7 +6,8 @@ export function renderLogin(initialMessage) {
   wrap.className = "login-wrap";
   wrap.innerHTML = `
     <form class="login-card" id="login-form">
-      <h1>Labor Allocation</h1>
+      <h1>ServiceWorks</h1>
+      <p class="login-sub">Toyota Operations &amp; Financial Management</p>
       <p class="login-sub">Sign in with your technician ID or admin code.</p>
       <label for="login-id">ID</label>
       <input id="login-id" name="id" type="text" autocomplete="username" placeholder="e.g. T1001" required />

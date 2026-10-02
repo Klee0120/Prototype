@@ -153,6 +153,18 @@ db.exec(`
     completed_at TEXT
   );
 
+  -- Free-text remarks an RFM/admin writes about a technician (performance
+  -- notes, a conversation to remember, etc.) -- not a file, just a dated log
+  -- entry, since that's what this tab is actually for.
+  CREATE TABLE IF NOT EXISTS tech_remarks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tech_id TEXT NOT NULL,
+    author_id TEXT NOT NULL,
+    author_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS vendors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -442,6 +454,12 @@ if (!hasColumn("tech_devices", "device_type")) {
 // plan names/tiers vary by carrier and change over time.
 if (!hasColumn("tech_devices", "plan")) {
   db.exec("ALTER TABLE tech_devices ADD COLUMN plan TEXT DEFAULT ''");
+}
+// When this device is next eligible for an upgrade (e.g. a phone's carrier
+// upgrade date) -- a plain date, not auto-computed, since that's set by the
+// carrier/contract, not anything this app tracks.
+if (!hasColumn("tech_devices", "upgrade_date")) {
+  db.exec("ALTER TABLE tech_devices ADD COLUMN upgrade_date TEXT");
 }
 
 // Real JDE accounting codes: each location's own job number for general
@@ -1135,7 +1153,7 @@ function listDeviceRequests(deviceId) {
 function listDevices(techId) {
   const devices = db
     .prepare(
-      "SELECT id, device_type AS deviceType, device_name AS deviceName, notes, plan, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
+      "SELECT id, device_type AS deviceType, device_name AS deviceName, notes, plan, upgrade_date AS upgradeDate, assigned_at AS assignedAt FROM tech_devices WHERE tech_id = ? ORDER BY id DESC"
     )
     .all(techId);
   return devices.map((d) => ({ ...d, requests: listDeviceRequests(d.id) }));
@@ -1151,6 +1169,11 @@ function addDevice(techId, deviceType, deviceName, notes, plan) {
 function removeDevice(techId, id) {
   db.prepare("DELETE FROM device_requests WHERE device_id = ?").run(id);
   db.prepare("DELETE FROM tech_devices WHERE id = ? AND tech_id = ?").run(id, techId);
+  return listDevices(techId);
+}
+
+function setDeviceUpgradeDate(techId, id, upgradeDate) {
+  db.prepare("UPDATE tech_devices SET upgrade_date = ? WHERE id = ? AND tech_id = ?").run(upgradeDate || null, id, techId);
   return listDevices(techId);
 }
 
@@ -1185,6 +1208,29 @@ function setDeviceRequestDetails(deviceId, requestId, { requestType, referenceNu
     deviceId
   );
   return listDeviceRequests(deviceId);
+}
+
+// ---- Technician remarks (RFM/manager notes) ----
+
+function listTechRemarks(techId) {
+  return db
+    .prepare(
+      `SELECT id, author_id AS authorId, author_name AS authorName, body, created_at AS createdAt
+       FROM tech_remarks WHERE tech_id = ? ORDER BY id DESC`
+    )
+    .all(techId);
+}
+
+function addTechRemark(techId, authorId, authorName, body) {
+  db.prepare(
+    "INSERT INTO tech_remarks (tech_id, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(techId, authorId, authorName, body, new Date().toISOString());
+  return listTechRemarks(techId);
+}
+
+function deleteTechRemark(techId, id) {
+  db.prepare("DELETE FROM tech_remarks WHERE id = ? AND tech_id = ?").run(id, techId);
+  return listTechRemarks(techId);
 }
 
 // ---- Vendors ----
@@ -3971,6 +4017,10 @@ module.exports = {
   addDevice,
   removeDevice,
   findDevice,
+  setDeviceUpgradeDate,
+  listTechRemarks,
+  addTechRemark,
+  deleteTechRemark,
   addDeviceRequest,
   setDeviceRequestCompleted,
   setDeviceRequestDetails,
