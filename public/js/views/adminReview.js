@@ -9,7 +9,7 @@ import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { renderPos } from "./pos.js";
 import { openModal } from "../modal.js";
-import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
+import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -3382,7 +3382,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>
         <div class="page-header-actions">
           <a class="btn btn-primary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">+ Request WOM</a>
-          <a class="btn btn-outline" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request C&amp;W PO ↗</a>
         </div>
       </div>
 

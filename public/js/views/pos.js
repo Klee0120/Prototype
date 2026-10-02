@@ -2,7 +2,7 @@ import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { openModal } from "../modal.js";
 import { renderAttachments } from "./attachments.js";
-import { TERRITORIES } from "../constants.js";
+import { TERRITORIES, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -74,6 +74,7 @@ export async function renderPos(container) {
         <h3 style="margin: 0;">Budget PO Tracker</h3>
         <button type="button" class="btn btn-primary po-import-btn">Import Excel</button>
         <input type="file" class="po-import-file" accept=".xlsx,.xls" hidden />
+        <a class="btn btn-outline" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">+ Request C&amp;W PO ↗</a>
       </div>
       <p class="review-checklist-hint">${escapeHtml(lastImportLine())}</p>
       <div class="pill-toggle-group po-subtabs">
