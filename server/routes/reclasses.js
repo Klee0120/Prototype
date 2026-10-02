@@ -184,6 +184,11 @@ router.get("/items/:id/gl-links", (req, res) => {
     fromLinks: db.getPoGlLinksByWom(item.fromWomNumber),
     toWomNumber: item.toWomNumber,
     toLinks: item.toWomNumber && item.toWomNumber !== item.fromWomNumber ? db.getPoGlLinksByWom(item.toWomNumber) : [],
+    // Direct search for the reclass itself having posted (see
+    // findReclassPostingMatches) -- independent of WOM/PO, since the "to"
+    // side of a reclass often moves to a job with no WOM at all.
+    fromPostingMatches: db.findReclassPostingMatches(item.fromJobNumber, item.fromAmount),
+    toPostingMatches: db.findReclassPostingMatches(item.toJobNumber, item.toAmount),
   });
 });
 

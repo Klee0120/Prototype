@@ -1080,6 +1080,16 @@ if (!hasColumn("gl_imports", "no_po_reference_count")) {
   db.exec("ALTER TABLE gl_imports ADD COLUMN no_po_reference_count INTEGER NOT NULL DEFAULT 0");
 }
 
+// "Name - Alpha Explanation" -- confirmed against Krista's real July GL
+// export to be where a reclass posting actually identifies itself (e.g.
+// "AER Reclass", "AER Reclass July 2026"), as a batch of offsetting debit/
+// credit lines across the old and new coding. Not captured before this --
+// a period imported before this column existed needs re-importing to
+// backfill it.
+if (!hasColumn("gl_entries", "name_alpha")) {
+  db.exec("ALTER TABLE gl_entries ADD COLUMN name_alpha TEXT");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -5301,9 +5311,9 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
     INSERT INTO gl_entries
       (import_id, period_number, fiscal_year, gl_date, document_type, document_number,
        journal_entry_line_number, business_unit, object_account, object_account_code, subsidiary,
-       amount, batch_number, supplier_invoice_number, invoice_date, location_code, remark,
+       amount, batch_number, supplier_invoice_number, invoice_date, location_code, name_alpha, remark,
        purchase_order, matched_po_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const findPoByNumber = db.prepare("SELECT id FROM pos WHERE po_number = ? LIMIT 1");
   const poNumberCache = new Map();
@@ -5353,6 +5363,7 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       r.supplierInvoiceNumber || null,
       r.invoiceDate || null,
       r.locationCode || null,
+      r.nameAlpha || null,
       r.remark || null,
       poNumber,
       matchedPoId,
@@ -5419,7 +5430,7 @@ function getPoGlLinksByWom(womNumber) {
       .prepare(
         `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, document_type AS documentType,
                 document_number AS documentNumber, object_account AS objectAccount, subsidiary, amount,
-                supplier_invoice_number AS supplierInvoiceNumber
+                name_alpha AS nameAlpha, supplier_invoice_number AS supplierInvoiceNumber
          FROM gl_entries WHERE matched_po_id = ? ORDER BY gl_date`
       )
       .all(p.id);
@@ -5435,6 +5446,29 @@ function getPoGlLinksByWom(womNumber) {
       lines,
     };
   });
+}
+
+// Krista confirmed against a real GL export that a posted reclass names
+// itself in "Name - Alpha Explanation" (e.g. "AER Reclass", "AER Reclass
+// July 2026" -- the customer-code prefix varies, "Reclass" is the constant
+// part), posting as a batch of offsetting debit/credit lines across the old
+// and new Business Unit. Searches for a GL line on each side's own job #
+// (reclass_items.from/to_job_number, which is the GL's Business Unit field)
+// whose amount matches that side's reclassed amount (either sign, since the
+// reversing side flips it) and whose Name - Alpha Explanation contains
+// "reclass" -- a real, confirmed signal, not a guess, but still just a
+// candidate for the admin to look at, never an auto-confirmation.
+function findReclassPostingMatches(jobNumber, amount) {
+  if (!jobNumber || amount == null) return [];
+  return db
+    .prepare(
+      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, business_unit AS businessUnit,
+              object_account AS objectAccount, subsidiary, amount, name_alpha AS nameAlpha, remark, batch_number AS batchNumber
+       FROM gl_entries
+       WHERE business_unit = ? AND ABS(ABS(amount) - ABS(?)) < 0.01 AND name_alpha LIKE '%reclass%' COLLATE NOCASE
+       ORDER BY gl_date`
+    )
+    .all(jobNumber, amount);
 }
 
 // A plain keyword read of the PO's own free-text status, for the Open/
@@ -5739,6 +5773,7 @@ module.exports = {
   findGlImport,
   findGlImportByPeriod,
   getPoGlLinksByWom,
+  findReclassPostingMatches,
   getPoReconciliation,
   getGlImportStatus,
   getGlFiscalYearCoverage,

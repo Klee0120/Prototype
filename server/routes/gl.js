@@ -31,6 +31,7 @@ const COLUMN_MAP = {
   "Supplier Invoice Number": "supplierInvoiceNumber",
   "Invoice Date": "invoiceDate",
   "Location Code": "locationCode",
+  "Name - Alpha Explanation": "nameAlpha",
   "Name - Remark Explanation": "remark",
   "Purchase Order": "purchaseOrder",
 };
@@ -89,6 +90,7 @@ function parseWorkbook(buffer) {
       supplierInvoiceNumber: mapped.supplierInvoiceNumber != null ? String(mapped.supplierInvoiceNumber).trim() : null,
       invoiceDate: toIsoDate(mapped.invoiceDate),
       locationCode: mapped.locationCode != null ? String(mapped.locationCode).trim() : null,
+      nameAlpha: mapped.nameAlpha != null ? String(mapped.nameAlpha).trim() : null,
       remark: mapped.remark != null ? String(mapped.remark).trim() : null,
       purchaseOrder: mapped.purchaseOrder,
     });

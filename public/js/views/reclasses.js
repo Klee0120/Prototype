@@ -271,7 +271,6 @@ export async function renderReclasses(container, options = {}) {
   }
 
   function openReclassDetailModal(item) {
-    const hasWom = Boolean(item.fromWomNumber || item.toWomNumber);
     const { body, close } = openModal({
       title: `Reclass #${item.id}`,
       size: "large",
@@ -289,7 +288,8 @@ export async function renderReclasses(container, options = {}) {
         <p>${escapeHtml(item.comments || "—")}</p>
         <h4>Path Forward</h4>
         <p>${escapeHtml(item.pathForward || "—")}</p>
-        ${hasWom ? `<h4>Linked PO / GL</h4><div class="reclass-gl-links">Loading…</div>` : ""}
+        <h4>Linked PO / GL</h4>
+        <div class="reclass-gl-links">Loading…</div>
         <form class="reclass-status-form modal-form">
           <label class="profile-field">
             <span>Status</span>
@@ -308,7 +308,7 @@ export async function renderReclasses(container, options = {}) {
         </form>
       `,
     });
-    if (hasWom) loadReclassGlLinks(body, item);
+    loadReclassGlLinks(body, item);
     const form = body.querySelector(".reclass-status-form");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -326,10 +326,17 @@ export async function renderReclasses(container, options = {}) {
     });
   }
 
-  // Read-only: looks up the item's own WOM #(s) against the Budget PO
-  // Tracker's wom_number field, then shows whatever GL has actually posted
-  // against each matching PO -- lets the admin eyeball whether the
-  // correction shows up yet, without the app declaring it posted on its own.
+  // Read-only, two independent checks:
+  // 1. Possible reclass posting -- searches GL lines on each side's own
+  //    job # (Business Unit) for an amount matching that side's reclassed
+  //    amount, where "Name - Alpha Explanation" names it a reclass (e.g.
+  //    "AER Reclass") -- confirmed against a real GL export to be how a
+  //    posted reclass identifies itself, as an offsetting debit/credit
+  //    pair across the old and new coding.
+  // 2. Linked Toyota PO (by WOM) -- the WOM's own PO from the Budget PO
+  //    Tracker and whatever GL has posted against it, same as before.
+  // Neither auto-declares a match; the admin still decides and records it
+  // via confirmedGlReference themselves.
   async function loadReclassGlLinks(body, item) {
     const wrap = body.querySelector(".reclass-gl-links");
     if (!wrap) return;
@@ -340,20 +347,56 @@ export async function renderReclasses(container, options = {}) {
       wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
     }
-    const sides = [
+
+    const postingRows = (label, jobNumber, amount, matches) => {
+      if (!jobNumber) return "";
+      if (matches.length === 0) {
+        return `<p class="empty-note">${label} (Job ${escapeHtml(jobNumber)}, ${formatMoney(amount)}): no matching GL line found yet.</p>`;
+      }
+      return `
+        <table class="detail-table">
+          <thead><tr><th>Period</th><th>Date</th><th>Business Unit</th><th>Object Account</th><th>Subsidiary</th><th>Amount</th><th>Name - Alpha</th><th>Remark</th></tr></thead>
+          <tbody>
+            ${matches
+              .map(
+                (l) => `
+              <tr>
+                <td>P${escapeHtml(String(l.periodNumber))}/FY${escapeHtml(String(l.fiscalYear))}</td>
+                <td>${escapeHtml(l.glDate || "—")}</td>
+                <td>${escapeHtml(l.businessUnit || "—")}</td>
+                <td>${escapeHtml(l.objectAccount || "—")}</td>
+                <td>${escapeHtml(l.subsidiary || "—")}</td>
+                <td>${formatMoney(l.amount)}</td>
+                <td>${escapeHtml(l.nameAlpha || "—")}</td>
+                <td>${escapeHtml(l.remark || "—")}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+      `;
+    };
+
+    const womSides = [
       { label: "From", womNumber: data.fromWomNumber, links: data.fromLinks },
       { label: "To", womNumber: data.toWomNumber, links: data.toLinks },
     ].filter((s) => s.womNumber);
-    if (sides.every((s) => s.links.length === 0)) {
-      wrap.innerHTML = `<p class="empty-note">No PO in the Budget PO Tracker names ${sides.map((s) => `WOM ${escapeHtml(s.womNumber)}`).join(" or ")}.</p>`;
-      return;
-    }
+
     wrap.innerHTML = `
+      <h5>Possible reclass posting</h5>
       <p class="review-checklist-hint">
-        Looked up by WOM # against the Budget PO Tracker -- not a confirmation this reclass posted. Check the
-        GL lines below yourself before marking Confirmed Posted.
+        Searched by job # and amount for a GL line naming itself a reclass (e.g. "AER Reclass") -- a real signal,
+        not a guess, but still just a candidate. Check the dates/amounts yourself before marking Confirmed Posted.
       </p>
-      ${sides
+      ${postingRows("From", item.fromJobNumber, item.fromAmount, data.fromPostingMatches)}
+      ${postingRows("To", item.toJobNumber, item.toAmount, data.toPostingMatches)}
+
+      ${
+        womSides.length > 0
+          ? `
+      <h5>Linked Toyota PO (by WOM)</h5>
+      <p class="review-checklist-hint">Looked up by WOM # against the Budget PO Tracker.</p>
+      ${womSides
         .map((side) =>
           side.links.length === 0
             ? `<p class="empty-note">${side.label} WOM ${escapeHtml(side.womNumber)}: no PO on file.</p>`
@@ -397,6 +440,9 @@ export async function renderReclasses(container, options = {}) {
                 .join("")
         )
         .join("")}
+      `
+          : ""
+      }
     `;
   }
 }
