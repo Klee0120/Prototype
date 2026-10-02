@@ -65,11 +65,11 @@ const VENDOR_STATUS_BADGE_CLASS = {
 // sub-tabs underneath once it's the active section.
 const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
-  { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "schedule", "overview", "review"] },
+  { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
-  { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
+  { key: "wom", label: "WOM", tabs: ["woms", "womlookup", "schedule"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
   { key: "financials", label: "Financials", tabs: ["costanalysis", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
@@ -423,21 +423,43 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     if (s === "denied") return "rejected";
     return "draft";
   }
+  // A vendor's services are stored as a single "|"-joined string (never a
+  // character any real COI matrix label contains) rather than a second
+  // table, since it's just a list of matrix labels picked off one fixed
+  // vocabulary -- splitting/joining here is all a multi-value field needs.
+  // A legacy single value (no "|" at all, predating multi-select) still
+  // splits into its own one-item list unchanged.
+  function splitServices(raw) {
+    return (raw || "").split("|").map((s) => s.trim()).filter(Boolean);
+  }
+  function formatServicesList(raw) {
+    return splitServices(raw).join(", ");
+  }
+
   // The four coverage figures Krista actually reads off the welcome email
   // she sends vendors (GL, Auto, WC, Umbrella) -- shown next to the COI
   // case as a reference while she checks a submitted certificate, pulled
   // from the same COI matrix that already drives the Vendors tab's
-  // Services dropdown, not re-entered here.
+  // Services dropdown, not re-entered here. A vendor with more than one
+  // service gets one line per service rather than a merged "strictest
+  // wins" figure -- the dollar strings here ("$1M", "$0.25M / $1M") aren't
+  // reliably comparable as plain text, and showing each service's own real
+  // requirement is more trustworthy than a guess at which is bigger.
   function coiRequirementLine(v) {
-    const entry = v.services && COI_MATRIX_BY_LABEL[v.services];
-    if (!entry) return "";
-    const r = entry.requirements;
-    const parts = [];
-    if (r.glOcc && r.glOcc !== "-") parts.push(`GL ${r.glOcc}${r.glAgg && r.glAgg !== "-" ? ` / ${r.glAgg}` : ""}`);
-    if (r.auto && r.auto !== "-") parts.push(`Auto ${r.auto}`);
-    if (r.wc && r.wc !== "-") parts.push(`WC ${r.wc}`);
-    if (r.exs && r.exs !== "-") parts.push(`Umbrella ${r.exs}`);
-    return parts.length ? `Required (${v.services}): ${parts.join(" · ")}` : "";
+    const lines = splitServices(v.services)
+      .map((service) => {
+        const entry = COI_MATRIX_BY_LABEL[service];
+        if (!entry) return null;
+        const r = entry.requirements;
+        const parts = [];
+        if (r.glOcc && r.glOcc !== "-") parts.push(`GL ${r.glOcc}${r.glAgg && r.glAgg !== "-" ? ` / ${r.glAgg}` : ""}`);
+        if (r.auto && r.auto !== "-") parts.push(`Auto ${r.auto}`);
+        if (r.wc && r.wc !== "-") parts.push(`WC ${r.wc}`);
+        if (r.exs && r.exs !== "-") parts.push(`Umbrella ${r.exs}`);
+        return parts.length ? `Required (${service}): ${parts.join(" · ")}` : null;
+      })
+      .filter(Boolean);
+    return lines.join("; ");
   }
 
   // updateVendor rewrites the whole record, not just the fields being
@@ -1064,7 +1086,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           jdeVendorNumber: addForm.jdeVendorNumber.value.trim(),
           cwStatus: addForm.cwStatus.value,
           toyotaStatus: addForm.toyotaStatus.value,
-          services: addForm.services.value.trim(),
+          services: selectedServicesValue(addForm.services),
         });
         invalidateVendorsCache();
         close();
@@ -1162,7 +1184,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             poEmail: form.poEmail.value.trim(),
             onlineSourceUrl: form.onlineSourceUrl.value.trim(),
             midwestSitesSeen: form.midwestSitesSeen.value.trim(),
-            services: form.services.value.trim(),
+            services: selectedServicesValue(form.services),
             invoicedPreviously: form.invoicedPreviously.value.trim(),
             successfulInvoiceRecords: form.successfulInvoiceRecords.value === "" ? null : Number(form.successfulInvoiceRecords.value),
             successfulSinceDate: form.successfulSinceDate.value || null,
@@ -1202,7 +1224,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="review-row-summary vendor-summary">
         <span class="review-row-name">
           ${escapeHtml(v.name)}
-          ${v.services ? `<span class="wom-desc"> — ${escapeHtml(v.services)}</span>` : ""}
+          ${v.services ? `<span class="wom-desc"> — ${escapeHtml(formatServicesList(v.services))}</span>` : ""}
         </span>
         <span class="vendor-jde">${escapeHtml(v.jdeVendorNumber || "No JDE #")}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
@@ -1251,6 +1273,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>
         <div class="page-header-actions">
           <button type="button" class="btn btn-outline vendor-edit-btn">Edit vendor</button>
+          <button type="button" class="btn btn-link vendor-delete-btn">Delete vendor</button>
         </div>
       </div>
       <div class="tabs vendor-profile-tabs">
@@ -1265,6 +1288,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
     content.querySelector(".vendor-edit-btn").addEventListener("click", () => {
       openVendorEditFormModal(v, content);
+    });
+    content.querySelector(".vendor-delete-btn").addEventListener("click", async () => {
+      if (!window.confirm(`Delete ${v.name}? This removes its profile, case log, tasks, and documents. This can't be undone.`)) return;
+      try {
+        await api.delete(`/api/admin/vendors/${v.id}`);
+        invalidateVendorsCache();
+        vendorProfileId = null;
+        drawVendors(content);
+      } catch (err) {
+        window.alert(err.message);
+      }
     });
     content.querySelectorAll(".vendor-profile-tabs .tab").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -1298,7 +1332,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <div><dt>Email</dt><dd>${v.email ? escapeHtml(v.email) : "Not provided"}</dd></div>
             <div><dt>PO email</dt><dd>${v.poEmail ? escapeHtml(v.poEmail) : "Not provided"}</dd></div>
             <div><dt>JDE Vendor #</dt><dd>${v.jdeVendorNumber ? escapeHtml(v.jdeVendorNumber) : "Not on file"}</dd></div>
-            <div><dt>Services</dt><dd>${v.services ? escapeHtml(v.services) : "Not set"}</dd></div>
+            <div><dt>Services</dt><dd>${v.services ? escapeHtml(formatServicesList(v.services)) : "Not set"}</dd></div>
             <div><dt>Coverage outside Midwest</dt><dd>${v.coverageOutsideMidwest ? escapeHtml(v.coverageOutsideMidwest) : "Not confirmed"}</dd></div>
             <div><dt>Midwest sites seen</dt><dd>${v.midwestSitesSeen ? escapeHtml(v.midwestSitesSeen) : "None on file"}</dd></div>
           </dl>
@@ -1535,8 +1569,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     "achHasW9Address",
   ];
 
+  // A vendor can do more than one kind of work (electrical AND HVAC, say),
+  // so this is a real multi-select -- currentValue is the stored "|"-joined
+  // string (see splitServices above), and the caller reads the result back
+  // out with selectedServicesValue. Ctrl/Cmd-click (or drag) picks more
+  // than one, same as any native multi-select.
   function renderServicesSelect(currentValue) {
-    const matches = COI_MATRIX_BY_LABEL[currentValue];
+    const selectedValues = splitServices(currentValue);
+    const matchedLabels = new Set(COI_MATRIX.map((e) => e.label));
     const groups = new Map();
     for (const entry of COI_MATRIX) {
       if (!groups.has(entry.group)) groups.set(entry.group, []);
@@ -1546,23 +1586,30 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       .map(
         ([group, entries]) =>
           `<optgroup label="${escapeHtml(group)}">${entries
-            .map((e) => `<option value="${escapeHtml(e.label)}" ${e.label === currentValue ? "selected" : ""}>${escapeHtml(e.label)}</option>`)
+            .map((e) => `<option value="${escapeHtml(e.label)}" ${selectedValues.includes(e.label) ? "selected" : ""}>${escapeHtml(e.label)}</option>`)
             .join("")}</optgroup>`
       )
       .join("");
-    // A vendor imported before this dropdown existed (or with a service
-    // type outside the matrix) keeps its original free-text value as a
-    // preserved option, rather than silently losing it the moment the
+    // A vendor imported before this was matrix-backed (or with a service
+    // type outside the matrix) keeps its original free-text value(s) as
+    // preserved options, rather than silently losing them the moment the
     // field renders as a select.
-    const unmatchedOption =
-      currentValue && !matches
-        ? `<option value="${escapeHtml(currentValue)}" selected>${escapeHtml(currentValue)} (not in matrix)</option>`
-        : "";
-    return `<select name="services">
-      <option value="">-- Select a service --</option>
-      ${unmatchedOption}
+    const unmatchedOptions = selectedValues
+      .filter((v) => !matchedLabels.has(v))
+      .map((v) => `<option value="${escapeHtml(v)}" selected>${escapeHtml(v)} (not in matrix)</option>`)
+      .join("");
+    return `<select name="services" multiple size="8" class="vendor-services-select">
+      ${unmatchedOptions}
       ${optgroups}
-    </select>`;
+    </select>
+    <p class="services-select-hint">Ctrl/Cmd-click (or drag) to select more than one service.</p>`;
+  }
+
+  // Reads a <select multiple name="services"> back into the single "|"-
+  // joined storage string -- the one place that knows the join delimiter,
+  // mirroring splitServices on the way in.
+  function selectedServicesValue(selectEl) {
+    return [...selectEl.selectedOptions].map((o) => o.value).join("|");
   }
 
   // The document-compliance checklist (does the vendor's actual uploaded

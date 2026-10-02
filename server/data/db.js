@@ -1610,12 +1610,28 @@ function updateVendor(id, fields) {
   return findVendor(id);
 }
 
+// Blocked if a WOM or PO record actually points at this vendor -- that's
+// real work/money history, same reasoning as deleteLocation, and silently
+// deleting the vendor out from under it would leave a dangling vendor_id
+// with no profile behind it (a vendor name/cost showing up with nothing to
+// click into). A vendor's own case log, tasks, and uploaded documents don't
+// mean anything once the vendor itself is gone, so those cascade with it
+// (see deleteTask for the same "takes its own files/comments with it"
+// reasoning, applied one level up here).
 function deleteVendor(id) {
   const vendor = findVendor(id);
-  if (!vendor) return null;
+  if (!vendor) return { error: "not_found" };
+  const womCount = db.prepare("SELECT COUNT(*) AS n FROM woms WHERE vendor_id = ?").get(Number(id)).n;
+  const poCount = db.prepare("SELECT COUNT(*) AS n FROM pos WHERE vendor_id = ?").get(Number(id)).n;
+  if (womCount > 0 || poCount > 0) {
+    return { error: "in_use", womCount, poCount };
+  }
+  const taskIds = db.prepare("SELECT id FROM tasks WHERE related_vendor_id = ?").all(Number(id)).map((r) => r.id);
+  for (const taskId of taskIds) deleteTask(taskId);
   db.prepare("DELETE FROM vendor_requests WHERE vendor_id = ?").run(Number(id));
+  db.prepare("DELETE FROM files WHERE related_type = 'vendor' AND related_id = ?").run(String(id));
   db.prepare("DELETE FROM vendors WHERE id = ?").run(Number(id));
-  return vendor;
+  return { ok: true, vendor };
 }
 
 // A vendor onboarding/compliance case (e.g. a ServiceEdge COI Case, Toyota

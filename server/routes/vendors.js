@@ -72,10 +72,20 @@ router.patch("/:id", (req, res) => {
 });
 
 router.delete("/:id", (req, res) => {
-  const vendor = db.deleteVendor(req.params.id);
-  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const result = db.deleteVendor(req.params.id);
+  if (result.error === "not_found") return res.status(404).json({ error: "Vendor not found" });
+  if (result.error === "in_use") {
+    const parts = [];
+    if (result.womCount > 0) parts.push(`${result.womCount} WOM${result.womCount === 1 ? "" : "s"}`);
+    if (result.poCount > 0) parts.push(`${result.poCount} Budget PO${result.poCount === 1 ? "" : "s"}`);
+    return res.status(409).json({
+      womCount: result.womCount,
+      poCount: result.poCount,
+      error: `Still in use by ${parts.join(", ")} -- reassign or unlink those first`,
+    });
+  }
 
-  db.addAudit(req.user.id, "VENDOR_DELETED", `${req.user.name} removed vendor ${vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_DELETED", `${req.user.name} removed vendor ${result.vendor.name}`);
   res.json({ ok: true });
 });
 

@@ -1228,6 +1228,12 @@ h1, h2, h3, h4 {
   max-width: 680px;
 }
 
+.services-select-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+
 .review-section-title {
   font-size: 13px;
   font-weight: 700;
@@ -3203,6 +3209,19 @@ h1, h2, h3, h4 {
   width: 100%;
 }
 
+/* A multi-select needs real height to show more than one row at a time --
+   letting it sit full-width across the grid (rather than squeezed into one
+   ~160px column like the single-line fields around it) keeps that height
+   from looking cramped. */
+.vendor-services-select {
+  grid-column: 1 / -1;
+  height: auto;
+}
+.add-tech-grid .services-select-hint {
+  grid-column: 1 / -1;
+  margin-top: -4px;
+}
+
 .add-tech-date-field {
   display: flex;
   flex-direction: column;
@@ -3277,6 +3296,9 @@ h1, h2, h3, h4 {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 10px;
   margin-bottom: 10px;
+}
+.vendor-edit-grid:has(.vendor-services-select) label:has(.vendor-services-select) {
+  grid-column: 1 / -1;
 }
 
 .vendor-edit-form textarea {
