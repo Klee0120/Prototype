@@ -183,6 +183,25 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     const weekPct = week.ukgTotal > 0 ? Math.min(100, Math.round((weekAllocated / week.ukgTotal) * 100)) : 0;
     const summaryDays = weekendEditable ? REGULAR_DAY_NAMES : DAY_NAMES;
 
+    // The plain status word on its own (Draft/Submitted/etc.) is already
+    // on the Status KPI tile above -- this banner is only worth showing at
+    // all when there's an actual note to go with it (a rejection reason,
+    // why editing is locked, time-off-only guidance); a bare "Draft" pill
+    // with nothing underneath was pure redundant chrome.
+    const statusNotesHtml = [
+      week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : "",
+      week.status === "approved" || week.status === "submitted"
+        ? state.user.role === "admin"
+          ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
+          : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
+        : "",
+      locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : "",
+      timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : "",
+      state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
+        ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
+        : "",
+    ].join("");
+
     // When a top-bar host is given (the shared page-context slot next to
     // the brand -- see app.js/renderTopBar), the week picker renders there
     // as a compact pill+arrows field instead of its own full-width bar
@@ -233,24 +252,11 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
 
       <div class="week-layout">
         <div class="week-main-col">
-          <div class="status-banner status-${week.status}">
-            <strong>${STATUS_LABELS[week.status]}</strong>
-            ${week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : ""}
-            ${
-              week.status === "approved" || week.status === "submitted"
-                ? state.user.role === "admin"
-                  ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
-                  : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
-                : ""
-            }
-            ${locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : ""}
-            ${timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : ""}
-            ${
-              state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
-                ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
-                : ""
-            }
-          </div>
+          ${
+            statusNotesHtml
+              ? `<div class="status-banner status-${week.status}">${statusNotesHtml}</div>`
+              : ""
+          }
 
           ${state.user.role !== "admin" ? renderNotificationPrefRow() : ""}
 
