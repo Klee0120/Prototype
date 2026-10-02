@@ -379,7 +379,7 @@ h1, h2, h3, h4 {
   justify-content: center;
   display: flex;
   background: rgba(255, 255, 255, 0.08);
-  color: var(--sidebar-text);
+  color: #fff;
 }
 .sidebar-logout-btn:hover {
   background: rgba(255, 255, 255, 0.16);
@@ -3153,6 +3153,17 @@ h1, h2, h3, h4 {
   border-radius: 8px;
   font-size: 14px;
   color: var(--ink);
+}
+
+.onboarding-section-heading {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.onboarding-section-heading:first-child {
+  margin-top: 0;
 }
 
 .onboarding-list {

@@ -811,20 +811,41 @@ export function renderTechniciansTab(content, openTo) {
 
   async function drawOnboarding(tabContent, tech) {
     const tasks = await api.get(`/api/admin/technicians/${tech.id}/onboarding`);
+    // Grouped by section (Setup & Access vs. Forms on File -- see
+    // ONBOARDING_TASKS in server/data/db.js) rather than one long flat
+    // list, in whatever order each section's tasks come back in (already
+    // the fixed checklist order, not re-sorted).
+    const sections = [];
+    const sectionIndex = {};
+    tasks.forEach((t) => {
+      const key = t.section || "";
+      if (!(key in sectionIndex)) {
+        sectionIndex[key] = sections.length;
+        sections.push({ section: key, items: [] });
+      }
+      sections[sectionIndex[key]].items.push(t);
+    });
+
     tabContent.innerHTML = `
       <p class="onboarding-error" hidden></p>
-      <div class="onboarding-list">
-        ${tasks
-          .map(
-            (t) => `
-          <label class="onboarding-item">
-            <input type="checkbox" data-key="${t.key}" ${t.completedAt ? "checked" : ""} />
-            <span>${escapeHtml(t.label)}</span>
-            ${t.completedAt ? `<span class="onboarding-date">${new Date(t.completedAt).toLocaleDateString()}</span>` : ""}
-          </label>`
-          )
-          .join("")}
-      </div>
+      ${sections
+        .map(
+          (s) => `
+        <h5 class="onboarding-section-heading">${escapeHtml(s.section)}</h5>
+        <div class="onboarding-list">
+          ${s.items
+            .map(
+              (t) => `
+            <label class="onboarding-item">
+              <input type="checkbox" data-key="${t.key}" ${t.completedAt ? "checked" : ""} />
+              <span>${escapeHtml(t.label)}</span>
+              ${t.completedAt ? `<span class="onboarding-date">${new Date(t.completedAt).toLocaleDateString()}</span>` : ""}
+            </label>`
+            )
+            .join("")}
+        </div>`
+        )
+        .join("")}
     `;
     const errorEl = tabContent.querySelector(".onboarding-error");
     tabContent.querySelectorAll("input[data-key]").forEach((input) => {

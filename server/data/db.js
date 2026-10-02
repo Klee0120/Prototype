@@ -1058,12 +1058,47 @@ function setNotificationPref(techId, pref) {
 
 // A fixed checklist for now rather than an admin-editable template — the
 // simplest version that's still a real, working checklist per technician.
+// Two sections, matching how onboarding actually breaks down: real setup
+// work (accounts, access, equipment) vs. forms/compliance items that need
+// to be collected and on file. Each item is just a checkbox here (done or
+// not, by whoever's working the checklist) -- the actual document itself,
+// once collected, gets uploaded on the Forms on File/Documents tabs; this
+// list exists to make sure nothing gets missed along the way, not to store
+// the files themselves.
 const ONBOARDING_TASKS = [
-  { key: "ukg_account", label: "UKG account created" },
-  { key: "badge_issued", label: "Badge issued" },
-  { key: "safety_training", label: "Safety training completed" },
-  { key: "uniform_issued", label: "Uniform issued" },
-  { key: "vehicle_assigned", label: "Vehicle assigned" },
+  // -- Setup & Access --
+  { key: "ukg_account", section: "Setup & Access", label: "UKG account created" },
+  { key: "email_account", section: "Setup & Access", label: "Email account created" },
+  { key: "workday_access", section: "Setup & Access", label: "Workday access set up" },
+  { key: "purelyhr_access", section: "Setup & Access", label: "PurelyHR access set up" },
+  { key: "microsoft_authenticator", section: "Setup & Access", label: "Microsoft Authenticator set up" },
+  { key: "maximo_promethius_access", section: "Setup & Access", label: "Maximo & Promethius access" },
+  { key: "concur_access", section: "Setup & Access", label: "Concur access (travel & expense)" },
+  { key: "vector_access", section: "Setup & Access", label: "Vector access" },
+  { key: "pcard_travel_card", section: "Setup & Access", label: "PCard & Travel Card issued" },
+  { key: "direct_deposit", section: "Setup & Access", label: "Direct deposit set up" },
+  { key: "badge_issued", section: "Setup & Access", label: "Badge issued" },
+  { key: "toyota_laptop", section: "Setup & Access", label: "Toyota laptop issued" },
+  { key: "uniform_issued", section: "Setup & Access", label: "Uniform issued" },
+  { key: "vehicle_assigned", section: "Setup & Access", label: "Vehicle assigned" },
+  { key: "vehicle_inspection", section: "Setup & Access", label: "Company vehicle inspection completed" },
+  // -- Forms on File --
+  { key: "offer_letter", section: "Forms on File", label: "Offer letter / rate on file" },
+  { key: "background_check", section: "Forms on File", label: "Background check completed" },
+  { key: "i9_completed", section: "Forms on File", label: "I-9 completed" },
+  { key: "w4_form", section: "Forms on File", label: "W-4 form on file" },
+  { key: "rfm_docs", section: "Forms on File", label: "RFM docs collected" },
+  { key: "emergency_contact_form", section: "Forms on File", label: "Emergency contact form on file" },
+  { key: "cardinal_safety_pledge", section: "Forms on File", label: "Cardinal Safety Pledge signed" },
+  { key: "cardinal_safety_rules", section: "Forms on File", label: "Cardinal Safety Rules acknowledged" },
+  { key: "hep_b_consent", section: "Forms on File", label: "Hep B consent or waiver on file" },
+  { key: "safety_training", section: "Forms on File", label: "Safety training completed" },
+  { key: "osha_training", section: "Forms on File", label: "OSHA training completed" },
+  { key: "active_shooter_training", section: "Forms on File", label: "Active shooter training completed" },
+  { key: "employee_responsibilities", section: "Forms on File", label: "Employee responsibilities form signed" },
+  { key: "cell_phone_policy", section: "Forms on File", label: "Cell phone policy signed" },
+  { key: "employee_handbook", section: "Forms on File", label: "Employee handbook acknowledged" },
+  { key: "pto_sick_policy", section: "Forms on File", label: "PTO/Sick time policy reviewed (Toyota workers)" },
 ];
 
 function getOnboardingProgress(techId) {
