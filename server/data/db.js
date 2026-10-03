@@ -1105,6 +1105,14 @@ if (!hasColumn("gl_entries", "name_alpha")) {
 if (!hasColumn("reclass_items", "related_po_id")) {
   db.exec("ALTER TABLE reclass_items ADD COLUMN related_po_id INTEGER");
 }
+// Who to loop in for this potential reclass -- the Budget PO Tracker's own
+// Admin column for whichever PO this item traces back to (see
+// resolveAdminNameForReclassFields), auto-filled the same way regardless of
+// which of the three flag entry points (PO Tracker, WOM detail, Reclasses
+// tab search) created the item.
+if (!hasColumn("reclass_items", "admin_name")) {
+  db.exec("ALTER TABLE reclass_items ADD COLUMN admin_name TEXT");
+}
 // Precomputed at import time (see importGlEntries) instead of recomputed on
 // every GL Reconciliation page load -- comparing the GL's own
 // subsidiary/object code against the matched PO's requires string-parsing
@@ -1961,6 +1969,7 @@ function presentReclassItem(r) {
     status: r.status,
     confirmedGlReference: r.confirmed_gl_reference,
     relatedPoId: r.related_po_id,
+    adminName: r.admin_name,
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -2131,18 +2140,39 @@ function findReclassItem(id) {
   return row ? presentReclassItem(row) : null;
 }
 
+// Who to loop in for a reclass finding -- the Budget PO Tracker's own Admin
+// column for whichever PO this item traces back to, resolved the same way
+// regardless of which of the three flag entry points created the item (PO
+// Tracker directly via relatedPoId, or a WOM # on either side matched
+// against the tracker's own wom_number field). An explicit fields.adminName
+// (none of the current call sites pass one, but kept for completeness)
+// always wins over this lookup.
+function resolveAdminNameForReclassFields(fields) {
+  if (fields.relatedPoId) {
+    const po = db.prepare("SELECT admin_name FROM pos WHERE id = ?").get(fields.relatedPoId);
+    if (po && po.admin_name) return po.admin_name;
+  }
+  const womCode = fields.toWomNumber || fields.fromWomNumber;
+  if (womCode) {
+    const po = db.prepare("SELECT admin_name FROM pos WHERE wom_number = ? LIMIT 1").get(womCode);
+    if (po && po.admin_name) return po.admin_name;
+  }
+  return null;
+}
+
 // A finding an admin spots during manual GL/labor review, logged by hand --
 // source='manual', starts 'flagged' (nothing's been reviewed/submitted yet).
 function addReclassItem(fields, createdBy) {
   const now = new Date().toISOString();
+  const adminName = fields.adminName || resolveAdminNameForReclassFields(fields);
   const result = db
     .prepare(
       `INSERT INTO reclass_items (
         batch_id, line_number, from_job_number, from_object_code, from_subsidiary, from_wom_number, from_amount,
         to_job_number, to_object_code, to_subsidiary, to_wom_number, to_amount,
         vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
-        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, related_po_id, created_by, created_at, updated_at
-      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?)`
+        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, related_po_id, admin_name, created_by, created_at, updated_at
+      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?, ?)`
     )
     .run(
       fields.fromJobNumber || null,
@@ -2167,6 +2197,7 @@ function addReclassItem(fields, createdBy) {
       fields.rootCause || null,
       fields.pathForward || null,
       fields.relatedPoId || null,
+      adminName,
       createdBy || null,
       now,
       now

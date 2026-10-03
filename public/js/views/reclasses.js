@@ -293,6 +293,7 @@ export async function renderReclasses(container, options = {}) {
             <th>To</th>
             <th>Amount</th>
             <th>Vendor</th>
+            <th>Admin</th>
             <th>Comments</th>
             <th>Root Cause</th>
             <th>Source</th>
@@ -308,6 +309,7 @@ export async function renderReclasses(container, options = {}) {
               <td>${escapeHtml(codingString(r.toJobNumber, r.toObjectCode, r.toSubsidiary))}</td>
               <td>${formatMoney(r.fromAmount)}</td>
               <td>${escapeHtml(r.vendor || "—")}</td>
+              <td>${escapeHtml(r.adminName || "—")}</td>
               <td class="po-desc-cell">${escapeHtml(r.comments || "—")}</td>
               <td>${escapeHtml(r.rootCause || "—")}</td>
               <td>${r.source === "imported" ? "Imported" : "Manual"}</td>
@@ -444,6 +446,7 @@ export async function renderReclasses(container, options = {}) {
             <tr><th>Vendor</th><td>${escapeHtml(item.vendor || "—")}</td><th>Impacts Final Invoice</th><td>${escapeHtml(item.impactsFinalInvoice || "—")}</td></tr>
             <tr><th>Caused By</th><td>${escapeHtml(item.causedBy || "—")}</td><th>Root Cause</th><td>${escapeHtml(item.rootCause || "—")}</td></tr>
             <tr><th>Source</th><td>${item.source === "imported" ? "Imported" : "Manual"}</td><th>Region</th><td>${escapeHtml(item.region || "—")}</td></tr>
+            <tr><th>Admin</th><td colspan="3">${escapeHtml(item.adminName || "—")}</td></tr>
           </tbody>
         </table>
         <h4>Comments</h4>

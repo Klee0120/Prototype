@@ -185,6 +185,34 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.equal(res.body.flaggedCount, 4);
   });
 
+  // The flagged item needs to carry who to loop in -- the PO Tracker's own
+  // Admin column for the PO this reclass traces back to -- so the flagged
+  // list itself is a usable "potential reclass" worklist, not just coding
+  // with no owner attached.
+  await t.test("flagging a PO for reclass auto-fills the admin name from the PO's own Admin column", async () => {
+    const poId = insertPo({ composite: "admin-1", poNumber: "PO70001", e1WomJobNumber: "100110070001", womNumber: null, lifecycleStatus: "active" });
+    raw.prepare("UPDATE pos SET admin_name = ? WHERE id = ?").run("Jordan Smith", poId);
+
+    const res = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(res.body.items[0].adminName, "Jordan Smith");
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    const item = itemsRes.body.find((i) => i.relatedPoId === poId);
+    assert.equal(item.adminName, "Jordan Smith");
+  });
+
+  await t.test("flagging by WOM # (no direct PO link) still resolves the admin name via the tracker's wom_number field", async () => {
+    const poId = insertPo({ composite: "admin-2", poNumber: "PO70002", e1WomJobNumber: "100110070002", womNumber: "WOM-7002", lifecycleStatus: "active" });
+    raw.prepare("UPDATE pos SET admin_name = ? WHERE id = ?").run("Alex Rivera", poId);
+
+    const res = await server.call("POST", "/api/admin/reclasses/items", {
+      userId: "ADMIN",
+      body: { fromWomNumber: "WOM-7002", fromAmount: 250, comments: "Noticed on search" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.adminName, "Alex Rivera", "should resolve via the WOM # even with no relatedPoId set");
+  });
+
   raw.close();
 });
 
