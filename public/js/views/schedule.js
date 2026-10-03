@@ -68,6 +68,21 @@ function mondayOfIso(dateIso) {
   return addDaysIso(dateIso, -mondayIndexOf(dateIso));
 }
 
+function formatLongDate(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
+
+function initialsOf(name) {
+  return String(name || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
 function datesBetween(startIso, endIso) {
   const dates = [];
   for (let cur = startIso; cur <= endIso; cur = addDaysIso(cur, 1)) {
@@ -448,22 +463,71 @@ export async function renderSchedule(container) {
     // hours/day figure) -- clears the old dates, then schedules the new ones,
     // same per-day schedule-wom writes "Schedule a WOM" itself uses.
     function openRescheduleModal(entry, oldDates) {
-      const oldRangeLabel = oldDates.length > 1 ? `${oldDates[0]} – ${oldDates[oldDates.length - 1]}` : oldDates[0];
+      const isOldRange = oldDates.length > 1;
+      const oldDateLabel = isOldRange
+        ? `${formatLongDate(oldDates[0])} – ${formatLongDate(oldDates[oldDates.length - 1])}`
+        : formatLongDate(oldDates[0]);
       const { body, close } = openModal({
-        title: `Reschedule ${entry.womCode}`,
+        title: "📅 Reschedule work",
         bodyHtml: `
           <form class="schedule-reschedule-form modal-form">
-            <p class="review-checklist-hint">
-              Moves ${escapeHtml(entry.description || entry.womCode)} for ${escapeHtml(entry.techName)} off
-              ${escapeHtml(oldRangeLabel)} onto a new date range below.
-            </p>
-            <div class="schedule-add-daterange">
-              <label class="schedule-add-field"><span>New first day</span><input name="startDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
-              <label class="schedule-add-field"><span>New last day</span><input name="endDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
+            <div class="reschedule-summary-card">
+              <div>
+                <div class="reschedule-summary-title">${escapeHtml(entry.description || entry.womCode)}</div>
+                <div class="chip-row">
+                  <span class="chip chip-code">WOM ${escapeHtml(entry.womCode)}</span>
+                  ${entry.locationName ? `<span class="chip">${escapeHtml(entry.locationName)}</span>` : ""}
+                </div>
+              </div>
+              <div class="reschedule-summary-tech">
+                <span class="reschedule-summary-tech-label">Technician</span>
+                <div class="reschedule-summary-tech-row">
+                  <div class="sidebar-user-avatar">${escapeHtml(initialsOf(entry.techName))}</div>
+                  <span>${escapeHtml(entry.techName)}</span>
+                </div>
+              </div>
             </div>
-            <label class="schedule-add-field"><span>Hours per day</span><input name="hours" type="number" min="0.5" step="0.5" value="${entry.hours}" required /></label>
+
+            <div class="reschedule-current-row">
+              <span>&#128197;</span>
+              <span><strong>Current schedule:</strong> ${escapeHtml(oldDateLabel)} &middot; ${entry.hours} hours &middot; Tentative</span>
+            </div>
+
+            <h4 class="reschedule-section-title">New schedule</h4>
+            <div class="schedule-add-daterange">
+              <label class="schedule-add-field">
+                <span>Start date</span>
+                <div class="search-field">
+                  <span class="search-field-icon">&#128197;</span>
+                  <input name="startDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required />
+                </div>
+              </label>
+              <label class="schedule-add-field">
+                <span>End date</span>
+                <div class="search-field">
+                  <span class="search-field-icon">&#128197;</span>
+                  <input name="endDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required />
+                </div>
+              </label>
+            </div>
+            <label class="schedule-add-field">
+              <span>Hours per day</span>
+              <div class="search-field">
+                <span class="search-field-icon">&#128336;</span>
+                <input name="hours" type="number" min="0.5" step="0.5" value="${entry.hours}" required />
+                <span class="reschedule-hours-suffix">hrs</span>
+              </div>
+            </label>
+            <p class="review-checklist-hint">Planned hours per scheduled day.</p>
+
+            <div class="reschedule-feedback-box">
+              <span>&#128196;</span>
+              <span class="reschedule-feedback-text">Dates not selected.</span>
+            </div>
+
             <div class="modal-form-actions">
-              <button type="submit" class="btn btn-primary">Reschedule</button>
+              <button type="button" class="btn btn-secondary schedule-reschedule-cancel">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save new schedule</button>
             </div>
             <span class="save-message schedule-reschedule-message"></span>
           </form>
@@ -471,6 +535,33 @@ export async function renderSchedule(container) {
       });
       wireDateMaskInput(body.querySelector('input[name="startDate"]'));
       wireDateMaskInput(body.querySelector('input[name="endDate"]'));
+      body.querySelector(".schedule-reschedule-cancel").addEventListener("click", close);
+
+      // Live preview of what the new range actually covers, so a typo
+      // (end before start, an unreasonably long span) is obvious before
+      // Save is even clicked, same spirit as the Add-a-WOM form's own
+      // inline Toyota-PO warning.
+      const feedbackText = body.querySelector(".reschedule-feedback-text");
+      function updateFeedback() {
+        const startVal = body.querySelector('input[name="startDate"]').value;
+        const endVal = body.querySelector('input[name="endDate"]').value;
+        const startDate = isoFromUs(startVal);
+        const endDate = isoFromUs(endVal);
+        if (!startDate || !endDate) {
+          feedbackText.textContent = "Dates not selected.";
+          return;
+        }
+        if (endDate < startDate) {
+          feedbackText.textContent = "End date is before the start date.";
+          return;
+        }
+        const span = datesBetween(startDate, endDate);
+        const rangeLabel = span.length > 1 ? `${formatLongDate(startDate)} – ${formatLongDate(endDate)}` : formatLongDate(startDate);
+        feedbackText.textContent = `${rangeLabel} · ${span.length} day${span.length === 1 ? "" : "s"} selected`;
+      }
+      body.querySelector('input[name="startDate"]').addEventListener("input", updateFeedback);
+      body.querySelector('input[name="endDate"]').addEventListener("input", updateFeedback);
+
       body.querySelector(".schedule-reschedule-form").addEventListener("submit", async (e2) => {
         e2.preventDefault();
         const form = e2.target;

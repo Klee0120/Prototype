@@ -172,12 +172,14 @@ h1, h2, h3, h4 {
   background: #fff;
   display: flex;
   align-items: center;
+  overflow: hidden;
 }
 
 .sidebar-brand-logo {
   display: block;
   width: 100%;
   height: auto;
+  transform: scale(1.18);
 }
 
 .app-main {
@@ -4092,6 +4094,77 @@ button.vendor-preferred-star:hover {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+
+.reschedule-summary-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.reschedule-summary-title {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+.reschedule-summary-tech {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.reschedule-summary-tech-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reschedule-summary-tech-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.reschedule-current-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent-bg);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.reschedule-section-title {
+  margin: 0 0 10px;
+}
+
+.reschedule-hours-suffix {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.reschedule-feedback-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 12px 0;
 }
 
 .profile-header {
