@@ -181,6 +181,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // One-shot: a reclass item id to auto-open in the Reclasses tab, set when
   // a "Reclassed" link is clicked from the Applied-over-PO category table.
   let reclassItemToOpen = null;
+  // One-shot: a WOM # to pre-fill into the "Flag a Reclass Finding" form,
+  // set when "+ Flag a reclass for this WOM" is clicked from a WOM's own
+  // detail modal.
+  let reclassFlagPrefillWom = null;
   // Contracted Services Increased groups its rows by vendor (Krista: one
   // vendor name + total, drilling down to the specifics, same idea as the
   // Vendor cost analysis section lower on the page) -- which vendor groups
@@ -316,7 +320,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "reclasses") {
       const openItemId = reclassItemToOpen;
       reclassItemToOpen = null;
-      await renderReclasses(content, { openItemId });
+      const flagPrefillWom = reclassFlagPrefillWom;
+      reclassFlagPrefillWom = null;
+      await renderReclasses(content, { openItemId, flagPrefillWom });
     }
     else if (activeTab === "glreconciliation") await renderGlReconciliation(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
@@ -3865,6 +3871,69 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       canUpload: true,
       emptyText: "No documents attached yet.",
     });
+    loadWomReclassActivity(body, w, close);
+  }
+
+  // Shows any reclass item (from the Reclasses tab) tied to this WOM on
+  // either side, with its current status -- so opening a WOM's own detail
+  // answers "has a reclass against this WOM been accomplished" without
+  // having to go search the Reclasses tab separately. Read-only: nothing
+  // here can be edited from this modal, but "+ Flag a reclass" jumps to the
+  // Reclasses tab with this WOM # already pre-filled into the flag form.
+  async function loadWomReclassActivity(body, w, closeModal) {
+    const wrap = document.createElement("div");
+    wrap.className = "wom-modal-reclasses";
+    wrap.innerHTML = `<h4>Reclasses tied to this WOM</h4><p class="empty-note">Loading…</p>`;
+    body.appendChild(wrap);
+    const goFlagThisWom = () => {
+      reclassFlagPrefillWom = w.code;
+      activeTab = "reclasses";
+      closeModal();
+      draw();
+    };
+    try {
+      const [items, meta] = await Promise.all([
+        api.get(`/api/admin/reclasses/items?${new URLSearchParams({ womNumber: w.code })}`),
+        api.get("/api/admin/reclasses/meta"),
+      ]);
+      if (items.length === 0) {
+        wrap.innerHTML = `
+          <h4>Reclasses tied to this WOM</h4>
+          <p class="empty-note">No reclass item (submitted or flagged) references this WOM.</p>
+          <button type="button" class="btn btn-secondary wom-flag-reclass-btn">+ Flag a reclass for this WOM</button>
+        `;
+        wrap.querySelector(".wom-flag-reclass-btn").addEventListener("click", goFlagThisWom);
+        return;
+      }
+      wrap.innerHTML = `
+        <h4>Reclasses tied to this WOM</h4>
+        <table class="detail-table">
+          <tbody>
+            ${items
+              .map((r) => {
+                const label = meta.statuses.find((s) => s.value === r.status)?.label || r.status;
+                const badgeClass = r.status === "confirmed_posted" ? "badge-approved" : r.status === "submitted" ? "badge-submitted" : "badge-draft";
+                return `
+              <tr>
+                <th>${r.fromWomNumber === w.code ? "From this WOM" : "To this WOM"}</th>
+                <td>${formatMoney(r.fromAmount)} -- ${escapeHtml(r.comments || "no comment")}</td>
+                <td><span class="badge ${badgeClass}">${escapeHtml(label)}</span></td>
+              </tr>`;
+              })
+              .join("")}
+          </tbody>
+        </table>
+        <button type="button" class="btn btn-secondary wom-flag-reclass-btn">+ Flag another reclass for this WOM</button>
+        <p class="review-checklist-hint">
+          Status here is whatever was set on the Reclasses tab -- "Confirmed Posted" means someone verified it
+          landed in the GL, not an automatic check. Open the item on the Reclasses tab for the full detail,
+          including any matching GL posting found automatically.
+        </p>
+      `;
+      wrap.querySelector(".wom-flag-reclass-btn").addEventListener("click", goFlagThisWom);
+    } catch (err) {
+      wrap.innerHTML = `<h4>Reclasses tied to this WOM</h4><p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    }
   }
 
   // Financials-wide estimated-vs-applied picture -- every non-cancelled

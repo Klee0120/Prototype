@@ -28,6 +28,8 @@ const STATUS_BADGE_CLASS = {
 export async function renderReclasses(container, options = {}) {
   let statusFilter = "";
   let sourceFilter = "";
+  let searchFilter = "";
+  let searchDebounceTimer = null;
   let meta = null;
   let itemsCache = null;
   let lastBatch = null;
@@ -38,6 +40,9 @@ export async function renderReclasses(container, options = {}) {
   // (see adminReview.js's reclassItemToOpen) -- opens straight to that
   // item's detail the first time this tab draws, regardless of filters.
   let openItemId = options.openItemId || null;
+  // One-shot deep link from a WOM's own detail modal's "+ Flag a reclass for
+  // this WOM" button -- opens the flag form pre-filled with that WOM #.
+  let flagPrefillWom = options.flagPrefillWom || null;
 
   draw();
 
@@ -49,6 +54,7 @@ export async function renderReclasses(container, options = {}) {
           `/api/admin/reclasses/items?${new URLSearchParams({
             ...(statusFilter ? { status: statusFilter } : {}),
             ...(sourceFilter ? { source: sourceFilter } : {}),
+            ...(searchFilter ? { search: searchFilter } : {}),
           })}`
         ),
         api.get("/api/admin/reclasses/batches"),
@@ -64,6 +70,12 @@ export async function renderReclasses(container, options = {}) {
       return;
     }
     drawList();
+
+    if (flagPrefillWom) {
+      const wom = flagPrefillWom;
+      flagPrefillWom = null;
+      openReclassFormModal({ from: { womNumber: wom } });
+    }
 
     if (openItemId) {
       const id = openItemId;
@@ -90,6 +102,12 @@ export async function renderReclasses(container, options = {}) {
         Submitting or importing a reclass never changes posted actuals here — it stays pending until a later GL import confirms the correction landed.
       </p>
       <div class="wom-filter-bar">
+        <input
+          type="text"
+          class="reclass-search-filter"
+          placeholder="Look up WOM # or PO #..."
+          value="${escapeHtml(searchFilter)}"
+        />
         <select class="reclass-status-filter">
           <option value="">All statuses</option>
           ${meta.statuses.map((s) => `<option value="${s.value}" ${statusFilter === s.value ? "selected" : ""}>${escapeHtml(s.label)}</option>`).join("")}
@@ -100,6 +118,11 @@ export async function renderReclasses(container, options = {}) {
           <option value="manual" ${sourceFilter === "manual" ? "selected" : ""}>Manually flagged</option>
         </select>
       </div>
+      ${
+        searchFilter
+          ? `<p class="review-checklist-hint">Showing reclasses tied to WOM/PO "<strong>${escapeHtml(searchFilter)}</strong>" (matches either side of the reclass, and resolves a PO # to its own WOM #). Click into a result to see whether it's actually posted in the GL yet.</p>`
+          : ""
+      }
       <p class="po-count">${itemsCache.length} item${itemsCache.length === 1 ? "" : "s"}.</p>
       <div class="reclass-table-wrap"></div>
 
@@ -130,6 +153,14 @@ export async function renderReclasses(container, options = {}) {
       await runImport(file);
     });
     container.querySelector(".reclass-flag-btn").addEventListener("click", () => openReclassFormModal());
+    container.querySelector(".reclass-search-filter").addEventListener("input", (e) => {
+      const value = e.target.value;
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => {
+        searchFilter = value.trim();
+        draw();
+      }, 400);
+    });
     container.querySelector(".reclass-status-filter").addEventListener("change", (e) => {
       statusFilter = e.target.value;
       draw();
@@ -178,6 +209,7 @@ export async function renderReclasses(container, options = {}) {
             <th>Amount</th>
             <th>Name - Alpha Explanation</th>
             <th>Remark</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -196,6 +228,7 @@ export async function renderReclasses(container, options = {}) {
               <td>${formatMoney(r.amount)}</td>
               <td>${escapeHtml(r.nameAlpha || "—")}</td>
               <td>${escapeHtml(r.remark || "—")}</td>
+              <td><button type="button" class="btn-link reclass-gl-flag-btn" data-gl-index="${glActivity.indexOf(r)}">Flag this</button></td>
             </tr>`
                 )
                 .join("")
@@ -219,12 +252,37 @@ export async function renderReclasses(container, options = {}) {
     const nextBtn = wrap.querySelector(".gl-pager-next");
     if (prevBtn) prevBtn.addEventListener("click", () => { glActivityPage--; renderGlActivity(); });
     if (nextBtn) nextBtn.addEventListener("click", () => { glActivityPage++; renderGlActivity(); });
+    wrap.querySelectorAll(".reclass-gl-flag-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const r = glActivity[Number(btn.dataset.glIndex)];
+        openReclassFormModal({
+          from: { jobNumber: r.businessUnit, objectCode: r.objectAccount, subsidiary: r.subsidiary, amount: r.amount },
+          comments: `${r.nameAlpha || ""} -- ${r.remark || ""} (batch ${r.batchNumber || "—"}, ${r.glDate || "—"})`.trim(),
+        });
+      });
+    });
   }
 
   function renderTable() {
     const wrap = container.querySelector(".reclass-table-wrap");
     if (itemsCache.length === 0) {
-      wrap.innerHTML = `<p class="empty-note">No reclass items match these filters.</p>`;
+      wrap.innerHTML = `
+        <p class="empty-note">No reclass items match these filters.</p>
+        ${
+          searchFilter
+            ? `<button type="button" class="btn btn-secondary reclass-flag-for-search-btn">+ Flag a reclass for "${escapeHtml(searchFilter)}"</button>`
+            : ""
+        }
+      `;
+      if (searchFilter) {
+        wrap.querySelector(".reclass-flag-for-search-btn").addEventListener("click", () => {
+          // searchFilter could be a WOM # or a PO # -- pre-fill it as a WOM #
+          // either way, since that's the field the admin will check/correct
+          // first; if it was actually a PO #, they'll swap in the real WOM #
+          // once they look it up.
+          openReclassFormModal({ from: { womNumber: searchFilter } });
+        });
+      }
       return;
     }
     wrap.innerHTML = `
@@ -304,18 +362,22 @@ export async function renderReclasses(container, options = {}) {
     `;
   }
 
-  function openReclassFormModal() {
+  // prefill lets a "Flag" button elsewhere (a GL activity row, a WOM/PO
+  // search with no tracked item yet, a WOM's own detail) start this form
+  // already filled with whatever's already known, instead of the admin
+  // retyping coding fields that are sitting right there on screen.
+  function openReclassFormModal(prefill = null) {
     const { body, close } = openModal({
       title: "Flag a Reclass Finding",
       size: "large",
       bodyHtml: `
         <form class="reclass-form modal-form">
           <h4>From (coded as)</h4>
-          ${codingFieldsHtml("from", null)}
+          ${codingFieldsHtml("from", prefill?.from || null)}
           <h4>To (should be)</h4>
-          ${codingFieldsHtml("to", null)}
+          ${codingFieldsHtml("to", prefill?.to || null)}
           <div class="add-tech-grid">
-            <input name="vendor" placeholder="Vendor / source" />
+            <input name="vendor" placeholder="Vendor / source" value="${escapeHtml(prefill?.vendor || "")}" />
             <select name="impactsFinalInvoice">
               <option value="">Impacts final invoice?</option>
               <option value="Yes">Yes (Impacting)</option>
@@ -330,7 +392,7 @@ export async function renderReclasses(container, options = {}) {
               ${meta.rootCauseOptions.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("")}
             </select>
           </div>
-          <textarea name="comments" rows="2" placeholder="Comments / reason"></textarea>
+          <textarea name="comments" rows="2" placeholder="Comments / reason">${escapeHtml(prefill?.comments || "")}</textarea>
           <textarea name="pathForward" rows="2" placeholder="Path forward / action to prevent reoccurrence"></textarea>
           <div class="modal-form-actions">
             <button type="submit" class="btn btn-primary">Flag finding</button>

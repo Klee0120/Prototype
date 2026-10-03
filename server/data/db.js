@@ -2054,6 +2054,31 @@ function listReclassItems(filters = {}) {
     clauses.push("region = ?");
     params.push(filters.region);
   }
+  // Matches either side of the reclass -- a WOM can be the one losing the
+  // cost or the one picking it up, and the WOM Projects detail view needs
+  // to surface a reclass either way.
+  if (filters.womNumber) {
+    clauses.push("(from_wom_number = ? OR to_wom_number = ?)");
+    params.push(filters.womNumber, filters.womNumber);
+  }
+  // Reclasses tab search box: look up by WOM # directly, or by a real PO #
+  // (resolved to that PO's own WOM # via the Budget PO Tracker) -- lets an
+  // admin search "did PO 10049941's reclass go through" without first
+  // having to know which WOM that PO is tied to.
+  if (filters.search) {
+    const term = String(filters.search).trim();
+    if (term) {
+      const womCandidates = new Set([term]);
+      const poRow = db.prepare("SELECT wom_number FROM pos WHERE po_number = ?").get(term);
+      if (poRow && poRow.wom_number) womCandidates.add(poRow.wom_number);
+      const orClauses = [];
+      for (const w of womCandidates) {
+        orClauses.push("(from_wom_number = ? OR to_wom_number = ?)");
+        params.push(w, w);
+      }
+      clauses.push(`(${orClauses.join(" OR ")})`);
+    }
+  }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   return db
     .prepare(`SELECT * FROM reclass_items ${where} ORDER BY id DESC`)

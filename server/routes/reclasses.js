@@ -161,6 +161,8 @@ router.get("/items", (req, res) => {
       status: req.query.status,
       source: req.query.source,
       region: req.query.region,
+      womNumber: req.query.womNumber,
+      search: req.query.search,
     })
   );
 });
