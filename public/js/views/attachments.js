@@ -18,6 +18,8 @@ const CATEGORY_LABELS = {
   vpo_waiver: "VPO Waiver",
   vendor_other: "Other Vendor Document",
   po_doc: "PO Document",
+  quote: "Vendor Quote",
+  quote_revision: "Approved Quote Revision",
 };
 
 function formatSize(bytes) {

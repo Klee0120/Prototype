@@ -161,7 +161,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // never be shown after something changes it elsewhere (Tech Allocation,
   // another tab, etc.). Detail is always fetched fresh when rendering.
   const expanded = new Set();
-  const womEditing = new Set(); // one-shot: code to jump straight to in the Open Project modal
+  // Which WOM's full profile page is open (null = showing the list instead),
+  // and which of its tabs -- same pattern as vendorProfileId/vendorProfileTab.
+  let womProfileCode = null;
+  let womProfileTab = "overview";
+  function openWomProfile(code, tab) {
+    womProfileCode = code;
+    womProfileTab = tab || "overview";
+    goTo("woms");
+  }
   const locationEditing = new Set();
   let womTerritoryFilter = ""; // "" = all territories, so a single-territory shop sees no filter UI noise by default
   let locationTerritoryFilter = ""; // "" = all territories
@@ -253,6 +261,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // directory list again -- an open profile is a within-visit
     // convenience, not state that should survive switching away and back.
     if (activeTab === "vendors" && tab !== "vendors") vendorProfileId = null;
+    if (activeTab === "woms" && tab !== "woms") womProfileCode = null;
     activeTab = tab;
     sectionLastTab[sectionForTab(tab).key] = tab;
     draw();
@@ -2242,7 +2251,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           expanded.add(tech);
           activeTab = "review";
         } else if (kind === "wom-pending") {
-          womEditing.add(wom);
+          womProfileCode = wom;
+          womProfileTab = "overview";
           activeTab = "woms";
         } else if (kind === "report-gap") {
           laborReportMonth = month;
@@ -3427,6 +3437,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   async function drawWoms(content) {
     const [allWoms, locations] = await Promise.all([api.get("/api/woms"), api.get("/api/locations")]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    if (womProfileCode) {
+      const w = allWoms.find((x) => x.code === womProfileCode);
+      if (w) {
+        await renderWomProfile(content, w, locationByCode, locations);
+        return;
+      }
+      womProfileCode = null;
+    }
     const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
     const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
     const locationsInUse = [...new Set(allWoms.map((w) => w.locationCode).filter(Boolean))]
@@ -3500,16 +3518,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     if (woms.length === 0) {
       list.innerHTML = `<p class="empty-note">No WOM projects match these filters.</p>`;
-    }
-
-    // One-shot deep link from a Priorities task card ("this WOM needs a
-    // Maximo #", etc.) -- jump straight to its Open Project modal regardless
-    // of whatever filters/group toggle happen to be active right now.
-    if (womEditing.size > 0) {
-      const codeToOpen = [...womEditing][0];
-      womEditing.clear();
-      const target = allWoms.find((x) => x.code === codeToOpen);
-      if (target) openWomProjectModal(target, content, locationByCode, locations);
     }
 
     if (!content.dataset.rowMenuBound) {
@@ -3652,6 +3660,240 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return el;
   }
 
+  const WOM_PROFILE_TABS = [
+    { key: "overview", label: "Overview" },
+    { key: "tasks", label: "Tasks" },
+    { key: "vendorspos", label: "Vendors & POs" },
+    { key: "financials", label: "Labor & Financials" },
+    { key: "documents", label: "Documents" },
+    { key: "activity", label: "Activity" },
+  ];
+
+  // The full WOM profile page -- consolidates what used to be split across
+  // the "Open project" edit modal and the separate "Smartsheet detail" raw
+  // dump into one place, same shell as the Vendor Directory's own profile
+  // page (see renderVendorProfile). Only Overview and Documents render real
+  // content for now; the rest are placeholders filled in by later phases of
+  // the WOM Profile Consolidation plan.
+  async function renderWomProfile(content, w, locationByCode, locations) {
+    const loc = locationByCode[w.locationCode];
+    content.innerHTML = `
+      <button type="button" class="btn btn-link wom-profile-back-btn">&larr; WOM Projects</button>
+      <div class="page-header">
+        <div>
+          <h1 class="page-header-title">${escapeHtml(w.description)}</h1>
+          <p class="page-header-subtitle">
+            <span class="chip chip-code">WOM ${escapeHtml(w.code)}</span>
+            <span class="badge badge-${womStatusBadgeClass(w.status)}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
+            ${loc ? `<span class="chip">${escapeHtml(loc.name)}</span>` : `<span class="chip chip-muted">No location on file</span>`}
+            ${w.statusConflict ? `<span class="badge badge-rejected">Smartsheet says this is done -- app status disagrees</span>` : ""}
+          </p>
+        </div>
+        <div class="page-header-actions">
+          <button type="button" class="btn btn-outline wom-profile-edit-btn">Edit</button>
+          ${w.smartsheetData ? `<button type="button" class="btn btn-outline wom-profile-source-btn">Source details</button>` : ""}
+          <button type="button" class="btn btn-link wom-profile-delete-btn">Delete</button>
+        </div>
+      </div>
+      <div class="tabs wom-profile-tabs">
+        ${WOM_PROFILE_TABS.map((t) => `<button class="tab ${womProfileTab === t.key ? "active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
+      </div>
+      <div class="wom-profile-body"></div>
+    `;
+
+    content.querySelector(".wom-profile-back-btn").addEventListener("click", () => {
+      womProfileCode = null;
+      drawWoms(content);
+    });
+    content.querySelector(".wom-profile-edit-btn").addEventListener("click", () => {
+      openWomEditFormModal(w, content, locationByCode, locations);
+    });
+    const sourceBtn = content.querySelector(".wom-profile-source-btn");
+    if (sourceBtn) sourceBtn.addEventListener("click", () => openSmartsheetDetailModal(w));
+    content.querySelector(".wom-profile-delete-btn").addEventListener("click", async () => {
+      if (!window.confirm(`Delete "${w.description}" (${w.code})? This can't be undone.`)) return;
+      try {
+        await api.delete(`/api/woms/${encodeURIComponent(w.code)}`);
+        womProfileCode = null;
+        await drawWoms(content);
+      } catch (err) {
+        if (err.status === 409 && err.payload && err.payload.allocatedHours != null) {
+          const forceConfirmed = window.confirm(
+            `${err.payload.allocatedHours}h already allocated against ${w.code} on technician timesheets. Deleting it removes those hours too -- delete anyway?`
+          );
+          if (!forceConfirmed) return;
+          try {
+            await api.delete(`/api/woms/${encodeURIComponent(w.code)}`, { force: true });
+            womProfileCode = null;
+            await drawWoms(content);
+          } catch (err2) {
+            window.alert(`Could not delete ${w.code}: ${err2.message}`);
+          }
+        } else {
+          window.alert(`Could not delete ${w.code}: ${err.message}`);
+        }
+      }
+    });
+    content.querySelectorAll(".wom-profile-tabs .tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        womProfileTab = btn.dataset.tab;
+        renderWomProfile(content, w, locationByCode, locations);
+      });
+    });
+
+    const body = content.querySelector(".wom-profile-body");
+    if (womProfileTab === "documents") await renderWomDocumentsTab(body, w);
+    else if (womProfileTab === "tasks") renderWomPlaceholderTab(body, "Tasks");
+    else if (womProfileTab === "vendorspos") renderWomPlaceholderTab(body, "Vendors & POs");
+    else if (womProfileTab === "financials") renderWomPlaceholderTab(body, "Labor & Financials");
+    else if (womProfileTab === "activity") renderWomPlaceholderTab(body, "Activity");
+    else await renderWomOverviewTab(body, w, content, locationByCode, locations);
+  }
+
+  function renderWomPlaceholderTab(host, label) {
+    host.innerHTML = `<p class="empty-note">${escapeHtml(label)} is coming in a future update.</p>`;
+  }
+
+  async function renderWomOverviewTab(host, w, content, locationByCode, locations) {
+    const metaItems = [
+      { label: "Subsidiary", value: w.subsidiaryCode ? escapeHtml(w.subsidiaryCode) : "—" },
+      { label: "Maximo #", value: w.maximoNumber ? escapeHtml(w.maximoNumber) : "—" },
+      { label: "Requested by (Smartsheet)", value: w.sourceRequestedBy ? escapeHtml(w.sourceRequestedBy) : "—" },
+      { label: "Estimated cost", value: w.estimatedPrice != null ? `$${formatMoney(w.estimatedPrice)}` : "—" },
+      { label: "Applied cost", value: w.appliedPrice != null ? `$${formatMoney(w.appliedPrice)}` : "—" },
+    ];
+    if (w.budgetHours != null) metaItems.push({ label: "Hours remaining", value: `${w.remainingHours}h of ${w.budgetHours}h` });
+
+    const statusOptions = WOM_STATUSES.map(
+      (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
+    ).join("");
+
+    const hasSourceStatus = w.sourceStatusRaw || w.sourceWorkCompletedRaw || w.sourceBillingRaw;
+    const sourceStatusCard = hasSourceStatus
+      ? `
+      <div class="vendor-overview-card">
+        <h4>Status reported by Smartsheet</h4>
+        <dl class="vendor-overview-fields">
+          ${w.sourceStatusRaw ? `<div><dt>Status</dt><dd>${escapeHtml(w.sourceStatusRaw)}</dd></div>` : ""}
+          ${w.sourceWorkCompletedRaw ? `<div><dt>Work completed</dt><dd>${escapeHtml(w.sourceWorkCompletedRaw)}</dd></div>` : ""}
+          ${w.sourceBillingRaw ? `<div><dt>Billing</dt><dd>${escapeHtml(w.sourceBillingRaw)}</dd></div>` : ""}
+        </dl>
+        ${
+          w.statusConflict
+            ? `<p class="review-checklist-hint">Smartsheet's own data says this WOM is done/invoiced, but the app status below still says otherwise. This never updates automatically -- change the app status once you've confirmed it.</p>`
+            : ""
+        }
+      </div>`
+      : "";
+
+    host.innerHTML = `
+      <div class="vendor-overview-grid">
+        <div class="vendor-overview-card">
+          <h4>Project details</h4>
+          <dl class="vendor-overview-fields">
+            ${metaItems.map((m) => `<div><dt>${m.label}</dt><dd>${m.value}</dd></div>`).join("")}
+          </dl>
+        </div>
+        <div class="vendor-overview-card">
+          <h4>App status</h4>
+          <select class="wom-overview-status-select">${statusOptions}</select>
+          <p class="review-checklist-hint">This is the status this app tracks -- an admin sets it manually; nothing here is auto-overwritten by a Smartsheet sync.</p>
+        </div>
+      </div>
+      ${sourceStatusCard}
+      <div class="vendor-overview-card">
+        <h4>Lifecycle checklist</h4>
+        <div class="wom-lifecycle-checklist">
+          ${w.lifecycleSteps
+            .map((s) => {
+              const done = Boolean(s.completedAt);
+              const meta = done ? `${s.completedBy === "sync" ? "auto-completed" : "completed"} ${new Date(s.completedAt).toLocaleString()}` : "";
+              return `
+              <div class="wom-lifecycle-step${done ? " wom-lifecycle-step-done" : ""}">
+                <span class="wom-lifecycle-step-icon">${done ? "✓" : "○"}</span>
+                <span class="wom-lifecycle-step-label">${escapeHtml(s.label)}</span>
+                <span class="wom-lifecycle-step-meta">${escapeHtml(meta)}</span>
+              </div>`;
+            })
+            .join("")}
+        </div>
+        <p class="review-checklist-hint">Manage these steps from the Priorities &rarr; Task Manager card for this WOM.</p>
+      </div>
+    `;
+
+    host.querySelector(".wom-overview-status-select").addEventListener("change", async (e) => {
+      const nextStatus = e.target.value;
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(w.code)}`, { status: nextStatus });
+        await drawWoms(content);
+      } catch (err) {
+        window.alert(`Could not update ${w.code}: ${err.message}`);
+        e.target.value = w.status;
+      }
+    });
+  }
+
+  async function renderWomDocumentsTab(host, w) {
+    await renderAttachments(host, {
+      title: "Documents & Photos",
+      relatedType: "wom",
+      relatedId: w.code,
+      categories: [
+        { value: "wom_doc", label: "Document / Photo" },
+        { value: "quote", label: "Vendor Quote" },
+        { value: "quote_revision", label: "Approved Quote Revision" },
+      ],
+      canUpload: true,
+      groupByCategory: true,
+      emptyText: "No documents attached yet.",
+    });
+  }
+
+  // A focused edit modal, same split as the vendor profile's own Edit vendor
+  // button -- Overview is read-only, this is the only place the WOM's own
+  // fields (not its status, which has its own control) get changed.
+  function openWomEditFormModal(w, content, locationByCode, locations) {
+    const locationOptions = locations
+      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === w.locationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
+      .join("");
+    const { body, close } = openModal({
+      title: `Edit ${w.code}`,
+      bodyHtml: `
+        <form class="edit-wom-form modal-form">
+          <div class="add-tech-grid">
+            <input name="description" value="${escapeHtml(w.description)}" required placeholder="Description" />
+            <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
+            <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
+            <input name="subsidiaryCode" placeholder="Subsidiary code" value="${escapeHtml(w.subsidiaryCode || "")}" />
+            <input name="maximoNumber" placeholder="Maximo #" value="${escapeHtml(w.maximoNumber || "")}" />
+          </div>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    body.querySelector(".edit-wom-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const msg = body.querySelector(".save-message");
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(w.code)}/details`, {
+          description: form.description.value.trim(),
+          locationCode: form.locationCode.value || null,
+          budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
+          subsidiaryCode: form.subsidiaryCode.value.trim() || null,
+          maximoNumber: form.maximoNumber.value.trim() || null,
+        });
+        close();
+        await drawWoms(content);
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
   async function renderWomRow(w, content, locationByCode, locations) {
     const el = document.createElement("div");
     el.className = "wom-card";
@@ -3704,7 +3946,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <div class="row-menu">
             <button class="btn btn-ghost row-menu-toggle" type="button" aria-label="More actions">&#8943;</button>
             <div class="row-menu-panel" hidden>
-              ${w.smartsheetData ? `<button class="row-menu-item smartsheet-detail-btn" type="button">Smartsheet detail</button>` : ""}
               <button class="row-menu-item row-menu-item-danger delete-wom-btn" type="button">Delete</button>
             </div>
           </div>
@@ -3716,7 +3957,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
 
     el.querySelector(".wom-open-btn").addEventListener("click", () => {
-      openWomProjectModal(w, content, locationByCode, locations);
+      openWomProfile(w.code);
     });
 
     el.querySelector(".row-menu-toggle").addEventListener("click", (e) => {
@@ -3766,11 +4007,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         e.target.value = w.status;
       }
     });
-
-    const smartsheetDetailBtn = el.querySelector(".smartsheet-detail-btn");
-    if (smartsheetDetailBtn) {
-      smartsheetDetailBtn.addEventListener("click", () => openSmartsheetDetailModal(w));
-    }
 
     return el;
   }

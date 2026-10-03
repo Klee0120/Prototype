@@ -636,6 +636,16 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       // figures above, which are this app's own numbers, not Toyota's.
       toyotaPoValue: smartsheet.findColumn(sheet.columns, ["toy", "value"]),
       vendor: smartsheet.findColumn(sheet.columns, ["vendor"]),
+      // Verbatim sheet fields surfaced on the WOM profile's Overview tab so
+      // the tracker's own account of completion/invoicing is visible instead
+      // of only ever landing inside the opaque smartsheet_raw_data blob --
+      // never fed into this app's own `status` (see
+      // computeWomStatusConflict in routes/woms.js and the woms.status
+      // migration comment in db.js for why).
+      sourceStatus: smartsheet.findAnyColumn(sheet.columns, [["wom", "status"], ["status"]]),
+      sourceWorkCompleted: smartsheet.findColumn(sheet.columns, ["work", "completed"]),
+      sourceBilling: smartsheet.findAnyColumn(sheet.columns, [["invoice", "status"], ["billing"], ["wom", "invoiced"]]),
+      sourceRequestedBy: smartsheet.findAnyColumn(sheet.columns, [["requested", "by"], ["technician"]]),
     };
     // Snapshot every task's status before the sync so the diff afterward
     // can say how many of the resulting task-engine writes were this sync's
@@ -697,6 +707,10 @@ router.post("/smartsheet/sync-woms", async (req, res) => {
       appliedContingencyColumn: columns.appliedContingency,
       toyotaPoValueColumn: columns.toyotaPoValue,
       vendorColumn: columns.vendor,
+      sourceStatusColumn: columns.sourceStatus,
+      sourceWorkCompletedColumn: columns.sourceWorkCompleted,
+      sourceBillingColumn: columns.sourceBilling,
+      sourceRequestedByColumn: columns.sourceRequestedBy,
     });
   } catch (err) {
     res.status(502).json({ error: err.message });

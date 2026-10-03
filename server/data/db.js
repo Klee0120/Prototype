@@ -865,6 +865,21 @@ if (!hasColumn("woms", "estimated_materials")) {
 if (!hasColumn("woms", "date_requested")) {
   db.exec("ALTER TABLE woms ADD COLUMN date_requested TEXT");
 }
+// Verbatim Status/Work Completed/Billing/Requested-By values from the
+// Smartsheet tracker -- kept separate from `status` (which only an admin
+// ever sets, see tests/smartsheetSync.test.js) so the sheet's own account of
+// completion/invoicing is visible instead of silently landing only inside
+// the opaque smartsheet_raw_data blob. Never written into `status` itself;
+// see computeWomStatusConflict in routes/woms.js for how a disagreement
+// between the two is surfaced without ever auto-overwriting the admin's
+// manually-set status.
+if (!hasColumn("woms", "source_status_raw")) {
+  db.exec("ALTER TABLE woms ADD COLUMN source_status_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_work_completed_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_work_completed INTEGER");
+  db.exec("ALTER TABLE woms ADD COLUMN source_billing_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_requested_by TEXT");
+}
 // One-time cleanup for tasks left behind by the old 9-stage PSE state
 // machine this app used before the WOM lifecycle checklist replaced it
 // ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
@@ -4250,6 +4265,20 @@ function valuesDiffer(existingValue, nextValue) {
   return Number(existingValue) !== Number(nextValue) && String(existingValue) !== String(nextValue);
 }
 
+// A sheet's "Work Completed" column is free text, not a real checkbox --
+// "True"/"Yes"/"Complete" style values map to done, "False"/"No"/blank map
+// to not-done, and anything else (wording neither list recognizes) stays
+// null rather than guessing. computeWomStatusConflict (routes/woms.js) also
+// checks the raw text directly, so an unrecognized value isn't lost, just
+// not folded into this derived flag.
+function parseWorkCompletedFlag(raw) {
+  if (!raw) return null;
+  const v = raw.toLowerCase().trim();
+  if (["true", "yes", "y", "complete", "completed", "done", "x", "1"].includes(v)) return 1;
+  if (["false", "no", "n", "incomplete", "0"].includes(v)) return 0;
+  return null;
+}
+
 // Every itemized cost category Cost Analysis breaks estimate-vs-applied by
 // (all six estimate-side figures sum to the WOM's project total; same for
 // applied). `jsField` is this value's key both on `columns` (the resolved
@@ -4275,6 +4304,22 @@ const WOM_COST_BREAKDOWN_FIELDS = [
   { dbColumn: "toyota_po_value", jsField: "toyotaPoValue", diffLabel: "Toyota PO value" },
 ];
 
+// Verbatim Status/Work Completed/Billing/Requested-By values from the
+// sheet -- same centralized-columns-list treatment as
+// WOM_COST_BREAKDOWN_FIELDS above, for the same reason (one entry here
+// instead of a hand-edit to 5 SQL statements + diffFields). Never read by
+// anything that writes `status` itself -- see the woms.source_status_raw
+// migration comment and computeWomStatusConflict in routes/woms.js.
+// source_work_completed (the derived 1/0/null flag) has no diffLabel of its
+// own since source_work_completed_raw already reports that change.
+const WOM_SOURCE_FIELDS = [
+  { dbColumn: "source_status_raw", jsField: "sourceStatusRaw", diffLabel: "source status" },
+  { dbColumn: "source_work_completed_raw", jsField: "sourceWorkCompletedRaw", diffLabel: "source work completed" },
+  { dbColumn: "source_work_completed", jsField: "sourceWorkCompleted", diffLabel: null },
+  { dbColumn: "source_billing_raw", jsField: "sourceBillingRaw", diffLabel: "source billing status" },
+  { dbColumn: "source_requested_by", jsField: "sourceRequestedBy", diffLabel: "requested by" },
+];
+
 function diffFields(existing, next) {
   const fields = [];
   if (next.estimatedPrice != null && valuesDiffer(existing.estimated_price, next.estimatedPrice)) fields.push("estimate");
@@ -4285,6 +4330,9 @@ function diffFields(existing, next) {
   for (const f of WOM_COST_BREAKDOWN_FIELDS) {
     if (next[f.jsField] != null && valuesDiffer(existing[f.dbColumn], next[f.jsField])) fields.push(f.diffLabel);
   }
+  for (const f of WOM_SOURCE_FIELDS) {
+    if (f.diffLabel && next[f.jsField] != null && valuesDiffer(existing[f.dbColumn], next[f.jsField])) fields.push(f.diffLabel);
+  }
   if (next.matchedVendorId && !existing.vendor_id) fields.push("vendor");
   return fields;
 }
@@ -4293,12 +4341,17 @@ function syncWomsFromSheetRows(rows, columns) {
   const { wom: womColumn, estimate: estimateColumn, applied: appliedColumn, description: descriptionColumn } = columns;
   const { dateRequested: dateRequestedColumn, maximo: maximoColumn, location: locationColumn, subsidiary: subsidiaryColumn } = columns;
   const { vendor: vendorColumn } = columns;
+  const { sourceStatus: sourceStatusColumn, sourceWorkCompleted: sourceWorkCompletedColumn } = columns;
+  const { sourceBilling: sourceBillingColumn, sourceRequestedBy: sourceRequestedByColumn } = columns;
   // The Smartsheet column title for each breakdown category, resolved once
   // up front -- looked up by row below, not re-resolved every row.
   const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
   const breakdownSetSql = WOM_COST_BREAKDOWN_FIELDS.map((f) => `${f.dbColumn} = ?`).join(", ");
   const breakdownInsertColumnsSql = WOM_COST_BREAKDOWN_FIELDS.map((f) => f.dbColumn).join(", ");
   const breakdownInsertPlaceholders = WOM_COST_BREAKDOWN_FIELDS.map(() => "?").join(", ");
+  const sourceSetSql = WOM_SOURCE_FIELDS.map((f) => `${f.dbColumn} = ?`).join(", ");
+  const sourceInsertColumnsSql = WOM_SOURCE_FIELDS.map((f) => f.dbColumn).join(", ");
+  const sourceInsertPlaceholders = WOM_SOURCE_FIELDS.map(() => "?").join(", ");
   let created = 0;
   let promoted = 0;
   let updated = 0;
@@ -4331,6 +4384,14 @@ function syncWomsFromSheetRows(rows, columns) {
     const subsidiaryCode = (subsidiaryColumn && row[subsidiaryColumn] && String(row[subsidiaryColumn]).trim()) || null;
     const matchedLocationCode = locationColumn ? matchLocationCodeByName(row[locationColumn]) : null;
     const matchedVendorId = vendorColumn ? matchVendorIdByName(row[vendorColumn]) : null;
+    const sourceStatusRaw = (sourceStatusColumn && row[sourceStatusColumn] && String(row[sourceStatusColumn]).trim()) || null;
+    const sourceWorkCompletedRaw =
+      (sourceWorkCompletedColumn && row[sourceWorkCompletedColumn] != null && String(row[sourceWorkCompletedColumn]).trim()) || null;
+    const sourceWorkCompleted = parseWorkCompletedFlag(sourceWorkCompletedRaw);
+    const sourceBillingRaw = (sourceBillingColumn && row[sourceBillingColumn] && String(row[sourceBillingColumn]).trim()) || null;
+    const sourceRequestedBy = (sourceRequestedByColumn && row[sourceRequestedByColumn] && String(row[sourceRequestedByColumn]).trim()) || null;
+    const sourceFields = { sourceStatusRaw, sourceWorkCompletedRaw, sourceWorkCompleted, sourceBillingRaw, sourceRequestedBy };
+    const sourceParams = WOM_SOURCE_FIELDS.map((f) => sourceFields[f.jsField]);
     const rawData = JSON.stringify(row);
     const breakdown = { matchedVendorId };
     const breakdownParams = [];
@@ -4368,10 +4429,18 @@ function syncWomsFromSheetRows(rows, columns) {
       // adopt it rather than erroring on a duplicate code.
       const collision = findWom(code);
       if (collision) {
-        const fields = diffFields(collision, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, ...breakdown });
+        const fields = diffFields(collision, {
+          estimatedPrice,
+          appliedPrice,
+          maximoNumber,
+          subsidiaryCode,
+          matchedLocationCode,
+          ...breakdown,
+          ...sourceFields,
+        });
         db.prepare(
           `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-           location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+           location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
            smartsheet_raw_data = ?, smartsheet_synced_at = ?,
            smartsheet_row_number = ?, smartsheet_row_id = COALESCE(smartsheet_row_id, ?) WHERE code = ?`
         ).run(
@@ -4381,6 +4450,7 @@ function syncWomsFromSheetRows(rows, columns) {
           subsidiaryCode,
           matchedLocationCode,
           ...breakdownParams,
+          ...sourceParams,
           matchedVendorId,
           dateRequestedValue,
           rawData,
@@ -4399,9 +4469,9 @@ function syncWomsFromSheetRows(rows, columns) {
       const status = realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
-         location_code, ${breakdownInsertColumnsSql}, vendor_id, date_requested,
+         location_code, ${breakdownInsertColumnsSql}, ${sourceInsertColumnsSql}, vendor_id, date_requested,
          smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${breakdownInsertPlaceholders}, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${breakdownInsertPlaceholders}, ${sourceInsertPlaceholders}, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         description,
@@ -4412,6 +4482,7 @@ function syncWomsFromSheetRows(rows, columns) {
         subsidiaryCode,
         matchedLocationCode,
         ...breakdownParams,
+        ...sourceParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -4427,7 +4498,7 @@ function syncWomsFromSheetRows(rows, columns) {
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
       db.prepare(
         `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -4438,6 +4509,7 @@ function syncWomsFromSheetRows(rows, columns) {
         subsidiaryCode,
         matchedLocationCode,
         ...breakdownParams,
+        ...sourceParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -4455,7 +4527,7 @@ function syncWomsFromSheetRows(rows, columns) {
     if (existing.status === "pending" && requested) {
       db.prepare(
         `UPDATE woms SET status = 'requested', estimated_price = ?, applied_price = ?, maximo_number = ?,
-         subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+         subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -4465,6 +4537,7 @@ function syncWomsFromSheetRows(rows, columns) {
         subsidiaryCode,
         matchedLocationCode,
         ...breakdownParams,
+        ...sourceParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,
@@ -4480,10 +4553,18 @@ function syncWomsFromSheetRows(rows, columns) {
     }
 
     {
-      const fields = diffFields(existing, { estimatedPrice, appliedPrice, maximoNumber, subsidiaryCode, matchedLocationCode, ...breakdown });
+      const fields = diffFields(existing, {
+        estimatedPrice,
+        appliedPrice,
+        maximoNumber,
+        subsidiaryCode,
+        matchedLocationCode,
+        ...breakdown,
+        ...sourceFields,
+      });
       db.prepare(
         `UPDATE woms SET estimated_price = ?, applied_price = ?, maximo_number = ?, subsidiary_code = ?,
-         location_code = COALESCE(location_code, ?), ${breakdownSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
+         location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
@@ -4493,6 +4574,7 @@ function syncWomsFromSheetRows(rows, columns) {
         subsidiaryCode,
         matchedLocationCode,
         ...breakdownParams,
+        ...sourceParams,
         matchedVendorId,
         dateRequestedValue,
         rawData,

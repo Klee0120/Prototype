@@ -774,3 +774,164 @@ test("smartsheet sync: full six-category cost breakdown matches the real tracker
     assert.equal(res.status, 404);
   });
 });
+
+// The reported bug: a WOM like "Install drop ceiling" shows status Open on
+// its card while the sheet itself says "Status 99 -- Invoiced," "Work
+// Completed: true," "WOM fully invoiced" -- all three only ever visible in
+// the raw Smartsheet dump, never reflected in `status`. These columns cover
+// that: synced into their own source_* fields, surfaced as a conflict flag,
+// and never allowed to touch `status` itself.
+const STATUS_COLUMNS = [
+  { id: 1, title: "WOM #" },
+  { id: 2, title: "Project Name" },
+  { id: 3, title: "WOM Status" },
+  { id: 4, title: "Work Completed" },
+  { id: 5, title: "Invoice Status" },
+  { id: 6, title: "Requested By" },
+];
+
+function statusSheetWith(rows) {
+  return { name: "Midwest PSE Request Tracker", columns: STATUS_COLUMNS, rows };
+}
+
+test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as source_* fields, never into app status", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a row synced with sheet-reported completion keeps app status untouched but flags a conflict", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9001,
+            cells: [
+              { columnId: 1, value: "20099001", displayValue: "20099001" },
+              { columnId: 2, value: "Install drop ceiling", displayValue: "Install drop ceiling" },
+              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+              { columnId: 4, value: "True", displayValue: "True" },
+              { columnId: 5, value: "WOM fully invoiced", displayValue: "WOM fully invoiced" },
+              { columnId: 6, value: "J. Smith", displayValue: "J. Smith" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.sourceStatusColumn, "WOM Status");
+      assert.equal(res.body.sourceWorkCompletedColumn, "Work Completed");
+      assert.equal(res.body.sourceBillingColumn, "Invoice Status");
+      assert.equal(res.body.sourceRequestedByColumn, "Requested By");
+
+      const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
+      // A real WOM # creates straight into 'open' -- the sheet's own
+      // completion/invoicing data never promotes or changes that; only an
+      // admin changing it by hand does.
+      assert.equal(wom.status, "open");
+      assert.equal(wom.sourceStatusRaw, "Status 99 - Invoiced");
+      assert.equal(wom.sourceWorkCompletedRaw, "True");
+      assert.equal(wom.sourceWorkCompleted, 1);
+      assert.equal(wom.sourceBillingRaw, "WOM fully invoiced");
+      assert.equal(wom.sourceRequestedBy, "J. Smith");
+      assert.equal(wom.statusConflict, true, "the sheet says invoiced/complete while app status is still open");
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("re-syncing the same row again still never touches app status", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9001,
+            cells: [
+              { columnId: 1, value: "20099001", displayValue: "20099001" },
+              { columnId: 2, value: "Install drop ceiling", displayValue: "Install drop ceiling" },
+              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+              { columnId: 4, value: "True", displayValue: "True" },
+              { columnId: 5, value: "WOM fully invoiced", displayValue: "WOM fully invoiced" },
+              { columnId: 6, value: "J. Smith", displayValue: "J. Smith" },
+            ],
+          },
+        ]),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.status, "open");
+      assert.equal(wom.statusConflict, true);
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("once an admin manually sets status to invoiced, the conflict clears even with the same sheet data", async () => {
+    await server.call("PATCH", "/api/woms/20099001", { userId: "ADMIN", body: { status: "invoiced" } });
+    const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
+    assert.equal(wom.status, "invoiced");
+    assert.equal(wom.statusConflict, false, "app status already reflects completion, so there's nothing left to flag");
+  });
+
+  await t.test("a row with ordinary in-progress sheet data shows no conflict", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9002,
+            cells: [
+              { columnId: 1, value: "20099002", displayValue: "20099002" },
+              { columnId: 2, value: "Replace parking lot lighting", displayValue: "Replace parking lot lighting" },
+              { columnId: 3, value: "Status 40 - In Progress", displayValue: "Status 40 - In Progress" },
+              { columnId: 4, value: "False", displayValue: "False" },
+              { columnId: 5, value: "Not yet billed", displayValue: "Not yet billed" },
+            ],
+          },
+        ]),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const wom = (await server.call("GET", "/api/woms/20099002/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.status, "open");
+      assert.equal(wom.sourceWorkCompleted, 0);
+      assert.equal(wom.statusConflict, false);
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("missing Status/Work Completed/Billing/Requested By columns are tolerated -- sync still succeeds", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () => ({
+        name: "Midwest PSE Request Tracker",
+        columns: [
+          { id: 1, title: "WOM #" },
+          { id: 2, title: "Project Name" },
+        ],
+        rows: [
+          {
+            id: 9003,
+            cells: [
+              { columnId: 1, value: "20099003", displayValue: "20099003" },
+              { columnId: 2, value: "No status columns on this sheet", displayValue: "No status columns on this sheet" },
+            ],
+          },
+        ],
+      }),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      const wom = (await server.call("GET", "/api/woms/20099003/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.sourceStatusRaw, null);
+      assert.equal(wom.sourceWorkCompleted, null);
+      assert.equal(wom.statusConflict, false);
+    } finally {
+      restore();
+    }
+  });
+});

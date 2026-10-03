@@ -5,6 +5,25 @@ const smartsheet = require("../utils/smartsheet");
 
 const router = express.Router();
 
+// A real conflict, not noise -- true only when the sheet's own data clearly
+// says the work is done/invoiced while the app's status still shows it as
+// open or earlier. Never resolves itself: syncWomsFromSheetRows deliberately
+// never writes `status` once a WOM leaves pending/requested (see
+// tests/smartsheetSync.test.js), so an admin has to actually look and change
+// it -- this just makes that disagreement visible instead of silently
+// sitting inside the raw Smartsheet blob.
+const SOURCE_DONE_PATTERN = /\b(invoiced|closed|complete|completed|99)\b/i;
+const APP_DONE_STATUSES = ["invoiced", "closed", "cancelled"];
+function computeWomStatusConflict(w) {
+  const sourceImpliesDone =
+    w.source_work_completed === 1 ||
+    SOURCE_DONE_PATTERN.test(w.source_status_raw || "") ||
+    SOURCE_DONE_PATTERN.test(w.source_billing_raw || "") ||
+    SOURCE_DONE_PATTERN.test(w.source_work_completed_raw || "");
+  const appAlreadyDone = APP_DONE_STATUSES.includes(w.status);
+  return Boolean(sourceImpliesDone && !appAlreadyDone);
+}
+
 function presentWom(w) {
   let smartsheetData = null;
   if (w.smartsheet_raw_data) {
@@ -78,6 +97,19 @@ function presentWom(w) {
     // completion state. Empty until the WOM has actually entered the
     // checklist (see db.checkWomLifecycleAutoSteps, called on every sync).
     lifecycleSteps: db.getWomLifecycleSteps(w.code),
+    // Verbatim Status/Work Completed/Billing/Requested-By values straight
+    // from the Smartsheet tracker -- see the woms.source_status_raw
+    // migration comment in db.js for why these are separate from `status`.
+    // null until a sync with those columns has touched this WOM.
+    sourceStatusRaw: w.source_status_raw,
+    sourceWorkCompletedRaw: w.source_work_completed_raw,
+    sourceWorkCompleted: w.source_work_completed,
+    sourceBillingRaw: w.source_billing_raw,
+    sourceRequestedBy: w.source_requested_by,
+    // True only when the sheet's own data says this WOM is done/invoiced
+    // while the app's own status still shows it open or earlier -- see
+    // computeWomStatusConflict above.
+    statusConflict: computeWomStatusConflict(w),
   };
 }
 
