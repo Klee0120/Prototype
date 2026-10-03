@@ -2903,13 +2903,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return `E&F — ${loc ? loc.name : a.locationCode}`;
   }
 
-  // The JDE accounting code a day's hours actually post to: a location's E&F
-  // Job Number + the standard E&F subsidiary code for E&F time, or a WOM's
-  // own location's WOM Job Number + that WOM's own subsidiary code for WOM
-  // time -- "?" wherever one of those hasn't been entered yet, so a missing
-  // code is obvious rather than silently blank. Returns the gap reason too
-  // (null when there isn't one) so callers can explain the "?" instead of
-  // leaving it looking like a bug -- see accountingCodeCell.
+  // The JDE accounting code a day's hours actually post to. E&F time is a
+  // location's E&F Job Number + the standard E&F subsidiary code. WOM time
+  // is location.subsidiary.WOM# -- the WOM's own location's WOM Job Number,
+  // that WOM's own subsidiary code, and the WOM # itself, so the code alone
+  // identifies which WOM it's for. "?" wherever a piece hasn't been entered
+  // yet, so a missing code is obvious rather than silently blank. Returns
+  // the gap reason too (null when there isn't one) so callers can explain
+  // the "?" instead of leaving it looking like a bug -- see accountingCodeCell.
   function accountingCode(a, locationByCode, womByCode) {
     if (a.type === "timeoff") return { text: "—", gap: null };
     if (a.type === "wom") {
@@ -2922,7 +2923,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       else if (!loc) gap = `WOM ${a.womCode} has no location on file -- set one on its WOM profile.`;
       else if (!jobNumber) gap = `${loc.name} has no WOM Job Number on file -- add it on the Locations page.`;
       else if (!subsidiary) gap = `WOM ${a.womCode} has no subsidiary code on file -- set one on its WOM profile.`;
-      return { text: `${jobNumber || "?"}.${subsidiary || "?"}`, gap };
+      return { text: `${jobNumber || "?"}.${subsidiary || "?"}.${a.womCode}`, gap };
     }
     const loc = locationByCode[a.locationCode];
     const gap = !loc
