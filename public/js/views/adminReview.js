@@ -404,7 +404,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         { value: "gl_report", label: "GL Report" },
       ],
       canUpload: true,
-      groupByCategory: true,
     });
   }
 
@@ -1550,8 +1549,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         relatedId: v.id,
         categories: VENDOR_DOC_CATEGORIES,
         canUpload: true,
-        groupByCategory: true,
         trackExpiration: true,
+        requiredCategories: ["coi", "w9", "ach", "vpo_waiver"],
         emptyText: "No documents on file yet.",
       });
     await refreshDocumentsPanel();
@@ -3911,7 +3910,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         { value: "quote_revision", label: "Approved Quote Revision" },
       ],
       canUpload: true,
-      groupByCategory: true,
       emptyText: "No documents attached yet.",
     });
   }

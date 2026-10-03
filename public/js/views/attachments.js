@@ -38,23 +38,37 @@ function expiryBadge(expiresAt) {
   return `<span class="badge ${expired ? "badge-rejected" : "badge-draft"}">${expired ? "Expired" : "Expires"} ${escapeHtml(expiresAt)}</span>`;
 }
 
+function accessBadge(f) {
+  if (f.accessLevel === "restricted") {
+    return `<span class="badge badge-warn">&#128274; Restricted access</span>`;
+  }
+  return `<span class="badge badge-draft">Standard access</span>`;
+}
+
 /**
- * Renders a self-contained attachments list + upload form into `host`.
- * options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,
+ * Renders a self-contained document manager (compliance cards, search +
+ * category filter, a unified table, and a drag-and-drop upload zone) into
+ * `host`. options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,
  *            trackExpiration: true adds Type + Expiration date fields to the upload form and
  *            shows them (with an Expired/Expires badge) on each file row -- used for Forms on File.
- *            groupByCategory: true splits the list into one section per category (in `categories`
- *            order) instead of one combined list -- used for Reports, where WOM/Labor/Financial/GL
- *            need to each stay together and in order rather than interleaved by upload date. }
+ *            requiredCategories: [value, ...] -- categories that should always have at least one
+ *            file on file; each gets a compliance card up top with a "Missing" badge when it
+ *            doesn't (e.g. a vendor's COI/W-9/ACH/VPO waiver). Omit where there's no fixed
+ *            compliance set to check against.
+ *            groupByCategory was the old grouped-sections layout; the unified table + category
+ *            filter below replaces it, so this option is no longer read. }
  */
 export async function renderAttachments(host, opts) {
+  let searchTerm = "";
+  let categoryFilter = "";
+  let allFiles = [];
+
   await refresh();
 
   async function refresh() {
-    let files = [];
     let loadError = "";
     try {
-      files = await api.get(
+      const files = await api.get(
         `/api/files?relatedType=${encodeURIComponent(opts.relatedType)}&relatedId=${encodeURIComponent(opts.relatedId)}`
       );
       // The API returns every file for this relatedType/relatedId, not just
@@ -62,71 +76,153 @@ export async function renderAttachments(host, opts) {
       // Documents tabs share one relatedType ("technician"), so without
       // this filter each tab would also show the other's files.
       const ownCategories = new Set(opts.categories.map((c) => c.value));
-      files = files.filter((f) => ownCategories.has(f.category));
+      allFiles = files.filter((f) => ownCategories.has(f.category));
     } catch (err) {
+      allFiles = [];
       loadError = err.message;
     }
+    render(loadError);
+  }
+
+  function render(loadError) {
+    const isAdmin = state.user.role === "admin";
+    const showCategoryFilter = opts.categories.length > 1;
 
     host.innerHTML = `
       <div class="attachments-panel">
         <div class="attachments-title">${escapeHtml(opts.title)}</div>
-        ${opts.groupByCategory ? `<div class="attachments-sections"></div>` : `<div class="attachments-list"></div>`}
+        ${opts.requiredCategories ? `<div class="attachments-compliance-cards"></div>` : ""}
+        <div class="attachments-toolbar">
+          <div class="search-field attachments-search">
+            <span class="search-field-icon">&#128269;</span>
+            <input type="text" placeholder="Search documents..." />
+          </div>
+          ${
+            showCategoryFilter
+              ? `<select class="attachments-category-filter">
+                  <option value="">All categories</option>
+                  ${opts.categories
+                    .map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`)
+                    .join("")}
+                </select>`
+              : ""
+          }
+        </div>
+        <div class="attachments-table-wrap"></div>
         ${loadError ? `<p class="attachments-error">${escapeHtml(loadError)}</p>` : ""}
-        ${opts.canUpload ? renderUploadForm() : ""}
+        ${opts.canUpload ? renderUploadZone(isAdmin) : ""}
       </div>
     `;
 
-    if (opts.groupByCategory) {
-      const sectionsHost = host.querySelector(".attachments-sections");
-      const byCategory = new Map(opts.categories.map((c) => [c.value, []]));
-      for (const f of files) {
-        if (!byCategory.has(f.category)) byCategory.set(f.category, []);
-        byCategory.get(f.category).push(f);
-      }
-      for (const [catValue, catFiles] of byCategory) {
-        const catLabel = (opts.categories.find((c) => c.value === catValue) || {}).label || catValue;
-        const section = document.createElement("div");
-        section.className = "attachments-section";
-        section.innerHTML = `<div class="attachments-section-title">${escapeHtml(catLabel)}</div><div class="attachments-list"></div>`;
-        const listEl = section.querySelector(".attachments-list");
-        if (catFiles.length === 0) {
-          listEl.innerHTML = `<p class="empty-note">${escapeHtml(opts.emptyText || `No ${catLabel.toLowerCase()}s saved for this month yet.`)}</p>`;
-        } else {
-          catFiles.forEach((f, i) => listEl.appendChild(renderFileRow(f, catFiles, i)));
-        }
-        sectionsHost.appendChild(section);
-      }
-    } else if (!loadError && files.length === 0) {
-      host.querySelector(".attachments-list").innerHTML = `<p class="empty-note">${escapeHtml(opts.emptyText || "No files yet.")}</p>`;
-    } else {
-      const listEl = host.querySelector(".attachments-list");
-      files.forEach((f, i) => listEl.appendChild(renderFileRow(f, files, i)));
-    }
-
-    if (opts.canUpload) wireUploadForm();
+    if (opts.requiredCategories) renderComplianceCards();
+    renderTable();
+    wireToolbar();
+    if (opts.canUpload) wireUploadZone();
   }
 
-  function renderFileRow(f, list, index) {
-    const row = document.createElement("div");
+  function renderComplianceCards() {
+    const cardsHost = host.querySelector(".attachments-compliance-cards");
+    if (!cardsHost) return;
+    cardsHost.innerHTML = opts.requiredCategories
+      .map((catValue) => {
+        const label = (opts.categories.find((c) => c.value === catValue) || {}).label || CATEGORY_LABELS[catValue] || catValue;
+        const count = allFiles.filter((f) => f.category === catValue).length;
+        return `
+          <div class="compliance-card${count === 0 ? " compliance-card-missing" : ""}">
+            <span class="compliance-card-label">${escapeHtml(label)}</span>
+            ${count === 0 ? `<span class="badge badge-rejected">Missing</span>` : `<span class="badge badge-approved">${count} on file</span>`}
+          </div>`;
+      })
+      .join("");
+  }
+
+  function filteredFiles() {
+    return allFiles.filter((f) => {
+      if (categoryFilter && f.category !== categoryFilter) return false;
+      if (searchTerm) {
+        const label = (CATEGORY_LABELS[f.category] || f.category).toLowerCase();
+        const haystack = `${f.originalName} ${label} ${f.formType || ""}`.toLowerCase();
+        if (!haystack.includes(searchTerm.toLowerCase())) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderTable() {
+    const wrap = host.querySelector(".attachments-table-wrap");
+    const files = filteredFiles();
+    const isAdmin = state.user.role === "admin";
+
+    if (allFiles.length === 0) {
+      wrap.innerHTML = `<p class="empty-note">${escapeHtml(opts.emptyText || "No files yet.")}</p>`;
+      return;
+    }
+    if (files.length === 0) {
+      wrap.innerHTML = `<p class="empty-note">No documents match your search.</p>`;
+      return;
+    }
+
+    wrap.innerHTML = `
+      <table class="attachments-table">
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Category</th>
+            <th>Uploaded</th>
+            <th>Access</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    `;
+    const tbody = wrap.querySelector("tbody");
+    files.forEach((f, i) => tbody.appendChild(renderFileRow(f, files, i, isAdmin)));
+
+    if (isAdmin && !host.dataset.rowMenuBound) {
+      host.dataset.rowMenuBound = "1";
+      host.addEventListener("click", (e) => {
+        if (!e.target.closest(".row-menu")) {
+          host.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
+        }
+      });
+    }
+  }
+
+  function renderFileRow(f, list, index, isAdmin) {
+    const row = document.createElement("tr");
     row.className = "attachment-row";
     const label = CATEGORY_LABELS[f.category] || f.category;
-    // Delete is admin-only everywhere -- a technician can view (and, where
-    // allowed, upload) but never remove anything, even their own upload.
-    const canDelete = state.user.role === "admin";
 
     row.innerHTML = `
-      <div class="attachment-info">
-        <span class="attachment-name">${escapeHtml(f.originalName)}</span>
-        <span class="attachment-meta">
-          ${opts.trackExpiration && f.formType ? `${escapeHtml(f.formType)} &middot; ` : ""}${escapeHtml(label)} &middot; ${formatSize(f.size)} &middot; ${escapeHtml(f.uploadedBy)} &middot; ${new Date(f.uploadedAt).toLocaleDateString()}
-        </span>
+      <td class="attachment-doc-cell">
+        <div class="attachment-name">${escapeHtml(f.originalName)}</div>
+        ${opts.trackExpiration && f.formType ? `<div class="attachment-subtext">${escapeHtml(f.formType)}</div>` : ""}
         ${opts.trackExpiration ? expiryBadge(f.expiresAt) : ""}
-      </div>
-      <div class="attachment-actions">
-        <button type="button" class="btn btn-link view-btn">View</button>
-        <button type="button" class="btn btn-link download-btn">Download</button>
-        ${canDelete ? `<button type="button" class="btn btn-link danger-link delete-btn">Delete</button>` : ""}
-      </div>
+      </td>
+      <td><span class="badge badge-draft">${escapeHtml(label)}</span></td>
+      <td>
+        <div>${new Date(f.uploadedAt).toLocaleDateString()}</div>
+        <div class="attachment-subtext">${escapeHtml(f.uploadedBy)} &middot; ${formatSize(f.size)}</div>
+      </td>
+      <td>${accessBadge(f)}</td>
+      <td class="attachment-actions-cell">
+        <button type="button" class="attachment-icon-btn view-btn" title="View" aria-label="View">&#128065;</button>
+        <button type="button" class="attachment-icon-btn download-btn" title="Download" aria-label="Download">&#11015;&#65039;</button>
+        ${
+          isAdmin
+            ? `<div class="row-menu">
+                <button type="button" class="btn btn-ghost row-menu-toggle" type="button" aria-label="More actions">&#8943;</button>
+                <div class="row-menu-panel" hidden>
+                  <button type="button" class="row-menu-item toggle-access-btn">${
+                    f.accessLevel === "restricted" ? "Mark standard access" : "Mark restricted access"
+                  }</button>
+                  <button type="button" class="row-menu-item row-menu-item-danger delete-btn">Delete</button>
+                </div>
+              </div>`
+            : ""
+        }
+      </td>
     `;
 
     row.querySelector(".view-btn").addEventListener("click", () => {
@@ -140,6 +236,30 @@ export async function renderAttachments(host, opts) {
         window.alert(err.message);
       }
     });
+
+    const menuToggle = row.querySelector(".row-menu-toggle");
+    if (menuToggle) {
+      menuToggle.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const panel = row.querySelector(".row-menu-panel");
+        const isHidden = panel.hasAttribute("hidden");
+        host.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
+        if (isHidden) panel.removeAttribute("hidden");
+      });
+    }
+
+    const toggleAccess = row.querySelector(".toggle-access-btn");
+    if (toggleAccess) {
+      toggleAccess.addEventListener("click", async () => {
+        const nextLevel = f.accessLevel === "restricted" ? "standard" : "restricted";
+        try {
+          await api.patch(`/api/files/${f.id}/access`, { accessLevel: nextLevel });
+          await refresh();
+        } catch (err) {
+          window.alert(`Could not update access: ${err.message}`);
+        }
+      });
+    }
 
     const del = row.querySelector(".delete-btn");
     if (del) {
@@ -157,10 +277,29 @@ export async function renderAttachments(host, opts) {
     return row;
   }
 
+  function wireToolbar() {
+    const searchInput = host.querySelector(".attachments-search input");
+    if (searchInput) {
+      searchInput.value = searchTerm;
+      searchInput.addEventListener("input", (e) => {
+        searchTerm = e.target.value;
+        renderTable();
+      });
+    }
+    const categorySelect = host.querySelector(".attachments-category-filter");
+    if (categorySelect) {
+      categorySelect.value = categoryFilter;
+      categorySelect.addEventListener("change", (e) => {
+        categoryFilter = e.target.value;
+        renderTable();
+      });
+    }
+  }
+
   // A document's own pop-up: metadata + Download/Delete on one side, a
   // large inline preview on the other, Previous/Next to move through the
-  // same list this was opened from -- instead of a bare "Download" link
-  // being the only way to see what a file actually is.
+  // same (filtered) list this was opened from -- instead of a bare
+  // "Download" link being the only way to see what a file actually is.
   function openDocViewer(list, startIndex) {
     let index = startIndex;
     let objectUrl = null;
@@ -209,6 +348,10 @@ export async function renderAttachments(host, opts) {
         <div class="doc-viewer-field">
           <span class="doc-viewer-field-label">Size</span>
           ${formatSize(f.size)}
+        </div>
+        <div class="doc-viewer-field">
+          <span class="doc-viewer-field-label">Access</span>
+          ${accessBadge(f)}
         </div>
         ${
           opts.trackExpiration && f.expiresAt
@@ -265,7 +408,7 @@ export async function renderAttachments(host, opts) {
         }
       });
 
-      previewHost.innerHTML = `<p class="doc-viewer-no-preview">Loading preview…</p>`;
+      previewHost.innerHTML = `<p class="doc-viewer-no-preview">Loading…</p>`;
       try {
         const blob = await api.fetchFileBlob(f.id);
         objectUrl = URL.createObjectURL(blob);
@@ -286,44 +429,82 @@ export async function renderAttachments(host, opts) {
     renderCurrent();
   }
 
-  function renderUploadForm() {
+  function renderUploadZone(isAdmin) {
     const categorySelect =
       opts.categories.length > 1
-        ? `<select name="category">${opts.categories
+        ? `<select class="attachments-upload-category">${opts.categories
             .map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`)
             .join("")}</select>`
-        : `<input type="hidden" name="category" value="${escapeHtml(opts.categories[0].value)}" />`;
-
+        : "";
     return `
-      <form class="attachment-upload-form">
-        ${categorySelect}
-        ${opts.trackExpiration ? `<input name="formType" placeholder="Type (e.g. Certification)" />` : ""}
-        ${opts.trackExpiration ? `<label class="attachment-expiry-field"><span>Expires</span><input type="date" name="expiresAt" /></label>` : ""}
-        <input type="file" name="file" required />
-        <button type="submit" class="btn btn-secondary">Upload</button>
+      <div class="attachments-upload">
+        <div class="attachments-upload-settings">
+          ${categorySelect}
+          ${opts.trackExpiration ? `<input class="attachments-upload-formtype" placeholder="Type (e.g. Certification)" />` : ""}
+          ${
+            opts.trackExpiration
+              ? `<label class="attachment-expiry-field"><span>Expires</span><input type="date" class="attachments-upload-expires" /></label>`
+              : ""
+          }
+          ${
+            isAdmin
+              ? `<select class="attachments-upload-access">
+                  <option value="standard">Standard access</option>
+                  <option value="restricted">Restricted access</option>
+                </select>`
+              : ""
+          }
+        </div>
+        <div class="attachments-dropzone">
+          <input type="file" class="attachments-dropzone-input" hidden />
+          <div class="attachments-dropzone-icon">&#128228;</div>
+          <div class="attachments-dropzone-text">Drop files here or <span class="attachments-dropzone-browse">browse</span></div>
+        </div>
         <span class="save-message upload-message"></span>
-      </form>
+      </div>
     `;
   }
 
-  function wireUploadForm() {
-    const form = host.querySelector(".attachment-upload-form");
-    if (!form) return;
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const category = form.category.value;
-      const file = form.file.files[0];
+  function wireUploadZone() {
+    const zone = host.querySelector(".attachments-dropzone");
+    if (!zone) return;
+    const fileInput = zone.querySelector(".attachments-dropzone-input");
+    const msg = host.querySelector(".upload-message");
+
+    async function handleFiles(fileList) {
+      const file = fileList && fileList[0];
       if (!file) return;
-      const msg = form.querySelector(".upload-message");
+      const categorySelect = host.querySelector(".attachments-upload-category");
+      const category = categorySelect ? categorySelect.value : opts.categories[0].value;
+      const formTypeInput = host.querySelector(".attachments-upload-formtype");
+      const expiresInput = host.querySelector(".attachments-upload-expires");
+      const accessSelect = host.querySelector(".attachments-upload-access");
+
+      msg.textContent = "Uploading…";
       try {
         await api.uploadFile(opts.relatedType, opts.relatedId, category, file, {
-          formType: opts.trackExpiration ? form.formType.value.trim() : undefined,
-          expiresAt: opts.trackExpiration ? form.expiresAt.value : undefined,
+          formType: opts.trackExpiration && formTypeInput ? formTypeInput.value.trim() : undefined,
+          expiresAt: opts.trackExpiration && expiresInput ? expiresInput.value : undefined,
+          accessLevel: accessSelect ? accessSelect.value : undefined,
         });
+        msg.textContent = "";
         await refresh();
       } catch (err) {
         msg.textContent = err.message;
       }
+    }
+
+    zone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+    zone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      zone.classList.add("attachments-dropzone-active");
+    });
+    zone.addEventListener("dragleave", () => zone.classList.remove("attachments-dropzone-active"));
+    zone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      zone.classList.remove("attachments-dropzone-active");
+      handleFiles(e.dataTransfer.files);
     });
   }
 }

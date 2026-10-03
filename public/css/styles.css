@@ -3382,50 +3382,86 @@ button.vendor-preferred-star:hover {
   margin-bottom: 10px;
 }
 
-.attachments-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.attachments-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-bottom: 10px;
-}
-
-.attachments-section-title {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  margin-bottom: 6px;
-}
-
 .attachments-error {
   color: var(--danger);
   font-size: 13px;
 }
 
-.attachment-row {
+.danger-link {
+  color: var(--danger) !important;
+}
+
+.attachments-compliance-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.compliance-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  flex-wrap: wrap;
 }
 
-.attachment-info {
+.compliance-card-missing {
+  border-color: var(--danger);
+}
+
+.compliance-card-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attachments-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.attachments-toolbar .search-field {
+  flex: 1 1 220px;
+}
+
+.attachments-category-filter {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  font-size: 14px;
+  font-family: var(--font-sans);
+}
+
+.attachments-table-wrap {
+  margin-bottom: 10px;
+}
+
+.attachments-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.attachments-table th {
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.attachments-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  font-size: 13px;
 }
 
 .attachment-name {
@@ -3434,34 +3470,84 @@ button.vendor-preferred-star:hover {
   word-break: break-word;
 }
 
-.attachment-meta {
+.attachment-subtext {
   font-size: 12px;
   color: var(--muted);
 }
 
-.attachment-actions {
+.attachment-actions-cell {
   display: flex;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.danger-link {
-  color: var(--danger) !important;
-}
-
-.attachment-upload-form {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
   align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.attachment-icon-btn {
+  background: transparent;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.attachment-icon-btn:hover {
+  background: var(--bg);
+}
+
+.attachments-upload {
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
 
-.attachment-upload-form select {
+.attachments-upload-settings {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.attachments-upload-settings select,
+.attachments-upload-settings input {
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
+  font-family: var(--font-sans);
+}
+
+.attachments-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 24px 12px;
+  border: 2px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.attachments-dropzone-active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.attachments-dropzone-icon {
+  font-size: 22px;
+}
+
+.attachments-dropzone-text {
+  font-size: 13px;
+}
+
+.attachments-dropzone-browse {
+  color: var(--accent-dark);
+  font-weight: 600;
+  text-decoration: underline;
 }
 
 /* ---- Roster / employee profile ---- */
@@ -4258,11 +4344,7 @@ button.vendor-preferred-star:hover {
   .action-row .btn {
     width: 100%;
   }
-  .attachment-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .attachment-upload-form {
+  .attachments-upload-settings {
     flex-direction: column;
     align-items: stretch;
   }

@@ -351,3 +351,133 @@ test("files: assigning a task-parked document onto a vendor", async (t) => {
     assert.equal(res.status, 404);
   });
 });
+
+test("files: restricted access", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendor = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Restricted Docs Co" } });
+  const vendorId = vendor.body.id;
+
+  await t.test("a non-admin's upload is always standard, even if they ask for restricted", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "T1001",
+      fields: { relatedType: "wom", relatedId: "WOM-4471", category: "wom_doc", accessLevel: "restricted" },
+      fileName: "job-photo.jpg",
+      mimeType: "image/jpeg",
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.accessLevel, "standard");
+  });
+
+  let restrictedId;
+  await t.test("an admin can upload a file marked restricted", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(vendorId), category: "ach", accessLevel: "restricted" },
+      fileName: "bank-letter.pdf",
+      mimeType: "application/pdf",
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.accessLevel, "restricted");
+    restrictedId = res.body.id;
+  });
+
+  await t.test("rejects an invalid accessLevel on upload", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(vendorId), category: "ach", accessLevel: "secret" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("an admin can download a restricted file", async () => {
+    const res = await server.rawGet(`/api/files/${restrictedId}/download`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+  });
+
+  await t.test("an admin can mark a restricted file back to standard via PATCH /:id/access", async () => {
+    const res = await server.call("PATCH", `/api/files/${restrictedId}/access`, {
+      userId: "ADMIN",
+      body: { accessLevel: "standard" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.accessLevel, "standard");
+  });
+
+  await t.test("a technician cannot toggle a file's access level", async () => {
+    const res = await server.call("PATCH", `/api/files/${restrictedId}/access`, {
+      userId: "T1001",
+      body: { accessLevel: "restricted" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects an invalid accessLevel on the PATCH route", async () => {
+    const res = await server.call("PATCH", `/api/files/${restrictedId}/access`, {
+      userId: "ADMIN",
+      body: { accessLevel: "nope" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("PATCH /:id/access 404s for an unknown file", async () => {
+    const res = await server.call("PATCH", "/api/files/does-not-exist/access", {
+      userId: "ADMIN",
+      body: { accessLevel: "restricted" },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  // A WOM is open to every authenticated user to read -- the one relatedType
+  // where a restricted file's extra gate (beyond canRead) is actually
+  // reachable by a non-admin, so it's the one used to prove the list-filter
+  // and download-block both work, not just the upload/PATCH plumbing above.
+  await t.test("a restricted file on an otherwise-open relatedType is hidden from a non-admin's list and blocked on download", async () => {
+    const restrictedWomFile = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "wom", relatedId: "WOM-4471", category: "wom_doc", accessLevel: "restricted" },
+      fileName: "internal-note.pdf",
+      mimeType: "application/pdf",
+    });
+    assert.equal(restrictedWomFile.body.accessLevel, "restricted");
+    const restrictedWomFileId = restrictedWomFile.body.id;
+
+    const techList = await server.call("GET", "/api/files?relatedType=wom&relatedId=WOM-4471", { userId: "T1002" });
+    assert.equal(techList.status, 200);
+    assert.ok(!techList.body.some((f) => f.id === restrictedWomFileId), "a non-admin's list should never include a restricted file");
+
+    const adminList = await server.call("GET", "/api/files?relatedType=wom&relatedId=WOM-4471", { userId: "ADMIN" });
+    assert.ok(adminList.body.some((f) => f.id === restrictedWomFileId), "an admin's list should still include it");
+
+    const techDownload = await server.rawGet(`/api/files/${restrictedWomFileId}/download`, { userId: "T1002" });
+    assert.equal(techDownload.status, 403);
+
+    const adminDownload = await server.rawGet(`/api/files/${restrictedWomFileId}/download`, { userId: "ADMIN" });
+    assert.equal(adminDownload.status, 200);
+  });
+
+  await t.test("marking a file restricted after upload hides it from non-admins going forward", async () => {
+    const upload = await server.upload("/api/files", {
+      userId: "T1003",
+      fields: { relatedType: "wom", relatedId: "WOM-4471", category: "wom_doc" },
+      fileName: "site-photo.jpg",
+      mimeType: "image/jpeg",
+    });
+    const fileId = upload.body.id;
+
+    const beforeList = await server.call("GET", "/api/files?relatedType=wom&relatedId=WOM-4471", { userId: "T1002" });
+    assert.ok(beforeList.body.some((f) => f.id === fileId));
+
+    await server.call("PATCH", `/api/files/${fileId}/access`, { userId: "ADMIN", body: { accessLevel: "restricted" } });
+
+    const afterList = await server.call("GET", "/api/files?relatedType=wom&relatedId=WOM-4471", { userId: "T1002" });
+    assert.ok(!afterList.body.some((f) => f.id === fileId));
+  });
+
+  await t.test("file access changes are audited", async () => {
+    const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const actions = res.body.map((e) => e.action);
+    assert.ok(actions.includes("FILE_ACCESS_CHANGED"));
+  });
+});
