@@ -4931,4 +4931,31 @@ button.vendor-preferred-star:hover {
     flex-direction: column;
     align-items: stretch;
   }
+
+  /* Every table in the app is built on one of these two classes (confirmed
+     by grepping every <table ...> in public/js/views/) -- squeezing a
+     multi-column data table to fit a phone's width just garbles it, so
+     instead each becomes its own horizontally-scrollable strip, same
+     pattern .roster-table-wrap already used for the Roster table alone.
+     Setting display:block on <table> itself (rather than needing a wrapper
+     div around every call site) still lets the browser generate the usual
+     anonymous table box for thead/tbody/tr/td, so column layout is
+     unaffected -- only the outer box becomes the scroll container. The
+     nowrap keeps a long cell (a description, a comment) from wrapping and
+     squeezing its column back down, which is what actually forces the
+     table wide enough to need scrolling in the first place. */
+  .detail-table,
+  .attachments-table {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .detail-table th,
+  .detail-table td,
+  .attachments-table th,
+  .attachments-table td {
+    white-space: nowrap;
+  }
 }
