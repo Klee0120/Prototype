@@ -1099,6 +1099,12 @@ if (!hasColumn("gl_imports", "no_po_reference_count")) {
 if (!hasColumn("gl_entries", "name_alpha")) {
   db.exec("ALTER TABLE gl_entries ADD COLUMN name_alpha TEXT");
 }
+// Links a reclass item back to the specific Budget PO Tracker record it was
+// one-click-flagged from (see flagPosForReclass) -- lets the PO Tracker show
+// "already flagged this month" without guessing at a job-number match.
+if (!hasColumn("reclass_items", "related_po_id")) {
+  db.exec("ALTER TABLE reclass_items ADD COLUMN related_po_id INTEGER");
+}
 
 seedIfEmpty();
 
@@ -1921,6 +1927,7 @@ function presentReclassItem(r) {
     source: r.source,
     status: r.status,
     confirmedGlReference: r.confirmed_gl_reference,
+    relatedPoId: r.related_po_id,
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -2101,8 +2108,8 @@ function addReclassItem(fields, createdBy) {
         batch_id, line_number, from_job_number, from_object_code, from_subsidiary, from_wom_number, from_amount,
         to_job_number, to_object_code, to_subsidiary, to_wom_number, to_amount,
         vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
-        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, created_by, created_at, updated_at
-      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?)`
+        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, related_po_id, created_by, created_at, updated_at
+      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?)`
     )
     .run(
       fields.fromJobNumber || null,
@@ -2126,11 +2133,57 @@ function addReclassItem(fields, createdBy) {
       fields.causedBy || null,
       fields.rootCause || null,
       fields.pathForward || null,
+      fields.relatedPoId || null,
       createdBy || null,
       now,
       now
     );
   return findReclassItem(Number(result.lastInsertRowid));
+}
+
+// One-click "I noticed this needs a reclass" from the Budget PO Tracker --
+// deliberately lighter than the Flag a Finding form: it logs the PO's own
+// known coding as a starting point and leaves the "To" side blank for
+// Krista to fill in whenever she actually works her monthly submission.
+// These build up as a running list she can pull from (filter the Reclasses
+// tab by status "Flagged") rather than something she has to detail right
+// away. Flagging the same PO again while an open flag already exists is a
+// no-op, so repeat clicks (or flagging the same PO from two different
+// filtered views) don't pile up duplicate rows.
+function flagPosForReclass(poIds, createdBy) {
+  let flaggedCount = 0;
+  let skippedCount = 0;
+  const items = [];
+  for (const poId of poIds) {
+    const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(Number(poId));
+    if (!po) {
+      skippedCount++;
+      continue;
+    }
+    const alreadyFlagged = db
+      .prepare("SELECT 1 FROM reclass_items WHERE related_po_id = ? AND status != 'confirmed_posted' LIMIT 1")
+      .get(po.id);
+    if (alreadyFlagged) {
+      skippedCount++;
+      continue;
+    }
+    const item = addReclassItem(
+      {
+        fromJobNumber: po.e1_wom_job_number || po.ef_job_number || null,
+        fromObjectCode: po.object_code,
+        fromSubsidiary: po.subsidiary,
+        fromWomNumber: po.wom_number,
+        fromAmount: po.po_amount,
+        vendor: po.vendor_name,
+        comments: `Flagged for reclass review from PO ${po.po_number || po.id}${po.description ? ` (${po.description})` : ""}.`,
+        relatedPoId: po.id,
+      },
+      createdBy
+    );
+    items.push(item);
+    flaggedCount++;
+  }
+  return { flaggedCount, skippedCount, items };
 }
 
 function updateReclassItem(id, fields) {
@@ -4919,15 +4972,28 @@ function listPos(filters = {}) {
     params.push(like, like, like, like);
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  return db
+  const rows = db
     .prepare(`SELECT * FROM pos ${where} ORDER BY date_requested DESC, id DESC`)
     .all(...params)
     .map(presentPoRow);
+  return attachOpenReclassFlags(rows);
+}
+
+// Which of these POs already has an open (not yet confirmed-posted) reclass
+// item flagged against it -- a single bulk lookup rather than one query per
+// row, since the Budget PO Tracker's list can run to a few hundred rows.
+function attachOpenReclassFlags(poRows) {
+  if (poRows.length === 0) return poRows;
+  const flaggedIds = new Set(
+    db.prepare("SELECT DISTINCT related_po_id FROM reclass_items WHERE related_po_id IS NOT NULL AND status != 'confirmed_posted'").all().map((r) => r.related_po_id)
+  );
+  return poRows.map((p) => ({ ...p, hasOpenReclassFlag: flaggedIds.has(p.id) }));
 }
 
 function findPo(id) {
   const row = db.prepare("SELECT * FROM pos WHERE id = ?").get(Number(id));
-  return row ? presentPoRow(row) : null;
+  if (!row) return null;
+  return attachOpenReclassFlags([presentPoRow(row)])[0];
 }
 
 function getLastPoImport() {
@@ -5749,6 +5815,7 @@ module.exports = {
   listReclassItems,
   findReclassItem,
   addReclassItem,
+  flagPosForReclass,
   updateReclassItem,
   VENDOR_COI_FIELDS,
   listVendorRequests,

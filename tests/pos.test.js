@@ -78,5 +78,68 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.ok(!res.body.some((tk) => tk.relatedPoId === gapId && tk.status === "open"), "task should no longer be open once the WOM # is filled in");
   });
 
+  // A lightweight, one-click "needs a reclass eventually" flag -- distinct
+  // from the full Flag a Finding form. Admin notices a gap on a PO (any
+  // reason, not just the WOM-link one above) and marks it for their running
+  // monthly list without detailing the From/To coding right away.
+  await t.test("flagging a PO for reclass logs a lightweight finding and shows up as an open flag", async () => {
+    const poId = insertPo({ composite: "flag-1", poNumber: "PO60001", e1WomJobNumber: "100110066000", womNumber: null, lifecycleStatus: "active" });
+
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(flagRes.status, 200);
+    assert.equal(flagRes.body.flaggedCount, 1);
+    assert.equal(flagRes.body.skippedCount, 0);
+    assert.match(flagRes.body.items[0].comments, /PO60001/);
+    assert.equal(flagRes.body.items[0].status, "flagged");
+    assert.equal(flagRes.body.items[0].toJobNumber, null, "the To side should be left blank for the admin to detail later");
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items?status=flagged", { userId: "ADMIN" });
+    assert.ok(itemsRes.body.some((i) => i.relatedPoId === poId));
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, true);
+  });
+
+  await t.test("flagging the same PO again while an open flag exists is a no-op", async () => {
+    const poId = insertPo({ composite: "flag-2", poNumber: "PO60002", e1WomJobNumber: "100110066001", womNumber: null, lifecycleStatus: "active" });
+
+    const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(first.body.flaggedCount, 1);
+
+    const second = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(second.body.flaggedCount, 0);
+    assert.equal(second.body.skippedCount, 1);
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    assert.equal(itemsRes.body.filter((i) => i.relatedPoId === poId).length, 1, "only one reclass item should exist for this PO");
+  });
+
+  await t.test("once the flagged item is marked confirmed_posted, the PO can be flagged again", async () => {
+    const poId = insertPo({ composite: "flag-3", poNumber: "PO60003", e1WomJobNumber: "100110066002", womNumber: null, lifecycleStatus: "active" });
+    const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    const itemId = first.body.items[0].id;
+
+    await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "confirmed_posted" } });
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, false, "a confirmed_posted flag should no longer count as open");
+
+    const second = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(second.body.flaggedCount, 1, "flagging again after the prior one is resolved should create a new entry");
+  });
+
+  await t.test("bulk-flagging multiple POs at once (the 4-row filtered-list use case)", async () => {
+    const ids = [
+      insertPo({ composite: "bulk-1", poNumber: "PO60010", e1WomJobNumber: "100110066010", womNumber: null, lifecycleStatus: "active" }),
+      insertPo({ composite: "bulk-2", poNumber: "PO60011", e1WomJobNumber: "100110066011", womNumber: null, lifecycleStatus: "active" }),
+      insertPo({ composite: "bulk-3", poNumber: "PO60012", e1WomJobNumber: "100110066012", womNumber: null, lifecycleStatus: "active" }),
+      insertPo({ composite: "bulk-4", poNumber: "PO60013", e1WomJobNumber: "100110066013", womNumber: null, lifecycleStatus: "active" }),
+    ];
+
+    const res = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: ids } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.flaggedCount, 4);
+  });
+
   raw.close();
 });

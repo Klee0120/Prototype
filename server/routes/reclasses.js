@@ -173,6 +173,24 @@ router.post("/items", (req, res) => {
   res.status(201).json(item);
 });
 
+// One-click flag from the Budget PO Tracker (single PO or a bulk
+// selection) -- logs a lightweight, undetailed reclass finding against
+// each PO so it shows up on the running "flagged this month" list without
+// requiring the full From/To form up front. See db.flagPosForReclass.
+router.post("/flag-po", (req, res) => {
+  const poIds = Array.isArray(req.body?.poIds) ? req.body.poIds : [];
+  if (poIds.length === 0) return res.status(400).json({ error: "poIds is required" });
+  const result = db.flagPosForReclass(poIds, req.user.id);
+  if (result.flaggedCount > 0) {
+    db.addAudit(
+      req.user.id,
+      "RECLASS_FLAGGED",
+      `${req.user.name} flagged ${result.flaggedCount} PO${result.flaggedCount === 1 ? "" : "s"} for reclass review from the Budget PO Tracker`
+    );
+  }
+  res.json(result);
+});
+
 // Looks up this item's named WOM(s) against the Budget PO Tracker's own
 // wom_number field, then shows whatever GL has actually posted against
 // each matching PO -- lets the admin see with their own eyes whether a

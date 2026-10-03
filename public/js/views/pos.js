@@ -207,7 +207,7 @@ export async function renderPos(container) {
               <td><input type="checkbox" class="po-select-checkbox task-select-checkbox" data-id="${p.id}" /></td>
               <td>${formatDate(p.dateRequested)}</td>
               <td>${escapeHtml(p.requestor || "—")}</td>
-              <td class="po-desc-cell">${escapeHtml(p.description || "—")}${p.missingFromImport ? ` <span class="badge badge-warn">Not in last import</span>` : ""}</td>
+              <td class="po-desc-cell">${escapeHtml(p.description || "—")}${p.missingFromImport ? ` <span class="badge badge-warn">Not in last import</span>` : ""}${p.hasOpenReclassFlag ? ` <span class="badge badge-submitted">Flagged for reclass</span>` : ""}</td>
               <td>${escapeHtml(p.poNumber || "—")}</td>
               <td>${escapeHtml(p.locationName || "—")}</td>
               <td>${p.region ? escapeHtml(p.region) : `<span class="badge badge-draft">Unassigned</span>`}</td>
@@ -279,6 +279,7 @@ export async function renderPos(container) {
       <button class="btn btn-secondary po-bulk-region-apply" type="button">Apply</button>
       <button class="btn btn-secondary po-bulk-confirm-vendor" type="button">Confirm vendor...</button>
       ${subTab === "needs_organization" ? `<button class="btn btn-secondary po-bulk-activate" type="button">Move to Active POs</button>` : ""}
+      <button class="btn btn-secondary po-bulk-flag-reclass" type="button">Flag for reclass</button>
       <button class="btn btn-link po-bulk-clear" type="button">Clear selection</button>
     `;
     toolbarEl.querySelector(".po-bulk-region-apply").addEventListener("click", async () => {
@@ -301,6 +302,14 @@ export async function renderPos(container) {
         await draw();
       });
     }
+    toolbarEl.querySelector(".po-bulk-flag-reclass").addEventListener("click", async () => {
+      const result = await api.post("/api/admin/reclasses/flag-po", { poIds: [...selectedIds] });
+      const bits = [];
+      if (result.flaggedCount > 0) bits.push(`${result.flaggedCount} flagged`);
+      if (result.skippedCount > 0) bits.push(`${result.skippedCount} already flagged or not found, skipped`);
+      window.alert(bits.join(", ") || "Nothing to flag.");
+      await draw();
+    });
     toolbarEl.querySelector(".po-bulk-clear").addEventListener("click", () => {
       selectedIds.clear();
       container.querySelectorAll(".po-select-checkbox").forEach((cb) => (cb.checked = false));
@@ -416,7 +425,9 @@ export async function renderPos(container) {
         <h3 style="margin: 0;">${escapeHtml(po.description || "PO record")}</h3>
         <span class="badge ${po.lifecycleStatus === "active" ? "badge-approved" : "badge-draft"}">${po.lifecycleStatus === "active" ? "Active" : "Needs Organization"}</span>
         ${po.missingFromImport ? `<span class="badge badge-warn">Not seen in last import</span>` : ""}
+        ${po.hasOpenReclassFlag ? `<span class="badge badge-submitted">Flagged for reclass</span>` : ""}
         ${po.lifecycleStatus !== "active" ? `<button type="button" class="btn btn-primary po-activate-btn">Move to Active POs</button>` : ""}
+        <button type="button" class="btn btn-secondary po-flag-reclass-btn" ${po.hasOpenReclassFlag ? "disabled" : ""}>${po.hasOpenReclassFlag ? "Already flagged" : "Flag for reclass"}</button>
       </div>
       <table class="detail-table po-detail-table">
         <tbody>
@@ -470,6 +481,13 @@ export async function renderPos(container) {
     if (activateBtn) {
       activateBtn.addEventListener("click", async () => {
         await api.post(`/api/admin/pos/${po.id}/activate`);
+        await draw();
+      });
+    }
+    const flagReclassBtn = container.querySelector(".po-flag-reclass-btn");
+    if (flagReclassBtn && !po.hasOpenReclassFlag) {
+      flagReclassBtn.addEventListener("click", async () => {
+        await api.post("/api/admin/reclasses/flag-po", { poIds: [po.id] });
         await draw();
       });
     }
