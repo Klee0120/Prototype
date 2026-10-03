@@ -2208,7 +2208,73 @@ function updateReclassItem(id, fields) {
     new Date().toISOString(),
     Number(id)
   );
-  return findReclassItem(id);
+  const updated = findReclassItem(id);
+  // The moment a reclass is actually confirmed posted (someone verified it
+  // landed in the GL), whatever got corrected also needs to be reflected in
+  // Smartsheet -- that's a separate, manual step this app can't do or
+  // verify on its own, so it tasks the PO's own assigned admin (from the
+  // Budget PO Tracker's Admin column) to go make that update. Only fires on
+  // the transition into confirmed_posted, not on every subsequent edit
+  // while it stays there.
+  if (fields.status === "confirmed_posted" && existing.status !== "confirmed_posted") {
+    createReclassSmartsheetUpdateTask(updated);
+  }
+  return updated;
+}
+
+// Matches the PO Tracker's free-text Admin column against a real admin
+// account by name -- exact, case-insensitive, trimmed. Never a fuzzy guess:
+// an unmatched name still gets a task, just unassigned with that raw name
+// kept in the description so a human routes it instead of this silently
+// assigning the wrong person.
+function matchAdminByName(name) {
+  if (!name) return null;
+  const target = String(name).trim().toLowerCase();
+  if (!target) return null;
+  return listAdmins().find((a) => String(a.name || "").trim().toLowerCase() === target) || null;
+}
+
+// The PO this reclass item traces back to, whichever way it's known: a
+// direct link (flagged from the PO Tracker -- see flagPosForReclass), or
+// failing that, a WOM # match against the Budget PO Tracker's own
+// wom_number field (same linkage getPoGlLinksByWom uses), since most
+// reclass items come from an imported submission with a WOM # but no
+// direct PO link at all.
+function resolvePoForReclassItem(item) {
+  if (item.relatedPoId) {
+    const byId = db.prepare("SELECT * FROM pos WHERE id = ?").get(item.relatedPoId);
+    if (byId) return byId;
+  }
+  const womCode = item.toWomNumber || item.fromWomNumber;
+  if (!womCode) return null;
+  return db.prepare("SELECT * FROM pos WHERE wom_number = ? LIMIT 1").get(womCode);
+}
+
+function createReclassSmartsheetUpdateTask(item) {
+  const po = resolvePoForReclassItem(item);
+  const matchedAdmin = po ? matchAdminByName(po.admin_name) : null;
+  const subject = po ? `PO ${po.po_number || po.id}` : item.toWomNumber || item.fromWomNumber ? `WOM ${item.toWomNumber || item.fromWomNumber}` : `reclass #${item.id}`;
+  const description =
+    `This reclass (${item.comments || "no comment"}) was just marked Confirmed Posted -- update Smartsheet to reflect the correction.` +
+    (po && po.admin_name && !matchedAdmin
+      ? ` The Budget PO Tracker lists "${po.admin_name}" as this PO's admin, but that name doesn't match any admin account -- route this manually.`
+      : "");
+  upsertTaskBySourceKey(
+    `RECLASS-${item.id}-SMARTSHEET-UPDATE`,
+    {
+      title: `Update Smartsheet for ${subject}'s reclass`,
+      description,
+      category: "reclass_smartsheet",
+      assignedTo: matchedAdmin ? matchedAdmin.id : null,
+      assignedRole: matchedAdmin ? "admin" : null,
+      relatedPoId: po ? po.id : null,
+      priority: "normal",
+      source: "reclass_smartsheet",
+      sourceRecordId: String(item.id),
+      workflowRule: "reclass_smartsheet",
+    },
+    { reopenIfClosed: false }
+  );
 }
 
 // A vendor onboarding/compliance case (e.g. a ServiceEdge COI Case, Toyota

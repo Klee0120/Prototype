@@ -128,6 +128,50 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.equal(second.body.flaggedCount, 1, "flagging again after the prior one is resolved should create a new entry");
   });
 
+  // A reclass getting confirmed posted means whatever it corrected also
+  // needs to be reflected in Smartsheet -- a separate manual step this app
+  // can't verify, so it tasks the PO's own Admin column (matched to a real
+  // admin account by name).
+  await t.test("confirming a reclass posted tasks the PO's own admin to update Smartsheet", async () => {
+    raw.prepare(`INSERT INTO pos (composite_key, po_number, admin_name, e1_wom_job_number, wom_number, lifecycle_status,
+      first_imported_at, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("ss-1", "PO70001", "Krista Lee", "100110077000", null, now, now, now, now);
+    const poRow = raw.prepare("SELECT id FROM pos WHERE po_number = ?").get("PO70001");
+
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poRow.id] } });
+    const itemId = flagRes.body.items[0].id;
+
+    await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "confirmed_posted" } });
+
+    // This PO also matches the WOM-link-gap condition (e1_wom_job_number
+    // set, wom_number blank), so it gets a *second*, unrelated task too
+    // ("Confirm WOM # for..."); disambiguate by workflowRule rather than
+    // just the PO number substring, which both titles contain.
+    const tasksRes = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasksRes.body.find((tk) => tk.workflowRule === "reclass_smartsheet" && tk.title.includes("PO70001"));
+    assert.ok(task, "expected a Smartsheet-update task for PO70001's reclass");
+    assert.equal(task.assignedTo, "ADMIN", "should be assigned to the admin account matching the PO's Admin column (Krista Lee)");
+    assert.match(task.title, /Update Smartsheet/);
+  });
+
+  await t.test("an unmatched Admin name still creates the task, unassigned, with the raw name kept for manual routing", async () => {
+    raw.prepare(`INSERT INTO pos (composite_key, po_number, admin_name, e1_wom_job_number, wom_number, lifecycle_status,
+      first_imported_at, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("ss-2", "PO70002", "Someone Not In The System", "100110077002", null, now, now, now, now);
+    const poRow = raw.prepare("SELECT id FROM pos WHERE po_number = ?").get("PO70002");
+
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poRow.id] } });
+    const itemId = flagRes.body.items[0].id;
+
+    await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "confirmed_posted" } });
+
+    const tasksRes = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasksRes.body.find((tk) => tk.workflowRule === "reclass_smartsheet" && tk.title.includes("PO70002"));
+    assert.ok(task, "expected the task to still be created even with no admin match");
+    assert.equal(task.assignedTo, null);
+    assert.match(task.description, /Someone Not In The System/);
+  });
+
   await t.test("bulk-flagging multiple POs at once (the 4-row filtered-list use case)", async () => {
     const ids = [
       insertPo({ composite: "bulk-1", poNumber: "PO60010", e1WomJobNumber: "100110066010", womNumber: null, lifecycleStatus: "active" }),
