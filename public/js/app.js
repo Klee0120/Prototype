@@ -77,6 +77,22 @@ export function escapeHtml(str) {
 
 const root = document.getElementById("app");
 
+// Mobile sidebar drawer: the sidebar/backdrop elements get recreated on
+// every full render() (login, logout, session-expiry), so these just look
+// them up live rather than holding stale references -- closed is simply
+// "the class isn't there," which is already true on every fresh render.
+function openMobileNav() {
+  document.querySelector(".app-sidebar")?.classList.add("mobile-nav-open");
+  document.querySelector(".sidebar-backdrop")?.classList.add("visible");
+}
+function closeMobileNav() {
+  document.querySelector(".app-sidebar")?.classList.remove("mobile-nav-open");
+  document.querySelector(".sidebar-backdrop")?.classList.remove("visible");
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMobileNav();
+});
+
 export async function render() {
   if (!state.user) {
     root.innerHTML = "";
@@ -98,6 +114,11 @@ export async function render() {
   const shell = document.createElement("div");
   shell.className = "app-shell";
   shell.appendChild(renderSidebar());
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "sidebar-backdrop";
+  backdrop.addEventListener("click", closeMobileNav);
+  shell.appendChild(backdrop);
 
   const main = document.createElement("main");
   main.className = "app-main";
@@ -134,6 +155,7 @@ function renderTopBar() {
   const bar = document.createElement("div");
   bar.className = "app-topbar";
   bar.innerHTML = `
+    <button type="button" class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation">&#9776;</button>
     <div class="topbar-brand-text">
       <span class="topbar-brand-name">ServiceWorks</span>
       <span class="topbar-brand-sub">Toyota Operations &amp; Financial Management</span>
@@ -141,6 +163,7 @@ function renderTopBar() {
     <div class="topbar-context" id="topbar-context"></div>
     <div class="topbar-global-tools" id="topbar-global-tools"></div>
   `;
+  bar.querySelector("#mobile-nav-toggle").addEventListener("click", openMobileNav);
   return bar;
 }
 
@@ -161,6 +184,15 @@ function renderSidebar() {
     <nav class="sidebar-nav" id="sidebar-nav"></nav>
   `;
   sidebar.appendChild(renderSidebarUser());
+  // Delegated rather than bound to individual nav items: adminReview.js/
+  // techHome.js own #sidebar-nav's actual content and redraw it on every
+  // tab switch, so a direct listener on an item would be gone the moment
+  // its innerHTML is replaced. Listening on the sidebar itself survives
+  // that, since the click still bubbles up through whatever's currently
+  // sitting inside it.
+  sidebar.addEventListener("click", (e) => {
+    if (e.target.closest(".sidebar-nav-item")) closeMobileNav();
+  });
   return sidebar;
 }
 
