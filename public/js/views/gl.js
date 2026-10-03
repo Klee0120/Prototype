@@ -54,56 +54,62 @@ function renderCoverageStrip(coverage) {
   `;
 }
 
+function renderPager(wrapClass, { page, pageSize, total }) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if (totalPages <= 1) return "";
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+  return `
+    <div class="gl-pager ${wrapClass}">
+      <button type="button" class="btn btn-secondary gl-pager-prev" ${page <= 1 ? "disabled" : ""}>&larr; Prev</button>
+      <span>Showing ${start}&ndash;${end} of ${total}</span>
+      <button type="button" class="btn btn-secondary gl-pager-next" ${page >= totalPages ? "disabled" : ""}>Next &rarr;</button>
+    </div>
+  `;
+}
+
 // GL Reconciliation -- matches a monthly GL extract against the Budget PO
 // Tracker by PO number (see server/routes/gl.js), to show what actually got
 // paid against each PO vs. what it was approved for, and whether the GL
 // posting used the same object/subsidiary code the PO itself specifies.
 // Read-only throughout -- same "Financials reflects numbers, never edits
 // project data" rule as Cost Analysis.
+//
+// Every number here -- the three big lists and the summary tiles -- is
+// fetched from the server already paginated/filtered (see
+// server/data/db.js's getGlReconciliationSummary/getReconciledPage/etc).
+// GL Reconciliation used to pull every GL line ever imported on every page
+// load, compute the whole reconciliation in JS, and ship all of it to the
+// browser before slicing it into pages client-side -- that only got slower
+// as more months were imported, since gl_entries only ever grows (each
+// import replaces just its own period). Paginating on the server means a
+// page load only ever touches the current page's own rows.
 export async function renderGlReconciliation(container) {
-  let data = null;
+  let summary = null;
   let imports = [];
   let status = null;
-  // PO reconciliation table filters -- all independent, all client-side
-  // (the full reconciled list is already in hand). "PO reference not
-  // found" isn't one of these: that's a GL-line-level gap, not a PO-level
-  // one, so it's its own section below rather than a filter here (see
-  // renderNoMatchingPoTable).
+
+  // PO reconciliation table filters -- sent to the server, not applied
+  // client-side. "PO reference not found" isn't one of these: that's a
+  // GL-line-level gap, not a PO-level one, so it's its own section below.
   let glStatusFilter = ""; // "" | "open" | "closed"
   let glCodingFilter = ""; // "" | "subsidiary" | "objectCode" | "either"
   let glAboveOnly = false; // variance > 0 ("posted above PO")
   let glMissingLocationOnly = false;
-  // Every GL import only adds to gl_entries (each one replaces just its own
-  // period), so these three tables only ever grow as more months get
-  // imported -- rendering all of them as one giant unpaginated table is
-  // what was making the page feel slow. Paginated client-side (the data's
-  // already in hand either way); each table keeps its own current page.
+
   const GL_PAGE_SIZE = 100;
   let reconciledPage = 1;
   let unmatchedPage = 1;
   let noPoReferencePage = 1;
-
-  function renderPager(wrapClass, totalRows, page) {
-    const totalPages = Math.max(1, Math.ceil(totalRows / GL_PAGE_SIZE));
-    if (totalPages <= 1) return "";
-    const start = (page - 1) * GL_PAGE_SIZE + 1;
-    const end = Math.min(totalRows, page * GL_PAGE_SIZE);
-    return `
-      <div class="gl-pager ${wrapClass}">
-        <button type="button" class="btn btn-secondary gl-pager-prev" ${page <= 1 ? "disabled" : ""}>&larr; Prev</button>
-        <span>Showing ${start}&ndash;${end} of ${totalRows}</span>
-        <button type="button" class="btn btn-secondary gl-pager-next" ${page >= totalPages ? "disabled" : ""}>Next &rarr;</button>
-      </div>
-    `;
-  }
+  let reconciledItems = []; // current page only, for the detail-modal click lookup
 
   await draw();
 
   async function draw() {
     container.innerHTML = `<p class="empty-note">Loading…</p>`;
     try {
-      [data, imports, status] = await Promise.all([
-        api.get("/api/admin/gl/reconciliation"),
+      [summary, imports, status] = await Promise.all([
+        api.get("/api/admin/gl/reconciliation/summary"),
         api.get("/api/admin/gl/imports"),
         api.get("/api/admin/gl/status"),
       ]);
@@ -145,12 +151,12 @@ export async function renderGlReconciliation(container) {
       ${status && status.coverage ? renderCoverageStrip(status.coverage) : ""}
 
       <div class="task-tiles">
-        <div class="task-tile"><div class="task-tile-count">${data.reconciled.length}</div><div class="task-tile-label">Unique POs matched to GL</div></div>
-        <div class="task-tile"><div class="task-tile-count">${formatMoney(data.reconciledTotal)}</div><div class="task-tile-label">Net variance (paid &minus; PO amount)</div></div>
-        <div class="task-tile"><div class="task-tile-count">${data.subsidiaryMismatchCount}</div><div class="task-tile-label">Subsidiary mismatches</div></div>
-        <div class="task-tile"><div class="task-tile-count">${data.objectCodeMismatchCount}</div><div class="task-tile-label">Object code mismatches</div></div>
-        <div class="task-tile"><div class="task-tile-count">${data.unmatchedEntries.length}</div><div class="task-tile-label">GL lines, PO # not found</div></div>
-        <div class="task-tile"><div class="task-tile-count">${data.noPoReferenceEntries.length}</div><div class="task-tile-label">GL lines, no PO reference</div></div>
+        <div class="task-tile"><div class="task-tile-count">${summary.reconciledCount}</div><div class="task-tile-label">Unique POs matched to GL</div></div>
+        <div class="task-tile"><div class="task-tile-count">${formatMoney(summary.reconciledTotal)}</div><div class="task-tile-label">Net variance (paid &minus; PO amount)</div></div>
+        <div class="task-tile"><div class="task-tile-count">${summary.subsidiaryMismatchCount}</div><div class="task-tile-label">Subsidiary mismatches</div></div>
+        <div class="task-tile"><div class="task-tile-count">${summary.objectCodeMismatchCount}</div><div class="task-tile-label">Object code mismatches</div></div>
+        <div class="task-tile"><div class="task-tile-count">${summary.unmatchedCount}</div><div class="task-tile-label">GL lines, PO # not found</div></div>
+        <div class="task-tile"><div class="task-tile-count">${summary.noPoReferenceCount}</div><div class="task-tile-label">GL lines, no PO reference</div></div>
       </div>
 
       <h3>PO reconciliation</h3>
@@ -190,7 +196,7 @@ export async function renderGlReconciliation(container) {
       <div class="gl-table-wrap"></div>
 
       ${
-        data.unmatchedEntries.length > 0
+        summary.unmatchedCount > 0
           ? `
       <h3>GL lines with a PO # not on file</h3>
       <p class="review-checklist-hint">
@@ -203,7 +209,7 @@ export async function renderGlReconciliation(container) {
       }
 
       ${
-        data.noPoReferenceEntries.length > 0
+        summary.noPoReferenceCount > 0
           ? `
       <h3>GL lines with no PO reference</h3>
       <p class="review-checklist-hint">
@@ -249,36 +255,38 @@ export async function renderGlReconciliation(container) {
     });
 
     renderReconciledTable();
-    if (data.unmatchedEntries.length > 0) renderUnmatchedTable();
-    if (data.noPoReferenceEntries.length > 0) renderNoPoReferenceTable();
+    if (summary.unmatchedCount > 0) renderUnmatchedTable();
+    if (summary.noPoReferenceCount > 0) renderNoPoReferenceTable();
   }
 
-  function filterReconciled(rows) {
-    return rows.filter((r) => {
-      if (glStatusFilter && r.statusBucket !== glStatusFilter) return false;
-      if (glCodingFilter === "subsidiary" && !r.subsidiaryMismatch) return false;
-      if (glCodingFilter === "objectCode" && !r.objectCodeMismatch) return false;
-      if (glCodingFilter === "either" && !r.subsidiaryMismatch && !r.objectCodeMismatch) return false;
-      if (glAboveOnly && !(r.variance > 0)) return false;
-      if (glMissingLocationOnly && r.locationCode) return false;
-      return true;
-    });
-  }
-
-  function renderReconciledTable() {
+  async function renderReconciledTable() {
     const wrap = container.querySelector(".gl-table-wrap");
-    if (data.reconciled.length === 0) {
+    wrap.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let pageData;
+    try {
+      pageData = await api.get(
+        `/api/admin/gl/reconciliation/reconciled?${new URLSearchParams({
+          page: String(reconciledPage),
+          pageSize: String(GL_PAGE_SIZE),
+          ...(glStatusFilter ? { status: glStatusFilter } : {}),
+          ...(glCodingFilter ? { coding: glCodingFilter } : {}),
+          ...(glAboveOnly ? { aboveOnly: "true" } : {}),
+          ...(glMissingLocationOnly ? { missingLocationOnly: "true" } : {}),
+        })}`
+      );
+    } catch (err) {
+      wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    reconciledItems = pageData.items;
+    if (summary.reconciledCount === 0) {
       wrap.innerHTML = `<p class="empty-note">No PO has a matching GL line yet -- import a GL report to populate this.</p>`;
       return;
     }
-    const filtered = filterReconciled(data.reconciled);
-    if (filtered.length === 0) {
+    if (pageData.total === 0) {
       wrap.innerHTML = `<p class="empty-note">No PO matches these filters.</p>`;
       return;
     }
-    const totalPages = Math.max(1, Math.ceil(filtered.length / GL_PAGE_SIZE));
-    if (reconciledPage > totalPages) reconciledPage = totalPages;
-    const pageItems = filtered.slice((reconciledPage - 1) * GL_PAGE_SIZE, reconciledPage * GL_PAGE_SIZE);
     wrap.innerHTML = `
       <table class="detail-table gl-table">
         <thead>
@@ -298,7 +306,7 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${pageItems
+          ${reconciledItems
             .map(
               (r) => `
             <tr class="gl-row" data-po-id="${r.poId}">
@@ -320,11 +328,11 @@ export async function renderGlReconciliation(container) {
             .join("")}
         </tbody>
       </table>
-      ${renderPager("gl-reconciled-pager", filtered.length, reconciledPage)}
+      ${renderPager("gl-reconciled-pager", pageData)}
     `;
     wrap.querySelectorAll("tr.gl-row").forEach((row) => {
       row.addEventListener("click", () => {
-        const r = data.reconciled.find((item) => String(item.poId) === row.dataset.poId);
+        const r = reconciledItems.find((item) => String(item.poId) === row.dataset.poId);
         if (r) openPoDetailModal(r);
       });
     });
@@ -334,11 +342,16 @@ export async function renderGlReconciliation(container) {
     if (nextBtn) nextBtn.addEventListener("click", () => { reconciledPage++; renderReconciledTable(); });
   }
 
-  function renderUnmatchedTable() {
+  async function renderUnmatchedTable() {
     const wrap = container.querySelector(".gl-unmatched-wrap");
-    const totalPages = Math.max(1, Math.ceil(data.unmatchedEntries.length / GL_PAGE_SIZE));
-    if (unmatchedPage > totalPages) unmatchedPage = totalPages;
-    const pageItems = data.unmatchedEntries.slice((unmatchedPage - 1) * GL_PAGE_SIZE, unmatchedPage * GL_PAGE_SIZE);
+    wrap.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let pageData;
+    try {
+      pageData = await api.get(`/api/admin/gl/reconciliation/unmatched?${new URLSearchParams({ page: String(unmatchedPage), pageSize: String(GL_PAGE_SIZE) })}`);
+    } catch (err) {
+      wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
     wrap.innerHTML = `
       <table class="detail-table gl-table">
         <thead>
@@ -353,7 +366,7 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${pageItems
+          ${pageData.items
             .map(
               (e) => `
             <tr>
@@ -370,7 +383,7 @@ export async function renderGlReconciliation(container) {
             .join("")}
         </tbody>
       </table>
-      ${renderPager("gl-unmatched-pager", data.unmatchedEntries.length, unmatchedPage)}
+      ${renderPager("gl-unmatched-pager", pageData)}
     `;
     const prevBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-prev");
     const nextBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-next");
@@ -382,11 +395,18 @@ export async function renderGlReconciliation(container) {
   // read "—" here (that's the whole point of this list) -- Document Type is
   // shown in its place instead, since that's what actually distinguishes a
   // payroll/journal/accrual line from a real invoice.
-  function renderNoPoReferenceTable() {
+  async function renderNoPoReferenceTable() {
     const wrap = container.querySelector(".gl-no-po-ref-wrap");
-    const totalPages = Math.max(1, Math.ceil(data.noPoReferenceEntries.length / GL_PAGE_SIZE));
-    if (noPoReferencePage > totalPages) noPoReferencePage = totalPages;
-    const pageItems = data.noPoReferenceEntries.slice((noPoReferencePage - 1) * GL_PAGE_SIZE, noPoReferencePage * GL_PAGE_SIZE);
+    wrap.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let pageData;
+    try {
+      pageData = await api.get(
+        `/api/admin/gl/reconciliation/no-po-reference?${new URLSearchParams({ page: String(noPoReferencePage), pageSize: String(GL_PAGE_SIZE) })}`
+      );
+    } catch (err) {
+      wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
     wrap.innerHTML = `
       <table class="detail-table gl-table">
         <thead>
@@ -401,7 +421,7 @@ export async function renderGlReconciliation(container) {
           </tr>
         </thead>
         <tbody>
-          ${pageItems
+          ${pageData.items
             .map(
               (e) => `
             <tr>
@@ -418,7 +438,7 @@ export async function renderGlReconciliation(container) {
             .join("")}
         </tbody>
       </table>
-      ${renderPager("gl-no-po-ref-pager", data.noPoReferenceEntries.length, noPoReferencePage)}
+      ${renderPager("gl-no-po-ref-pager", pageData)}
     `;
     const prevBtn = wrap.querySelector(".gl-no-po-ref-pager .gl-pager-prev");
     const nextBtn = wrap.querySelector(".gl-no-po-ref-pager .gl-pager-next");

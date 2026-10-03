@@ -1105,6 +1105,39 @@ if (!hasColumn("gl_entries", "name_alpha")) {
 if (!hasColumn("reclass_items", "related_po_id")) {
   db.exec("ALTER TABLE reclass_items ADD COLUMN related_po_id INTEGER");
 }
+// Precomputed at import time (see importGlEntries) instead of recomputed on
+// every GL Reconciliation page load -- comparing the GL's own
+// subsidiary/object code against the matched PO's requires string-parsing
+// the PO's "code + description" fields (parseObjectAccountCode), which
+// isn't expressible as a plain SQL filter. Computing it once per line at
+// import time, instead of for every matched PO on every read, is what
+// makes server-side paginating/filtering the reconciled list possible.
+if (!hasColumn("gl_entries", "subsidiary_mismatch")) {
+  db.exec("ALTER TABLE gl_entries ADD COLUMN subsidiary_mismatch INTEGER");
+  db.exec("ALTER TABLE gl_entries ADD COLUMN object_code_mismatch INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_gl_entries_mismatch ON gl_entries(matched_po_id, subsidiary_mismatch, object_code_mismatch)");
+  // One-time backfill for every already-matched line, run in JS with the
+  // exact same parseObjectAccountCode logic the live import path uses below
+  // -- a SQL-side CAST(x AS INTEGER) shortcut was tried first and rejected
+  // after testing showed it silently strips a leading zero ('0100' -> 100),
+  // which would diverge from parseObjectAccountCode's string-preserving
+  // regex on any real code that has one.
+  const linesToBackfill = db
+    .prepare(
+      `SELECT g.id, g.subsidiary AS glSubsidiary, g.object_account_code AS glObjectCode,
+              p.subsidiary AS poSubsidiary, p.object_code AS poObjectCode
+       FROM gl_entries g JOIN pos p ON p.id = g.matched_po_id`
+    )
+    .all();
+  const backfillStmt = db.prepare("UPDATE gl_entries SET subsidiary_mismatch = ?, object_code_mismatch = ? WHERE id = ?");
+  for (const line of linesToBackfill) {
+    const poSubsidiaryCode = parseObjectAccountCode(line.poSubsidiary);
+    const poObjectCode = parseObjectAccountCode(line.poObjectCode);
+    const subsidiaryMismatch = poSubsidiaryCode && line.glSubsidiary && String(line.glSubsidiary) !== poSubsidiaryCode ? 1 : 0;
+    const objectCodeMismatch = poObjectCode && line.glObjectCode && String(line.glObjectCode) !== poObjectCode ? 1 : 0;
+    backfillStmt.run(subsidiaryMismatch, objectCodeMismatch, line.id);
+  }
+}
 
 seedIfEmpty();
 
@@ -5180,6 +5213,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
         );
         maybeAutoActivatePo(existing.id);
         refreshPoWomLinkTask(existing.id);
+        refreshGlMismatchFlagsForPo(existing.id);
         if (changed) updated++;
         else unchanged++;
       } else {
@@ -5334,6 +5368,27 @@ function refreshPoWomLinkTask(poId) {
 function refreshAllPoWomLinkTasks() {
   for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'active'").all()) {
     refreshPoWomLinkTask(row.id);
+  }
+}
+
+// Keeps a PO's already-matched GL lines' precomputed mismatch flags correct
+// when the PO's own subsidiary/object code gets corrected in a later PO
+// Tracker import -- without this, a fix made here would only show up in GL
+// Reconciliation after the next GL re-import, since gl_entries rows aren't
+// otherwise touched by a PO import. No-ops instantly for a PO with no
+// matched GL lines yet (the common case for a brand-new PO).
+function refreshGlMismatchFlagsForPo(poId) {
+  const po = db.prepare("SELECT subsidiary, object_code FROM pos WHERE id = ?").get(poId);
+  if (!po) return;
+  const lines = db.prepare("SELECT id, subsidiary, object_account_code FROM gl_entries WHERE matched_po_id = ?").all(poId);
+  if (lines.length === 0) return;
+  const poSubsidiaryCode = parseObjectAccountCode(po.subsidiary);
+  const poObjectCode = parseObjectAccountCode(po.object_code);
+  const stmt = db.prepare("UPDATE gl_entries SET subsidiary_mismatch = ?, object_code_mismatch = ? WHERE id = ?");
+  for (const line of lines) {
+    const subsidiaryMismatch = poSubsidiaryCode && line.subsidiary && String(line.subsidiary) !== poSubsidiaryCode ? 1 : 0;
+    const objectCodeMismatch = poObjectCode && line.object_account_code && String(line.object_account_code) !== poObjectCode ? 1 : 0;
+    stmt.run(subsidiaryMismatch, objectCodeMismatch, line.id);
   }
 }
 
@@ -5536,17 +5591,14 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       (import_id, period_number, fiscal_year, gl_date, document_type, document_number,
        journal_entry_line_number, business_unit, object_account, object_account_code, subsidiary,
        amount, batch_number, supplier_invoice_number, invoice_date, location_code, name_alpha, remark,
-       purchase_order, matched_po_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       purchase_order, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const findPoByNumber = db.prepare("SELECT id FROM pos WHERE po_number = ? LIMIT 1");
-  const poNumberCache = new Map();
-  const lookupPoId = (poNumber) => {
-    if (!poNumberCache.has(poNumber)) {
-      const row = findPoByNumber.get(poNumber);
-      poNumberCache.set(poNumber, row ? row.id : null);
-    }
-    return poNumberCache.get(poNumber);
+  const findPoByNumber = db.prepare("SELECT id, subsidiary, object_code FROM pos WHERE po_number = ? LIMIT 1");
+  const poCache = new Map();
+  const lookupPo = (poNumber) => {
+    if (!poCache.has(poNumber)) poCache.set(poNumber, findPoByNumber.get(poNumber) || null);
+    return poCache.get(poNumber);
   };
 
   const importRow = db.prepare(
@@ -5561,7 +5613,8 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
   let noPoReferenceCount = 0;
   for (const r of rows) {
     const poNumber = normalizePoNumber(r.purchaseOrder);
-    const matchedPoId = poNumber ? lookupPoId(poNumber) : null;
+    const matchedPo = poNumber ? lookupPo(poNumber) : null;
+    const matchedPoId = matchedPo ? matchedPo.id : null;
     if (poNumber) {
       if (matchedPoId) matchedCount++;
       else unmatchedCount++;
@@ -5569,6 +5622,15 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       // Payroll, journal entries, accruals, etc. -- legitimately never had a
       // PO # to begin with, not a reconciliation gap.
       noPoReferenceCount++;
+    }
+    const objectAccountCode = parseObjectAccountCode(r.objectAccount);
+    let subsidiaryMismatch = 0;
+    let objectCodeMismatch = 0;
+    if (matchedPo) {
+      const poSubsidiaryCode = parseObjectAccountCode(matchedPo.subsidiary);
+      const poObjectCode = parseObjectAccountCode(matchedPo.object_code);
+      subsidiaryMismatch = poSubsidiaryCode && r.subsidiary && String(r.subsidiary) !== poSubsidiaryCode ? 1 : 0;
+      objectCodeMismatch = poObjectCode && objectAccountCode && String(objectAccountCode) !== poObjectCode ? 1 : 0;
     }
     insert.run(
       importId,
@@ -5580,7 +5642,7 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       r.journalEntryLineNumber ?? null,
       r.businessUnit || null,
       r.objectAccount || null,
-      parseObjectAccountCode(r.objectAccount),
+      objectAccountCode,
       r.subsidiary || null,
       r.amount ?? null,
       r.batchNumber || null,
@@ -5591,6 +5653,8 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       r.remark || null,
       poNumber,
       matchedPoId,
+      subsidiaryMismatch,
+      objectCodeMismatch,
       now
     );
   }
@@ -5729,41 +5793,140 @@ function classifyPoStatusBucket(status) {
   return s.includes("closed") || s.includes("fully invoiced") ? "closed" : "open";
 }
 
-// Per-PO reconciliation: what the PO was approved for vs. what the GL shows
-// actually paid against it (summed across every matched GL line, which can
-// span more than one invoice/batch), plus whether any matched line's own
-// object/subsidiary code differs from what the PO itself specifies.
-function getPoReconciliation() {
-  const matchedPos = db
+const GL_PAGE_SIZE_DEFAULT = 100;
+const GL_ENTRY_COLUMNS = `period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
+            document_type AS documentType, document_number AS documentNumber,
+            object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
+            purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber`;
+
+// Cheap aggregate-only counts/totals for the summary tiles -- computed over
+// the whole GL history (not just the current page), but as single SQL
+// aggregates rather than materializing every matched line in JS. Backed by
+// idx_gl_entries_mismatch and idx_gl_entries_purchase_order.
+function getGlReconciliationSummary() {
+  const reconciledRow = db
+    .prepare(
+      `SELECT COUNT(*) AS cnt, COALESCE(SUM(variance), 0) AS total FROM (
+         SELECT SUM(g.amount) - COALESCE(p.po_amount, 0) AS variance
+         FROM pos p JOIN gl_entries g ON g.matched_po_id = p.id
+         GROUP BY p.id
+       ) t`
+    )
+    .get();
+  const subsidiaryMismatchCount = db
+    .prepare("SELECT COUNT(DISTINCT matched_po_id) AS cnt FROM gl_entries WHERE matched_po_id IS NOT NULL AND subsidiary_mismatch = 1")
+    .get().cnt;
+  const objectCodeMismatchCount = db
+    .prepare("SELECT COUNT(DISTINCT matched_po_id) AS cnt FROM gl_entries WHERE matched_po_id IS NOT NULL AND object_code_mismatch = 1")
+    .get().cnt;
+  const unmatchedRow = db
+    .prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL")
+    .get();
+  const noPoReferenceRow = db.prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM gl_entries WHERE purchase_order IS NULL").get();
+
+  return {
+    reconciledCount: reconciledRow.cnt,
+    reconciledTotal: reconciledRow.total,
+    subsidiaryMismatchCount,
+    objectCodeMismatchCount,
+    unmatchedCount: unmatchedRow.cnt,
+    unmatchedTotal: unmatchedRow.total,
+    noPoReferenceCount: noPoReferenceRow.cnt,
+    noPoReferenceTotal: noPoReferenceRow.total,
+  };
+}
+
+function buildReconciledFilterClauses(filters) {
+  const whereClauses = [];
+  const havingClauses = [];
+  if (filters.missingLocationOnly) {
+    whereClauses.push("(p.location_code IS NULL OR p.location_code = '')");
+  }
+  // Mirrors classifyPoStatusBucket's own keyword logic exactly, so a PO's
+  // bucket reads the same whether computed here (for filtering) or in JS
+  // (for the statusBucket field on each returned row).
+  if (filters.status === "open") {
+    whereClauses.push("(p.status IS NULL OR (LOWER(p.status) NOT LIKE '%closed%' AND LOWER(p.status) NOT LIKE '%fully invoiced%'))");
+  } else if (filters.status === "closed") {
+    whereClauses.push("(LOWER(p.status) LIKE '%closed%' OR LOWER(p.status) LIKE '%fully invoiced%')");
+  }
+  if (filters.coding === "subsidiary") {
+    havingClauses.push("MAX(g.subsidiary_mismatch) = 1");
+  } else if (filters.coding === "objectCode") {
+    havingClauses.push("MAX(g.object_code_mismatch) = 1");
+  } else if (filters.coding === "either") {
+    havingClauses.push("(MAX(g.subsidiary_mismatch) = 1 OR MAX(g.object_code_mismatch) = 1)");
+  }
+  if (filters.aboveOnly) {
+    havingClauses.push("(SUM(g.amount) - COALESCE(p.po_amount, 0)) > 0");
+  }
+  return {
+    where: whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "",
+    having: havingClauses.length ? `HAVING ${havingClauses.join(" AND ")}` : "",
+  };
+}
+
+// Per-PO reconciliation, one page at a time: what the PO was approved for
+// vs. what the GL shows actually paid against it (summed across every
+// matched GL line, which can span more than one invoice/batch), plus
+// whether any matched line's own object/subsidiary code differs from what
+// the PO itself specifies (precomputed on gl_entries -- see
+// subsidiary_mismatch/object_code_mismatch -- so filtering by coding
+// mismatch is a plain indexed HAVING clause, not a JS scan of every line).
+// Replaces the old all-at-once getPoReconciliation: that pulled every
+// matched line in the GL's entire history on every single page load, which
+// only got slower as more months were imported -- this only ever touches
+// the current page's POs' own lines.
+function getReconciledPage(filters = {}) {
+  const page = Math.max(1, Number(filters.page) || 1);
+  const pageSize = Math.max(1, Number(filters.pageSize) || GL_PAGE_SIZE_DEFAULT);
+  const { where, having } = buildReconciledFilterClauses(filters);
+
+  const countRow = db
+    .prepare(
+      `SELECT COUNT(*) AS cnt FROM (
+         SELECT p.id FROM pos p JOIN gl_entries g ON g.matched_po_id = p.id ${where} GROUP BY p.id ${having}
+       ) t`
+    )
+    .get();
+
+  const rows = db
     .prepare(
       `SELECT
          p.id, p.po_number AS poNumber, p.description, p.location_code AS locationCode,
          p.wom_number AS womNumber, p.po_amount AS poAmount, p.object_code AS objectCode,
          p.subsidiary AS poSubsidiary, p.vendor_name AS vendorName, p.status AS poStatus,
-         COUNT(g.id) AS glLineCount, SUM(g.amount) AS actualPaid
-       FROM pos p
-       JOIN gl_entries g ON g.matched_po_id = p.id
+         COUNT(g.id) AS glLineCount, SUM(g.amount) AS actualPaid,
+         MAX(g.subsidiary_mismatch) AS subsidiaryMismatch, MAX(g.object_code_mismatch) AS objectCodeMismatch
+       FROM pos p JOIN gl_entries g ON g.matched_po_id = p.id
+       ${where}
        GROUP BY p.id
-       ORDER BY ABS(SUM(g.amount) - p.po_amount) DESC`
+       ${having}
+       ORDER BY ABS(SUM(g.amount) - COALESCE(p.po_amount, 0)) DESC
+       LIMIT ? OFFSET ?`
     )
-    .all();
+    .all(pageSize, (page - 1) * pageSize);
 
+  // Only this page's POs' own matched lines -- never the whole history.
   const linesByPo = new Map();
-  for (const line of db.prepare("SELECT * FROM gl_entries WHERE matched_po_id IS NOT NULL").all()) {
-    if (!linesByPo.has(line.matched_po_id)) linesByPo.set(line.matched_po_id, []);
-    linesByPo.get(line.matched_po_id).push({
-      periodNumber: line.period_number,
-      fiscalYear: line.fiscal_year,
-      glDate: line.gl_date,
-      documentType: line.document_type,
-      documentNumber: line.document_number,
-      objectAccount: line.object_account,
-      objectAccountCode: line.object_account_code,
-      subsidiary: line.subsidiary,
-      amount: line.amount,
-      supplierInvoiceNumber: line.supplier_invoice_number,
-      invoiceDate: line.invoice_date,
-    });
+  if (rows.length > 0) {
+    const placeholders = rows.map(() => "?").join(",");
+    for (const line of db.prepare(`SELECT * FROM gl_entries WHERE matched_po_id IN (${placeholders})`).all(...rows.map((r) => r.id))) {
+      if (!linesByPo.has(line.matched_po_id)) linesByPo.set(line.matched_po_id, []);
+      linesByPo.get(line.matched_po_id).push({
+        periodNumber: line.period_number,
+        fiscalYear: line.fiscal_year,
+        glDate: line.gl_date,
+        documentType: line.document_type,
+        documentNumber: line.document_number,
+        objectAccount: line.object_account,
+        objectAccountCode: line.object_account_code,
+        subsidiary: line.subsidiary,
+        amount: line.amount,
+        supplierInvoiceNumber: line.supplier_invoice_number,
+        invoiceDate: line.invoice_date,
+      });
+    }
   }
 
   // Each import only replaces its own period/fiscal year (see
@@ -5772,23 +5935,8 @@ function getPoReconciliation() {
   // one. "periodLabel" names every period actually represented for that PO
   // (e.g. "P7/FY26" or "P6/FY26, P7/FY26"), so the table never implies a
   // single period when the underlying lines span more than one.
-  const reconciled = matchedPos.map((p) => {
+  const items = rows.map((p) => {
     const lines = linesByPo.get(p.id) || [];
-    // The PO Tracker stores Object Code/Subsidiary as a combined "code +
-    // description" string (e.g. "605200 Subcontracting Gen/Recurring"),
-    // while the GL only ever has the bare numeric code -- comparing those
-    // directly would flag a mismatch on every single row regardless of
-    // whether the actual code matches. Pull the leading number off the
-    // PO's own fields the same way parseObjectAccountCode already does for
-    // the GL side.
-    const poSubsidiaryCode = parseObjectAccountCode(p.poSubsidiary);
-    const poObjectCode = parseObjectAccountCode(p.objectCode);
-    // Reported separately (not one blended flag) -- they're different
-    // dimensions with different reliability, and conflating a real
-    // subsidiary error with an object-code difference under one "Mismatch"
-    // badge hides which one actually needs attention.
-    const subsidiaryMismatch = lines.some((l) => poSubsidiaryCode && l.subsidiary && String(l.subsidiary) !== poSubsidiaryCode);
-    const objectCodeMismatch = lines.some((l) => poObjectCode && l.objectAccountCode && String(l.objectAccountCode) !== poObjectCode);
     const periods = [...new Set(lines.map((l) => `P${l.periodNumber}/FY${l.fiscalYear}`))];
     return {
       poId: p.id,
@@ -5803,40 +5951,40 @@ function getPoReconciliation() {
       actualPaid: p.actualPaid,
       variance: p.actualPaid - (p.poAmount || 0),
       glLineCount: p.glLineCount,
-      subsidiaryMismatch,
-      objectCodeMismatch,
+      subsidiaryMismatch: Boolean(p.subsidiaryMismatch),
+      objectCodeMismatch: Boolean(p.objectCodeMismatch),
       periodLabel: periods.join(", "),
       lines,
     };
   });
 
-  const GL_ENTRY_COLUMNS = `period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
-              document_type AS documentType, document_number AS documentNumber,
-              object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
-              purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber`;
-  // A GL line naming a PO # that isn't in the Budget PO Tracker -- a real
-  // gap worth investigating (missing from the tracker, or billed against
-  // the wrong PO #).
-  const unmatchedEntries = db
-    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL ORDER BY ABS(amount) DESC`)
-    .all();
-  // A GL line with no PO # at all -- payroll, journal entries, accruals,
-  // and similar legitimately never have one. Kept separate from
-  // unmatchedEntries above so this never reads as the same kind of gap.
-  const noPoReferenceEntries = db
-    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NULL ORDER BY ABS(amount) DESC`)
-    .all();
+  return { items, total: countRow.cnt, page, pageSize };
+}
 
-  return {
-    reconciled,
-    reconciledTotal: reconciled.reduce((sum, r) => sum + r.variance, 0),
-    subsidiaryMismatchCount: reconciled.filter((r) => r.subsidiaryMismatch).length,
-    objectCodeMismatchCount: reconciled.filter((r) => r.objectCodeMismatch).length,
-    unmatchedEntries,
-    unmatchedTotal: unmatchedEntries.reduce((sum, e) => sum + (e.amount || 0), 0),
-    noPoReferenceEntries,
-    noPoReferenceTotal: noPoReferenceEntries.reduce((sum, e) => sum + (e.amount || 0), 0),
-  };
+// A GL line naming a PO # that isn't in the Budget PO Tracker -- a real gap
+// worth investigating (missing from the tracker, or billed against the
+// wrong PO #).
+function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } = {}) {
+  const p = Math.max(1, Number(page) || 1);
+  const ps = Math.max(1, Number(pageSize) || GL_PAGE_SIZE_DEFAULT);
+  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL").get();
+  const items = db
+    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL ORDER BY ABS(amount) DESC LIMIT ? OFFSET ?`)
+    .all(ps, (p - 1) * ps);
+  return { items, total: countRow.cnt, page: p, pageSize: ps };
+}
+
+// A GL line with no PO # at all -- payroll, journal entries, accruals, and
+// similar legitimately never have one. Kept separate from the unmatched
+// list above so this never reads as the same kind of gap.
+function getNoPoReferenceEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } = {}) {
+  const p = Math.max(1, Number(page) || 1);
+  const ps = Math.max(1, Number(pageSize) || GL_PAGE_SIZE_DEFAULT);
+  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM gl_entries WHERE purchase_order IS NULL").get();
+  const items = db
+    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NULL ORDER BY ABS(amount) DESC LIMIT ? OFFSET ?`)
+    .all(ps, (p - 1) * ps);
+  return { items, total: countRow.cnt, page: p, pageSize: ps };
 }
 
 module.exports = {
@@ -6017,13 +6165,17 @@ module.exports = {
   listPoTasks,
   listUnregisteredPoVendors,
   importGlEntries,
+  refreshGlMismatchFlagsForPo,
   listGlImports,
   findGlImport,
   findGlImportByPeriod,
   getPoGlLinksByWom,
   findReclassPostingMatches,
   getGlReclassActivity,
-  getPoReconciliation,
+  getGlReconciliationSummary,
+  getReconciledPage,
+  getUnmatchedEntriesPage,
+  getNoPoReferenceEntriesPage,
   getGlImportStatus,
   getGlFiscalYearCoverage,
 };

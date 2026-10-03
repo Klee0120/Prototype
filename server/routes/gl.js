@@ -179,8 +179,32 @@ router.get("/status", (req, res) => {
   res.json({ ...db.getGlImportStatus(), coverage: db.getGlFiscalYearCoverage() });
 });
 
-router.get("/reconciliation", (req, res) => {
-  res.json(db.getPoReconciliation());
+// Cheap aggregate-only counts/totals for the summary tiles -- see
+// db.getGlReconciliationSummary for why this is split out from the
+// paginated lists below rather than computed alongside them.
+router.get("/reconciliation/summary", (req, res) => {
+  res.json(db.getGlReconciliationSummary());
+});
+
+router.get("/reconciliation/reconciled", (req, res) => {
+  res.json(
+    db.getReconciledPage({
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+      status: req.query.status,
+      coding: req.query.coding,
+      aboveOnly: req.query.aboveOnly === "true",
+      missingLocationOnly: req.query.missingLocationOnly === "true",
+    })
+  );
+});
+
+router.get("/reconciliation/unmatched", (req, res) => {
+  res.json(db.getUnmatchedEntriesPage({ page: req.query.page, pageSize: req.query.pageSize }));
+});
+
+router.get("/reconciliation/no-po-reference", (req, res) => {
+  res.json(db.getNoPoReferenceEntriesPage({ page: req.query.page, pageSize: req.query.pageSize }));
 });
 
 module.exports = router;
