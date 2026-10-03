@@ -187,3 +187,51 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
 
   raw.close();
 });
+
+// "Subsidiary" and "PPS Subsidiary" are two separate columns on the real
+// sheet, but a given row only ever has one filled in -- both mean the exact
+// same thing (confirmed directly), so the import needs to read whichever
+// one is actually populated into the single `subsidiary` field used
+// everywhere else in the app.
+test("PO Tracker import: Subsidiary and PPS Subsidiary coalesce into one field", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+  const rows = [
+    headers,
+    // Row with "Subsidiary" filled, "PPS Subsidiary" blank.
+    ["2026-01-01", "Normal subsidiary row", "Jane Doe", "PO90001", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    // Row with "PPS Subsidiary" filled, "Subsidiary" blank -- the gap this fixes.
+    ["2026-01-02", "PPS subsidiary row", "John Smith", "PO90002", null, 200, null, "Open", "Vendor B", "1002", null, null, null, null, null, null, null, "200 Janitorial", "Krista Lee", null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90001", { userId: "ADMIN" });
+  const po1 = listRes.body.find((p) => p.poNumber === "PO90001");
+  assert.ok(po1, "expected PO90001 to have imported");
+  assert.equal(po1.subsidiary, "100 Primary");
+
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90002", { userId: "ADMIN" });
+  const po2 = listRes2.body.find((p) => p.poNumber === "PO90002");
+  assert.ok(po2, "expected PO90002 to have imported");
+  assert.equal(po2.subsidiary, "200 Janitorial", "PPS Subsidiary should fill the subsidiary field when Subsidiary itself is blank");
+});

@@ -31,10 +31,20 @@ const COLUMN_MAP = {
   "Maximo WO#": "maximoWo",
   "Object Code": "objectCode",
   Subsidiary: "subsidiary",
+  "PPS Subsidiary": "ppsSubsidiary",
   Admin: "adminName",
   Urgent: "urgent",
   "Urgent Reason/Notes": "urgentNotes",
 };
+
+// "PPS Subsidiary" is a newer column on the real sheet -- a form-side
+// guardrail that keeps certain requestors (e.g. janitorial) from picking a
+// bad subsidiary code. A given row only ever has one of "Subsidiary" /
+// "PPS Subsidiary" filled in, never both, but they mean the exact same
+// thing (confirmed directly) -- coalesced into the one `subsidiary` field
+// everywhere else in the app already reads. Optional in the missing-column
+// check since older exports won't have this column at all.
+const OPTIONAL_COLUMNS = new Set(["PPS Subsidiary"]);
 
 function toIsoDate(value) {
   if (value == null || value === "") return null;
@@ -53,6 +63,15 @@ function toCleanNumberString(value) {
   return trimmed === "" ? null : trimmed;
 }
 
+// A row only ever has one of "Subsidiary" / "PPS Subsidiary" filled in, not
+// both -- whichever is present is the real value.
+function coalesceSubsidiary(subsidiary, ppsSubsidiary) {
+  const primary = subsidiary == null || subsidiary === "" ? null : String(subsidiary).trim();
+  if (primary) return primary;
+  const fallback = ppsSubsidiary == null || ppsSubsidiary === "" ? null : String(ppsSubsidiary).trim();
+  return fallback;
+}
+
 function parseWorkbook(buffer) {
   const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
   const sheetName = workbook.SheetNames.find((n) => /po.*track/i.test(n)) || workbook.SheetNames[0];
@@ -64,6 +83,7 @@ function parseWorkbook(buffer) {
   if (raw.length > 0) {
     const firstRowKeys = new Set(Object.keys(raw[0]));
     for (const header of Object.keys(COLUMN_MAP)) {
+      if (OPTIONAL_COLUMNS.has(header)) continue;
       if (!firstRowKeys.has(header)) missingColumns.push(header);
     }
   }
@@ -89,6 +109,7 @@ function parseWorkbook(buffer) {
       requestor: row.requestor == null ? null : String(row.requestor).trim(),
       vendorName: row.vendorName == null ? null : String(row.vendorName).trim(),
       status: row.status == null ? null : String(row.status).trim(),
+      subsidiary: coalesceSubsidiary(row.subsidiary, row.ppsSubsidiary),
     };
   });
 
