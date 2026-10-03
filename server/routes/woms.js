@@ -172,6 +172,41 @@ router.get("/:code/sync-history", requireAuth, requireAdmin, (req, res) => {
   res.json(db.getWomSyncHistory(req.params.code));
 });
 
+// GL postings actually matched to a PO linked to this WOM (by wom_number) --
+// distinct from the WOM's own project-reported appliedPrice, which comes
+// from the Smartsheet tracker and can lag or disagree with what's actually
+// hit the general ledger.
+router.get("/:code/gl-links", requireAuth, requireAdmin, (req, res) => {
+  if (!db.findWom(req.params.code)) return res.status(404).json({ error: "WOM not found" });
+  res.json(db.getPoGlLinksByWom(req.params.code));
+});
+
+// Every task tied to this WOM regardless of category/status/assignee -- the
+// WOM Profile's Tasks tab. The main Task Manager's own GET /api/tasks
+// defaults to "my work" scoping, which would silently hide an unassigned
+// task created from this tab; this route never scopes to a viewer/view, same
+// reasoning as vendors.js's own :id/tasks route (and the exact same rows --
+// relatedWomCode is just another filter on the one tasks table).
+router.get("/:code/tasks", requireAuth, requireAdmin, (req, res) => {
+  if (!db.findWom(req.params.code)) return res.status(404).json({ error: "WOM not found" });
+  const tasks = db.listTasks({ relatedWomCode: req.params.code }).map((t) => {
+    const assignee = t.assigned_to ? db.findTechnician(t.assigned_to) : null;
+    const vendor = t.related_vendor_id ? db.findVendor(t.related_vendor_id) : null;
+    return {
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      priority: t.priority,
+      dueAt: t.due_at,
+      createdAt: t.created_at,
+      relatedVendorId: t.related_vendor_id,
+      relatedVendorName: vendor ? vendor.name : null,
+      assignedToName: assignee ? assignee.name : t.assigned_role ? `Unclaimed — ${t.assigned_role}` : "Unassigned",
+    };
+  });
+  res.json(tasks);
+});
+
 router.post("/", requireAuth, requireAdmin, (req, res) => {
   const { code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber } = req.body || {};
   if (!code || !description) return res.status(400).json({ error: "code and description are required" });

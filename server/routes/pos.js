@@ -127,6 +127,7 @@ router.get("/", (req, res) => {
       regionUnassigned: req.query.regionUnassigned === "true",
       adminUnmatched: req.query.adminUnmatched === "true",
       womLinkMissing: req.query.womLinkMissing === "true",
+      womNumber: req.query.womNumber,
       search: req.query.search,
     })
   );

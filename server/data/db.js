@@ -5736,6 +5736,10 @@ function listPos(filters = {}) {
   if (filters.womLinkMissing) {
     clauses.push("(e1_wom_job_number IS NOT NULL AND e1_wom_job_number != '' AND (wom_number IS NULL OR wom_number = ''))");
   }
+  if (filters.womNumber) {
+    clauses.push("wom_number = ?");
+    params.push(filters.womNumber);
+  }
   if (filters.search) {
     clauses.push("(vendor_name LIKE ? OR description LIKE ? OR po_number LIKE ? OR requestor LIKE ?)");
     const like = `%${filters.search}%`;

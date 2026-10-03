@@ -666,3 +666,55 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.equal(after.body.find((l) => l.code === "LOC-OVERHEAD").territory, "East", "unrecognized section must not overwrite an existing territory");
   });
 });
+
+// WOM Profile Consolidation (Phase 4): the Labor & Financials tab's
+// GL-links route, and the Tasks tab's dedicated route. The latter exists
+// specifically because the general GET /api/tasks defaults to "my work"
+// scoping, which would silently hide an unassigned task -- see
+// server/routes/woms.js's own comment on :code/tasks.
+test("WOM profile: gl-links and tasks routes", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "WOM-PROFILE-1", description: "Profile test job" } });
+
+  await t.test("gl-links 404s for an unknown WOM", async () => {
+    const res = await server.call("GET", "/api/woms/NOPE-NOT-REAL/gl-links", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("gl-links is empty for a WOM with no POs", async () => {
+    const res = await server.call("GET", "/api/woms/WOM-PROFILE-1/gl-links", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, []);
+  });
+
+  await t.test("tasks route 404s for an unknown WOM", async () => {
+    const res = await server.call("GET", "/api/woms/NOPE-NOT-REAL/tasks", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("an unassigned task created for this WOM shows up on its dedicated tasks route", async () => {
+    const created = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Follow up on vendor invoice", relatedWomCode: "WOM-PROFILE-1" },
+    });
+    assert.equal(created.status, 201);
+
+    // The general route's default "my work" view would hide this task --
+    // it's unassigned and ADMIN didn't create-and-claim it onto themself.
+    const generalRes = await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    assert.ok(!generalRes.body.some((t2) => t2.id === created.body.id), "sanity check: confirms the scoping gap this route exists to avoid");
+
+    const womTasksRes = await server.call("GET", "/api/woms/WOM-PROFILE-1/tasks", { userId: "ADMIN" });
+    assert.equal(womTasksRes.status, 200);
+    assert.equal(womTasksRes.body.length, 1);
+    assert.equal(womTasksRes.body[0].title, "Follow up on vendor invoice");
+    assert.equal(womTasksRes.body[0].assignedToName, "Unassigned");
+  });
+
+  await t.test("a technician cannot read a WOM's tasks route", async () => {
+    const res = await server.call("GET", "/api/woms/WOM-PROFILE-1/tasks", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+});

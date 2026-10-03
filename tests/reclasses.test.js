@@ -161,4 +161,29 @@ test("Reclasses tab: location/month filtering and the Midwest total", async (t) 
   await t.test("getPoGlLinksByWom returns nothing for a WOM with no POs at all", () => {
     assert.deepEqual(db.getPoGlLinksByWom("WOM-DOES-NOT-EXIST"), []);
   });
+
+  // The WOM profile's Labor & Financials tab (Plan: WOM Profile Consolidation)
+  // surfaces exactly this same GL-matched data through its own route.
+  await t.test("GET /api/woms/:code/gl-links exposes the same GL-matched POs as the db helper", async () => {
+    raw.prepare("INSERT INTO woms (code, description, status) VALUES (?, ?, 'open')").run("WOM-SHARED-1", "Shared job");
+    const res = await server.call("GET", "/api/woms/WOM-SHARED-1/gl-links", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 1, "only the PO with an actual GL line should show up");
+    assert.equal(res.body[0].poNumber, "PO90001");
+  });
+
+  await t.test("GET /api/woms/:code/gl-links 404s for a WOM that doesn't exist", async () => {
+    const res = await server.call("GET", "/api/woms/WOM-DOES-NOT-EXIST/gl-links", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  // Backs the WOM profile's Vendors & POs tab: narrows the Budget PO Tracker
+  // to just the POs tagged with one WOM #, the same wom_number linkage
+  // getPoGlLinksByWom uses.
+  await t.test("Budget PO Tracker's list can be filtered to just one WOM's POs", async () => {
+    const res = await server.call("GET", "/api/admin/pos?womNumber=WOM-SHARED-1", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 3, "all 3 POs tagged WOM-SHARED-1, regardless of GL activity");
+    assert.ok(res.body.every((p) => p.womNumber === "WOM-SHARED-1"));
+  });
 });

@@ -4229,15 +4229,247 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     const body = content.querySelector(".wom-profile-body");
     if (womProfileTab === "documents") await renderWomDocumentsTab(body, w);
-    else if (womProfileTab === "tasks") renderWomPlaceholderTab(body, "Tasks");
-    else if (womProfileTab === "vendorspos") renderWomPlaceholderTab(body, "Vendors & POs");
-    else if (womProfileTab === "financials") renderWomPlaceholderTab(body, "Labor & Financials");
+    else if (womProfileTab === "tasks") await renderWomTasksTab(body, w);
+    else if (womProfileTab === "vendorspos") await renderWomVendorsPosTab(body, w);
+    else if (womProfileTab === "financials") await renderWomFinancialsTab(body, w);
     else if (womProfileTab === "activity") await renderWomActivityTab(body, w);
     else await renderWomOverviewTab(body, w, content, locationByCode, locations);
   }
 
   function renderWomPlaceholderTab(host, label) {
     host.innerHTML = `<p class="empty-note">${escapeHtml(label)} is coming in a future update.</p>`;
+  }
+
+  // "Multiple vendors" with no new join table: the distinct set of vendors
+  // found across every PO linked to this WOM (by wom_number), plus the WOM's
+  // own primary vendor match -- always backed by real PO/vendor rows, never
+  // a fabricated profile. An admin-name-style vendor string on a PO that
+  // never resolved to a real vendor profile shows as "Needs matching" text,
+  // same as the PO Tracker's own vendor column.
+  async function renderWomVendorsPosTab(host, w) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let pos;
+    try {
+      pos = await api.get(`/api/admin/pos?${new URLSearchParams({ womNumber: w.code })}`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    const vendorMap = new Map();
+    if (w.vendorId) vendorMap.set(w.vendorId, w.vendorName || `Vendor #${w.vendorId}`);
+    pos.forEach((p) => {
+      if (p.vendorId) vendorMap.set(p.vendorId, p.vendorLinkedName || `Vendor #${p.vendorId}`);
+    });
+    const unmatchedVendorNames = [...new Set(pos.filter((p) => !p.vendorId && p.vendorName).map((p) => p.vendorName))];
+
+    host.innerHTML = `
+      <div class="vendor-overview-card">
+        <h4>Vendors</h4>
+        ${
+          vendorMap.size === 0 && unmatchedVendorNames.length === 0
+            ? `<p class="empty-note">No vendor linked to this WOM or its POs yet.</p>`
+            : `<div class="wom-vendor-chips">
+                ${[...vendorMap]
+                  .map(
+                    ([id, name]) => `
+                  <button type="button" class="chip wom-vendor-chip" data-vendor-id="${id}">
+                    ${escapeHtml(name)}${id === w.vendorId ? ` &middot; Primary` : ""}
+                  </button>`
+                  )
+                  .join("")}
+                ${unmatchedVendorNames
+                  .map((name) => `<span class="chip chip-muted">${escapeHtml(name)} (needs matching)</span>`)
+                  .join("")}
+              </div>`
+        }
+      </div>
+      <div class="vendor-overview-card">
+        <h4>Budget POs (${pos.length})</h4>
+        <div class="review-list wom-po-list"></div>
+      </div>
+    `;
+
+    host.querySelectorAll(".wom-vendor-chip").forEach((btn) => {
+      btn.addEventListener("click", () => openVendorProfile(Number(btn.dataset.vendorId)));
+    });
+
+    const poList = host.querySelector(".wom-po-list");
+    if (pos.length === 0) {
+      poList.innerHTML = `<p class="empty-note">No Budget POs linked to this WOM yet.</p>`;
+    } else {
+      poList.innerHTML = pos
+        .map(
+          (p) => `
+        <div class="review-row wom-po-row" data-po-id="${p.id}">
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(p.description || "PO record")} ${p.poNumber ? `<span class="wom-code">PO ${escapeHtml(p.poNumber)}</span>` : ""}</span>
+            <span class="badge badge-draft">${escapeHtml(p.status || "—")}</span>
+          </div>
+          <div class="wom-desc">$${formatMoney(p.poAmount || 0)} &mdash; ${escapeHtml(p.vendorLinkedName || p.vendorName || "No vendor")}</div>
+        </div>`
+        )
+        .join("");
+      poList.querySelectorAll(".wom-po-row").forEach((row) => {
+        row.addEventListener("click", () => openPoProfile(Number(row.dataset.poId)));
+      });
+    }
+  }
+
+  // "Posted to GL" here is what's actually matched to a real GL transaction
+  // against one of this WOM's linked POs -- distinct from the Smartsheet
+  // tracker's own self-reported appliedPrice (shown on Overview), which can
+  // lag or disagree with it. Reclass activity is the exact same read-only
+  // section the old edit-everything modal used to show, just mounted here
+  // instead (see loadWomReclassActivity).
+  async function renderWomFinancialsTab(host, w) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let glLinks;
+    try {
+      glLinks = await api.get(`/api/woms/${encodeURIComponent(w.code)}/gl-links`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    const totalPosted = glLinks.reduce((sum, p) => sum + (p.actualPaid || 0), 0);
+
+    host.innerHTML = `
+      <div class="wom-stat-cards">
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#128176;</span>
+          <div><div class="wom-stat-label">Estimated cost</div><div class="wom-stat-value">${w.estimatedPrice != null ? `$${formatMoney(w.estimatedPrice)}` : "—"}</div></div>
+        </div>
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#128196;</span>
+          <div><div class="wom-stat-label">Reported applied</div><div class="wom-stat-value">${w.appliedPrice != null ? `$${formatMoney(w.appliedPrice)}` : "Not reported"}</div></div>
+        </div>
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#128179;</span>
+          <div><div class="wom-stat-label">Posted to GL</div><div class="wom-stat-value">$${formatMoney(totalPosted)}</div></div>
+        </div>
+      </div>
+      ${w.budgetHours != null ? `<p class="review-checklist-hint">Hours: ${w.remainingHours}h remaining of ${w.budgetHours}h budgeted.</p>` : ""}
+      <div class="vendor-overview-card">
+        <h4>GL Postings by PO</h4>
+        <p class="review-checklist-hint">What's actually hit the general ledger against this WOM's linked POs -- not the same figure as "Reported applied" above, which comes from the Smartsheet tracker and can lag or disagree.</p>
+        ${
+          glLinks.length === 0
+            ? `<p class="empty-note">No GL postings found yet for any PO linked to this WOM.</p>`
+            : glLinks
+                .map(
+                  (p) => `
+          <table class="detail-table wom-gl-po-table">
+            <thead>
+              <tr><th colspan="6">PO ${escapeHtml(p.poNumber || "—")} &mdash; $${formatMoney(p.actualPaid)} posted</th></tr>
+              <tr><th>Period</th><th>GL Date</th><th>Doc Type</th><th>Doc #</th><th>Object Acct</th><th>Amount</th></tr>
+            </thead>
+            <tbody>
+              ${p.lines
+                .map(
+                  (l) => `<tr>
+                <td>${l.periodNumber != null ? `P${l.periodNumber} FY${l.fiscalYear}` : "—"}</td>
+                <td>${l.glDate ? new Date(l.glDate).toLocaleDateString() : "—"}</td>
+                <td>${escapeHtml(l.documentType || "—")}</td>
+                <td>${escapeHtml(l.documentNumber || "—")}</td>
+                <td>${escapeHtml(l.objectAccount || "—")}</td>
+                <td>$${formatMoney(l.amount)}</td>
+              </tr>`
+                )
+                .join("")}
+            </tbody>
+          </table>`
+                )
+                .join("")
+        }
+      </div>
+    `;
+
+    await loadWomReclassActivity(host, w);
+  }
+
+  const WOM_TASK_STATUS_BADGE_CLASS = { completed: "approved", cancelled: "rejected", waiting: "warn" };
+
+  // Reads/writes the exact same task rows Task Manager and (if vendor-linked)
+  // that vendor's own Tasks tab use -- relatedWomCode is just another filter
+  // on the one tasks table, not a copy. Lists via the WOM's own dedicated
+  // /tasks route rather than the general GET /api/tasks, which defaults to
+  // "my work" scoping and would silently hide an unassigned task. The vendor
+  // picker is intentionally bounded to vendors this WOM already has a real
+  // connection to (its own confirmed vendor, plus whoever's on its linked
+  // POs) rather than a free search, so a task can't get linked to a vendor
+  // with nothing to do with this WOM.
+  async function renderWomTasksTab(host, w) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let tasks, pos;
+    try {
+      [tasks, pos] = await Promise.all([
+        api.get(`/api/woms/${encodeURIComponent(w.code)}/tasks`),
+        api.get(`/api/admin/pos?${new URLSearchParams({ womNumber: w.code })}`),
+      ]);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    const vendorOptions = new Map();
+    if (w.vendorId) vendorOptions.set(w.vendorId, w.vendorName || `Vendor #${w.vendorId}`);
+    pos.forEach((p) => {
+      if (p.vendorId) vendorOptions.set(p.vendorId, p.vendorLinkedName || `Vendor #${p.vendorId}`);
+    });
+
+    host.innerHTML = `
+      <div class="vendor-overview-card">
+        <h4>Add a task</h4>
+        <form class="wom-task-form">
+          <input type="text" name="title" placeholder="Task title" required />
+          <select name="relatedVendorId">
+            <option value="">No vendor</option>
+            ${[...vendorOptions].map(([id, name]) => `<option value="${id}">${escapeHtml(name)}</option>`).join("")}
+          </select>
+          <input type="date" name="dueAt" />
+          <button type="submit" class="btn btn-secondary">Add task</button>
+        </form>
+      </div>
+      <div class="wom-task-list"></div>
+    `;
+
+    const listHost = host.querySelector(".wom-task-list");
+    function renderList() {
+      listHost.innerHTML =
+        tasks.length === 0
+          ? `<p class="empty-note">No tasks linked to this WOM yet.</p>`
+          : `<table class="detail-table">
+              <thead><tr><th>Task</th><th>Vendor</th><th>Owner</th><th>Status</th><th>Due</th></tr></thead>
+              <tbody>
+                ${tasks
+                  .map(
+                    (t) => `<tr>
+                  <td>${escapeHtml(t.title)}</td>
+                  <td>${escapeHtml(t.relatedVendorName || "—")}</td>
+                  <td>${escapeHtml(t.assignedToName || "Unassigned")}</td>
+                  <td><span class="badge badge-${WOM_TASK_STATUS_BADGE_CLASS[t.status] || "draft"}">${escapeHtml(t.status)}</span></td>
+                  <td>${t.dueAt ? new Date(t.dueAt).toLocaleDateString() : "—"}</td>
+                </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>`;
+    }
+    renderList();
+
+    host.querySelector(".wom-task-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const title = form.title.value.trim();
+      if (!title) return;
+      const relatedVendorId = form.relatedVendorId.value || null;
+      const dueAt = form.dueAt.value || null;
+      const created = await api.post("/api/tasks", { title, relatedWomCode: w.code, relatedVendorId, dueAt });
+      tasks = [created, ...tasks];
+      renderList();
+      form.reset();
+    });
   }
 
   // What every past Smartsheet sync actually changed on this WOM, in its own
@@ -4660,65 +4892,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // its documents -- replaces the old separate inline Edit row and
   // Documents expand-toggle with a single modal, matching the Add
   // Vendor/Add Location pattern used everywhere else in the app.
-  function openWomProjectModal(w, content, locationByCode, locations) {
-    const locationOptions = locations
-      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === w.locationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
-      .join("");
-    const { body, close } = openModal({
-      title: w.description,
-      size: "large",
-      bodyHtml: `
-        <form class="edit-wom-form modal-form">
-          <div class="add-tech-grid">
-            <input name="description" value="${escapeHtml(w.description)}" required placeholder="Description" />
-            <select name="locationCode"><option value="">No location</option>${locationOptions}</select>
-            <input name="budgetHours" type="number" min="0" step="0.5" placeholder="Budget hrs" value="${w.budgetHours == null ? "" : w.budgetHours}" />
-            <input name="subsidiaryCode" placeholder="Subsidiary code" value="${escapeHtml(w.subsidiaryCode || "")}" />
-            <input name="maximoNumber" placeholder="Maximo #" value="${escapeHtml(w.maximoNumber || "")}" />
-          </div>
-          <div class="modal-form-actions">
-            <button type="submit" class="btn btn-primary">Save</button>
-          </div>
-          <span class="save-message"></span>
-        </form>
-        <div class="wom-modal-documents"></div>
-      `,
-    });
-    body.querySelector(".edit-wom-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const form = e.target;
-      const msg = body.querySelector(".save-message");
-      try {
-        await api.patch(`/api/woms/${encodeURIComponent(w.code)}/details`, {
-          description: form.description.value.trim(),
-          locationCode: form.locationCode.value || null,
-          budgetHours: form.budgetHours.value === "" ? null : Number(form.budgetHours.value),
-          subsidiaryCode: form.subsidiaryCode.value.trim() || null,
-          maximoNumber: form.maximoNumber.value.trim() || null,
-        });
-        close();
-        await refreshWomList(content, locationByCode, locations);
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    });
-    renderAttachments(body.querySelector(".wom-modal-documents"), {
-      title: "Documents & Photos",
-      relatedType: "wom",
-      relatedId: w.code,
-      categories: [{ value: "wom_doc", label: "Document / Photo" }],
-      canUpload: true,
-      emptyText: "No documents attached yet.",
-    });
-    loadWomReclassActivity(body, w, close);
-  }
-
   // Shows any reclass item (from the Reclasses tab) tied to this WOM on
   // either side, with its current status -- so opening a WOM's own detail
   // answers "has a reclass against this WOM been accomplished" without
   // having to go search the Reclasses tab separately. Read-only: nothing
-  // here can be edited from this modal, but "+ Flag a reclass" jumps to the
-  // Reclasses tab with this WOM # already pre-filled into the flag form.
+  // here can be edited, but "+ Flag a reclass" jumps to the Reclasses tab
+  // with this WOM # already pre-filled into the flag form. closeModal is
+  // only passed by the (now removed) modal-based caller's leftover callers,
+  // if any ever exist again -- the WOM profile's Financials tab calls this
+  // with no third argument, since there's no modal to close.
   async function loadWomReclassActivity(body, w, closeModal) {
     const wrap = document.createElement("div");
     wrap.className = "wom-modal-reclasses";
@@ -4727,7 +4909,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const goFlagThisWom = () => {
       reclassFlagPrefillWom = w.code;
       activeTab = "reclasses";
-      closeModal();
+      if (closeModal) closeModal();
       draw();
     };
     try {
@@ -5433,8 +5615,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     wrap.querySelectorAll(".va-wom-link").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        const w = allWoms.find((item) => item.code === btn.dataset.code);
-        if (w) openWomProjectModal(w, content, locationByCode, locations);
+        if (allWoms.some((item) => item.code === btn.dataset.code)) openWomProfile(btn.dataset.code);
       });
     });
     wrap.querySelectorAll(".va-review-reason-select").forEach((select) => {

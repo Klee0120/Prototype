@@ -3195,6 +3195,32 @@ h1, h2, h3, h4 {
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   color: var(--muted);
 }
+button.chip {
+  border: none;
+  cursor: pointer;
+  gap: 6px;
+}
+button.chip:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.wom-vendor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wom-po-row {
+  cursor: pointer;
+}
+.wom-po-row:hover {
+  border-color: var(--accent);
+}
+.wom-gl-po-table {
+  margin-bottom: 18px;
+}
+.wom-gl-po-table:last-child {
+  margin-bottom: 0;
+}
 
 .wom-card-actions {
   display: flex;
@@ -3394,6 +3420,31 @@ button.vendor-preferred-star:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.wom-task-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.wom-task-form input[type="text"] {
+  flex: 1;
+  min-width: 180px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+}
+.wom-task-form select,
+.wom-task-form input[type="date"] {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+}
+.wom-task-list {
+  margin-top: 16px;
 }
 .vendor-remark {
   border-bottom: 1px dashed var(--border);
