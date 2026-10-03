@@ -3674,6 +3674,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // page (see renderVendorProfile). Only Overview and Documents render real
   // content for now; the rest are placeholders filled in by later phases of
   // the WOM Profile Consolidation plan.
+  // The dropdown's own detailed wording ("Requested from Toyota (no WOM #
+  // yet)") is useful when choosing a status; the header chip just needs the
+  // short name, so this drops any trailing parenthetical.
+  function womStatusShortLabel(status) {
+    return (WOM_STATUS_LABELS[status] || status).replace(/\s*\([^)]*\)\s*$/, "");
+  }
+
   async function renderWomProfile(content, w, locationByCode, locations) {
     const loc = locationByCode[w.locationCode];
     content.innerHTML = `
@@ -3683,15 +3690,22 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <h1 class="page-header-title">${escapeHtml(w.description)}</h1>
           <p class="page-header-subtitle">
             <span class="chip chip-code">WOM ${escapeHtml(w.code)}</span>
-            <span class="badge badge-${womStatusBadgeClass(w.status)}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
-            ${loc ? `<span class="chip">${escapeHtml(loc.name)}</span>` : `<span class="chip chip-muted">No location on file</span>`}
+            <span class="badge badge-${womStatusBadgeClass(w.status)}">${escapeHtml(womStatusShortLabel(w.status))}</span>
+            ${loc ? `<span class="chip">&#128205; ${escapeHtml(loc.name)}</span>` : `<span class="chip chip-muted">No location on file</span>`}
             ${w.statusConflict ? `<span class="badge badge-rejected">Smartsheet says this is done -- app status disagrees</span>` : ""}
           </p>
         </div>
-        <div class="page-header-actions">
-          <button type="button" class="btn btn-outline wom-profile-edit-btn">Edit</button>
-          ${w.smartsheetData ? `<button type="button" class="btn btn-outline wom-profile-source-btn">Source details</button>` : ""}
-          <button type="button" class="btn btn-link wom-profile-delete-btn">Delete</button>
+        <div class="page-header-actions-col">
+          <div class="page-header-actions">
+            <button type="button" class="btn btn-outline wom-profile-edit-btn">&#9998; Edit</button>
+            <div class="row-menu">
+              <button type="button" class="btn btn-outline row-menu-toggle" aria-label="More actions">&#8943;</button>
+              <div class="row-menu-panel" hidden>
+                <button type="button" class="row-menu-item row-menu-item-danger wom-profile-delete-btn">Delete</button>
+              </div>
+            </div>
+          </div>
+          ${w.smartsheetData ? `<a href="#" class="wom-profile-source-link">Source details &rarr;</a>` : ""}
         </div>
       </div>
       <div class="tabs wom-profile-tabs">
@@ -3707,8 +3721,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     content.querySelector(".wom-profile-edit-btn").addEventListener("click", () => {
       openWomEditFormModal(w, content, locationByCode, locations);
     });
-    const sourceBtn = content.querySelector(".wom-profile-source-btn");
-    if (sourceBtn) sourceBtn.addEventListener("click", () => openSmartsheetDetailModal(w));
+    const sourceLink = content.querySelector(".wom-profile-source-link");
+    if (sourceLink) {
+      sourceLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        openSmartsheetDetailModal(w);
+      });
+    }
+    const menuToggle = content.querySelector(".row-menu-toggle");
+    menuToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const panel = content.querySelector(".row-menu-panel");
+      const isHidden = panel.hasAttribute("hidden");
+      content.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
+      if (isHidden) panel.removeAttribute("hidden");
+    });
     content.querySelector(".wom-profile-delete-btn").addEventListener("click", async () => {
       if (!window.confirm(`Delete "${w.description}" (${w.code})? This can't be undone.`)) return;
       try {
@@ -3739,6 +3766,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         renderWomProfile(content, w, locationByCode, locations);
       });
     });
+    if (!content.dataset.rowMenuBound) {
+      content.dataset.rowMenuBound = "1";
+      content.addEventListener("click", (e) => {
+        if (!e.target.closest(".row-menu")) {
+          content.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
+        }
+      });
+    }
 
     const body = content.querySelector(".wom-profile-body");
     if (womProfileTab === "documents") await renderWomDocumentsTab(body, w);
@@ -3784,13 +3819,25 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
   }
 
+  // Friendlier sentence-case wording for the Overview tab's billing
+  // checklist -- the backend's own labels (e.g. "Vendor INV Attached")
+  // mirror the Smartsheet column names verbatim for traceability, which
+  // reads better in Source details than in a plain-language status card.
+  const WOM_BILLING_CHECKLIST_DISPLAY_LABELS = {
+    vendorInvAttached: "Vendor invoice attached",
+    invoiceAttached: "Invoice attached",
+    journalEdit: "Journal edit",
+    aribaConfirm: "Ariba confirm",
+    sentToJason: "Sent to Jason",
+    batchPostedConfirmed: "Batch posted confirmed",
+  };
+
   async function renderWomOverviewTab(host, w, content, locationByCode, locations) {
     const metaItems = [
       { label: "Subsidiary", value: w.subsidiaryCode ? escapeHtml(w.subsidiaryCode) : "—" },
       { label: "Maximo #", value: w.maximoNumber ? escapeHtml(w.maximoNumber) : "—" },
-      { label: "Requested by (Smartsheet)", value: w.sourceRequestedBy ? escapeHtml(w.sourceRequestedBy) : "—" },
-      { label: "Estimated cost", value: w.estimatedPrice != null ? `$${formatMoney(w.estimatedPrice)}` : "—" },
-      { label: "Applied cost", value: w.appliedPrice != null ? `$${formatMoney(w.appliedPrice)}` : "—" },
+      { label: "Requested by", value: w.sourceRequestedBy ? escapeHtml(w.sourceRequestedBy) : "—" },
+      { label: "Location", value: locationByCode[w.locationCode] ? escapeHtml(locationByCode[w.locationCode].name) : "—" },
     ];
     if (w.budgetHours != null) metaItems.push({ label: "Hours remaining", value: `${w.remainingHours}h of ${w.budgetHours}h` });
 
@@ -3798,74 +3845,85 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
     ).join("");
 
-    // Work completion and billing are two different facts Smartsheet
-    // reports separately -- never collapsed into one combined status, and
-    // never read from Status/Billing free text (see workCompleted/
-    // billingChecklist in presentWom). Work Completed says the job itself
-    // is done; the billing checklist + a real invoice # say where it
-    // actually stands in getting invoiced.
-    const workCompletedLabel = w.workCompleted === 1 ? "Yes" : w.workCompleted === 0 ? "No" : "Not reported yet";
-    const workCompletionCard = `
-      <div class="vendor-overview-card">
-        <h4>Work completion</h4>
-        <dl class="vendor-overview-fields">
-          <div><dt>Work completed</dt><dd>${escapeHtml(workCompletedLabel)}</dd></div>
-        </dl>
-        ${
-          w.sourceStatusRaw
-            ? `<p class="review-checklist-hint">As reported by Smartsheet's Status column: "${escapeHtml(w.sourceStatusRaw)}" (shown for reference only -- never drives status).</p>`
-            : ""
-        }
-      </div>`;
+    const workCompletedLabel = w.workCompleted === 1 ? "Yes" : w.workCompleted === 0 ? "No" : "Not reported";
+
+    const statCards = `
+      <div class="wom-stat-cards">
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#128176;</span>
+          <div><div class="wom-stat-label">Estimated cost</div><div class="wom-stat-value">${w.estimatedPrice != null ? `$${formatMoney(w.estimatedPrice)}` : "—"}</div></div>
+        </div>
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#128196;</span>
+          <div><div class="wom-stat-label">Reported applied</div><div class="wom-stat-value">${w.appliedPrice != null ? `$${formatMoney(w.appliedPrice)}` : "Not reported"}</div></div>
+        </div>
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#9989;</span>
+          <div><div class="wom-stat-label">Work completion</div><div class="wom-stat-value">${escapeHtml(workCompletedLabel)}</div></div>
+        </div>
+      </div>
+    `;
+
+    // A WOM still waiting on a real WOM # (its code is a PENDING-<rowId>
+    // placeholder) can't be invoiced yet by definition -- called out here so
+    // an admin doesn't read "Requested from Toyota" as stuck/stalled.
+    const pendingCodeHint = w.code.startsWith("PENDING-")
+      ? `<div class="wom-info-box">&#8505;&#65039; WOM number is pending and will be available after creation in Toyota.</div>`
+      : "";
 
     const billingChecklistRows = w.billingChecklist
       .map(
         (c) => `
-        <div class="wom-lifecycle-step${c.done ? " wom-lifecycle-step-done" : ""}">
-          <span class="wom-lifecycle-step-icon">${c.done ? "✓" : "○"}</span>
-          <span class="wom-lifecycle-step-label">${escapeHtml(c.label)}</span>
+        <div class="wom-checklist-row">
+          <span class="wom-checklist-row-label">${escapeHtml(WOM_BILLING_CHECKLIST_DISPLAY_LABELS[c.key] || c.label)}</span>
+          <span class="badge ${c.done ? "badge-approved" : "badge-draft"}">${c.done ? "Confirmed" : "Unconfirmed"}</span>
         </div>`
       )
       .join("");
-    const billingStatusCard = `
-      <div class="vendor-overview-card">
-        <h4>Billing status</h4>
-        <dl class="vendor-overview-fields">
-          <div><dt>Invoice #</dt><dd>${w.invoiceNumber ? escapeHtml(w.invoiceNumber) : "—"}</dd></div>
-          <div><dt>Batch #</dt><dd>${w.batchNumber ? escapeHtml(w.batchNumber) : "—"}</dd></div>
-          <div><dt>Billing ref #</dt><dd>${w.billingRefNumber ? escapeHtml(w.billingRefNumber) : "—"}</dd></div>
-        </dl>
-        <div class="wom-lifecycle-checklist">${billingChecklistRows}</div>
-        ${
-          w.sourceBillingRaw
-            ? `<p class="review-checklist-hint">As reported by Smartsheet's Billing column: "${escapeHtml(w.sourceBillingRaw)}" (shown for reference only -- never drives status).</p>`
-            : ""
-        }
-        <p class="review-checklist-hint">Billing ref # and the checklist above were added to the tracker recently -- older closed/invoiced WOMs may legitimately show these blank.</p>
-      </div>`;
 
     const conflictHint = w.statusConflict
       ? `<div class="vendor-overview-card"><p class="review-checklist-hint">Smartsheet shows real invoicing evidence (an invoice # on file, or the full billing checklist complete) that the app status below hasn't caught up to yet. The next sync auto-promotes this to Invoiced -- unless this WOM is cancelled, which a sync never auto-changes, so this will keep flagging until an admin looks at it.</p></div>`
       : "";
 
     host.innerHTML = `
-      <div class="vendor-overview-grid">
+      ${statCards}
+      ${conflictHint}
+      <div class="vendor-overview-grid wom-overview-main-grid">
         <div class="vendor-overview-card">
-          <h4>Project details</h4>
+          <div class="wom-overview-card-header">
+            <h4>Project information</h4>
+            <span class="wom-overview-card-header-note" title="Fields imported from the Smartsheet tracker.">&#128229; Imported from Smartsheet &#9432;</span>
+          </div>
           <dl class="vendor-overview-fields">
             ${metaItems.map((m) => `<div><dt>${m.label}</dt><dd>${m.value}</dd></div>`).join("")}
           </dl>
         </div>
-        <div class="vendor-overview-card">
-          <h4>App status</h4>
-          <select class="wom-overview-status-select">${statusOptions}</select>
-          <p class="review-checklist-hint">An admin can set this manually at any time. A sync auto-promotes this to Invoiced only once a real invoice # appears on the sheet -- never from Status/Billing free text alone.</p>
+        <div class="wom-overview-right-col">
+          <div class="vendor-overview-card">
+            <div class="wom-overview-card-header">
+              <h4>Project status</h4>
+              <span class="wom-overview-card-header-note" title="The app's own status -- set manually, or auto-promoted to Invoiced once a real invoice # appears.">&#9432;</span>
+            </div>
+            <select class="wom-overview-status-select">${statusOptions}</select>
+            ${pendingCodeHint}
+          </div>
+          <div class="vendor-overview-card">
+            <div class="wom-overview-card-header">
+              <h4>Billing progress</h4>
+              <div class="wom-overview-card-header-right">
+                <span class="wom-overview-card-header-note" title="Billing evidence from Smartsheet: a real invoice #, or the full checklist confirmed.">&#9432;</span>
+                <span class="badge badge-draft">&#128196; ${w.invoiceNumber ? "Invoice recorded" : "Invoice not recorded"}</span>
+              </div>
+            </div>
+            <dl class="vendor-overview-fields">
+              <div><dt>Invoice #</dt><dd>${w.invoiceNumber ? escapeHtml(w.invoiceNumber) : "Not recorded"}</dd></div>
+              <div><dt>Batch #</dt><dd>${w.batchNumber ? escapeHtml(w.batchNumber) : "Not recorded"}</dd></div>
+              <div><dt>Billing reference</dt><dd>${w.billingRefNumber ? escapeHtml(w.billingRefNumber) : "Not recorded"}</dd></div>
+            </dl>
+            <div class="wom-checklist">${billingChecklistRows}</div>
+            <p class="review-checklist-hint">&#8505;&#65039; Historical checklist data may be incomplete.</p>
+          </div>
         </div>
-      </div>
-      ${conflictHint}
-      <div class="vendor-overview-grid">
-        ${workCompletionCard}
-        ${billingStatusCard}
       </div>
       <div class="vendor-overview-card">
         <h4>Lifecycle checklist</h4>
