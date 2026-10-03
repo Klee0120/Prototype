@@ -1128,6 +1128,33 @@ if (!hasColumn("reclass_items", "related_po_id")) {
 if (!hasColumn("reclass_items", "admin_name")) {
   db.exec("ALTER TABLE reclass_items ADD COLUMN admin_name TEXT");
 }
+// Which fiscal period this finding was flagged/imported in (see
+// resolveFiscalPeriod) -- lets the Reclasses tab filter by month/year the
+// same way the rest of the app's GL screens do, instead of a plain calendar
+// month that doesn't actually match how periods are bounded. Backfills both
+// this and region (see resolveRegionForReclassFields) for every row that
+// predates this column -- a manually-flagged item never got a region before
+// this fix existed (only imported ones, straight from the submission
+// sheet's own Region column, already had one).
+if (!hasColumn("reclass_items", "fiscal_period_number")) {
+  db.exec("ALTER TABLE reclass_items ADD COLUMN fiscal_period_number INTEGER");
+  db.exec("ALTER TABLE reclass_items ADD COLUMN fiscal_year INTEGER");
+  const rowsToBackfill = db
+    .prepare("SELECT id, created_at, related_po_id, from_wom_number, to_wom_number, region FROM reclass_items")
+    .all();
+  const backfillReclassStmt = db.prepare(
+    "UPDATE reclass_items SET fiscal_period_number = ?, fiscal_year = ?, region = COALESCE(region, ?) WHERE id = ?"
+  );
+  for (const row of rowsToBackfill) {
+    const period = resolveFiscalPeriod(String(row.created_at || "").slice(0, 10));
+    const resolvedRegion = resolveRegionForReclassFields({
+      relatedPoId: row.related_po_id,
+      fromWomNumber: row.from_wom_number,
+      toWomNumber: row.to_wom_number,
+    });
+    backfillReclassStmt.run(period ? period.periodNumber : null, period ? period.fiscalYear : null, resolvedRegion, row.id);
+  }
+}
 // Precomputed at import time (see importGlEntries) instead of recomputed on
 // every GL Reconciliation page load -- comparing the GL's own
 // subsidiary/object code against the matched PO's requires string-parsing
@@ -2003,6 +2030,8 @@ function presentReclassItem(r) {
     confirmedGlReference: r.confirmed_gl_reference,
     relatedPoId: r.related_po_id,
     adminName: r.admin_name,
+    fiscalPeriodNumber: r.fiscal_period_number,
+    fiscalYear: r.fiscal_year,
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -2058,14 +2087,18 @@ function importReclassBatch(metadata, items, importedBy, sourceFileName) {
       now
     );
   const batchId = Number(result.lastInsertRowid);
+  // Same fiscal period for every line in this one import -- the sheet
+  // itself was submitted/published as a single batch, not line by line.
+  const fiscalPeriod = resolveFiscalPeriod(now.slice(0, 10));
 
   const insertItem = db.prepare(
     `INSERT INTO reclass_items (
       batch_id, line_number, from_job_number, from_object_code, from_subsidiary, from_wom_number, from_amount,
       to_job_number, to_object_code, to_subsidiary, to_wom_number, to_amount,
       vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
-      impacts_final_invoice, caused_by, root_cause, path_forward, source, status, created_by, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', 'submitted', ?, ?, ?)`
+      impacts_final_invoice, caused_by, root_cause, path_forward, source, status, fiscal_period_number, fiscal_year,
+      created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', 'submitted', ?, ?, ?, ?, ?)`
   );
   for (const item of items) {
     insertItem.run(
@@ -2092,6 +2125,8 @@ function importReclassBatch(metadata, items, importedBy, sourceFileName) {
       item.causedBy || null,
       item.rootCause || null,
       item.pathForward || null,
+      fiscalPeriod ? fiscalPeriod.periodNumber : null,
+      fiscalPeriod ? fiscalPeriod.fiscalYear : null,
       importedBy || null,
       now,
       now
@@ -2121,7 +2156,11 @@ function findReclassBatch(id) {
 // Every reclass item regardless of batch -- the main Reclasses tab's own
 // list, filterable by status/source/region so a repeated-error pattern (a
 // region or coding combo that keeps needing a reclass) is easy to spot.
-function listReclassItems(filters = {}) {
+// Shared by listReclassItems and getReclassSummary -- the summary needs to
+// total up exactly the same slice the list is showing (e.g. "Midwest, Period
+// 2/FY26"), not a separately-filtered figure that could drift from what's
+// actually on screen.
+function buildReclassItemFilterClauses(filters = {}) {
   const clauses = [];
   const params = [];
   if (filters.status) {
@@ -2135,6 +2174,15 @@ function listReclassItems(filters = {}) {
   if (filters.region) {
     clauses.push("region = ?");
     params.push(filters.region);
+  }
+  // Fiscal period this finding was flagged/imported in -- not a GL
+  // transaction date (a reclass item has none of its own), and not a plain
+  // calendar month either, since fiscal periods don't line up with calendar
+  // month boundaries (see resolveFiscalPeriod). Both parts required: a bare
+  // period number alone is ambiguous across fiscal years.
+  if (filters.fiscalPeriodNumber != null && filters.fiscalYear != null) {
+    clauses.push("fiscal_period_number = ? AND fiscal_year = ?");
+    params.push(Number(filters.fiscalPeriodNumber), Number(filters.fiscalYear));
   }
   // Matches either side of the reclass -- a WOM can be the one losing the
   // cost or the one picking it up, and the WOM Projects detail view needs
@@ -2161,11 +2209,26 @@ function listReclassItems(filters = {}) {
       clauses.push(`(${orClauses.join(" OR ")})`);
     }
   }
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params };
+}
+
+function listReclassItems(filters = {}) {
+  const { where, params } = buildReclassItemFilterClauses(filters);
   return db
     .prepare(`SELECT * FROM reclass_items ${where} ORDER BY id DESC`)
     .all(...params)
     .map(presentReclassItem);
+}
+
+// Total reclassed $ and item count for whatever slice of the list is
+// currently showing (e.g. Midwest, a given fiscal period) -- the amount
+// summed is each item's own from_amount (the dollar figure moving off the
+// miscoded line), same convention listReclassBatches already uses for a
+// batch's own itemTotal.
+function getReclassSummary(filters = {}) {
+  const { where, params } = buildReclassItemFilterClauses(filters);
+  const row = db.prepare(`SELECT COUNT(*) AS itemCount, COALESCE(SUM(ABS(from_amount)), 0) AS totalAmount FROM reclass_items ${where}`).get(...params);
+  return { itemCount: row.itemCount, totalAmount: row.totalAmount };
 }
 
 function findReclassItem(id) {
@@ -2193,19 +2256,57 @@ function resolveAdminNameForReclassFields(fields) {
   return null;
 }
 
+// Same resolution approach as resolveAdminNameForReclassFields, for region
+// instead -- lets the Reclasses tab's location filter (and the Midwest
+// total) actually include a manually-flagged item, not just ones imported
+// from the real submission sheet's own Region column (which already carries
+// its own region verbatim and never needs this). pos.region is already the
+// real territory resolved at PO-import time from the E&F Contract Job #; a
+// WOM with no matching PO on file still has its own location_code to fall
+// back to.
+function resolveRegionForReclassFields(fields) {
+  if (fields.relatedPoId) {
+    const po = db.prepare("SELECT region FROM pos WHERE id = ?").get(fields.relatedPoId);
+    if (po && po.region) return po.region;
+  }
+  const womCode = fields.toWomNumber || fields.fromWomNumber;
+  if (womCode) {
+    const po = db
+      .prepare("SELECT region FROM pos WHERE wom_number = ? AND region IS NOT NULL AND region != '' LIMIT 1")
+      .get(womCode);
+    if (po && po.region) return po.region;
+    const wom = db
+      .prepare(
+        `SELECT l.territory AS territory FROM woms w JOIN locations l ON l.code = w.location_code
+         WHERE w.code = ? AND l.territory IS NOT NULL AND l.territory != ''`
+      )
+      .get(womCode);
+    if (wom && wom.territory) return wom.territory;
+  }
+  return null;
+}
+
 // A finding an admin spots during manual GL/labor review, logged by hand --
 // source='manual', starts 'flagged' (nothing's been reviewed/submitted yet).
 function addReclassItem(fields, createdBy) {
   const now = new Date().toISOString();
   const adminName = fields.adminName || resolveAdminNameForReclassFields(fields);
+  const region = fields.region || resolveRegionForReclassFields(fields);
+  // The fiscal period this finding belongs to is when it was actually
+  // flagged/noticed, not any date tied to the miscoded GL line itself (a
+  // reclass item isn't a GL posting, it's a note that one needs fixing) --
+  // matches Krista's own "store it on this list until I print out the
+  // reclass report, which is all of them for the month" workflow.
+  const fiscalPeriod = resolveFiscalPeriod(now.slice(0, 10));
   const result = db
     .prepare(
       `INSERT INTO reclass_items (
         batch_id, line_number, from_job_number, from_object_code, from_subsidiary, from_wom_number, from_amount,
         to_job_number, to_object_code, to_subsidiary, to_wom_number, to_amount,
         vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
-        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, related_po_id, admin_name, created_by, created_at, updated_at
-      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?, ?)`
+        impacts_final_invoice, caused_by, root_cause, path_forward, source, status, related_po_id, admin_name,
+        fiscal_period_number, fiscal_year, created_by, created_at, updated_at
+      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.fromJobNumber || null,
@@ -2220,7 +2321,7 @@ function addReclassItem(fields, createdBy) {
       fields.toAmount == null || fields.toAmount === "" ? null : Number(fields.toAmount),
       fields.vendor || null,
       fields.comments || null,
-      fields.region || null,
+      region,
       fields.costCenterAdjusted ? 1 : 0,
       fields.subledgerAdjusted ? 1 : 0,
       fields.objectCodeAdjusted ? 1 : 0,
@@ -2231,6 +2332,8 @@ function addReclassItem(fields, createdBy) {
       fields.pathForward || null,
       fields.relatedPoId || null,
       adminName,
+      fiscalPeriod ? fiscalPeriod.periodNumber : null,
+      fiscalPeriod ? fiscalPeriod.fiscalYear : null,
       createdBy || null,
       now,
       now
@@ -5732,32 +5835,58 @@ function parseObjectAccountCode(raw) {
 // real close calendar instead of a guessed month-end. Only FY25-FY26 are
 // seeded (what that document covers); once a later year's calendar is
 // published, add its rows here the same way, not a new mechanism.
-const GL_FISCAL_CALENDAR = [
-  { periodNumber: 1, fiscalYear: 25, monthName: "January", hfmCorporateLoad: "2025-02-06", womCloseDate: "2025-01-21" },
-  { periodNumber: 2, fiscalYear: 25, monthName: "February", hfmCorporateLoad: "2025-03-06", womCloseDate: "2025-02-18" },
-  { periodNumber: 3, fiscalYear: 25, monthName: "March", hfmCorporateLoad: "2025-04-04", womCloseDate: "2025-03-24" },
-  { periodNumber: 4, fiscalYear: 25, monthName: "April", hfmCorporateLoad: "2025-05-06", womCloseDate: "2025-04-22" },
-  { periodNumber: 5, fiscalYear: 25, monthName: "May", hfmCorporateLoad: "2025-06-05", womCloseDate: "2025-05-20" },
-  { periodNumber: 6, fiscalYear: 25, monthName: "June", hfmCorporateLoad: "2025-07-07", womCloseDate: "2025-06-23" },
-  { periodNumber: 7, fiscalYear: 25, monthName: "July", hfmCorporateLoad: "2025-08-06", womCloseDate: "2025-07-22" },
-  { periodNumber: 8, fiscalYear: 25, monthName: "August", hfmCorporateLoad: "2025-09-05", womCloseDate: "2025-08-19" },
-  { periodNumber: 9, fiscalYear: 25, monthName: "September", hfmCorporateLoad: "2025-10-06", womCloseDate: "2025-09-22" },
-  { periodNumber: 10, fiscalYear: 25, monthName: "October", hfmCorporateLoad: "2025-11-06", womCloseDate: "2025-10-21" },
-  { periodNumber: 11, fiscalYear: 25, monthName: "November", hfmCorporateLoad: "2025-12-04", womCloseDate: "2025-11-18" },
-  { periodNumber: 12, fiscalYear: 25, monthName: "December", hfmCorporateLoad: "2026-01-07", womCloseDate: "2025-12-22" },
-  { periodNumber: 1, fiscalYear: 26, monthName: "January", hfmCorporateLoad: "2026-02-05", womCloseDate: "2026-01-20" },
-  { periodNumber: 2, fiscalYear: 26, monthName: "February", hfmCorporateLoad: "2026-03-05", womCloseDate: "2026-02-17" },
-  { periodNumber: 3, fiscalYear: 26, monthName: "March", hfmCorporateLoad: "2026-04-06", womCloseDate: "2026-03-23" },
-  { periodNumber: 4, fiscalYear: 26, monthName: "April", hfmCorporateLoad: "2026-05-06", womCloseDate: "2026-04-21" },
-  { periodNumber: 5, fiscalYear: 26, monthName: "May", hfmCorporateLoad: "2026-06-04", womCloseDate: "2026-05-19" },
-  { periodNumber: 6, fiscalYear: 26, monthName: "June", hfmCorporateLoad: "2026-07-07", womCloseDate: "2026-06-22" },
-  { periodNumber: 7, fiscalYear: 26, monthName: "July", hfmCorporateLoad: "2026-08-06", womCloseDate: "2026-07-21" },
-  { periodNumber: 8, fiscalYear: 26, monthName: "August", hfmCorporateLoad: "2026-09-04", womCloseDate: "2026-08-18" },
-  { periodNumber: 9, fiscalYear: 26, monthName: "September", hfmCorporateLoad: "2026-10-06", womCloseDate: "2026-09-21" },
-  { periodNumber: 10, fiscalYear: 26, monthName: "October", hfmCorporateLoad: "2026-11-05", womCloseDate: "2026-10-20" },
-  { periodNumber: 11, fiscalYear: 26, monthName: "November", hfmCorporateLoad: "2026-12-04", womCloseDate: "2026-11-16" },
-  { periodNumber: 12, fiscalYear: 26, monthName: "December", hfmCorporateLoad: "2027-01-07", womCloseDate: "2026-12-21" },
-];
+// A function (not a top-level const) so migration-time code elsewhere in
+// this file can call it safely regardless of where in the file that
+// migration happens to sit -- a `const` here would still be in its temporal
+// dead zone if referenced from a migration positioned earlier in the file,
+// where a hoisted function declaration works fine (same reasoning as
+// parseObjectAccountCode's own migration-time use above).
+function getGlFiscalCalendar() {
+  return [
+    { periodNumber: 1, fiscalYear: 25, monthName: "January", fiscalMonthEnd: "2025-01-12", hfmCorporateLoad: "2025-02-06", womCloseDate: "2025-01-21" },
+    { periodNumber: 2, fiscalYear: 25, monthName: "February", fiscalMonthEnd: "2025-02-09", hfmCorporateLoad: "2025-03-06", womCloseDate: "2025-02-18" },
+    { periodNumber: 3, fiscalYear: 25, monthName: "March", fiscalMonthEnd: "2025-03-16", hfmCorporateLoad: "2025-04-04", womCloseDate: "2025-03-24" },
+    { periodNumber: 4, fiscalYear: 25, monthName: "April", fiscalMonthEnd: "2025-04-13", hfmCorporateLoad: "2025-05-06", womCloseDate: "2025-04-22" },
+    { periodNumber: 5, fiscalYear: 25, monthName: "May", fiscalMonthEnd: "2025-05-11", hfmCorporateLoad: "2025-06-05", womCloseDate: "2025-05-20" },
+    { periodNumber: 6, fiscalYear: 25, monthName: "June", fiscalMonthEnd: "2025-06-15", hfmCorporateLoad: "2025-07-07", womCloseDate: "2025-06-23" },
+    { periodNumber: 7, fiscalYear: 25, monthName: "July", fiscalMonthEnd: "2025-07-13", hfmCorporateLoad: "2025-08-06", womCloseDate: "2025-07-22" },
+    { periodNumber: 8, fiscalYear: 25, monthName: "August", fiscalMonthEnd: "2025-08-10", hfmCorporateLoad: "2025-09-05", womCloseDate: "2025-08-19" },
+    { periodNumber: 9, fiscalYear: 25, monthName: "September", fiscalMonthEnd: "2025-09-14", hfmCorporateLoad: "2025-10-06", womCloseDate: "2025-09-22" },
+    { periodNumber: 10, fiscalYear: 25, monthName: "October", fiscalMonthEnd: "2025-10-12", hfmCorporateLoad: "2025-11-06", womCloseDate: "2025-10-21" },
+    { periodNumber: 11, fiscalYear: 25, monthName: "November", fiscalMonthEnd: "2025-11-09", hfmCorporateLoad: "2025-12-04", womCloseDate: "2025-11-18" },
+    { periodNumber: 12, fiscalYear: 25, monthName: "December", fiscalMonthEnd: "2025-12-14", hfmCorporateLoad: "2026-01-07", womCloseDate: "2025-12-22" },
+    { periodNumber: 1, fiscalYear: 26, monthName: "January", fiscalMonthEnd: "2026-01-11", hfmCorporateLoad: "2026-02-05", womCloseDate: "2026-01-20" },
+    { periodNumber: 2, fiscalYear: 26, monthName: "February", fiscalMonthEnd: "2026-02-08", hfmCorporateLoad: "2026-03-05", womCloseDate: "2026-02-17" },
+    { periodNumber: 3, fiscalYear: 26, monthName: "March", fiscalMonthEnd: "2026-03-15", hfmCorporateLoad: "2026-04-06", womCloseDate: "2026-03-23" },
+    { periodNumber: 4, fiscalYear: 26, monthName: "April", fiscalMonthEnd: "2026-04-12", hfmCorporateLoad: "2026-05-06", womCloseDate: "2026-04-21" },
+    { periodNumber: 5, fiscalYear: 26, monthName: "May", fiscalMonthEnd: "2026-05-10", hfmCorporateLoad: "2026-06-04", womCloseDate: "2026-05-19" },
+    { periodNumber: 6, fiscalYear: 26, monthName: "June", fiscalMonthEnd: "2026-06-14", hfmCorporateLoad: "2026-07-07", womCloseDate: "2026-06-22" },
+    { periodNumber: 7, fiscalYear: 26, monthName: "July", fiscalMonthEnd: "2026-07-12", hfmCorporateLoad: "2026-08-06", womCloseDate: "2026-07-21" },
+    { periodNumber: 8, fiscalYear: 26, monthName: "August", fiscalMonthEnd: "2026-08-09", hfmCorporateLoad: "2026-09-04", womCloseDate: "2026-08-18" },
+    { periodNumber: 9, fiscalYear: 26, monthName: "September", fiscalMonthEnd: "2026-09-13", hfmCorporateLoad: "2026-10-06", womCloseDate: "2026-09-21" },
+    { periodNumber: 10, fiscalYear: 26, monthName: "October", fiscalMonthEnd: "2026-10-11", hfmCorporateLoad: "2026-11-05", womCloseDate: "2026-10-20" },
+    { periodNumber: 11, fiscalYear: 26, monthName: "November", fiscalMonthEnd: "2026-11-08", hfmCorporateLoad: "2026-12-04", womCloseDate: "2026-11-16" },
+    { periodNumber: 12, fiscalYear: 26, monthName: "December", fiscalMonthEnd: "2026-12-13", hfmCorporateLoad: "2027-01-07", womCloseDate: "2026-12-21" },
+  ];
+}
+
+// Which fiscal period a real calendar date falls into -- a fiscal period's
+// own date range does NOT line up with calendar month boundaries (confirmed
+// against Krista's real February GL export: rows dated in mid-January are
+// legitimately tagged Period 2/FY26, since that period's own fiscal month
+// end runs from the prior period's end through this one's, e.g. Jan 12 -
+// Feb 8 for Period 2/FY26). Finds the earliest period whose own
+// fiscalMonthEnd is on or after the given date; null if the date falls
+// after the last seeded period (or the calendar simply doesn't go back far
+// enough for it).
+function resolveFiscalPeriod(dateStr) {
+  if (!dateStr) return null;
+  const sorted = getGlFiscalCalendar()
+    .slice()
+    .sort((a, b) => (a.fiscalMonthEnd < b.fiscalMonthEnd ? -1 : a.fiscalMonthEnd > b.fiscalMonthEnd ? 1 : 0));
+  const match = sorted.find((p) => p.fiscalMonthEnd >= dateStr);
+  return match ? { periodNumber: match.periodNumber, fiscalYear: match.fiscalYear } : null;
+}
 
 // Whether the most recently-closed GL period (per the real close calendar,
 // not a guessed "percent through the month") has a report imported yet.
@@ -5767,7 +5896,7 @@ const GL_FISCAL_CALENDAR = [
 function getGlImportStatus() {
   const today = new Date().toISOString().slice(0, 10);
   let expected = null;
-  for (const period of GL_FISCAL_CALENDAR) {
+  for (const period of getGlFiscalCalendar()) {
     if (period.hfmCorporateLoad <= today && (!expected || period.hfmCorporateLoad > expected.hfmCorporateLoad)) {
       expected = period;
     }
@@ -5803,7 +5932,7 @@ function getGlFiscalYearCoverage(fiscalYear = 26) {
       .all()
       .map((r) => `${r.periodNumber}|${r.fiscalYear}`)
   );
-  return GL_FISCAL_CALENDAR.filter((period) => period.fiscalYear === fiscalYear).map((period) => ({
+  return getGlFiscalCalendar().filter((period) => period.fiscalYear === fiscalYear).map((period) => ({
     periodNumber: period.periodNumber,
     fiscalYear: period.fiscalYear,
     monthName: period.monthName,
@@ -6259,6 +6388,7 @@ module.exports = {
   listReclassBatches,
   findReclassBatch,
   listReclassItems,
+  getReclassSummary,
   findReclassItem,
   addReclassItem,
   flagPosForReclass,
@@ -6411,4 +6541,6 @@ module.exports = {
   getNoPoReferenceEntriesPage,
   getGlImportStatus,
   getGlFiscalYearCoverage,
+  getGlFiscalCalendar,
+  resolveFiscalPeriod,
 };

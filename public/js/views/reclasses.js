@@ -28,10 +28,13 @@ const STATUS_BADGE_CLASS = {
 export async function renderReclasses(container, options = {}) {
   let statusFilter = "";
   let sourceFilter = "";
+  let regionFilter = "";
+  let fiscalPeriodFilter = ""; // "" or "periodNumber|fiscalYear"
   let searchFilter = "";
   let searchDebounceTimer = null;
   let meta = null;
   let itemsCache = null;
+  let summaryCache = null;
   let lastBatch = null;
   let glActivity = null;
   const GL_ACTIVITY_GROUP_PAGE_SIZE = 25;
@@ -46,22 +49,33 @@ export async function renderReclasses(container, options = {}) {
 
   draw();
 
+  // Shared between the item list and the summary totals, so the "X item(s),
+  // $Y total" line always reflects exactly the same slice the table below
+  // it is showing -- never a separately-filtered figure that could drift.
+  function currentFilterParams() {
+    const [fiscalPeriodNumber, fiscalYear] = fiscalPeriodFilter ? fiscalPeriodFilter.split("|") : [null, null];
+    return {
+      ...(statusFilter ? { status: statusFilter } : {}),
+      ...(sourceFilter ? { source: sourceFilter } : {}),
+      ...(regionFilter ? { region: regionFilter } : {}),
+      ...(fiscalPeriodNumber ? { fiscalPeriodNumber, fiscalYear } : {}),
+      ...(searchFilter ? { search: searchFilter } : {}),
+    };
+  }
+
   async function draw() {
     container.innerHTML = `<p class="empty-note">Loading…</p>`;
     try {
-      const [items, batches, metaResp, activity] = await Promise.all([
-        api.get(
-          `/api/admin/reclasses/items?${new URLSearchParams({
-            ...(statusFilter ? { status: statusFilter } : {}),
-            ...(sourceFilter ? { source: sourceFilter } : {}),
-            ...(searchFilter ? { search: searchFilter } : {}),
-          })}`
-        ),
+      const params = currentFilterParams();
+      const [items, summary, batches, metaResp, activity] = await Promise.all([
+        api.get(`/api/admin/reclasses/items?${new URLSearchParams(params)}`),
+        api.get(`/api/admin/reclasses/summary?${new URLSearchParams(params)}`),
         api.get("/api/admin/reclasses/batches"),
         meta || api.get("/api/admin/reclasses/meta"),
         api.get("/api/admin/reclasses/gl-activity"),
       ]);
       itemsCache = items;
+      summaryCache = summary;
       meta = metaResp;
       lastBatch = batches[0] || null;
       glActivity = activity;
@@ -117,13 +131,30 @@ export async function renderReclasses(container, options = {}) {
           <option value="imported" ${sourceFilter === "imported" ? "selected" : ""}>Imported</option>
           <option value="manual" ${sourceFilter === "manual" ? "selected" : ""}>Manually flagged</option>
         </select>
+        <select class="reclass-fiscal-period-filter">
+          <option value="">All months</option>
+          ${meta.fiscalPeriods
+            .slice()
+            .sort((a, b) => b.fiscalYear - a.fiscalYear || b.periodNumber - a.periodNumber)
+            .map((p) => {
+              const value = `${p.periodNumber}|${p.fiscalYear}`;
+              return `<option value="${value}" ${fiscalPeriodFilter === value ? "selected" : ""}>${escapeHtml(p.monthName)} FY${p.fiscalYear}</option>`;
+            })
+            .join("")}
+        </select>
+        <select class="reclass-region-filter">
+          <option value="">All locations</option>
+          ${meta.territories.map((t) => `<option value="${escapeHtml(t)}" ${regionFilter === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
+        </select>
       </div>
       ${
         searchFilter
           ? `<p class="review-checklist-hint">Showing reclasses tied to WOM/PO "<strong>${escapeHtml(searchFilter)}</strong>" (matches either side of the reclass, and resolves a PO # to its own WOM #). Click into a result to see whether it's actually posted in the GL yet.</p>`
           : ""
       }
-      <p class="po-count">${itemsCache.length} item${itemsCache.length === 1 ? "" : "s"}.</p>
+      <p class="po-count">
+        ${summaryCache.itemCount} item${summaryCache.itemCount === 1 ? "" : "s"}, ${formatMoney(summaryCache.totalAmount)} total${regionFilter ? ` in ${escapeHtml(regionFilter)}` : ""}${fiscalPeriodFilter ? ` for the selected month` : ""}.
+      </p>
       <div class="reclass-table-wrap"></div>
 
       ${
@@ -167,6 +198,14 @@ export async function renderReclasses(container, options = {}) {
     });
     container.querySelector(".reclass-source-filter").addEventListener("change", (e) => {
       sourceFilter = e.target.value;
+      draw();
+    });
+    container.querySelector(".reclass-fiscal-period-filter").addEventListener("change", (e) => {
+      fiscalPeriodFilter = e.target.value;
+      draw();
+    });
+    container.querySelector(".reclass-region-filter").addEventListener("change", (e) => {
+      regionFilter = e.target.value;
       draw();
     });
 
@@ -281,6 +320,8 @@ export async function renderReclasses(container, options = {}) {
             <th>From</th>
             <th>To</th>
             <th>Amount</th>
+            <th>Location</th>
+            <th>Month</th>
             <th>Vendor</th>
             <th>Admin</th>
             <th>Comments</th>
@@ -297,6 +338,8 @@ export async function renderReclasses(container, options = {}) {
               <td>${escapeHtml(codingString(r.fromJobNumber, r.fromObjectCode, r.fromSubsidiary))}</td>
               <td>${escapeHtml(codingString(r.toJobNumber, r.toObjectCode, r.toSubsidiary))}</td>
               <td>${formatMoney(r.fromAmount)}</td>
+              <td>${r.region ? `<span class="badge badge-draft">${escapeHtml(r.region)}</span>` : "—"}</td>
+              <td>${r.fiscalPeriodNumber != null ? `P${r.fiscalPeriodNumber}/FY${r.fiscalYear}` : "—"}</td>
               <td>${escapeHtml(r.vendor || "—")}</td>
               <td>${escapeHtml(r.adminName || "—")}</td>
               <td class="po-desc-cell">${escapeHtml(r.comments || "—")}</td>

@@ -155,16 +155,27 @@ router.post("/batches/import", upload.single("file"), (req, res) => {
   res.status(201).json(batch);
 });
 
+function reclassFiltersFromQuery(query) {
+  return {
+    status: query.status,
+    source: query.source,
+    region: query.region,
+    fiscalPeriodNumber: query.fiscalPeriodNumber,
+    fiscalYear: query.fiscalYear,
+    womNumber: query.womNumber,
+    search: query.search,
+  };
+}
+
 router.get("/items", (req, res) => {
-  res.json(
-    db.listReclassItems({
-      status: req.query.status,
-      source: req.query.source,
-      region: req.query.region,
-      womNumber: req.query.womNumber,
-      search: req.query.search,
-    })
-  );
+  res.json(db.listReclassItems(reclassFiltersFromQuery(req.query)));
+});
+
+// Total reclassed $ and item count for whatever filters the list above is
+// currently showing (e.g. region=Midwest) -- a separate call rather than
+// folded into the list response so the list endpoint stays a plain array.
+router.get("/summary", (req, res) => {
+  res.json(db.getReclassSummary(reclassFiltersFromQuery(req.query)));
 });
 
 router.post("/items", (req, res) => {
@@ -237,6 +248,16 @@ router.get("/meta", (req, res) => {
     statuses: db.RECLASS_STATUSES.map((value) => ({ value, label: db.RECLASS_STATUS_LABELS[value] })),
     causedByOptions: db.RECLASS_CAUSED_BY_OPTIONS,
     rootCauseOptions: db.RECLASS_ROOT_CAUSE_OPTIONS,
+    territories: db.TERRITORIES,
+    // Every seeded fiscal period (not just ones with items already flagged
+    // in them) -- lets the filter offer the current/upcoming period before
+    // anything's been flagged in it yet. See db.resolveFiscalPeriod for why
+    // this doesn't line up with plain calendar months.
+    fiscalPeriods: db.getGlFiscalCalendar().map((p) => ({
+      periodNumber: p.periodNumber,
+      fiscalYear: p.fiscalYear,
+      monthName: p.monthName,
+    })),
   });
 });
 
