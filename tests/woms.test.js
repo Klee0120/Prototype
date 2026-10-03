@@ -402,3 +402,121 @@ test("locations: E&F job number and region tracking", async (t) => {
     assert.ok(!list.body.some((l) => l.code === "LOC-GTOWN"));
   });
 });
+
+// The real Chart of Accounts "Job Numbers" sheet carries its own E&F
+// Contract Job Number (already used to match POs) alongside an E1 WOM Job
+// Number this app had no way to backfill -- WOM-type timekeeping posts to
+// location.subsidiary.WOM#, and the location piece is this number, not the
+// E&F one. Column headers on the real file carry extra internal whitespace
+// ("E1 WOM          Job Number"), and most rows are category headers with
+// no job numbers at all -- both covered here.
+test("locations: Chart of Accounts import backfills job numbers by name match", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  function coaWorkbook(rows) {
+    const headers = [
+      "Toyota Reference Code",
+      "PPS Contract           Job Number",
+      "E&F Contract Job Number",
+      "E1 WOM                         Job Number",
+      "Description",
+      "City",
+      "State",
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Job Numbers");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  await t.test("dry run previews the match without writing anything", async () => {
+    const buffer = coaWorkbook([
+      // Category header row -- no job numbers at all, should be skipped entirely.
+      [null, null, null, null, "GENERAL MGT & ADMIN", null, null],
+      ["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"],
+      [null, null, null, 100110099999, "Totally Unknown Site", "Nowhere", "ZZ"],
+    ]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { dryRun: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.sheetName, "Job Numbers");
+    assert.equal(res.body.matchedCount, 1);
+    assert.equal(res.body.changedCount, 1);
+    assert.equal(res.body.unmatchedCount, 1);
+    const match = res.body.results.find((r) => r.locationCode === "PRINCETON");
+    assert.ok(match);
+    assert.equal(match.efJobNumber.after, "100110042963");
+    assert.equal(match.womJobNumber.after, "100110007530");
+    const unmatched = res.body.results.find((r) => !r.matched);
+    assert.equal(unmatched.description, "Totally Unknown Site");
+
+    const stillBlank = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const princeton = stillBlank.body.find((l) => l.code === "PRINCETON");
+    assert.equal(princeton.womJobNumber, null, "dry run must not write anything");
+  });
+
+  await t.test("committing writes the matched location's job numbers", async () => {
+    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"]]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+
+    const after = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const princeton = after.body.find((l) => l.code === "PRINCETON");
+    assert.equal(princeton.efJobNumber, "100110042963");
+    assert.equal(princeton.womJobNumber, "100110007530");
+  });
+
+  await t.test("re-running with the same numbers reports nothing changed", async () => {
+    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"]]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { dryRun: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.body.matchedCount, 1);
+    assert.equal(res.body.changedCount, 0, "already matches -- nothing to update");
+  });
+
+  await t.test("a technician cannot run the import", async () => {
+    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"]]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "T1001",
+      fields: {},
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a sheet with no Description column is rejected", async () => {
+    const sheet = XLSX.utils.aoa_to_sheet([["Job #"], [100110000726]]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Job Numbers");
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /Description/);
+  });
+});

@@ -2682,6 +2682,63 @@ function createLocation(code, name, efJobNumber, region, womJobNumber, territory
   return findLocation(code);
 }
 
+function matchLocationByName(name) {
+  const target = String(name == null ? "" : name).trim().toLowerCase();
+  if (!target) return null;
+  return db.prepare("SELECT * FROM locations WHERE LOWER(TRIM(name)) = ?").get(target) || null;
+}
+
+// Backfills a location's E&F Contract Job Number and WOM Job Number from
+// Toyota's own Chart of Accounts (the "Job Numbers" sheet) -- matched by
+// name against this app's existing locations, never creating a new one.
+// Most rows on that sheet are category headers with no job numbers at all
+// (e.g. "GENERAL MGT & ADMIN"); those, and any row whose name doesn't match
+// a location already on file, just show up unmatched -- informational only,
+// the same "nothing here is guessed" posture as the PO Tracker import.
+// The COA is the single most authoritative source for these numbers, so a
+// commit overwrites whatever's on file today; dryRun (the default call
+// shape) only ever previews the diff.
+function runLocationCoaImport(rows, { commit } = {}) {
+  const results = [];
+  let matchedCount = 0;
+  let changedCount = 0;
+  let unmatchedCount = 0;
+
+  for (const row of rows) {
+    const location = matchLocationByName(row.description);
+    if (!location) {
+      unmatchedCount++;
+      results.push({ description: row.description, matched: false });
+      continue;
+    }
+    matchedCount++;
+    const nextEf = row.efJobNumber || location.ef_job_number;
+    const nextWom = row.womJobNumber || location.wom_job_number;
+    const changed = nextEf !== location.ef_job_number || nextWom !== location.wom_job_number;
+    if (changed) {
+      changedCount++;
+      if (commit) {
+        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ? WHERE code = ?").run(
+          nextEf || null,
+          nextWom || null,
+          location.code
+        );
+      }
+    }
+    results.push({
+      description: row.description,
+      matched: true,
+      locationCode: location.code,
+      locationName: location.name,
+      changed,
+      efJobNumber: { before: location.ef_job_number, after: nextEf },
+      womJobNumber: { before: location.wom_job_number, after: nextWom },
+    });
+  }
+
+  return { results, totalRows: rows.length, matchedCount, changedCount, unmatchedCount };
+}
+
 function setLocationDetails(code, { name, efJobNumber, region, womJobNumber, territory } = {}) {
   if (!findLocation(code)) return null;
   db.prepare(
@@ -6800,6 +6857,7 @@ module.exports = {
   listLocations,
   findLocation,
   createLocation,
+  runLocationCoaImport,
   deleteLocation,
   deleteTechnician,
   setLocationDetails,

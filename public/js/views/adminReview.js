@@ -3379,6 +3379,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="review-actions">
         <h3 style="margin: 0;">Locations</h3>
         <button type="button" class="btn btn-primary" id="add-location-btn">Add location</button>
+        <button type="button" class="btn btn-outline" id="import-coa-btn">Import Chart of Accounts</button>
         <label class="roster-filter-field">
           <span>Territory</span>
           <select class="location-territory-filter">
@@ -3416,6 +3417,115 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     content.querySelector("#add-location-btn").addEventListener("click", () => {
       openAddLocationModal(content);
     });
+    content.querySelector("#import-coa-btn").addEventListener("click", () => {
+      openCoaImportModal(content);
+    });
+  }
+
+  // Backfills E&F Contract Job Number / WOM Job Number on existing locations
+  // from Toyota's own Chart of Accounts export -- preview first, matched by
+  // location name, never creating a location on its own. Mirrors the PO
+  // Tracker import's own upload-then-preview-then-confirm shape.
+  function openCoaImportModal(content) {
+    const { body, close } = openModal({
+      title: "Import Chart of Accounts",
+      size: "large",
+      bodyHtml: `
+        <p class="review-checklist-hint">
+          Reads the Job Numbers sheet and backfills each matching location's E&amp;F Contract Job Number and WOM Job
+          Number. Matched by location name -- a sheet row with no matching location is listed, never auto-created.
+        </p>
+        <input type="file" class="coa-import-file" accept=".xlsx,.xls" />
+        <div class="coa-import-result"></div>
+      `,
+    });
+
+    body.querySelector(".coa-import-file").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      await runCoaPreview(file);
+    });
+
+    async function runCoaPreview(file) {
+      const resultEl = body.querySelector(".coa-import-result");
+      resultEl.innerHTML = `<p class="empty-note">Reading file…</p>`;
+      let preview;
+      try {
+        preview = await api.uploadRawFile("/api/locations/import-coa", file, { dryRun: "true" });
+      } catch (err) {
+        resultEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        return;
+      }
+      const changedRows = preview.results.filter((r) => r.matched && r.changed);
+      const unmatchedRows = preview.results.filter((r) => !r.matched);
+      resultEl.innerHTML = `
+        <p class="review-checklist-hint">
+          Read sheet <strong>${escapeHtml(preview.sheetName)}</strong> -- ${preview.totalRows} rows with a job number.
+          ${preview.missingColumns.length ? `<br /><span class="attachments-error">Missing expected column(s): ${preview.missingColumns.map(escapeHtml).join(", ")}</span>` : ""}
+        </p>
+        <div class="task-tiles">
+          <div class="task-tile"><div class="task-tile-count">${preview.matchedCount}</div><div class="task-tile-label">Matched locations</div></div>
+          <div class="task-tile"><div class="task-tile-count">${preview.changedCount}</div><div class="task-tile-label">Would update</div></div>
+          <div class="task-tile"><div class="task-tile-count">${preview.unmatchedCount}</div><div class="task-tile-label">No matching location</div></div>
+        </div>
+        ${
+          changedRows.length > 0
+            ? `<table class="detail-table">
+                <thead><tr><th>Location</th><th>E&amp;F Job #</th><th>WOM Job #</th></tr></thead>
+                <tbody>
+                  ${changedRows
+                    .map(
+                      (r) => `<tr>
+                        <td>${escapeHtml(r.locationName)}</td>
+                        <td>${
+                          r.efJobNumber.before !== r.efJobNumber.after
+                            ? `${escapeHtml(r.efJobNumber.before || "—")} &rarr; <strong>${escapeHtml(r.efJobNumber.after || "—")}</strong>`
+                            : escapeHtml(r.efJobNumber.after || "—")
+                        }</td>
+                        <td>${
+                          r.womJobNumber.before !== r.womJobNumber.after
+                            ? `${escapeHtml(r.womJobNumber.before || "—")} &rarr; <strong>${escapeHtml(r.womJobNumber.after || "—")}</strong>`
+                            : escapeHtml(r.womJobNumber.after || "—")
+                        }</td>
+                      </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+            : `<p class="empty-note">No location job numbers would change.</p>`
+        }
+        ${
+          unmatchedRows.length > 0
+            ? `<details class="coa-unmatched-details">
+                <summary>${unmatchedRows.length} Chart of Accounts row(s) with no matching location</summary>
+                <ul>${unmatchedRows.map((r) => `<li>${escapeHtml(r.description)}</li>`).join("")}</ul>
+              </details>`
+            : ""
+        }
+        <div class="modal-form-actions">
+          <button type="button" class="btn btn-primary coa-import-confirm" ${changedRows.length === 0 ? "disabled" : ""}>
+            Apply ${changedRows.length} update${changedRows.length === 1 ? "" : "s"}
+          </button>
+          <button type="button" class="btn btn-secondary coa-import-cancel">Cancel</button>
+        </div>
+        <span class="save-message"></span>
+      `;
+      resultEl.querySelector(".coa-import-cancel").addEventListener("click", close);
+      const confirmBtn = resultEl.querySelector(".coa-import-confirm");
+      if (!confirmBtn.disabled) {
+        confirmBtn.addEventListener("click", async () => {
+          confirmBtn.disabled = true;
+          try {
+            await api.uploadRawFile("/api/locations/import-coa", file, { dryRun: "false" });
+            close();
+            await drawLocations(content);
+          } catch (err) {
+            resultEl.querySelector(".save-message").textContent = err.message;
+            confirmBtn.disabled = false;
+          }
+        });
+      }
+    }
   }
 
   function openAddLocationModal(content) {
