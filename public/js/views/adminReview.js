@@ -14,6 +14,7 @@ import { renderGlReconciliation } from "./gl.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
+import { renderLoadingState } from "../loadingState.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -323,6 +324,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
 
     const content = container.querySelector("#tab-content");
+    // Every tab fetches its own data before rendering real content, so one
+    // shared loading state shown here -- overwritten the moment that tab's
+    // own draw function sets content.innerHTML -- is enough to make every
+    // page's loading look the same without each one building its own.
+    renderLoadingState(content, (TAB_LABELS[activeTab] || "content").toLowerCase());
     // No admin tab currently fills this back in (Tech Allocation's own
     // technician/week picker moved into the sub-tab band instead -- see
     // drawTechAllocation); still cleared up front in case a future tab
@@ -4270,6 +4276,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       { label: "Location", value: locationByCode[w.locationCode] ? escapeHtml(locationByCode[w.locationCode].name) : "—" },
     ];
     if (w.budgetHours != null) metaItems.push({ label: "Hours remaining", value: `${w.remainingHours}h of ${w.budgetHours}h` });
+    metaItems.push({
+      label: "Last synced",
+      value: w.smartsheetSyncedAt ? new Date(w.smartsheetSyncedAt).toLocaleDateString() : "Never",
+    });
 
     const statusOptions = WOM_STATUSES.map(
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
@@ -4465,6 +4475,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       { label: "Applied cost", value: w.appliedPrice != null ? `$${formatMoney(w.appliedPrice)}` : "—" },
     ];
     if (w.budgetHours != null) metaItems.push({ label: "Hours remaining", value: `${w.remainingHours}h of ${w.budgetHours}h` });
+    metaItems.push({
+      label: "Last synced",
+      value: w.smartsheetSyncedAt ? new Date(w.smartsheetSyncedAt).toLocaleDateString() : "Never",
+    });
 
     const statusBadgeClass = womStatusBadgeClass(w.status);
     const statusOptions = WOM_STATUSES.map(
@@ -4763,11 +4777,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const categories = [
       {
         key: "overquoted",
-        tileLabel: "Remaining estimate: Labor",
+        tileLabel: "Estimated Summary - Applied Summary",
         count: summary.overquotedCount,
         total: summary.overquotedTotal,
         totalLabel: "total remaining",
-        sectionTitle: "Remaining labor estimate",
+        sectionTitle: "Estimated Summary - Applied Summary",
         hint:
           "Remaining estimate is not confirmed savings -- it's only accurate once the project is complete " +
           "and costs are reconciled.",

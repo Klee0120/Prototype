@@ -50,6 +50,99 @@
   box-sizing: border-box;
 }
 
+/* Shared page-level loading state (see public/js/loadingState.js) -- a
+   spinner, title, and skeleton rows shaped like the list that's about to
+   replace them, used consistently across every tab's own fetch instead of
+   each one showing a bare "Loading…" string. */
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 56px 20px 24px;
+}
+.loading-spinner {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 5px solid var(--accent-bg);
+  border-top-color: var(--accent);
+  animation: loading-spin 0.8s linear infinite;
+  margin-bottom: 14px;
+}
+.loading-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.loading-subtext {
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 4px;
+}
+.loading-skeleton {
+  width: 100%;
+  max-width: 960px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 28px;
+}
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.skeleton-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--neutral-bg);
+  flex-shrink: 0;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-bars {
+  flex: 1;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+.skeleton-bars span {
+  height: 14px;
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-bars span:nth-child(1) {
+  width: 30%;
+}
+.skeleton-bars span:nth-child(2) {
+  width: 18%;
+}
+.skeleton-bars span:nth-child(3) {
+  width: 10%;
+}
+.skeleton-bars span:nth-child(4) {
+  width: 10%;
+}
+
 body {
   margin: 0;
   font-family: var(--font-sans);

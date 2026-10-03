@@ -203,6 +203,7 @@ export async function renderPos(container, { openPoId } = {}) {
             <th>Vendor</th>
             <th>Amount</th>
             <th>Status</th>
+            <th>Last Synced</th>
           </tr>
         </thead>
         <tbody>
@@ -223,6 +224,7 @@ export async function renderPos(container, { openPoId } = {}) {
               </td>
               <td>${formatMoney(p.poAmount)}</td>
               <td>${escapeHtml(p.status || "—")}</td>
+              <td>${p.lastSeenAt ? formatDate(p.lastSeenAt) : "—"}</td>
             </tr>`
             )
             .join("")}
@@ -519,6 +521,7 @@ export async function renderPos(container, { openPoId } = {}) {
           <tr><th>Date Requested</th><td>${formatDate(po.dateRequested)}</td><th>Requestor</th><td>${escapeHtml(po.requestor || "—")}</td></tr>
           <tr><th>PO Amount</th><td>${formatMoney(po.poAmount)}</td><th>Change Order</th><td>${escapeHtml(po.changeOrder || "—")}</td></tr>
           <tr><th>Status</th><td>${escapeHtml(po.status || "—")}</td><th>Admin</th><td>${escapeHtml(po.adminName || "—")}</td></tr>
+          <tr><th>Last Synced</th><td>${po.lastSeenAt ? formatDate(po.lastSeenAt) : "—"}</td><th></th><td></td></tr>
           <tr><th>PPS Job #</th><td>${escapeHtml(po.ppsJobNumber || "—")}</td><th>E1 WOM Job #</th><td>${escapeHtml(po.e1WomJobNumber || "—")}</td></tr>
           <tr><th>WOM Number</th><td>${escapeHtml(po.womNumber || "—")}</td><th>Asset #</th><td>${escapeHtml(po.assetNumber || "—")}</td></tr>
           <tr><th>Maximo WO#</th><td>${escapeHtml(po.maximoWo || "—")}</td><th>Object Code</th><td>${escapeHtml(po.objectCode || "—")}</td></tr>
