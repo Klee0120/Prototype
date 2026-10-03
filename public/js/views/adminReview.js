@@ -3780,7 +3780,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </dl>
         ${
           w.statusConflict
-            ? `<p class="review-checklist-hint">Smartsheet's own data says this WOM is done/invoiced, but the app status below still says otherwise. This never updates automatically -- change the app status once you've confirmed it.</p>`
+            ? `<p class="review-checklist-hint">Smartsheet's own data says this WOM is done/invoiced, but the app status below still says otherwise. The next sync will auto-promote this to Invoiced if it's still open -- this only sticks around for a status sync won't touch on its own, like a cancelled WOM or one with no real WOM # yet.</p>`
             : ""
         }
       </div>`
@@ -3797,7 +3797,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="vendor-overview-card">
           <h4>App status</h4>
           <select class="wom-overview-status-select">${statusOptions}</select>
-          <p class="review-checklist-hint">This is the status this app tracks -- an admin sets it manually; nothing here is auto-overwritten by a Smartsheet sync.</p>
+          <p class="review-checklist-hint">An admin can set this manually at any time. Smartsheet is the authority on completion, though -- a sync auto-promotes this to Invoiced the moment the sheet's own data says the work is done.</p>
         </div>
       </div>
       ${sourceStatusCard}

@@ -794,11 +794,11 @@ function statusSheetWith(rows) {
   return { name: "Midwest PSE Request Tracker", columns: STATUS_COLUMNS, rows };
 }
 
-test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as source_* fields, never into app status", async (t) => {
+test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as source_* fields and drive app status", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
-  await t.test("a row synced with sheet-reported completion keeps app status untouched but flags a conflict", async () => {
+  await t.test("a brand-new row whose sheet data already says done/invoiced is created straight into 'invoiced'", async () => {
     const restore = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -825,22 +825,22 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       assert.equal(res.body.sourceRequestedByColumn, "Requested By");
 
       const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
-      // A real WOM # creates straight into 'open' -- the sheet's own
-      // completion/invoicing data never promotes or changes that; only an
-      // admin changing it by hand does.
-      assert.equal(wom.status, "open");
+      // Smartsheet is the authority on completion -- a real WOM # whose
+      // sheet data already says done/invoiced by the time this app first
+      // sees it lands straight on 'invoiced', not 'open'.
+      assert.equal(wom.status, "invoiced");
       assert.equal(wom.sourceStatusRaw, "Status 99 - Invoiced");
       assert.equal(wom.sourceWorkCompletedRaw, "True");
       assert.equal(wom.sourceWorkCompleted, 1);
       assert.equal(wom.sourceBillingRaw, "WOM fully invoiced");
       assert.equal(wom.sourceRequestedBy, "J. Smith");
-      assert.equal(wom.statusConflict, true, "the sheet says invoiced/complete while app status is still open");
+      assert.equal(wom.statusConflict, false, "app status already reflects what the sheet says");
     } finally {
       restore();
     }
   });
 
-  await t.test("re-syncing the same row again still never touches app status", async () => {
+  await t.test("re-syncing the same done data again doesn't re-flag or change anything further", async () => {
     const restore = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -861,18 +861,107 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
     try {
       await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
-      assert.equal(wom.status, "open");
-      assert.equal(wom.statusConflict, true);
+      assert.equal(wom.status, "invoiced");
+      assert.equal(wom.statusConflict, false);
     } finally {
       restore();
     }
   });
 
-  await t.test("once an admin manually sets status to invoiced, the conflict clears even with the same sheet data", async () => {
-    await server.call("PATCH", "/api/woms/20099001", { userId: "ADMIN", body: { status: "invoiced" } });
-    const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
-    assert.equal(wom.status, "invoiced");
-    assert.equal(wom.statusConflict, false, "app status already reflects completion, so there's nothing left to flag");
+  await t.test("an already-open WOM gets auto-promoted to invoiced once a later sync's sheet data says it's done", async () => {
+    const createOpen = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9004,
+            cells: [
+              { columnId: 1, value: "20099004", displayValue: "20099004" },
+              { columnId: 2, value: "Replace exterior lighting", displayValue: "Replace exterior lighting" },
+            ],
+          },
+        ]),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const beforeWom = (await server.call("GET", "/api/woms/20099004/lookup", { userId: "ADMIN" })).body;
+      assert.equal(beforeWom.status, "open");
+    } finally {
+      createOpen();
+    }
+
+    const markDone = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9004,
+            cells: [
+              { columnId: 1, value: "20099004", displayValue: "20099004" },
+              { columnId: 2, value: "Replace exterior lighting", displayValue: "Replace exterior lighting" },
+              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+              { columnId: 4, value: "True", displayValue: "True" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const changed = res.body.changedWoms.find((c) => c.code === "20099004");
+      assert.ok(changed, "expected this WOM to show up in the sync's changed list");
+      assert.ok(changed.fields.some((f) => f.includes("now invoiced")));
+
+      const wom = (await server.call("GET", "/api/woms/20099004/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.status, "invoiced", "sync should have auto-promoted this from open to invoiced");
+      assert.equal(wom.statusConflict, false);
+    } finally {
+      markDone();
+    }
+  });
+
+  await t.test("a cancelled WOM is never auto-promoted even if the sheet later says done -- it only flags a conflict", async () => {
+    const createOpen = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9005,
+            cells: [
+              { columnId: 1, value: "20099005", displayValue: "20099005" },
+              { columnId: 2, value: "Cancelled project", displayValue: "Cancelled project" },
+            ],
+          },
+        ]),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+    } finally {
+      createOpen();
+    }
+    await server.call("PATCH", "/api/woms/20099005", { userId: "ADMIN", body: { status: "cancelled" } });
+
+    const markDone = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9005,
+            cells: [
+              { columnId: 1, value: "20099005", displayValue: "20099005" },
+              { columnId: 2, value: "Cancelled project", displayValue: "Cancelled project" },
+              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+            ],
+          },
+        ]),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const wom = (await server.call("GET", "/api/woms/20099005/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.status, "cancelled", "a cancelled WOM is a deliberate admin call sync never overrides");
+      assert.equal(wom.statusConflict, true, "still worth flagging as a disagreement to look at by hand");
+    } finally {
+      markDone();
+    }
   });
 
   await t.test("a row with ordinary in-progress sheet data shows no conflict", async () => {

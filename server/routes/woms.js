@@ -5,23 +5,27 @@ const smartsheet = require("../utils/smartsheet");
 
 const router = express.Router();
 
-// A real conflict, not noise -- true only when the sheet's own data clearly
-// says the work is done/invoiced while the app's status still shows it as
-// open or earlier. Never resolves itself: syncWomsFromSheetRows deliberately
-// never writes `status` once a WOM leaves pending/requested (see
-// tests/smartsheetSync.test.js), so an admin has to actually look and change
-// it -- this just makes that disagreement visible instead of silently
-// sitting inside the raw Smartsheet blob.
-const SOURCE_DONE_PATTERN = /\b(invoiced|closed|complete|completed|99)\b/i;
-const APP_DONE_STATUSES = ["invoiced", "closed", "cancelled"];
+// Smartsheet is the authority on completion -- syncWomsFromSheetRows
+// (db.js) already auto-promotes an "open" WOM straight to "invoiced" the
+// moment the sheet's own Status/Work Completed/Billing data says it's done
+// (via db.sourceImpliesDone, the same predicate used here). This banner
+// covers what that auto-promotion deliberately doesn't touch: a WOM with no
+// real WOM # yet (pending/requested) the sheet already marks done, or a
+// cancelled WOM the sheet now says is invoiced -- a real contradiction
+// (cancelled means never billed), so cancelled is deliberately *not* treated
+// as "already done" here the way invoiced/closed are; sync still never
+// auto-changes a cancelled WOM's status itself, but this still flags the
+// disagreement for an admin to look at.
+const APP_DONE_STATUSES = ["invoiced", "closed"];
 function computeWomStatusConflict(w) {
-  const sourceImpliesDone =
-    w.source_work_completed === 1 ||
-    SOURCE_DONE_PATTERN.test(w.source_status_raw || "") ||
-    SOURCE_DONE_PATTERN.test(w.source_billing_raw || "") ||
-    SOURCE_DONE_PATTERN.test(w.source_work_completed_raw || "");
+  const sourceImpliesDoneFlag = db.sourceImpliesDone({
+    sourceStatusRaw: w.source_status_raw,
+    sourceWorkCompletedRaw: w.source_work_completed_raw,
+    sourceWorkCompleted: w.source_work_completed,
+    sourceBillingRaw: w.source_billing_raw,
+  });
   const appAlreadyDone = APP_DONE_STATUSES.includes(w.status);
-  return Boolean(sourceImpliesDone && !appAlreadyDone);
+  return Boolean(sourceImpliesDoneFlag && !appAlreadyDone);
 }
 
 function presentWom(w) {

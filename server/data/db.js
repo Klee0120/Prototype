@@ -4320,6 +4320,25 @@ const WOM_SOURCE_FIELDS = [
   { dbColumn: "source_requested_by", jsField: "sourceRequestedBy", diffLabel: "requested by" },
 ];
 
+// Smartsheet is the source of truth for whether a WOM is actually done --
+// when the sheet's own Status/Work Completed/Billing text clearly says so,
+// syncWomsFromSheetRows below promotes an "open" WOM straight to "invoiced"
+// itself, the same way it already auto-promotes pending -> requested -> open
+// from the sheet's own Date Requested/WOM # columns. The shared predicate
+// lives here (not duplicated in routes/woms.js) since both the sync-time
+// auto-promotion and computeWomStatusConflict's remaining-edge-case banner
+// (a cancelled WOM the sheet says is done, or one with no real WOM # yet)
+// need to agree on exactly what "the sheet says done" means.
+const SOURCE_DONE_PATTERN = /\b(invoiced|closed|complete|completed|99)\b/i;
+function sourceImpliesDone(fields) {
+  return Boolean(
+    fields.sourceWorkCompleted === 1 ||
+      SOURCE_DONE_PATTERN.test(fields.sourceStatusRaw || "") ||
+      SOURCE_DONE_PATTERN.test(fields.sourceBillingRaw || "") ||
+      SOURCE_DONE_PATTERN.test(fields.sourceWorkCompletedRaw || "")
+  );
+}
+
 function diffFields(existing, next) {
   const fields = [];
   if (next.estimatedPrice != null && valuesDiffer(existing.estimated_price, next.estimatedPrice)) fields.push("estimate");
@@ -4459,6 +4478,10 @@ function syncWomsFromSheetRows(rows, columns) {
           rowId,
           code
         );
+        if (collision.status === "open" && sourceImpliesDone(sourceFields)) {
+          setWomStatus(code, "invoiced", { source: "smartsheet_sync" });
+          fields.push("status: now invoiced (Smartsheet marked it done)");
+        }
         if (fields.length > 0) {
           updated++;
           changedWoms.push({ code, description: collision.description, fields });
@@ -4466,7 +4489,11 @@ function syncWomsFromSheetRows(rows, columns) {
         checkWomLifecycleAutoSteps(code);
         continue;
       }
-      const status = realCode ? "open" : requested ? "requested" : "pending";
+      // Smartsheet is the authority here -- a brand-new row whose sheet data
+      // already says done/invoiced by the time this app first sees it goes
+      // straight to "invoiced" instead of landing on "open" and waiting for
+      // a second sync to catch up.
+      const status = realCode ? (sourceImpliesDone(sourceFields) ? "invoiced" : "open") : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
          location_code, ${breakdownInsertColumnsSql}, ${sourceInsertColumnsSql}, vendor_id, date_requested,
@@ -4496,13 +4523,19 @@ function syncWomsFromSheetRows(rows, columns) {
     }
 
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
+      // Same Smartsheet-is-the-authority reasoning as the new-insert branch
+      // above -- if the sheet already says this one's done by the time its
+      // real WOM # shows up, land it straight on "invoiced" instead of
+      // "open."
+      const promotedStatus = sourceImpliesDone(sourceFields) ? "invoiced" : "open";
       db.prepare(
-        `UPDATE woms SET code = ?, status = 'open', estimated_price = ?, applied_price = ?, maximo_number = ?,
+        `UPDATE woms SET code = ?, status = ?, estimated_price = ?, applied_price = ?, maximo_number = ?,
          subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
          smartsheet_raw_data = ?, smartsheet_synced_at = ?,
          smartsheet_row_number = ? WHERE code = ?`
       ).run(
         realCode,
+        promotedStatus,
         estimatedPrice,
         appliedPrice,
         maximoNumber,
@@ -4518,8 +4551,12 @@ function syncWomsFromSheetRows(rows, columns) {
         existing.code
       );
       promoted++;
-      changedWoms.push({ code: realCode, description: existing.description, fields: ["status: now open (real WOM # arrived)"] });
-      recordWomStatusChange(realCode, "status", existing.status, "open", { source: "smartsheet_sync" });
+      changedWoms.push({
+        code: realCode,
+        description: existing.description,
+        fields: [`status: now ${promotedStatus} (real WOM # arrived${promotedStatus === "invoiced" ? ", Smartsheet marked it done" : ""})`],
+      });
+      recordWomStatusChange(realCode, "status", existing.status, promotedStatus, { source: "smartsheet_sync" });
       checkWomLifecycleAutoSteps(realCode);
       continue;
     }
@@ -4582,6 +4619,18 @@ function syncWomsFromSheetRows(rows, columns) {
         rowNumber,
         existing.code
       );
+      // Smartsheet is the authority on whether this is actually done -- an
+      // "open" WOM whose sheet data now clearly says invoiced/complete gets
+      // promoted here automatically rather than just flagged for an admin to
+      // notice and change by hand (see computeWomStatusConflict in
+      // routes/woms.js for the remaining edge cases this doesn't cover: a
+      // cancelled WOM, or one with no real WOM # yet). Never touches
+      // "cancelled" (a deliberate admin call, not something sync should
+      // second-guess) or "closed"/"invoiced" (already done).
+      if (existing.status === "open" && sourceImpliesDone(sourceFields)) {
+        setWomStatus(existing.code, "invoiced", { source: "smartsheet_sync" });
+        fields.push("status: now invoiced (Smartsheet marked it done)");
+      }
       if (fields.length > 0) {
         updated++;
         changedWoms.push({ code: existing.code, description: existing.description, fields });
@@ -6206,6 +6255,7 @@ module.exports = {
   WOM_LIFECYCLE_STEPS,
   getWomLifecycleSteps,
   checkWomLifecycleAutoSteps,
+  sourceImpliesDone,
   refreshAllOpenWomLifecycles,
   lifecycleTaskSourceKey,
   referWomChangeOrderToAdmin,
