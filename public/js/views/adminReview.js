@@ -3432,32 +3432,50 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       size: "large",
       bodyHtml: `
         <p class="review-checklist-hint">
-          Reads the Job Numbers sheet and backfills each matching location's E&amp;F Contract Job Number and WOM Job
-          Number. Matched by location name -- a sheet row with no matching location is listed, never auto-created.
+          Reads the Job Numbers sheet and backfills each matching location's E&amp;F Contract Job Number, WOM Job
+          Number, PPS Contract Job Number, and region. Matched by location name -- a sheet row with no matching
+          location is listed, not updated.
         </p>
         <input type="file" class="coa-import-file" accept=".xlsx,.xls" />
+        <label class="coa-import-create-toggle" style="display:none">
+          <input type="checkbox" class="coa-import-create-unmatched" />
+          Create a new location for each unmatched row above
+        </label>
         <div class="coa-import-result"></div>
       `,
     });
 
+    let currentFile = null;
+    const createToggle = body.querySelector(".coa-import-create-unmatched");
+    const createToggleLabel = body.querySelector(".coa-import-create-toggle");
+
     body.querySelector(".coa-import-file").addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      await runCoaPreview(file);
+      currentFile = file;
+      await runCoaPreview();
+    });
+    createToggle.addEventListener("change", () => {
+      if (currentFile) runCoaPreview();
     });
 
-    async function runCoaPreview(file) {
+    async function runCoaPreview() {
       const resultEl = body.querySelector(".coa-import-result");
       resultEl.innerHTML = `<p class="empty-note">Reading file…</p>`;
       let preview;
       try {
-        preview = await api.uploadRawFile("/api/locations/import-coa", file, { dryRun: "true" });
+        preview = await api.uploadRawFile("/api/locations/import-coa", currentFile, {
+          dryRun: "true",
+          createUnmatched: createToggle.checked ? "true" : "false",
+        });
       } catch (err) {
         resultEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
         return;
       }
+      createToggleLabel.style.display = "";
       const changedRows = preview.results.filter((r) => r.matched && r.changed);
       const unmatchedRows = preview.results.filter((r) => !r.matched);
+      const fieldDiff = (f) => (f.before !== f.after ? `${escapeHtml(f.before || "—")} &rarr; <strong>${escapeHtml(f.after || "—")}</strong>` : escapeHtml(f.after || "—"));
       resultEl.innerHTML = `
         <p class="review-checklist-hint">
           Read sheet <strong>${escapeHtml(preview.sheetName)}</strong> -- ${preview.totalRows} rows with a job number.
@@ -3467,26 +3485,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <div class="task-tile"><div class="task-tile-count">${preview.matchedCount}</div><div class="task-tile-label">Matched locations</div></div>
           <div class="task-tile"><div class="task-tile-count">${preview.changedCount}</div><div class="task-tile-label">Would update</div></div>
           <div class="task-tile"><div class="task-tile-count">${preview.unmatchedCount}</div><div class="task-tile-label">No matching location</div></div>
+          ${createToggle.checked ? `<div class="task-tile"><div class="task-tile-count">${preview.createdCount}</div><div class="task-tile-label">Would create</div></div>` : ""}
         </div>
         ${
           changedRows.length > 0
             ? `<table class="detail-table">
-                <thead><tr><th>Location</th><th>E&amp;F Job #</th><th>WOM Job #</th></tr></thead>
+                <thead><tr><th>Location</th><th>E&amp;F Job #</th><th>WOM Job #</th><th>PPS Job #</th><th>Region</th></tr></thead>
                 <tbody>
                   ${changedRows
                     .map(
                       (r) => `<tr>
                         <td>${escapeHtml(r.locationName)}</td>
-                        <td>${
-                          r.efJobNumber.before !== r.efJobNumber.after
-                            ? `${escapeHtml(r.efJobNumber.before || "—")} &rarr; <strong>${escapeHtml(r.efJobNumber.after || "—")}</strong>`
-                            : escapeHtml(r.efJobNumber.after || "—")
-                        }</td>
-                        <td>${
-                          r.womJobNumber.before !== r.womJobNumber.after
-                            ? `${escapeHtml(r.womJobNumber.before || "—")} &rarr; <strong>${escapeHtml(r.womJobNumber.after || "—")}</strong>`
-                            : escapeHtml(r.womJobNumber.after || "—")
-                        }</td>
+                        <td>${fieldDiff(r.efJobNumber)}</td>
+                        <td>${fieldDiff(r.womJobNumber)}</td>
+                        <td>${fieldDiff(r.ppsJobNumber)}</td>
+                        <td>${fieldDiff(r.region)}</td>
                       </tr>`
                     )
                     .join("")}
@@ -3496,15 +3509,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         }
         ${
           unmatchedRows.length > 0
-            ? `<details class="coa-unmatched-details">
+            ? `<details class="coa-unmatched-details" open>
                 <summary>${unmatchedRows.length} Chart of Accounts row(s) with no matching location</summary>
-                <ul>${unmatchedRows.map((r) => `<li>${escapeHtml(r.description)}</li>`).join("")}</ul>
+                <ul>${unmatchedRows
+                  .map(
+                    (r) =>
+                      `<li>${escapeHtml(r.description)}${r.willCreate ? ` &mdash; <strong>will create as ${escapeHtml(r.locationCode)}</strong>` : ""}</li>`
+                  )
+                  .join("")}</ul>
               </details>`
             : ""
         }
         <div class="modal-form-actions">
-          <button type="button" class="btn btn-primary coa-import-confirm" ${changedRows.length === 0 ? "disabled" : ""}>
-            Apply ${changedRows.length} update${changedRows.length === 1 ? "" : "s"}
+          <button type="button" class="btn btn-primary coa-import-confirm" ${changedRows.length === 0 && preview.createdCount === 0 ? "disabled" : ""}>
+            Apply ${changedRows.length} update${changedRows.length === 1 ? "" : "s"}${createToggle.checked && preview.createdCount > 0 ? ` and create ${preview.createdCount} location${preview.createdCount === 1 ? "" : "s"}` : ""}
           </button>
           <button type="button" class="btn btn-secondary coa-import-cancel">Cancel</button>
         </div>
@@ -3516,7 +3534,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         confirmBtn.addEventListener("click", async () => {
           confirmBtn.disabled = true;
           try {
-            await api.uploadRawFile("/api/locations/import-coa", file, { dryRun: "false" });
+            await api.uploadRawFile("/api/locations/import-coa", currentFile, {
+              dryRun: "false",
+              createUnmatched: createToggle.checked ? "true" : "false",
+            });
             close();
             await drawLocations(content);
           } catch (err) {
@@ -3538,6 +3559,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <input name="name" placeholder="Location name" required />
             <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" />
             <input name="womJobNumber" placeholder="WOM Job Number" />
+            <input name="ppsJobNumber" placeholder="PPS Contract Job Number" />
             <input name="region" placeholder="Region (e.g. Southeast)" />
             <select name="territory">${renderTerritorySelect("Midwest")}</select>
           </div>
@@ -3558,6 +3580,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           name: form.name.value.trim(),
           efJobNumber: form.efJobNumber.value.trim() || null,
           womJobNumber: form.womJobNumber.value.trim() || null,
+          ppsJobNumber: form.ppsJobNumber.value.trim() || null,
           region: form.region.value.trim() || null,
           territory: form.territory.value,
         });
@@ -3739,6 +3762,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <input name="name" value="${escapeHtml(l.name)}" required />
           <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" value="${escapeHtml(l.efJobNumber || "")}" />
           <input name="womJobNumber" placeholder="WOM Job Number" value="${escapeHtml(l.womJobNumber || "")}" />
+          <input name="ppsJobNumber" placeholder="PPS Contract Job Number" value="${escapeHtml(l.ppsJobNumber || "")}" />
           <input name="region" placeholder="Region" value="${escapeHtml(l.region || "")}" />
           <select name="territory">${renderTerritorySelect(l.territory)}</select>
           <button type="submit" class="btn btn-primary">Save</button>
@@ -3759,6 +3783,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             name: form.name.value.trim(),
             efJobNumber: form.efJobNumber.value.trim() || null,
             womJobNumber: form.womJobNumber.value.trim() || null,
+            ppsJobNumber: form.ppsJobNumber.value.trim() || null,
             region: form.region.value.trim() || null,
             territory: form.territory.value,
           });
@@ -3773,11 +3798,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     const jobLabel = l.efJobNumber ? `E&amp;F Job # ${escapeHtml(l.efJobNumber)}` : "No E&amp;F Job # on file";
     const womJobLabel = l.womJobNumber ? ` &middot; WOM Job # ${escapeHtml(l.womJobNumber)}` : " &middot; No WOM Job # on file";
+    const ppsJobLabel = l.ppsJobNumber ? ` &middot; PPS Job # ${escapeHtml(l.ppsJobNumber)}` : "";
     const regionLabel = l.region ? ` &middot; ${escapeHtml(l.region)}` : "";
     const territoryLabel = ` &middot; <span class="badge badge-draft">${escapeHtml(l.territory || "Midwest")}</span>`;
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${regionLabel}</span>${territoryLabel}</div>
+        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${ppsJobLabel}${regionLabel}</span>${territoryLabel}</div>
         <button class="btn btn-link edit-location-btn" type="button">Edit</button>
         <button class="btn btn-link delete-location-btn" type="button">Delete</button>
       </div>

@@ -711,7 +711,7 @@ if (!hasColumn("locations", "region")) {
 // rather than needing its own territory column that could drift out of
 // sync with where it's actually located. Everything predates territories,
 // so every existing location backfills to Midwest.
-const TERRITORIES = ["Midwest", "HQ", "East", "West"];
+const TERRITORIES = ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION"];
 if (!hasColumn("locations", "territory")) {
   db.exec("ALTER TABLE locations ADD COLUMN territory TEXT NOT NULL DEFAULT 'Midwest'");
 }
@@ -721,6 +721,13 @@ if (!hasColumn("locations", "territory")) {
 // accounting code, the same way efJobNumber + EF_SUBSIDIARY_CODE do for E&F.
 if (!hasColumn("locations", "wom_job_number")) {
   db.exec("ALTER TABLE locations ADD COLUMN wom_job_number TEXT");
+}
+// A location's PPS Contract Job Number -- the third of the three job
+// numbers the Chart of Accounts tracks per site (alongside E&F Contract Job
+// Number and E1 WOM Job Number). Not consumed by any matching logic yet,
+// kept for reference the same way the other two are.
+if (!hasColumn("locations", "pps_job_number")) {
+  db.exec("ALTER TABLE locations ADD COLUMN pps_job_number TEXT");
 }
 if (!hasColumn("woms", "subsidiary_code")) {
   db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
@@ -2675,10 +2682,10 @@ function findLocation(code) {
   return db.prepare("SELECT * FROM locations WHERE code = ?").get(code);
 }
 
-function createLocation(code, name, efJobNumber, region, womJobNumber, territory) {
+function createLocation(code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber) {
   db.prepare(
-    "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest");
+    "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory, pps_job_number) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest", ppsJobNumber || null);
   return findLocation(code);
 }
 
@@ -2688,39 +2695,81 @@ function matchLocationByName(name) {
   return db.prepare("SELECT * FROM locations WHERE LOWER(TRIM(name)) = ?").get(target) || null;
 }
 
-// Backfills a location's E&F Contract Job Number and WOM Job Number from
-// Toyota's own Chart of Accounts (the "Job Numbers" sheet) -- matched by
-// name against this app's existing locations, never creating a new one.
-// Most rows on that sheet are category headers with no job numbers at all
-// (e.g. "GENERAL MGT & ADMIN"); those, and any row whose name doesn't match
-// a location already on file, just show up unmatched -- informational only,
-// the same "nothing here is guessed" posture as the PO Tracker import.
-// The COA is the single most authoritative source for these numbers, so a
-// commit overwrites whatever's on file today; dryRun (the default call
-// shape) only ever previews the diff.
-function runLocationCoaImport(rows, { commit } = {}) {
+function slugifyLocationCode(name) {
+  const slug = String(name || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug || "LOCATION";
+}
+
+// Backfills a location's E&F Contract Job Number, WOM Job Number, PPS
+// Contract Job Number, and region from Toyota's own Chart of Accounts (the
+// "Job Numbers" sheet) -- matched by name against this app's existing
+// locations. Most rows on that sheet are category headers with no job
+// numbers at all (e.g. "GENERAL MGT & ADMIN"); those are filtered out
+// before this ever runs (see parseCoaWorkbook). A real site with no
+// matching location on file is only CREATED when createUnmatched is set --
+// otherwise it's just listed, the same "nothing here is guessed" posture as
+// the PO Tracker import. The COA is the single most authoritative source
+// for these fields, so a commit overwrites whatever's on file today; dryRun
+// (the default call shape) only ever previews the diff.
+function runLocationCoaImport(rows, { commit, createUnmatched } = {}) {
   const results = [];
   let matchedCount = 0;
   let changedCount = 0;
   let unmatchedCount = 0;
+  let createdCount = 0;
+  // Codes already handed out during this run (committed or just previewed)
+  // so two same-named unmatched rows in one file don't collide on the same
+  // suggested code before either has actually been written.
+  const reservedCodes = new Set();
+  function uniqueLocationCode(base) {
+    let code = base;
+    let n = 2;
+    while (findLocation(code) || reservedCodes.has(code)) {
+      code = `${base}-${n}`;
+      n++;
+    }
+    reservedCodes.add(code);
+    return code;
+  }
 
   for (const row of rows) {
     const location = matchLocationByName(row.description);
     if (!location) {
       unmatchedCount++;
-      results.push({ description: row.description, matched: false });
+      if (createUnmatched) {
+        const suggestedCode = uniqueLocationCode(slugifyLocationCode(row.description));
+        if (commit) {
+          createLocation(suggestedCode, row.description, row.efJobNumber, row.region, row.womJobNumber, "Midwest", row.ppsJobNumber);
+        }
+        createdCount++;
+        results.push({ description: row.description, matched: false, willCreate: true, locationCode: suggestedCode });
+      } else {
+        results.push({ description: row.description, matched: false, willCreate: false });
+      }
       continue;
     }
     matchedCount++;
     const nextEf = row.efJobNumber || location.ef_job_number;
     const nextWom = row.womJobNumber || location.wom_job_number;
-    const changed = nextEf !== location.ef_job_number || nextWom !== location.wom_job_number;
+    const nextPps = row.ppsJobNumber || location.pps_job_number;
+    const nextRegion = row.region || location.region;
+    const changed =
+      nextEf !== location.ef_job_number ||
+      nextWom !== location.wom_job_number ||
+      nextPps !== location.pps_job_number ||
+      nextRegion !== location.region;
     if (changed) {
       changedCount++;
       if (commit) {
-        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ? WHERE code = ?").run(
+        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ?, pps_job_number = ?, region = ? WHERE code = ?").run(
           nextEf || null,
           nextWom || null,
+          nextPps || null,
+          nextRegion || null,
           location.code
         );
       }
@@ -2733,17 +2782,19 @@ function runLocationCoaImport(rows, { commit } = {}) {
       changed,
       efJobNumber: { before: location.ef_job_number, after: nextEf },
       womJobNumber: { before: location.wom_job_number, after: nextWom },
+      ppsJobNumber: { before: location.pps_job_number, after: nextPps },
+      region: { before: location.region, after: nextRegion },
     });
   }
 
-  return { results, totalRows: rows.length, matchedCount, changedCount, unmatchedCount };
+  return { results, totalRows: rows.length, matchedCount, changedCount, unmatchedCount, createdCount };
 }
 
-function setLocationDetails(code, { name, efJobNumber, region, womJobNumber, territory } = {}) {
+function setLocationDetails(code, { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = {}) {
   if (!findLocation(code)) return null;
   db.prepare(
-    "UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ?, territory = ? WHERE code = ?"
-  ).run(name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest", code);
+    "UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ?, territory = ?, pps_job_number = ? WHERE code = ?"
+  ).run(name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest", ppsJobNumber || null, code);
   return findLocation(code);
 }
 

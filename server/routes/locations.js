@@ -36,11 +36,18 @@ function parseCoaWorkbook(buffer) {
   const descriptionCol = findColumn(columns, ["description"]);
   const efCol = findColumn(columns, ["e&f", "contract", "job"]);
   const womCol = findColumn(columns, ["e1", "wom", "job"]);
+  const ppsCol = findColumn(columns, ["pps", "contract", "job"]);
+  // The real file also has a bare "E&F" column (just the region code, e.g.
+  // "Region 1") separate from "E&F Contract Job Number" -- both contain
+  // "e&f", so this excludes "contract"/"job" to land on the region one.
+  const regionCol = findColumn(columns, ["e&f"], ["contract", "job"]);
   if (!descriptionCol) throw Object.assign(new Error('Could not find a "Description" column in that sheet'), { status: 400 });
 
   const missingColumns = [];
   if (!efCol) missingColumns.push("E&F Contract Job Number");
   if (!womCol) missingColumns.push("E1 WOM Job Number");
+  if (!ppsCol) missingColumns.push("PPS Contract Job Number");
+  if (!regionCol) missingColumns.push("Region (E&F)");
 
   // Most rows are category headers ("GENERAL MGT & ADMIN") with no job
   // numbers at all and no real location behind them -- skipped here rather
@@ -50,8 +57,10 @@ function parseCoaWorkbook(buffer) {
       description: r[descriptionCol] == null ? null : String(r[descriptionCol]).trim(),
       efJobNumber: efCol ? toJobNumberString(r[efCol]) : null,
       womJobNumber: womCol ? toJobNumberString(r[womCol]) : null,
+      ppsJobNumber: ppsCol ? toJobNumberString(r[ppsCol]) : null,
+      region: regionCol && r[regionCol] != null ? String(r[regionCol]).trim() || null : null,
     }))
-    .filter((r) => r.description && (r.efJobNumber || r.womJobNumber));
+    .filter((r) => r.description && (r.efJobNumber || r.womJobNumber || r.ppsJobNumber || r.region));
 
   return { sheetName, rows, missingColumns };
 }
@@ -68,6 +77,7 @@ function presentLocation(l) {
     name: l.name,
     efJobNumber: l.ef_job_number,
     womJobNumber: l.wom_job_number,
+    ppsJobNumber: l.pps_job_number,
     region: l.region,
     territory: l.territory,
     efSubsidiaryCode: EF_SUBSIDIARY_CODE,
@@ -82,13 +92,16 @@ router.get("/territories", requireAuth, (req, res) => {
   res.json(db.TERRITORIES);
 });
 
-// Backfills E&F Contract Job Number / WOM Job Number on existing locations
-// from Toyota's own Chart of Accounts export, matched by name. Never
-// creates a location -- a COA row with no match just comes back unmatched,
-// same "preview, then commit" shape as the PO Tracker import.
+// Backfills E&F Contract Job Number / WOM Job Number / PPS Contract Job
+// Number / region on existing locations from Toyota's own Chart of Accounts
+// export, matched by name. A COA row with no matching location is only
+// created when createUnmatched is set (opt-in, since the generated code is
+// never one an admin chose) -- otherwise it's just listed, same
+// "preview, then commit" shape as the PO Tracker import.
 router.post("/import-coa", requireAuth, requireAdmin, upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   const dryRun = req.query.dryRun === "true" || req.body.dryRun === "true";
+  const createUnmatched = req.query.createUnmatched === "true" || req.body.createUnmatched === "true";
 
   let parsed;
   try {
@@ -100,36 +113,36 @@ router.post("/import-coa", requireAuth, requireAdmin, upload.single("file"), (re
     return res.status(400).json({ error: "No rows with a job number found in the uploaded sheet" });
   }
 
-  const summary = db.runLocationCoaImport(parsed.rows, { commit: !dryRun });
+  const summary = db.runLocationCoaImport(parsed.rows, { commit: !dryRun, createUnmatched });
   if (!dryRun) {
     db.addAudit(
       req.user.id,
       "LOCATION_COA_IMPORT",
-      `${req.user.name} imported job numbers from the Chart of Accounts: ${summary.changedCount} location(s) updated, ${summary.unmatchedCount} unmatched`
+      `${req.user.name} imported job numbers from the Chart of Accounts: ${summary.changedCount} location(s) updated, ${summary.createdCount} created, ${summary.unmatchedCount - summary.createdCount} still unmatched`
     );
   }
   res.json({ ...summary, dryRun, sheetName: parsed.sheetName, missingColumns: parsed.missingColumns });
 });
 
 router.post("/", requireAuth, requireAdmin, (req, res) => {
-  const { code, name, efJobNumber, region, womJobNumber, territory } = req.body || {};
+  const { code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = req.body || {};
   if (!code || !name) return res.status(400).json({ error: "code and name are required" });
   if (db.findLocation(code)) return res.status(409).json({ error: "Location code already exists" });
   if (territory && !db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || null);
+  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || null, ppsJobNumber || null);
   db.addAudit(req.user.id, "LOCATION_CREATED", `${req.user.name} created location ${code}: ${name}`);
   res.status(201).json({ ok: true });
 });
 
 router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
-  const { name, efJobNumber, region, womJobNumber, territory } = req.body || {};
+  const { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = req.body || {};
   const existing = db.findLocation(req.params.code);
   if (!existing) return res.status(404).json({ error: "Location not found" });
   if (!name) return res.status(400).json({ error: "name is required" });
   if (territory && !db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  const location = db.setLocationDetails(req.params.code, { name, efJobNumber, region, womJobNumber, territory });
+  const location = db.setLocationDetails(req.params.code, { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber });
   db.addAudit(req.user.id, "LOCATION_UPDATED", `${req.user.name} updated location ${location.code}`);
   res.json(presentLocation(location));
 });

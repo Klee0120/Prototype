@@ -272,7 +272,7 @@ test("locations: E&F job number and region tracking", async (t) => {
   await t.test("any logged-in user can list the available territories", async () => {
     const res = await server.call("GET", "/api/locations/territories", { userId: "T1001" });
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, ["Midwest", "HQ", "East", "West"]);
+    assert.deepEqual(res.body, ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION"]);
   });
 
   await t.test("a technician cannot create a location", async () => {
@@ -339,7 +339,7 @@ test("locations: E&F job number and region tracking", async (t) => {
         efJobNumber: "100110043044",
         womJobNumber: "100110041403",
         region: "Region 1",
-        territory: "HQ",
+        territory: "HQ Plano",
       },
     });
     assert.equal(res.status, 200);
@@ -347,7 +347,7 @@ test("locations: E&F job number and region tracking", async (t) => {
     assert.equal(res.body.efJobNumber, "100110043044");
     assert.equal(res.body.womJobNumber, "100110041403");
     assert.equal(res.body.region, "Region 1");
-    assert.equal(res.body.territory, "HQ");
+    assert.equal(res.body.territory, "HQ Plano");
   });
 
   await t.test("editing a location with an unknown territory is rejected", async () => {
@@ -422,6 +422,7 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
       "E&F Contract Job Number",
       "E1 WOM                         Job Number",
       "Description",
+      "E&F",
       "City",
       "State",
     ];
@@ -434,9 +435,9 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
   await t.test("dry run previews the match without writing anything", async () => {
     const buffer = coaWorkbook([
       // Category header row -- no job numbers at all, should be skipped entirely.
-      [null, null, null, null, "GENERAL MGT & ADMIN", null, null],
-      ["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"],
-      [null, null, null, 100110099999, "Totally Unknown Site", "Nowhere", "ZZ"],
+      [null, null, null, null, "GENERAL MGT & ADMIN", null, null, null],
+      ["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Region 1", "Princeton", "NJ"],
+      [null, null, null, 100110099999, "Totally Unknown Site", "Region 9", "Nowhere", "ZZ"],
     ]);
     const res = await server.upload("/api/locations/import-coa", {
       userId: "ADMIN",
@@ -454,16 +455,19 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.ok(match);
     assert.equal(match.efJobNumber.after, "100110042963");
     assert.equal(match.womJobNumber.after, "100110007530");
+    assert.equal(match.ppsJobNumber.after, "100110000726");
+    assert.equal(match.region.after, "Region 1");
     const unmatched = res.body.results.find((r) => !r.matched);
     assert.equal(unmatched.description, "Totally Unknown Site");
+    assert.equal(unmatched.willCreate, false, "createUnmatched defaults off");
 
     const stillBlank = await server.call("GET", "/api/locations", { userId: "ADMIN" });
     const princeton = stillBlank.body.find((l) => l.code === "PRINCETON");
     assert.equal(princeton.womJobNumber, null, "dry run must not write anything");
   });
 
-  await t.test("committing writes the matched location's job numbers", async () => {
-    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"]]);
+  await t.test("committing writes the matched location's job numbers and region", async () => {
+    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Region 1", "Princeton", "NJ"]]);
     const res = await server.upload("/api/locations/import-coa", {
       userId: "ADMIN",
       fields: {},
@@ -477,10 +481,12 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     const princeton = after.body.find((l) => l.code === "PRINCETON");
     assert.equal(princeton.efJobNumber, "100110042963");
     assert.equal(princeton.womJobNumber, "100110007530");
+    assert.equal(princeton.ppsJobNumber, "100110000726");
+    assert.equal(princeton.region, "Region 1");
   });
 
   await t.test("re-running with the same numbers reports nothing changed", async () => {
-    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"]]);
+    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Region 1", "Princeton", "NJ"]]);
     const res = await server.upload("/api/locations/import-coa", {
       userId: "ADMIN",
       fields: { dryRun: "true" },
@@ -492,8 +498,69 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.equal(res.body.changedCount, 0, "already matches -- nothing to update");
   });
 
+  await t.test("an unmatched row is only listed unless createUnmatched is set", async () => {
+    const buffer = coaWorkbook([[null, null, 100110055501, 100110055502, "Brand New Site", "Region 4A", "Nowhere", "ZZ"]]);
+
+    const previewOff = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { dryRun: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(previewOff.body.unmatchedCount, 1);
+    assert.equal(previewOff.body.createdCount, 0, "createUnmatched is off -- nothing would be created");
+    assert.equal(previewOff.body.results[0].willCreate, false);
+
+    const previewOn = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { dryRun: "true", createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(previewOn.body.createdCount, 1, "preview reports what would be created");
+    assert.equal(previewOn.body.results[0].willCreate, true);
+    const suggestedCode = previewOn.body.results[0].locationCode;
+    assert.ok(suggestedCode);
+
+    const stillMissing = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.ok(!stillMissing.body.some((l) => l.code === suggestedCode), "dry run (even with createUnmatched) must not write anything");
+
+    const commit = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(commit.body.createdCount, 1);
+
+    const after = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const created = after.body.find((l) => l.code === suggestedCode);
+    assert.ok(created, "the unmatched row was created as a new location");
+    assert.equal(created.name, "Brand New Site");
+    assert.equal(created.efJobNumber, "100110055501");
+    assert.equal(created.womJobNumber, "100110055502");
+    assert.equal(created.region, "Region 4A");
+  });
+
+  await t.test("re-running the same unmatched row after it was created now matches, not duplicates", async () => {
+    const buffer = coaWorkbook([[null, null, 100110055501, 100110055502, "Brand New Site", "Region 4A", "Nowhere", "ZZ"]]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { dryRun: "true", createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.body.matchedCount, 1);
+    assert.equal(res.body.unmatchedCount, 0);
+    assert.equal(res.body.changedCount, 0);
+  });
+
   await t.test("a technician cannot run the import", async () => {
-    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Princeton", "NJ"]]);
+    const buffer = coaWorkbook([["03004", 100110000726, 100110042963, 100110007530, "TLS Princeton", "Region 1", "Princeton", "NJ"]]);
     const res = await server.upload("/api/locations/import-coa", {
       userId: "T1001",
       fields: {},
