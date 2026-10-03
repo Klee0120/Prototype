@@ -31,6 +31,9 @@ export async function renderReclasses(container, options = {}) {
   let meta = null;
   let itemsCache = null;
   let lastBatch = null;
+  let glActivity = null;
+  const GL_ACTIVITY_GROUP_PAGE_SIZE = 25;
+  let glActivityPage = 1;
   // One-shot deep link from Financials -> Cost Analysis's "Reclassed" link
   // (see adminReview.js's reclassItemToOpen) -- opens straight to that
   // item's detail the first time this tab draws, regardless of filters.
@@ -41,7 +44,7 @@ export async function renderReclasses(container, options = {}) {
   async function draw() {
     container.innerHTML = `<p class="empty-note">Loading…</p>`;
     try {
-      const [items, batches, metaResp] = await Promise.all([
+      const [items, batches, metaResp, activity] = await Promise.all([
         api.get(
           `/api/admin/reclasses/items?${new URLSearchParams({
             ...(statusFilter ? { status: statusFilter } : {}),
@@ -50,10 +53,12 @@ export async function renderReclasses(container, options = {}) {
         ),
         api.get("/api/admin/reclasses/batches"),
         meta || api.get("/api/admin/reclasses/meta"),
+        api.get("/api/admin/reclasses/gl-activity"),
       ]);
       itemsCache = items;
       meta = metaResp;
       lastBatch = batches[0] || null;
+      glActivity = activity;
     } catch (err) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
@@ -97,6 +102,22 @@ export async function renderReclasses(container, options = {}) {
       </div>
       <p class="po-count">${itemsCache.length} item${itemsCache.length === 1 ? "" : "s"}.</p>
       <div class="reclass-table-wrap"></div>
+
+      ${
+        glActivity.length > 0
+          ? `
+      <h3>Reclass activity found in GL</h3>
+      <p class="review-checklist-hint">
+        GL lines whose "Name - Alpha Explanation" text itself says "Reclass" -- pulled straight from
+        whatever GL reports you've imported, whether or not a Reclass Submission was ever imported for it.
+        Grouped by batch number, since a reclass usually posts as a matched pair (one business unit charged,
+        another credited) in the same batch. This is a read from the GL's own text, not a formal record --
+        it never creates or changes anything in the list above.
+      </p>
+      <div class="reclass-gl-activity-wrap"></div>
+      `
+          : ""
+      }
     `;
 
     container.querySelector(".reclass-import-btn").addEventListener("click", () => {
@@ -119,6 +140,85 @@ export async function renderReclasses(container, options = {}) {
     });
 
     renderTable();
+    if (glActivity.length > 0) renderGlActivity();
+  }
+
+  // Groups consecutive rows (already ordered by batch_number from the
+  // server) into one block per batch, so a reclass's matched pair never
+  // splits across a page boundary.
+  function groupGlActivityByBatch(rows) {
+    const groups = [];
+    for (const row of rows) {
+      const last = groups[groups.length - 1];
+      if (last && last.batchNumber === row.batchNumber) last.rows.push(row);
+      else groups.push({ batchNumber: row.batchNumber, rows: [row] });
+    }
+    return groups;
+  }
+
+  function renderGlActivity() {
+    const wrap = container.querySelector(".reclass-gl-activity-wrap");
+    const groups = groupGlActivityByBatch(glActivity);
+    const totalPages = Math.max(1, Math.ceil(groups.length / GL_ACTIVITY_GROUP_PAGE_SIZE));
+    if (glActivityPage > totalPages) glActivityPage = totalPages;
+    const pageGroups = groups.slice((glActivityPage - 1) * GL_ACTIVITY_GROUP_PAGE_SIZE, glActivityPage * GL_ACTIVITY_GROUP_PAGE_SIZE);
+    const start = (glActivityPage - 1) * GL_ACTIVITY_GROUP_PAGE_SIZE + 1;
+    const end = Math.min(groups.length, glActivityPage * GL_ACTIVITY_GROUP_PAGE_SIZE);
+
+    wrap.innerHTML = `
+      <table class="detail-table reclass-table">
+        <thead>
+          <tr>
+            <th>Batch #</th>
+            <th>GL Period</th>
+            <th>GL Date</th>
+            <th>Business Unit</th>
+            <th>Object Account</th>
+            <th>Subsidiary</th>
+            <th>Amount</th>
+            <th>Name - Alpha Explanation</th>
+            <th>Remark</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${pageGroups
+            .map((g) =>
+              g.rows
+                .map(
+                  (r, i) => `
+            <tr class="${i === 0 ? "reclass-gl-group-start" : ""}">
+              <td>${i === 0 ? escapeHtml(r.batchNumber || "—") : ""}</td>
+              <td>P${escapeHtml(String(r.periodNumber))}/FY${escapeHtml(String(r.fiscalYear))}</td>
+              <td>${escapeHtml(r.glDate || "—")}</td>
+              <td>${escapeHtml(r.businessUnit || "—")}</td>
+              <td>${escapeHtml(r.objectAccount || "—")}</td>
+              <td>${escapeHtml(r.subsidiary || "—")}</td>
+              <td>${formatMoney(r.amount)}</td>
+              <td>${escapeHtml(r.nameAlpha || "—")}</td>
+              <td>${escapeHtml(r.remark || "—")}</td>
+            </tr>`
+                )
+                .join("")
+            )
+            .join("")}
+        </tbody>
+      </table>
+      ${
+        totalPages > 1
+          ? `
+      <div class="gl-pager reclass-gl-activity-pager">
+        <button type="button" class="btn btn-secondary gl-pager-prev" ${glActivityPage <= 1 ? "disabled" : ""}>&larr; Prev</button>
+        <span>Showing batch group ${start}&ndash;${end} of ${groups.length}</span>
+        <button type="button" class="btn btn-secondary gl-pager-next" ${glActivityPage >= totalPages ? "disabled" : ""}>Next &rarr;</button>
+      </div>
+      `
+          : ""
+      }
+    `;
+    const prevBtn = wrap.querySelector(".gl-pager-prev");
+    const nextBtn = wrap.querySelector(".gl-pager-next");
+    if (prevBtn) prevBtn.addEventListener("click", () => { glActivityPage--; renderGlActivity(); });
+    if (nextBtn) nextBtn.addEventListener("click", () => { glActivityPage++; renderGlActivity(); });
   }
 
   function renderTable() {

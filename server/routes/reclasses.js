@@ -205,6 +205,13 @@ router.patch("/items/:id", (req, res) => {
   }
 });
 
+// Reclass activity the GL itself shows (via the "Name - Alpha Explanation"
+// signal), regardless of whether a Reclass Submission workbook was ever
+// imported for it -- see db.getGlReclassActivity.
+router.get("/gl-activity", (req, res) => {
+  res.json(db.getGlReclassActivity());
+});
+
 router.get("/meta", (req, res) => {
   res.json({
     statuses: db.RECLASS_STATUSES.map((value) => ({ value, label: db.RECLASS_STATUS_LABELS[value] })),

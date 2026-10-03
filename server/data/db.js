@@ -5481,6 +5481,28 @@ function findReclassPostingMatches(jobNumber, amount) {
     .all(jobNumber, amount);
 }
 
+// Every GL line that looks like a reclass posting (same "Name - Alpha
+// Explanation contains Reclass" signal as findReclassPostingMatches above),
+// independent of whether anyone ever imported a Reclass Submission workbook
+// for it -- lets the Reclasses tab show what the GL itself says happened,
+// not just what's been formally submitted. Ordered by batch number so the
+// debit/credit pair (or set) that make up one reclass transaction land next
+// to each other (confirmed against a real pair: same batch, opposite-signed
+// amounts, both tagged "AER Reclass").
+function getGlReclassActivity() {
+  return db
+    .prepare(
+      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
+              batch_number AS batchNumber, business_unit AS businessUnit, object_account AS objectAccount,
+              subsidiary, amount, name_alpha AS nameAlpha, remark, document_number AS documentNumber,
+              supplier_invoice_number AS supplierInvoiceNumber
+       FROM gl_entries
+       WHERE name_alpha LIKE '%reclass%' COLLATE NOCASE
+       ORDER BY batch_number, gl_date, business_unit`
+    )
+    .all();
+}
+
 // A plain keyword read of the PO's own free-text status, for the Open/
 // Closed filter only -- never shown in place of the real status text (see
 // the Financials UI comment on why that's never algorithmically
@@ -5784,6 +5806,7 @@ module.exports = {
   findGlImportByPeriod,
   getPoGlLinksByWom,
   findReclassPostingMatches,
+  getGlReclassActivity,
   getPoReconciliation,
   getGlImportStatus,
   getGlFiscalYearCoverage,
