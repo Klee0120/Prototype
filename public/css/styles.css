@@ -266,6 +266,207 @@ h1, h2, h3, h4 {
   flex-wrap: wrap;
 }
 
+/* The search/territory/notifications group -- persists across tab switches
+   (unlike .topbar-context, which each tab's own draw() clears), rendered
+   once on the dark top bar so it needs its own light-on-dark pill styling
+   rather than the light-background .search-field it borrows its layout from. */
+.topbar-global-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  width: 260px;
+}
+.topbar-search .search-field-icon {
+  color: var(--sidebar-text);
+  font-size: 14px;
+}
+.topbar-search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 13px;
+  min-width: 0;
+}
+.topbar-search-input::placeholder {
+  color: var(--sidebar-text);
+}
+.topbar-search-input:focus {
+  outline: none;
+}
+
+.topbar-search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  max-height: 420px;
+  overflow-y: auto;
+  z-index: 30;
+  padding: 6px;
+}
+.topbar-search-dropdown .empty-note {
+  padding: 10px;
+  margin: 0;
+}
+.topbar-search-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 8px 4px;
+}
+.topbar-search-result {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.topbar-search-result:hover {
+  background: var(--accent-bg);
+}
+.topbar-search-result-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.topbar-search-result-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.topbar-territory-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.topbar-territory-field .search-field-icon {
+  font-size: 14px;
+}
+.topbar-territory-field select {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 13px;
+}
+.topbar-territory-field select:focus {
+  outline: none;
+}
+.topbar-territory-field select option {
+  color: var(--ink);
+}
+
+.topbar-bell {
+  position: relative;
+}
+.topbar-bell-btn {
+  position: relative;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 8px;
+  line-height: 1;
+}
+.topbar-bell-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+}
+
+.topbar-bell-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 340px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  max-height: 440px;
+  overflow-y: auto;
+  z-index: 30;
+  padding: 6px;
+}
+.topbar-bell-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 8px 4px;
+}
+.topbar-bell-item {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 10px 8px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.topbar-bell-item:hover {
+  background: var(--accent-bg);
+}
+.topbar-bell-item-section {
+  font-size: 11px;
+  color: var(--muted);
+}
+.topbar-bell-item-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.topbar-bell-item-detail {
+  font-size: 12px;
+  color: var(--muted);
+}
+.topbar-bell-viewall {
+  width: 100%;
+  text-align: center;
+  padding: 10px;
+}
+
 .topbar-field {
   display: flex;
   flex-direction: column;

@@ -833,4 +833,43 @@ router.patch("/admins/:id/pse-reviewer", (req, res) => {
   res.json(presentAdmin(db.findTechnician(admin.id)));
 });
 
+// The topbar's global search -- one box across the three things an admin
+// actually jumps to by name/number instead of browsing a list for: a WOM
+// (by code or description), a vendor (by name), or a PO (by PO#/vendor/
+// description, reusing the Budget PO Tracker's own search filter so the
+// matching rule stays in one place). Capped per kind since this is a
+// jump-to-record box, not a report -- a long tail of matches belongs in
+// each section's own filtered list, not a dropdown.
+const GLOBAL_SEARCH_LIMIT = 6;
+
+router.get("/search", (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (q.length < 2) return res.json({ woms: [], vendors: [], pos: [] });
+  const needle = q.toLowerCase();
+
+  const woms = db
+    .listWoms()
+    .filter((w) => w.code.toLowerCase().includes(needle) || (w.description || "").toLowerCase().includes(needle))
+    .slice(0, GLOBAL_SEARCH_LIMIT)
+    .map((w) => ({
+      code: w.code,
+      description: w.description,
+      status: w.status,
+      locationName: w.location_code ? (db.findLocation(w.location_code) || {}).name || null : null,
+    }));
+
+  const vendors = db
+    .listVendors()
+    .filter((v) => v.name.toLowerCase().includes(needle))
+    .slice(0, GLOBAL_SEARCH_LIMIT)
+    .map((v) => ({ id: v.id, name: v.name, cwStatus: v.cwStatus }));
+
+  const pos = db
+    .listPos({ search: q })
+    .slice(0, GLOBAL_SEARCH_LIMIT)
+    .map((p) => ({ id: p.id, poNumber: p.poNumber, vendorName: p.vendorName, description: p.description }));
+
+  res.json({ woms, vendors, pos });
+});
+
 module.exports = router;

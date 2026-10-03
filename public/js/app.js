@@ -117,8 +117,9 @@ export async function render() {
 
   const navHost = shell.querySelector("#sidebar-nav");
   const topbarHost = main.querySelector("#topbar-context");
+  const globalToolsHost = main.querySelector("#topbar-global-tools");
   if (state.user.role === "admin") {
-    await renderAdminReview(content, navHost, topbarHost, subtabBand);
+    await renderAdminReview(content, navHost, topbarHost, subtabBand, globalToolsHost);
   } else {
     await renderTechHome(content, navHost, topbarHost, subtabBand);
   }
@@ -138,6 +139,7 @@ function renderTopBar() {
       <span class="topbar-brand-sub">Toyota Operations &amp; Financial Management</span>
     </div>
     <div class="topbar-context" id="topbar-context"></div>
+    <div class="topbar-global-tools" id="topbar-global-tools"></div>
   `;
   return bar;
 }

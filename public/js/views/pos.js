@@ -3,6 +3,7 @@ import { state, escapeHtml } from "../app.js";
 import { openModal } from "../modal.js";
 import { renderAttachments } from "./attachments.js";
 import { TERRITORIES, CW_PO_REQUEST_FORM_URL } from "../constants.js";
+import { getTerritory } from "../globalFilters.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -25,9 +26,9 @@ const PO_DOC_CATEGORIES = [
 // Local state resets on every visit to this tab (same reasoning as the
 // task board's own bulk-select: a stale selection across an unrelated
 // filter/subtab change is worse than just starting fresh).
-export async function renderPos(container) {
+export async function renderPos(container, { openPoId } = {}) {
   let subTab = "active"; // "active" | "needs_organization"
-  let detailId = null;
+  let detailId = openPoId || null;
   const filters = { search: "", locationCode: "", vendorUnmatched: false, regionUnassigned: false, womLinkMissing: false };
   const selectedIds = new Set();
   let listCache = null;
@@ -57,6 +58,11 @@ export async function renderPos(container) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
     }
+    const territory = getTerritory();
+    if (territory) {
+      const locationByCode = Object.fromEntries(locationsCache.map((l) => [l.code, l]));
+      listCache = listCache.filter((p) => p.locationCode && ((locationByCode[p.locationCode] || {}).territory || "Midwest") === territory);
+    }
     selectedIds.clear();
     if (detailId) await drawDetail();
     else drawList();
@@ -77,7 +83,7 @@ export async function renderPos(container) {
         <input type="file" class="po-import-file" accept=".xlsx,.xls" hidden />
         <a class="btn btn-outline" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">+ Request C&amp;W PO ↗</a>
       </div>
-      <p class="review-checklist-hint">${escapeHtml(lastImportLine())}</p>
+      <p class="review-checklist-hint">${escapeHtml(lastImportLine())}${getTerritory() ? ` Showing <strong>${escapeHtml(getTerritory())}</strong> only.` : ""}</p>
       <div class="pill-toggle-group po-subtabs">
         <button type="button" class="pill-toggle-btn ${subTab === "active" ? "active" : ""}" data-subtab="active">Active POs</button>
         <button type="button" class="pill-toggle-btn ${subTab === "needs_organization" ? "active" : ""}" data-subtab="needs_organization">Needs Organization</button>

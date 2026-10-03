@@ -13,6 +13,7 @@ import { renderInvoicing } from "./invoicing.js";
 import { renderGlReconciliation } from "./gl.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
+import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -155,7 +156,7 @@ function reportYearOptions(selectedYear) {
     .join("");
 }
 
-export async function renderAdminReview(container, navHost, topbarHost, subtabHost) {
+export async function renderAdminReview(container, navHost, topbarHost, subtabHost, globalToolsHost) {
   let activeTab = "review";
   let allocTechId = null;
   // Which technicians' detail panels are expanded on Weekly Review -- just
@@ -181,8 +182,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     goTo("woms");
   }
   const locationEditing = new Set();
-  let womTerritoryFilter = ""; // "" = all territories, so a single-territory shop sees no filter UI noise by default
-  let locationTerritoryFilter = ""; // "" = all territories
+  // Territory is filtered globally now (see globalFilters.js / the topbar
+  // selector), not as a separate per-page dropdown.
   let womGroupFilter = "active"; // "active" | "closed" -- the pill toggle above the WOM list
   let womLocationFilter = ""; // "" = all locations
   let womStatusFilter = ""; // "" = all statuses
@@ -199,6 +200,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // One-shot: a reclass item id to auto-open in the Reclasses tab, set when
   // a "Reclassed" link is clicked from the Applied-over-PO category table.
   let reclassItemToOpen = null;
+  // One-shot: a PO id to auto-open in the Budget PO Tracker, set by the
+  // global topbar search (same pattern as reclassItemToOpen above).
+  let poToOpen = null;
+  function openPoProfile(poId) {
+    poToOpen = poId;
+    goTo("pos");
+  }
   // One-shot: a WOM # to pre-fill into the "Flag a Reclass Finding" form,
   // set when "+ Flag a reclass for this WOM" is clicked from a WOM's own
   // detail modal.
@@ -277,6 +285,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     draw();
   }
 
+  renderGlobalTopbarTools(globalToolsHost);
   draw();
 
   async function draw() {
@@ -334,7 +343,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
-    else if (activeTab === "pos") await renderPos(content);
+    else if (activeTab === "pos") {
+      const openPoId = poToOpen;
+      poToOpen = null;
+      await renderPos(content, { openPoId });
+    }
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
     else if (activeTab === "invoicing") {
       await renderInvoicing(content, { onOpenWom: (code) => openWomProfile(code, "documents", "invoicing") });
@@ -360,17 +373,28 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // elsewhere by checking drawGeneration hasn't moved on since this call
   // started.
   async function refreshPriorityBadge(myGeneration) {
-    const count = await computePriorityCount();
+    // The nav pill and the bell deliberately count different things (the
+    // pill is a curated "a few things to look at today," per the comment on
+    // computePriorityCount; the bell's badge mirrors exactly what's in its
+    // own dropdown, built by computeBellItems) -- fetched in parallel so one
+    // slow/failing count never blocks the other.
+    const [count, bellItems] = await Promise.all([computePriorityCount(), computeBellItems().catch(() => [])]);
     if (myGeneration !== drawGeneration) return;
     priorityCount = count;
     const nav = navHost.querySelector('.sidebar-nav-item[data-section="priorities"]');
-    if (!nav) return;
-    const existingBadge = nav.querySelector(".tab-badge");
-    if (count > 0) {
-      if (existingBadge) existingBadge.textContent = count;
-      else nav.insertAdjacentHTML("beforeend", ` <span class="tab-badge">${count}</span>`);
-    } else if (existingBadge) {
-      existingBadge.remove();
+    if (nav) {
+      const existingBadge = nav.querySelector(".tab-badge");
+      if (count > 0) {
+        if (existingBadge) existingBadge.textContent = count;
+        else nav.insertAdjacentHTML("beforeend", ` <span class="tab-badge">${count}</span>`);
+      } else if (existingBadge) {
+        existingBadge.remove();
+      }
+    }
+    const bellBadge = globalToolsHost && globalToolsHost.querySelector(".topbar-bell-badge");
+    if (bellBadge) {
+      bellBadge.textContent = bellItems.length;
+      bellBadge.hidden = bellItems.length === 0;
     }
   }
 
@@ -2036,24 +2060,32 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   const DAILY_GOAL_TARGET = 10;
 
+  // One shared fetch behind both the tab's own badge count and the topbar
+  // notification bell, so the two never drift out of sync by each hitting
+  // these 9 endpoints separately with slightly different logic.
+  async function fetchPriorityRaw() {
+    const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues, taskSummary] = await Promise.all([
+      api.get("/api/admin/expiring-forms"),
+      api.get("/api/admin/vendors"),
+      api.get("/api/admin/weekend-addenda"),
+      api.get("/api/admin/report-gaps"),
+      api.get("/api/admin/missing-ukg"),
+      api.get("/api/woms"),
+      api.get("/api/admin/purelyhr-unverified"),
+      api.get("/api/admin/punch-issues"),
+      api.get("/api/tasks/summary"),
+    ]);
+    return { expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues, taskSummary };
+  }
+
   // The tab's own badge count -- a small number next to its label, not a
   // banner anywhere else. Never blocks the tab bar itself if one of these
   // calls fails.
   async function computePriorityCount() {
     try {
-      const [expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues, taskSummary] = await Promise.all([
-        api.get("/api/admin/expiring-forms"),
-        api.get("/api/admin/vendors"),
-        api.get("/api/admin/weekend-addenda"),
-        api.get("/api/admin/report-gaps"),
-        api.get("/api/admin/missing-ukg"),
-        api.get("/api/woms"),
-        api.get("/api/admin/purelyhr-unverified"),
-        api.get("/api/admin/punch-issues"),
-        api.get("/api/tasks/summary"),
-      ]);
-      const outdatedVendorCount = vendors.filter((v) => v.formsStatus === "outdated").length;
-      const smartsheetGapCount = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
+      const raw = await fetchPriorityRaw();
+      const outdatedVendorCount = raw.vendors.filter((v) => v.formsStatus === "outdated").length;
+      const smartsheetGapCount = raw.woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt).length;
       // Vendor document-check completeness and pending WOM requests are both
       // deliberately left out of this badge: against a real Smartsheet
       // sync, "not yet sent to Toyota" (or "not yet checked", for vendors)
@@ -2063,16 +2095,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       // full in their own section below, to work through at whatever pace
       // makes sense (see Today's focus).
       return (
-        expiringForms.length +
+        raw.expiringForms.length +
         outdatedVendorCount +
-        weekendAddenda.length +
-        reportGaps.length +
-        missingUkg.length +
+        raw.weekendAddenda.length +
+        raw.reportGaps.length +
+        raw.missingUkg.length +
         smartsheetGapCount +
-        purelyhrUnverified.length +
-        punchIssues.length +
-        taskSummary.overdue +
-        taskSummary.exceptions
+        raw.purelyhrUnverified.length +
+        raw.punchIssues.length +
+        raw.taskSummary.overdue +
+        raw.taskSummary.exceptions
       );
     } catch {
       return 0;
@@ -2242,41 +2274,300 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     sections.querySelectorAll(".priority-view-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const { kind, tech, week, month, vendor, wom } = btn.dataset;
-        if (kind === "vendor") {
-          vendorFilters.formsStatus = "outdated";
-          vendorProfileId = null;
-          activeTab = "vendors";
-        } else if (kind === "vendor-doc") {
-          vendorProfileId = Number(vendor);
-          vendorProfileTab = "documents";
-          activeTab = "vendors";
-        } else if (kind === "tech-forms") {
-          jumpToTech = { techId: tech, subTab: "forms" };
-          activeTab = "technicians";
-        } else if (kind === "missing-ukg") {
-          allocTechId = tech;
-          state.weekMonday = week;
-          activeTab = "techalloc";
-        } else if (kind === "weekend" || kind === "punch-issue") {
-          state.weekMonday = week;
-          expanded.add(tech);
-          activeTab = "review";
-        } else if (kind === "wom-pending") {
-          womProfileCode = wom;
-          womProfileTab = "overview";
-          activeTab = "woms";
-        } else if (kind === "report-gap") {
-          laborReportMonth = month;
-          activeTab = "laborreports";
-        } else if (kind === "purelyhr") {
-          state.weekMonday = week;
-          expanded.add(tech);
-          activeTab = "review";
-        }
+        applyPriorityNavigation(btn.dataset);
         await draw();
       });
     });
+  }
+
+  // The "View" jump-to-record logic for a Priorities item -- factored out so
+  // the topbar notification bell (a condensed view of the same items) can
+  // reuse the exact same navigation instead of a second, divergable copy.
+  function applyPriorityNavigation({ kind, tech, week, month, vendor, wom }) {
+    if (kind === "vendor") {
+      vendorFilters.formsStatus = "outdated";
+      vendorProfileId = null;
+      activeTab = "vendors";
+    } else if (kind === "vendor-doc") {
+      vendorProfileId = Number(vendor);
+      vendorProfileTab = "documents";
+      activeTab = "vendors";
+    } else if (kind === "tech-forms") {
+      jumpToTech = { techId: tech, subTab: "forms" };
+      activeTab = "technicians";
+    } else if (kind === "missing-ukg") {
+      allocTechId = tech;
+      state.weekMonday = week;
+      activeTab = "techalloc";
+    } else if (kind === "weekend" || kind === "punch-issue") {
+      state.weekMonday = week;
+      expanded.add(tech);
+      activeTab = "review";
+    } else if (kind === "wom-pending") {
+      womProfileCode = wom;
+      womProfileTab = "overview";
+      activeTab = "woms";
+    } else if (kind === "report-gap") {
+      laborReportMonth = month;
+      activeTab = "laborreports";
+    } else if (kind === "purelyhr") {
+      state.weekMonday = week;
+      expanded.add(tech);
+      activeTab = "review";
+    }
+  }
+
+  // The same 8-endpoint aggregation computePriorityCount/drawPriorities use,
+  // but returning actual items (not just a count) for the topbar
+  // notification bell's dropdown -- fetched fresh only when the bell is
+  // opened, not on every page draw.
+  async function computeBellItems() {
+    const { expiringForms, vendors, weekendAddenda, reportGaps, missingUkg, woms, purelyhrUnverified, punchIssues } = await fetchPriorityRaw();
+    const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
+    const pendingWoms = woms.filter((w) => w.status === "pending");
+    const todayIso = new Date().toISOString().slice(0, 10);
+
+    return [
+      ...outdatedVendors.map((v) => ({ section: "Vendor forms outdated", label: v.name, detail: "Forms outdated", kind: "vendor" })),
+      ...expiringForms.map((f) => ({
+        section: "Employee forms needing attention",
+        label: f.techName,
+        detail: `${f.formType || f.originalName} — ${f.expiresAt < todayIso ? "expired" : "expires"} ${f.expiresAt}`,
+        kind: "tech-forms",
+        tech: f.techId,
+      })),
+      ...missingUkg.map((m) => ({
+        section: "Missing UKG hours",
+        label: m.techName,
+        detail: `week of ${m.weekMonday}`,
+        kind: "missing-ukg",
+        tech: m.techId,
+        week: m.weekMonday,
+      })),
+      ...weekendAddenda.map((a) => ({
+        section: "Weekend hours needing review",
+        label: a.techName,
+        detail: `week of ${a.weekMonday}`,
+        kind: "weekend",
+        tech: a.techId,
+        week: a.weekMonday,
+      })),
+      ...punchIssues.map((p) => ({
+        section: "Punch issues",
+        label: p.techName,
+        detail: `${p.day}, week of ${p.weekMonday}`,
+        kind: "punch-issue",
+        tech: p.techId,
+        week: p.weekMonday,
+      })),
+      ...reportGaps.map((m) => ({ section: "Months missing a report", label: monthLabel(m), detail: "No report saved", kind: "report-gap", month: m })),
+      ...pendingWoms.map((w) => ({ section: "WOM requests not yet sent to Toyota", label: w.description, detail: w.code, kind: "wom-pending", wom: w.code })),
+      ...purelyhrUnverified.map((w) => ({
+        section: "Time off needing PurelyHR verification",
+        label: w.techName,
+        detail: `week of ${w.weekMonday}`,
+        kind: "purelyhr",
+        tech: w.techId,
+        week: w.weekMonday,
+      })),
+    ];
+  }
+
+  // The topbar's search/territory/notifications group -- rendered once into
+  // a host that survives tab switches (unlike #topbar-context, which each
+  // tab's own draw() clears), since these apply across the whole app rather
+  // than to whichever tab is active.
+  function renderGlobalTopbarTools(host) {
+    if (!host) return;
+    host.innerHTML = `
+      <div class="topbar-search" id="topbar-search">
+        <span class="search-field-icon">&#128269;</span>
+        <input type="search" class="topbar-search-input" placeholder="Search WOMs, vendors, POs..." autocomplete="off" />
+        <div class="topbar-search-dropdown" hidden></div>
+      </div>
+      <label class="topbar-territory-field">
+        <span class="search-field-icon">&#127760;</span>
+        <select class="topbar-territory-select">
+          <option value="">All territories</option>
+          ${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}" ${getTerritory() === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="topbar-bell" id="topbar-bell">
+        <button type="button" class="topbar-bell-btn" aria-label="Notifications">
+          &#128276;
+          <span class="topbar-bell-badge" hidden></span>
+        </button>
+        <div class="topbar-bell-dropdown" hidden></div>
+      </div>
+    `;
+
+    const searchInput = host.querySelector(".topbar-search-input");
+    const searchDropdown = host.querySelector(".topbar-search-dropdown");
+    let searchDebounce = null;
+    let searchGeneration = 0;
+
+    searchInput.addEventListener("input", () => {
+      const q = searchInput.value.trim();
+      clearTimeout(searchDebounce);
+      if (q.length < 2) {
+        searchDropdown.hidden = true;
+        searchDropdown.innerHTML = "";
+        return;
+      }
+      searchDebounce = setTimeout(() => runSearch(q), 250);
+    });
+    searchInput.addEventListener("focus", () => {
+      if (searchDropdown.innerHTML) searchDropdown.hidden = false;
+    });
+
+    async function runSearch(q) {
+      const myGeneration = ++searchGeneration;
+      let results;
+      try {
+        results = await api.get(`/api/admin/search?q=${encodeURIComponent(q)}`);
+      } catch {
+        return;
+      }
+      if (myGeneration !== searchGeneration) return;
+      renderSearchResults(results);
+    }
+
+    function searchGroup(title, rows) {
+      if (rows.length === 0) return "";
+      return `
+        <div class="topbar-search-group">
+          <div class="topbar-search-group-title">${escapeHtml(title)}</div>
+          ${rows.join("")}
+        </div>
+      `;
+    }
+
+    function renderSearchResults(results) {
+      const groups = [
+        searchGroup(
+          "WOM Projects",
+          results.woms.map(
+            (w) => `
+              <button type="button" class="topbar-search-result" data-kind="wom" data-code="${escapeHtml(w.code)}">
+                <span class="topbar-search-result-label">${escapeHtml(w.description || w.code)}</span>
+                <span class="topbar-search-result-sub">WOM ${escapeHtml(w.code)}${w.locationName ? ` &middot; ${escapeHtml(w.locationName)}` : ""}</span>
+              </button>
+            `
+          )
+        ),
+        searchGroup(
+          "Vendors",
+          results.vendors.map(
+            (v) => `
+              <button type="button" class="topbar-search-result" data-kind="vendor" data-id="${v.id}">
+                <span class="topbar-search-result-label">${escapeHtml(v.name)}</span>
+              </button>
+            `
+          )
+        ),
+        searchGroup(
+          "POs",
+          results.pos.map(
+            (p) => `
+              <button type="button" class="topbar-search-result" data-kind="po" data-id="${p.id}">
+                <span class="topbar-search-result-label">PO ${escapeHtml(p.poNumber || "—")} -- ${escapeHtml(p.vendorName || "Unassigned vendor")}</span>
+                <span class="topbar-search-result-sub">${escapeHtml(p.description || "")}</span>
+              </button>
+            `
+          )
+        ),
+      ].filter(Boolean);
+
+      searchDropdown.innerHTML = groups.length ? groups.join("") : `<p class="empty-note">No matches.</p>`;
+      searchDropdown.hidden = false;
+
+      searchDropdown.querySelectorAll(".topbar-search-result").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const { kind, code, id } = btn.dataset;
+          searchInput.value = "";
+          searchDropdown.hidden = true;
+          searchDropdown.innerHTML = "";
+          if (kind === "wom") openWomProfile(code);
+          else if (kind === "vendor") openVendorProfile(Number(id));
+          else if (kind === "po") openPoProfile(Number(id));
+          await draw();
+        });
+      });
+    }
+
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#topbar-search")) searchDropdown.hidden = true;
+    });
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") searchDropdown.hidden = true;
+    });
+
+    host.querySelector(".topbar-territory-select").addEventListener("change", (e) => {
+      setTerritory(e.target.value);
+    });
+
+    const bellBtn = host.querySelector(".topbar-bell-btn");
+    const bellDropdown = host.querySelector(".topbar-bell-dropdown");
+    bellBtn.addEventListener("click", async () => {
+      const opening = bellDropdown.hidden;
+      bellDropdown.hidden = !opening;
+      if (opening) await loadBellDropdown();
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#topbar-bell")) bellDropdown.hidden = true;
+    });
+
+    async function loadBellDropdown() {
+      bellDropdown.innerHTML = `<p class="empty-note">Loading…</p>`;
+      let items;
+      try {
+        items = await computeBellItems();
+      } catch (err) {
+        bellDropdown.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        return;
+      }
+      const shown = items.slice(0, 8);
+      bellDropdown.innerHTML = `
+        <div class="topbar-bell-title">Notifications</div>
+        ${
+          shown.length === 0
+            ? `<p class="empty-note">Nothing needs attention right now.</p>`
+            : shown
+                .map(
+                  (item, i) => `
+                  <button type="button" class="topbar-bell-item" data-index="${i}">
+                    <span class="topbar-bell-item-section">${escapeHtml(item.section)}</span>
+                    <span class="topbar-bell-item-label">${escapeHtml(item.label)}</span>
+                    <span class="topbar-bell-item-detail">${escapeHtml(item.detail)}</span>
+                  </button>
+                `
+                )
+                .join("")
+        }
+        ${items.length > 0 ? `<button type="button" class="btn btn-link topbar-bell-viewall">View all ${items.length} in Priorities</button>` : ""}
+      `;
+      bellDropdown.querySelectorAll(".topbar-bell-item").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const item = shown[Number(btn.dataset.index)];
+          bellDropdown.hidden = true;
+          applyPriorityNavigation(item);
+          await draw();
+        });
+      });
+      const viewAll = bellDropdown.querySelector(".topbar-bell-viewall");
+      if (viewAll) {
+        viewAll.addEventListener("click", async () => {
+          bellDropdown.hidden = true;
+          activeTab = "checklist";
+          await draw();
+        });
+      }
+    }
+
+    // Any list currently on screen (WOM Projects, Locations, Budget PO
+    // Tracker, Financials) re-filters itself by territory on its own next
+    // draw -- a territory change just needs to trigger that redraw.
+    onTerritoryChange(() => draw());
   }
 
   function renderPrioritySection(title, items, emptyText) {
@@ -3370,29 +3661,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   async function drawLocations(content) {
     const locations = await api.get("/api/locations");
     const efSubsidiary = locations[0] ? locations[0].efSubsidiaryCode : "20920000";
-    const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
-    const filtered = locationTerritoryFilter
-      ? locations.filter((l) => (l.territory || "Midwest") === locationTerritoryFilter)
-      : locations;
+    const territory = getTerritory();
+    const filtered = territory ? locations.filter((l) => (l.territory || "Midwest") === territory) : locations;
 
     content.innerHTML = `
       <div class="review-actions">
         <h3 style="margin: 0;">Locations</h3>
         <button type="button" class="btn btn-primary" id="add-location-btn">Add location</button>
         <button type="button" class="btn btn-outline" id="import-coa-btn">Import Chart of Accounts</button>
-        <label class="roster-filter-field">
-          <span>Territory</span>
-          <select class="location-territory-filter">
-            <option value="">All territories</option>
-            ${territoriesInUse.map((t) => `<option value="${escapeHtml(t)}" ${locationTerritoryFilter === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
-          </select>
-        </label>
       </div>
       <p class="review-checklist-hint">
         Each location has its own E&amp;F Contract Job Number and WOM Job Number (from the JDE lookup). E&amp;F time
         always uses the standard subsidiary code <strong>${escapeHtml(efSubsidiary)}</strong> at every location —
         that part never changes location to location; WOM subsidiary codes vary by project and are set on each WOM
         (WOM tab). Region is used to match this location up against the monthly labor report.
+        ${territory ? ` Showing <strong>${escapeHtml(territory)}</strong> only -- change the territory filter in the top bar to see others.` : ""}
       </p>
       <div class="review-list" id="location-list"></div>
     `;
@@ -3404,14 +3687,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       for (const l of filtered) {
         locationList.appendChild(renderLocationRow(l, content));
       }
-    }
-
-    const territorySelect = content.querySelector(".location-territory-filter");
-    if (territorySelect) {
-      territorySelect.addEventListener("change", (e) => {
-        locationTerritoryFilter = e.target.value;
-        drawLocations(content);
-      });
     }
 
     content.querySelector("#add-location-btn").addEventListener("click", () => {
@@ -3437,9 +3712,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           location is listed, not updated.
         </p>
         <input type="file" class="coa-import-file" accept=".xlsx,.xls" />
-        <label class="coa-import-create-toggle" style="display:none">
-          <input type="checkbox" class="coa-import-create-unmatched" />
-          Create a new location for each unmatched row above
+        <label class="coa-import-create-toggle">
+          <input type="checkbox" class="coa-import-create-unmatched" checked />
+          Also create a new location for every Chart of Accounts row that doesn't match an existing one
         </label>
         <div class="coa-import-result"></div>
       `,
@@ -3447,7 +3722,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     let currentFile = null;
     const createToggle = body.querySelector(".coa-import-create-unmatched");
-    const createToggleLabel = body.querySelector(".coa-import-create-toggle");
 
     body.querySelector(".coa-import-file").addEventListener("change", async (e) => {
       const file = e.target.files[0];
@@ -3472,7 +3746,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         resultEl.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
         return;
       }
-      createToggleLabel.style.display = "";
       const changedRows = preview.results.filter((r) => r.matched && r.changed);
       const unmatchedRows = preview.results.filter((r) => !r.matched);
       const fieldDiff = (f) => (f.before !== f.after ? `${escapeHtml(f.before || "—")} &rarr; <strong>${escapeHtml(f.after || "—")}</strong>` : escapeHtml(f.after || "—"));
@@ -3490,7 +3763,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${
           changedRows.length > 0
             ? `<table class="detail-table">
-                <thead><tr><th>Location</th><th>E&amp;F Job #</th><th>WOM Job #</th><th>PPS Job #</th><th>Region</th></tr></thead>
+                <thead><tr><th>Location</th><th>E&amp;F Job #</th><th>WOM Job #</th><th>PPS Job #</th><th>Region</th><th>Territory</th></tr></thead>
                 <tbody>
                   ${changedRows
                     .map(
@@ -3500,6 +3773,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                         <td>${fieldDiff(r.womJobNumber)}</td>
                         <td>${fieldDiff(r.ppsJobNumber)}</td>
                         <td>${fieldDiff(r.region)}</td>
+                        <td>${fieldDiff(r.territory)}</td>
                       </tr>`
                     )
                     .join("")}
@@ -3514,7 +3788,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                 <ul>${unmatchedRows
                   .map(
                     (r) =>
-                      `<li>${escapeHtml(r.description)}${r.willCreate ? ` &mdash; <strong>will create as ${escapeHtml(r.locationCode)}</strong>` : ""}</li>`
+                      `<li>${escapeHtml(r.description)}${r.willCreate ? ` &mdash; <strong>will create as ${escapeHtml(r.locationCode)}</strong> (${escapeHtml(r.territory)})` : ""}</li>`
                   )
                   .join("")}</ul>
               </details>`
@@ -3611,7 +3885,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       womProfileCode = null;
     }
     const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
-    const territoriesInUse = [...new Set(locations.map((l) => l.territory || "Midwest"))];
+    const territory = getTerritory();
     const locationsInUse = [...new Set(allWoms.map((w) => w.locationCode).filter(Boolean))]
       .map((code) => locationByCode[code])
       .filter(Boolean)
@@ -3621,7 +3895,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="page-header">
         <div>
           <h1 class="page-header-title">WOM Projects</h1>
-          <p class="page-header-subtitle">Track project status, costs and requests.</p>
+          <p class="page-header-subtitle">
+            Track project status, costs and requests.
+            ${territory ? `Showing <strong>${escapeHtml(territory)}</strong> only.` : ""}
+          </p>
         </div>
         <div class="page-header-actions">
           <a class="btn btn-primary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">+ Request WOM</a>
@@ -3643,17 +3920,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <option value="">All statuses</option>
           ${WOM_STATUSES.map((s) => `<option value="${s}" ${womStatusFilter === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`).join("")}
         </select>
-        ${
-          territoriesInUse.length > 1
-            ? `<label class="roster-filter-field">
-                <span>Territory</span>
-                <select class="wom-territory-filter">
-                  <option value="">All</option>
-                  ${territoriesInUse.map((t) => `<option value="${escapeHtml(t)}" ${womTerritoryFilter === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
-                </select>
-              </label>`
-            : ""
-        }
       </div>
 
       <div class="pill-toggle-group">
@@ -3666,7 +3932,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     await renderSmartsheetPanel(content.querySelector("#smartsheet-panel"), content);
 
-    const territoryFiltered = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
+    const territoryFiltered = territory ? allWoms.filter((w) => womTerritoryOf(w) === territory) : allWoms;
     const groupFiltered = territoryFiltered.filter((w) =>
       womGroupFilter === "closed" ? WOM_CLOSED_STATUSES.includes(w.status) : !WOM_CLOSED_STATUSES.includes(w.status)
     );
@@ -3712,14 +3978,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       womSearchQuery = e.target.value;
       refreshWomList(content, locationByCode, locations);
     });
-
-    const womTerritorySelect = content.querySelector(".wom-territory-filter");
-    if (womTerritorySelect) {
-      womTerritorySelect.addEventListener("change", (e) => {
-        womTerritoryFilter = e.target.value;
-        drawWoms(content);
-      });
-    }
   }
 
   // Re-filters and redraws just the WOM list (not the whole tab, which would
@@ -3727,7 +3985,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   async function refreshWomList(content, locationByCode, locations) {
     const allWoms = await api.get("/api/woms");
     const womTerritoryOf = (w) => (locationByCode[w.locationCode] && locationByCode[w.locationCode].territory) || "Midwest";
-    const territoryFiltered = womTerritoryFilter ? allWoms.filter((w) => womTerritoryOf(w) === womTerritoryFilter) : allWoms;
+    const territory = getTerritory();
+    const territoryFiltered = territory ? allWoms.filter((w) => womTerritoryOf(w) === territory) : allWoms;
     const groupFiltered = territoryFiltered.filter((w) =>
       womGroupFilter === "closed" ? WOM_CLOSED_STATUSES.includes(w.status) : !WOM_CLOSED_STATUSES.includes(w.status)
     );
@@ -4641,8 +4900,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return categories;
   }
 
-  function filterCostItems(items, locationFilter, query) {
+  function filterCostItems(items, locationFilter, query, locationByCode) {
     let filtered = items;
+    const territory = getTerritory();
+    if (territory && locationByCode) {
+      filtered = filtered.filter((w) => w.locationCode && ((locationByCode[w.locationCode] || {}).territory || "Midwest") === territory);
+    }
     if (locationFilter) filtered = filtered.filter((w) => w.locationCode === locationFilter);
     const q = query.trim().toLowerCase();
     if (q) filtered = filtered.filter((w) => (w.description || "").toLowerCase().includes(q) || (w.code || "").toLowerCase().includes(q));
@@ -4731,6 +4994,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   function vaMatchesFilters(item, locationByCode) {
+    const territory = getTerritory();
+    if (territory) {
+      const loc = item.locationCode ? locationByCode[item.locationCode] : null;
+      if (!loc || (loc.territory || "Midwest") !== territory) return false;
+    }
     if (vaRegionFilter) {
       const loc = item.locationCode ? locationByCode[item.locationCode] : null;
       if (!loc || loc.region !== vaRegionFilter) return false;
@@ -5264,7 +5532,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
     content.querySelector(".cost-export-btn").addEventListener("click", () => {
       const cat = categories.find((c) => c.key === costCategoryKey);
-      const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery);
+      const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery, locationByCode);
       const sorted = sortCostItems(filtered, cat.columns, costSortKey, costSortDir);
       const headers = ["Project", "WOM", "Location", ...cat.columns.map((c) => c.label)];
       const rows = sorted.map((w) => [
@@ -5289,7 +5557,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   function redrawCostBody(content, categories, allWoms, locationByCode, locations) {
     const body = content.querySelector("#cost-body");
     const cat = categories.find((c) => c.key === costCategoryKey) || categories[0];
-    const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery);
+    const filtered = filterCostItems(cat.items, costLocationFilter, costSearchQuery, locationByCode);
     const sorted = sortCostItems(filtered, cat.columns, costSortKey, costSortDir);
     const headlineCol = headlineColumnOf(cat);
     const filteredTotal = filtered.reduce((sum, w) => sum + (Number(headlineCol.get(w)) || 0), 0);
@@ -5302,7 +5570,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             // Tile counts reflect the active location/search filters too --
             // showing "3" on a tile while its own table (once selected) only
             // lists 1 filtered row would read as a bug, not a feature.
-            const tileCount = c.key === cat.key ? filtered.length : filterCostItems(c.items, costLocationFilter, costSearchQuery).length;
+            const tileCount = c.key === cat.key ? filtered.length : filterCostItems(c.items, costLocationFilter, costSearchQuery, locationByCode).length;
             return `
           <div class="cost-category-tile ${c.key === costCategoryKey ? "cost-category-tile-selected" : ""}" data-key="${escapeHtml(c.key)}">
             <div class="cost-category-tile-count">${tileCount}</div>
