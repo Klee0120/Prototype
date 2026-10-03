@@ -209,7 +209,6 @@ export async function renderReclasses(container, options = {}) {
             <th>Amount</th>
             <th>Name - Alpha Explanation</th>
             <th>Remark</th>
-            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -228,7 +227,6 @@ export async function renderReclasses(container, options = {}) {
               <td>${formatMoney(r.amount)}</td>
               <td>${escapeHtml(r.nameAlpha || "—")}</td>
               <td>${escapeHtml(r.remark || "—")}</td>
-              <td><button type="button" class="btn-link reclass-gl-flag-btn" data-gl-index="${glActivity.indexOf(r)}">Flag this</button></td>
             </tr>`
                 )
                 .join("")
@@ -252,15 +250,6 @@ export async function renderReclasses(container, options = {}) {
     const nextBtn = wrap.querySelector(".gl-pager-next");
     if (prevBtn) prevBtn.addEventListener("click", () => { glActivityPage--; renderGlActivity(); });
     if (nextBtn) nextBtn.addEventListener("click", () => { glActivityPage++; renderGlActivity(); });
-    wrap.querySelectorAll(".reclass-gl-flag-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const r = glActivity[Number(btn.dataset.glIndex)];
-        openReclassFormModal({
-          from: { jobNumber: r.businessUnit, objectCode: r.objectAccount, subsidiary: r.subsidiary, amount: r.amount },
-          comments: `${r.nameAlpha || ""} -- ${r.remark || ""} (batch ${r.batchNumber || "—"}, ${r.glDate || "—"})`.trim(),
-        });
-      });
-    });
   }
 
   function renderTable() {
