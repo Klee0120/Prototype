@@ -287,3 +287,166 @@ test("PO Tracker import: Subsidiary and PPS Subsidiary coalesce into one field",
   assert.ok(po2, "expected PO90002 to have imported");
   assert.equal(po2.subsidiary, "200 Janitorial", "PPS Subsidiary should fill the subsidiary field when Subsidiary itself is blank");
 });
+
+// A PO whose vendor_number doesn't match any vendor profile on file (see
+// listUnregisteredPoVendors) should task the admin who owns that PO to
+// create one -- one task per vendor #, even if several POs share it.
+test("Task Manager: unregistered PO vendor -> create vendor profile task", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, vendorNumber, vendorName, adminName, amount }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, vendor_number, vendor_name, admin_name, po_amount,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, vendorNumber, vendorName, adminName, amount, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await t.test("creates one task per unregistered vendor #, routed to the PO's admin when it matches a real account", async () => {
+    insertPo({ composite: "unreg-1", poNumber: "PO70001", vendorNumber: "V9001", vendorName: "Acme Fire & Safety", adminName: "Krista Lee", amount: 500 });
+    insertPo({ composite: "unreg-2", poNumber: "PO70002", vendorNumber: "V9001", vendorName: "Acme Fire & Safety", adminName: "Krista Lee", amount: 750 });
+
+    db.refreshAllUnregisteredVendorTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const tasks = res.body.filter((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9001");
+    assert.equal(tasks.length, 1, "two POs sharing the same unregistered vendor # should collapse into one task");
+    assert.match(tasks[0].title, /Acme Fire & Safety/);
+    assert.match(tasks[0].title, /V9001/);
+    assert.equal(tasks[0].assignedTo, "ADMIN", "should route to Krista Lee's admin account by name match");
+    assert.match(tasks[0].description, /2 Budget POs/);
+  });
+
+  await t.test("an admin_name that doesn't match any account creates an unassigned task with the raw name kept for manual routing", async () => {
+    insertPo({ composite: "unreg-3", poNumber: "PO70010", vendorNumber: "V9002", vendorName: "Beta Mechanical", adminName: "Nobody Real", amount: 300 });
+
+    db.refreshAllUnregisteredVendorTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9002");
+    assert.ok(task);
+    assert.equal(task.assignedTo, null);
+    assert.match(task.description, /Nobody Real/);
+  });
+
+  await t.test("creating the vendor profile closes the task on the next refresh", async () => {
+    insertPo({ composite: "unreg-4", poNumber: "PO70020", vendorNumber: "V9003", vendorName: "Gamma Electric", adminName: "Krista Lee", amount: 900 });
+    db.refreshAllUnregisteredVendorTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9003" && tk.status === "open"));
+
+    const vendorRes = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Gamma Electric", jdeVendorNumber: "V9003" },
+    });
+    assert.equal(vendorRes.status, 201, JSON.stringify(vendorRes.body));
+
+    db.refreshAllUnregisteredVendorTasks();
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(
+      !res.body.some((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9003" && tk.status === "open"),
+      "task should auto-complete once a matching vendor profile exists"
+    );
+  });
+
+  raw.close();
+});
+
+// A GL posting against a PO whose object code or subsidiary doesn't match
+// what's on file for that PO (gl_entries.subsidiary_mismatch/object_code_mismatch,
+// computed at GL import time) should task the PO's admin to correct the
+// Smartsheet coding -- the GL posting is the latest real-world truth.
+test("Task Manager: PO/GL coding drift -> update Smartsheet coding task", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, objectCode, subsidiary, adminName }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, object_code, subsidiary, admin_name,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, objectCode, subsidiary, adminName, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  function insertGlEntry({ poId, objectAccount, subsidiary, subsidiaryMismatch, objectCodeMismatch, glDate }) {
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (matched_po_id, object_account, subsidiary, subsidiary_mismatch, object_code_mismatch, gl_date, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(poId, objectAccount, subsidiary, subsidiaryMismatch, objectCodeMismatch, glDate, now);
+  }
+
+  await t.test("a mismatched GL posting tasks the PO's admin, naming what differs", async () => {
+    const poId = insertPo({ composite: "drift-1", poNumber: "PO80001", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Krista Lee" });
+    insertGlEntry({ poId, objectAccount: "22099000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 1, glDate: "2026-01-15" });
+
+    db.refreshAllPoCodingDriftTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a coding-drift task for this PO");
+    assert.match(task.title, /PO80001/);
+    assert.match(task.description, /object code/);
+    assert.match(task.description, /22099000/);
+    assert.match(task.description, /22067000/);
+    assert.equal(task.assignedTo, "ADMIN");
+  });
+
+  await t.test("a PO with no mismatched GL line gets no task", async () => {
+    const poId = insertPo({ composite: "drift-2", poNumber: "PO80002", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Krista Lee" });
+    insertGlEntry({ poId, objectAccount: "22067000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 0, glDate: "2026-01-15" });
+
+    db.refreshAllPoCodingDriftTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("correcting the PO's coding auto-completes the task on the next refresh", async () => {
+    const poId = insertPo({ composite: "drift-3", poNumber: "PO80003", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Krista Lee" });
+    insertGlEntry({ poId, objectAccount: "22099000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 1, glDate: "2026-01-15" });
+    db.refreshAllPoCodingDriftTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"));
+
+    raw.prepare("UPDATE gl_entries SET object_code_mismatch = 0 WHERE matched_po_id = ?").run(poId);
+    db.refreshAllPoCodingDriftTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"), "task should auto-complete once the GL line no longer mismatches");
+  });
+
+  await t.test("an admin_name that doesn't match any account routes unassigned with the raw name kept", async () => {
+    const poId = insertPo({ composite: "drift-4", poNumber: "PO80004", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Nobody Real" });
+    insertGlEntry({ poId, objectAccount: "22099000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 1, glDate: "2026-01-15" });
+
+    db.refreshAllPoCodingDriftTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task);
+    assert.equal(task.assignedTo, null);
+    assert.match(task.description, /Nobody Real/);
+  });
+
+  raw.close();
+});

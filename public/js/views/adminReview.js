@@ -5029,7 +5029,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <span class="search-field-icon">&#128269;</span>
             <input type="search" class="cost-search-input" placeholder="Search projects, WOMs..." value="${escapeHtml(costSearchQuery)}" />
           </label>
-          <button type="button" class="btn btn-primary cost-export-btn">&#8681; Export</button>
+          <button type="button" class="btn btn-outline cost-export-btn">&#8681; Export</button>
         </div>
       </div>
 

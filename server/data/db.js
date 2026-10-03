@@ -5975,6 +5975,126 @@ function listUnregisteredPoVendors() {
     .all();
 }
 
+function poVendorUnregisteredTaskSourceKey(vendorNumber) {
+  return `VENDOR-UNREGISTERED-${vendorNumber}`;
+}
+
+// Tasks the admin who owns the most recently seen unmatched PO for each
+// unregistered vendor # (see listUnregisteredPoVendors) to create or update
+// that vendor's profile. One task per vendor_number group, not per PO --
+// the same vendor can show up on several POs, and it's one profile that
+// needs creating either way. Same "still task it, just unassigned, with the
+// raw name kept for manual routing" treatment as the other PO-driven tasks
+// when the Admin column doesn't match a real account.
+function refreshAllUnregisteredVendorTasks() {
+  const groups = listUnregisteredPoVendors();
+  const stillOpen = new Set(groups.map((g) => g.vendorNumber));
+
+  for (const g of groups) {
+    const representativePo = db
+      .prepare(
+        `SELECT id, po_number, admin_name FROM pos
+         WHERE vendor_number = ? AND vendor_id IS NULL
+         ORDER BY last_seen_at DESC LIMIT 1`
+      )
+      .get(g.vendorNumber);
+    const matchedAdmin = representativePo ? matchAdminByName(representativePo.admin_name) : null;
+    const totalAmount = `$${Number(g.totalAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    upsertTaskBySourceKey(poVendorUnregisteredTaskSourceKey(g.vendorNumber), {
+      title: `Create a vendor profile for ${g.vendorName || `Vendor #${g.vendorNumber}`} (Vendor # ${g.vendorNumber})`,
+      description:
+        `Shows up on ${g.poCount} Budget PO${g.poCount === 1 ? "" : "s"} (${totalAmount} total) by name and JDE Vendor # but has no vendor profile here yet.` +
+        (representativePo && representativePo.admin_name && !matchedAdmin
+          ? ` The Budget PO Tracker lists "${representativePo.admin_name}" as the admin on the most recent one, but that name doesn't match any admin account -- route this manually.`
+          : ""),
+      category: "po_vendor_unregistered",
+      assignedTo: matchedAdmin ? matchedAdmin.id : null,
+      assignedRole: matchedAdmin ? "admin" : null,
+      relatedPoId: representativePo ? representativePo.id : null,
+      priority: "normal",
+      source: "po_vendor_unregistered",
+      sourceRecordId: g.vendorNumber,
+      workflowRule: "po_vendor_unregistered",
+    });
+  }
+
+  // A vendor # that was unregistered last time this ran but isn't anymore
+  // (a profile got created or it got matched) -- clear its task rather than
+  // leaving it open forever.
+  const openTasks = db
+    .prepare("SELECT source_key FROM tasks WHERE category = 'po_vendor_unregistered' AND status NOT IN ('completed', 'cancelled')")
+    .all();
+  for (const row of openTasks) {
+    const vendorNumber = row.source_key.replace("VENDOR-UNREGISTERED-", "");
+    if (!stillOpen.has(vendorNumber)) completeTaskBySourceKey(row.source_key);
+  }
+}
+
+function poCodingDriftTaskSourceKey(poId) {
+  return `PO-${poId}-CODING-DRIFT`;
+}
+
+// The GL is the latest real record of what actually got coded to a PO --
+// the Budget PO Tracker's own object code/subsidiary (whatever Smartsheet
+// says) can drift out of date after the real work happened (a mid-stream
+// change, a correction made directly in JDE) without anyone updating the
+// tracker to match. Flags this PO's own admin (same name-matching as the
+// reclass-Smartsheet-update task) the moment any GL line posted against it
+// shows a different object code or subsidiary than what's on file, naming
+// the GL's own value as what needs to replace what's in Smartsheet.
+// Clears itself the instant the mismatch resolves -- either the PO gets
+// corrected to match (see refreshGlMismatchFlagsForPo, called from the same
+// PO-import path that would fix this), or a later GL import corrects the
+// line. Runs lazily off whatever GL activity already exists -- never a
+// trigger of its own -- so it naturally re-evaluates every time more GL
+// reports come in and get matched to POs.
+function refreshPoCodingDriftTask(poId) {
+  const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(poId);
+  if (!po) return;
+  const sourceKey = poCodingDriftTaskSourceKey(poId);
+  const mismatchedLine = db
+    .prepare(
+      `SELECT * FROM gl_entries WHERE matched_po_id = ? AND (subsidiary_mismatch = 1 OR object_code_mismatch = 1)
+       ORDER BY gl_date DESC, id DESC LIMIT 1`
+    )
+    .get(poId);
+  if (!mismatchedLine) {
+    completeTaskBySourceKey(sourceKey);
+    return;
+  }
+  const diffs = [];
+  if (mismatchedLine.object_code_mismatch) {
+    diffs.push(
+      `object code: GL shows "${mismatchedLine.object_account || mismatchedLine.object_account_code}" -- we have "${po.object_code || "nothing"}" on file`
+    );
+  }
+  if (mismatchedLine.subsidiary_mismatch) {
+    diffs.push(`subsidiary: GL shows "${mismatchedLine.subsidiary}" -- we have "${po.subsidiary || "nothing"}" on file`);
+  }
+  const matchedAdmin = matchAdminByName(po.admin_name);
+  upsertTaskBySourceKey(sourceKey, {
+    title: `Update Smartsheet coding for PO ${po.po_number || poId}`,
+    description:
+      `A GL report shows this PO's ${diffs.join(" and ")}. The GL is the latest real posting -- update the PO's coding on the Smartsheet tracker to match.` +
+      (po.admin_name && !matchedAdmin
+        ? ` The Budget PO Tracker lists "${po.admin_name}" as this PO's admin, but that name doesn't match any admin account -- route this manually.`
+        : ""),
+    category: "po_coding_drift",
+    assignedTo: matchedAdmin ? matchedAdmin.id : null,
+    assignedRole: matchedAdmin ? "admin" : null,
+    relatedPoId: poId,
+    priority: "normal",
+    source: "po_coding_drift",
+    sourceRecordId: String(poId),
+    workflowRule: "po_coding_drift",
+  });
+}
+
+function refreshAllPoCodingDriftTasks() {
+  const rows = db.prepare("SELECT DISTINCT matched_po_id AS id FROM gl_entries WHERE matched_po_id IS NOT NULL").all();
+  for (const row of rows) refreshPoCodingDriftTask(row.id);
+}
+
 // ---- GL import / PO reconciliation ----
 //
 // Matches a monthly GL extract against the Budget PO Tracker by PO number
@@ -6708,6 +6828,8 @@ module.exports = {
   bulkMovePoToActive,
   listPoTasks,
   listUnregisteredPoVendors,
+  refreshAllUnregisteredVendorTasks,
+  refreshAllPoCodingDriftTasks,
   importGlEntries,
   refreshGlMismatchFlagsForPo,
   listGlImports,
