@@ -548,3 +548,67 @@ test("PO Tracker: tag a location with a PO's E&F job # (replaces the old region 
 
   raw.close();
 });
+
+// A PO's territory -- the Budget PO Tracker's own Admin column is a more
+// reliable signal than its own location match (every row has an admin
+// name; the location match often doesn't resolve), so a PO's territory
+// comes from the matched admin's home location first, falling back to the
+// PO's own location only when the admin name doesn't match a real account.
+// See server/data/db.js's poTerritory.
+test("PO Tracker: a PO's territory comes from its admin, falling back to its own location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, adminName, locationCode }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, admin_name, location_code,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, adminName || null, locationCode || null, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TERRTEST-EAST", name: "East HQ Site", territory: "East" } });
+  await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TERRTEST-WEST", name: "West Depot", territory: "West" } });
+
+  await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN1", name: "Pat Eastward", pin: "1234" } });
+  await server.call("PATCH", "/api/admin/admins/TERRADMIN1/basic-info", { userId: "ADMIN", body: { homeLocationCode: "TERRTEST-EAST" } });
+
+  await t.test("a matched admin's territory wins even when the PO's own location disagrees", async () => {
+    const poId = insertPo({ composite: "terr-1", poNumber: "PO92001", adminName: "Pat Eastward", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "East");
+  });
+
+  await t.test("falls back to the PO's own location when the admin name doesn't match a real account", async () => {
+    const poId = insertPo({ composite: "terr-2", poNumber: "PO92002", adminName: "Nobody Real", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "West");
+  });
+
+  await t.test("falls back to the PO's own location when there's no admin name at all", async () => {
+    const poId = insertPo({ composite: "terr-3", poNumber: "PO92003", adminName: null, locationCode: "TERRTEST-EAST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "East");
+  });
+
+  await t.test("territory is null when neither the admin nor the location resolve one", async () => {
+    const poId = insertPo({ composite: "terr-4", poNumber: "PO92004", adminName: "Nobody Real", locationCode: null });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, null);
+  });
+
+  await t.test("a matched admin with no home location on file falls back to the PO's own location", async () => {
+    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN2", name: "No Home Set", pin: "1234" } });
+    const poId = insertPo({ composite: "terr-5", poNumber: "PO92005", adminName: "No Home Set", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "West");
+  });
+
+  raw.close();
+});

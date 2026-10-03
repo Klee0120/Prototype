@@ -2495,6 +2495,26 @@ function matchAdminByName(name) {
   return listAdmins().find((a) => String(a.name || "").trim().toLowerCase() === target) || null;
 }
 
+// A PO's territory -- the Budget PO Tracker's own Admin column is a more
+// reliable signal than the PO's own location match: every row carries an
+// admin name, while the location match can be missing or wrong, and each
+// admin's home location is deliberately set to the territory they actually
+// serve. Falls back to the PO's own matched location only when the admin
+// name doesn't match a real account (or that admin has no home location
+// with a territory on file); never guessed when neither resolves one.
+function poTerritory(p) {
+  const admin = matchAdminByName(p.admin_name);
+  if (admin && admin.home_location_code) {
+    const loc = findLocation(admin.home_location_code);
+    if (loc && loc.territory) return loc.territory;
+  }
+  if (p.location_code) {
+    const loc = findLocation(p.location_code);
+    if (loc && loc.territory) return loc.territory;
+  }
+  return null;
+}
+
 // The PO this reclass item traces back to, whichever way it's known: a
 // direct link (flagged from the PO Tracker -- see flagPosForReclass), or
 // failing that, a WOM # match against the Budget PO Tracker's own
@@ -5627,6 +5647,7 @@ function presentPoRow(p) {
     efJobNumber: p.ef_job_number,
     locationCode: p.location_code,
     locationName: p.location_code ? (findLocation(p.location_code) || {}).name || null : null,
+    territory: poTerritory(p),
     region: p.region,
     regionConfirmed: Boolean(p.region_confirmed),
     poAmount: p.po_amount,

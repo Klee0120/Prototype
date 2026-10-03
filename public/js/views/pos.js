@@ -59,10 +59,12 @@ export async function renderPos(container, { openPoId } = {}) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
     }
+    // Each PO's own territory (admin-derived, falling back to its matched
+    // location -- see db.js's poTerritory) already comes back from the
+    // server, so this is just a straight equality filter.
     const territory = getTerritory();
     if (territory) {
-      const locationByCode = Object.fromEntries(locationsCache.map((l) => [l.code, l]));
-      listCache = listCache.filter((p) => p.locationCode && ((locationByCode[p.locationCode] || {}).territory || "Midwest") === territory);
+      listCache = listCache.filter((p) => p.territory === territory);
     }
     selectedIds.clear();
     if (detailId) await drawDetail();

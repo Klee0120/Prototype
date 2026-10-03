@@ -3,7 +3,7 @@ import { state, escapeHtml, setUser, refreshHeader } from "../app.js";
 import { renderAttachments } from "./attachments.js";
 import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
 import { openModal } from "../modal.js";
-import { TERRITORIES } from "../constants.js";
+import { getTerritory } from "../globalFilters.js";
 
 const PROFILE_TABS = [
   { key: "basic", label: "Basic Info" },
@@ -43,7 +43,7 @@ export function renderTechniciansTab(content, openTo) {
   let showAdminAccounts = false;
   const adminRenaming = new Set(); // admin ids currently showing their rename field
   const revealedAdminPins = new Map(); // admin id -> freshly reset PIN, shown once until dismissed
-  const filters = { location: "", territory: "", status: "active" };
+  const filters = { location: "", status: "active" };
 
   draw();
 
@@ -55,21 +55,19 @@ export function renderTechniciansTab(content, openTo) {
   async function drawRoster() {
     const [techs, locations] = await Promise.all([api.get("/api/admin/technicians"), api.get("/api/locations")]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const territory = getTerritory();
 
     const filtered = techs.filter((t) => {
       if (filters.location && t.homeLocationCode !== filters.location) return false;
-      if (filters.territory) {
+      if (territory) {
         const loc = locationByCode[t.homeLocationCode];
-        if (!loc || (loc.territory || "Midwest") !== filters.territory) return false;
+        if (!loc || (loc.territory || "Midwest") !== territory) return false;
       }
       if (filters.status !== "all" && t.employmentStatus !== filters.status) return false;
       return true;
     });
 
     const locationOptions = locations.map((l) => `<option value="${escapeHtml(l.code)}">${escapeHtml(l.name)}</option>`).join("");
-    const territoryFilterOptions = TERRITORIES.map(
-      (t) => `<option value="${t}" ${filters.territory === t ? "selected" : ""}>${t}</option>`
-    ).join("");
     const statusFilterOptions = STATUS_OPTIONS.map(
       (o) => `<option value="${o.value}" ${filters.status === o.value ? "selected" : ""}>${o.label}</option>`
     ).join("");
@@ -79,6 +77,7 @@ export function renderTechniciansTab(content, openTo) {
         Terminating or retiring someone never deletes their record -- allocation history, documents,
         and forms all stay in place. The Status filter below defaults to Active, so switch it to
         Terminated (or All) to find someone who's left.
+        ${territory ? ` Showing <strong>${escapeHtml(territory)}</strong> only -- change the territory filter in the top bar to see others.` : ""}
       </p>
       <div class="roster-filters">
         <label class="roster-filter-field">
@@ -86,13 +85,6 @@ export function renderTechniciansTab(content, openTo) {
           <select class="roster-location-filter">
             <option value="">All</option>
             ${locationOptions}
-          </select>
-        </label>
-        <label class="roster-filter-field">
-          <span>Territory</span>
-          <select class="roster-territory-filter">
-            <option value="">All</option>
-            ${territoryFilterOptions}
           </select>
         </label>
         <label class="roster-filter-field">
@@ -134,10 +126,6 @@ export function renderTechniciansTab(content, openTo) {
 
     content.querySelector(".roster-location-filter").addEventListener("change", (e) => {
       filters.location = e.target.value;
-      draw();
-    });
-    content.querySelector(".roster-territory-filter").addEventListener("change", (e) => {
-      filters.territory = e.target.value;
       draw();
     });
     content.querySelector(".roster-status-filter").addEventListener("change", (e) => {

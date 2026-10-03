@@ -2006,9 +2006,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   async function drawTechAllocation(content) {
-    const techs = await api.get("/api/admin/technicians");
-    const selectable = techs.filter((t) => t.employmentStatus === "active");
-    if (!allocTechId && selectable.length > 0) allocTechId = selectable[0].id;
+    const [techs, locations] = await Promise.all([api.get("/api/admin/technicians"), api.get("/api/locations")]);
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+    const territory = getTerritory();
+    const selectable = techs.filter(
+      (t) =>
+        t.employmentStatus === "active" &&
+        (!territory || ((locationByCode[t.homeLocationCode] || {}).territory || "Midwest") === territory)
+    );
+    if (!allocTechId || !selectable.some((t) => t.id === allocTechId)) allocTechId = selectable.length > 0 ? selectable[0].id : null;
 
     const options = selectable.map((t) => `<option value="${escapeHtml(t.id)}" ${t.id === allocTechId ? "selected" : ""}>${escapeHtml(t.name)}</option>`).join("");
     const currentIndex = selectable.findIndex((t) => t.id === allocTechId);
@@ -2657,7 +2663,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   const TREND_LABELS = { rising: "Rising", falling: "Falling", steady: "Steady" };
 
   async function drawOverview(content) {
-    const [rows, locations, expiringForms, otTrends, vendors, weekendAddenda] = await Promise.all([
+    const [allRows, locations, expiringForms, otTrends, vendors, weekendAddenda] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
       api.get("/api/admin/expiring-forms"),
@@ -2668,6 +2674,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const todayIso = new Date().toISOString().slice(0, 10);
     vendorsCache = vendors; // reuse this fetch if the admin jumps straight to the Vendors tab below
+    const territory = getTerritory();
+    const rows = territory
+      ? allRows.filter((r) => ((locationByCode[r.technician.homeLocationCode] || {}).territory || "Midwest") === territory)
+      : allRows;
 
     const sorted = [...rows].sort((a, b) => {
       if (a.flagged !== b.flagged) return a.flagged ? -1 : 1;
@@ -2717,6 +2727,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         Every technician's week at a glance, for RFM/admin review. A row is flagged when more than
         3 overtime hours in the week aren't charged to any WOM project — i.e. overtime that isn't
         explained by a specific job.
+        ${territory ? ` Showing <strong>${escapeHtml(territory)}</strong> only.` : ""}
       </p>
       <table class="detail-table overview-table">
         <thead>
@@ -2830,13 +2841,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   async function drawReview(content) {
-    const [rows, locations, woms] = await Promise.all([
+    const [allRows, locations, woms] = await Promise.all([
       api.get(`/api/admin/weeks/${state.weekMonday}`),
       api.get("/api/locations"),
       api.get("/api/woms"),
     ]);
     const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
     const womByCode = Object.fromEntries(woms.map((w) => [w.code, w]));
+    const territory = getTerritory();
+    const rows = territory
+      ? allRows.filter((r) => ((locationByCode[r.technician.homeLocationCode] || {}).territory || "Midwest") === territory)
+      : allRows;
 
     // A week with time off isn't really "done" until PurelyHR's been
     // checked too -- PurelyHR doesn't link to UKG, so this can't be
@@ -2861,6 +2876,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         Three steps per technician: <strong>1. UKG hours entered</strong>, <strong>2. Time allocated</strong>
         (matches UKG), <strong>3. Entered in UKG</strong> -- your own confirmation once you've put it into the
         real UKG system. Marking step 3 moves them to Completed below.
+        ${territory ? ` Showing <strong>${escapeHtml(territory)}</strong> only.` : ""}
       </p>
       <div class="review-section-title">Needs Attention (${needsAttention.length})</div>
       <div class="review-list" id="review-list-open"></div>
