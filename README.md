@@ -205,6 +205,33 @@ Demo logins:
   ever touched it (`smartsheetSyncedAt` is still null) — those are exactly
   the ones worth a look when cleaning up test entries or typos, since a
   real WOM in active use almost always has a sync behind it
+- **WOM Profile**: clicking a WOM (from WOM Projects, WOM Lookup, Schedule,
+  Cost Analysis, the Vendor profile's Costs tab, Task Manager's WOM
+  reference, or a reclass item's WOM link) opens one full profile page
+  (`renderWomProfile` in `adminReview.js`) instead of the separate thin edit
+  modal and raw Smartsheet-dump modal this used to be split across — same
+  shell as the Vendor Directory's own profile page. Six tabs:
+  **Overview** (project info, lifecycle checklist, and both the app's own
+  status and the source's status side by side — with a conflict banner if
+  the sheet shows real invoicing evidence the app status hasn't caught up to
+  yet, since a sync never auto-overwrites a manually-set status once a WOM
+  is past Pending/Requested); **Tasks** (every task linked to this WOM,
+  regardless of status or assignee, with a quick-add form — the exact same
+  rows Task Manager and a linked vendor's own Tasks tab read, not a copy);
+  **Vendors & POs** (every vendor connected to this WOM — its own matched
+  vendor plus whoever's on its linked Budget POs — and every one of those
+  POs, each a real link to its own profile; an unmatched vendor name shows
+  "needs matching" as plain text rather than a fabricated profile);
+  **Labor & Financials** (budget/remaining hours, the Smartsheet-reported
+  estimate/applied figures, and separately what's actually posted to the GL
+  against this WOM's linked POs — the two can disagree — plus any reclass
+  activity tied to this WOM); **Documents** (the same attachment manager
+  every other profile uses, with Vendor Quote/Approved Quote Revision added
+  as categories); and **Activity** (status-change history with who changed
+  it and when, the Smartsheet sync history showing exactly what a sync
+  changed and on which run, and this WOM's task activity). A header action,
+  **Source details**, reuses the old raw-dump modal for "every column
+  Smartsheet has on this row" when the structured tabs aren't enough.
 - **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
   fill a week's hours in one go instead of typing each day, with a live
   **Total** readout in both decimal (e.g. `42.5`) and UKG's own clock format
@@ -598,7 +625,9 @@ Demo logins:
   already used internally (`countWomAllocatedHours` in `server/data/db.js`)
   plus a new per-technician breakdown (`womHoursByTechnician`), just
   surfaced as its own lookup rather than buried in a budget-remaining
-  calculation.
+  calculation. For an admin, the result card also has a **"View full
+  profile"** link straight into the WOM Profile above -- Lookup itself
+  stays a pure finder, not a second place to manage a WOM.
 - **"Request a new WOM" / "Request a C&W PO" links on the tech's
   Locations & WOM tab** (`techHome.js`): a technician can't create a WOM or
   a C&W purchase order in this app -- "C&W PO" here means a C&W-internal
@@ -2134,11 +2163,12 @@ by their existing keys.
   whatever else is there — is kept too, verbatim, as one JSON blob
   (`smartsheet_raw_data`) rather than a dedicated database column per field;
   most of the ~75 columns on the real tracker will only ever matter for a
-  handful of WOMs, and the sheet gains new columns over time. The WOM
-  Projects tab has a **"Smartsheet detail"** button on any row a sync has
-  touched, showing every column/value pair from that row's own last sync —
-  covers "I want to see every column" without a schema change every time
-  the sheet grows one. A WOM without a Smartsheet match yet can still have
+  handful of WOMs, and the sheet gains new columns over time. Opening a WOM's
+  full profile (see **WOM Profile** below) surfaces a **"Source details"**
+  header action on any row a sync has touched, showing every column/value
+  pair from that row's own last sync — covers "I want to see every column"
+  without a schema change every time the sheet grows one. A WOM without a
+  Smartsheet match yet can still have
   pricing hand-entered (`PATCH /api/woms/:code/pricing`) — a later sync
   overwrites both fields once that WOM code is found there, since they're meant to
   mirror Smartsheet once a match exists, not be independently maintained

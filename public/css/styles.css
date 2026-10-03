@@ -3209,10 +3209,14 @@ button.chip:hover {
   flex-wrap: wrap;
   gap: 8px;
 }
-.wom-po-row {
+.wom-po-row,
+.wom-vendor-cost-row,
+.po-vendor-cost-row {
   cursor: pointer;
 }
-.wom-po-row:hover {
+.wom-po-row:hover,
+.wom-vendor-cost-row:hover,
+.po-vendor-cost-row:hover {
   border-color: var(--accent);
 }
 .wom-gl-po-table {

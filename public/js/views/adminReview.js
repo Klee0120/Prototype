@@ -337,7 +337,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     if (activeTab === "mywork") await renderTaskBoard(content);
     else if (activeTab === "checklist") await drawPriorities(content);
     else if (activeTab === "techalloc") await drawTechAllocation(content);
-    else if (activeTab === "schedule") await renderSchedule(content);
+    else if (activeTab === "schedule") await renderSchedule(content, { onOpenWom: openWomProfile });
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
     else if (activeTab === "locations") await drawLocations(content);
@@ -363,7 +363,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       reclassItemToOpen = null;
       const flagPrefillWom = reclassFlagPrefillWom;
       reclassFlagPrefillWom = null;
-      await renderReclasses(content, { openItemId, flagPrefillWom });
+      await renderReclasses(content, { openItemId, flagPrefillWom, onOpenWom: openWomProfile });
     }
     else if (activeTab === "glreconciliation") await renderGlReconciliation(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
@@ -1634,7 +1634,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       list.innerHTML = woms
         .map(
           (w) => `
-        <div class="review-row">
+        <div class="review-row wom-vendor-cost-row" data-code="${escapeHtml(w.code)}">
           <div class="review-row-summary">
             <span class="review-row-name">${escapeHtml(w.description)} <span class="wom-code">${escapeHtml(w.code)}</span></span>
             <span class="badge badge-${womStatusBadgeClass(w.status)}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
@@ -1643,6 +1643,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>`
         )
         .join("");
+      list.querySelectorAll(".wom-vendor-cost-row").forEach((row) => {
+        row.addEventListener("click", () => openWomProfile(row.dataset.code));
+      });
     }
     const poList = host.querySelector("#vendor-cost-po-list");
     if (pos.length === 0) {
@@ -1651,7 +1654,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       poList.innerHTML = pos
         .map(
           (p) => `
-        <div class="review-row">
+        <div class="review-row po-vendor-cost-row" data-id="${p.id}">
           <div class="review-row-summary">
             <span class="review-row-name">${escapeHtml(p.description || "PO record")} ${p.poNumber ? `<span class="wom-code">PO ${escapeHtml(p.poNumber)}</span>` : ""}</span>
             <span class="badge badge-draft">${escapeHtml(p.status || "—")}</span>
@@ -1660,6 +1663,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>`
         )
         .join("");
+      poList.querySelectorAll(".po-vendor-cost-row").forEach((row) => {
+        row.addEventListener("click", () => openPoProfile(Number(row.dataset.id)));
+      });
     }
   }
 
@@ -4121,9 +4127,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // The full WOM profile page -- consolidates what used to be split across
   // the "Open project" edit modal and the separate "Smartsheet detail" raw
   // dump into one place, same shell as the Vendor Directory's own profile
-  // page (see renderVendorProfile). Only Overview and Documents render real
-  // content for now; the rest are placeholders filled in by later phases of
-  // the WOM Profile Consolidation plan.
+  // page (see renderVendorProfile). The old raw Smartsheet dump survives as
+  // the "Source details" header action (openSmartsheetDetailModal) rather
+  // than a tab of its own, since it's reference material, not a working view.
   // The dropdown's own detailed wording ("Requested from Toyota (no WOM #
   // yet)") is useful when choosing a status; the header chip just needs the
   // short name, so this drops any trailing parenthetical.
@@ -4234,10 +4240,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (womProfileTab === "financials") await renderWomFinancialsTab(body, w);
     else if (womProfileTab === "activity") await renderWomActivityTab(body, w);
     else await renderWomOverviewTab(body, w, content, locationByCode, locations);
-  }
-
-  function renderWomPlaceholderTab(host, label) {
-    host.innerHTML = `<p class="empty-note">${escapeHtml(label)} is coming in a future update.</p>`;
   }
 
   // "Multiple vendors" with no new join table: the distinct set of vendors
@@ -4479,28 +4481,79 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // itself, named for what it is.
   async function renderWomActivityTab(host, w) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let history, syncHistory, tasks;
     try {
-      const history = await api.get(`/api/woms/${encodeURIComponent(w.code)}/sync-history`);
-      host.innerHTML = `
-        <div class="vendor-overview-card">
-          <h4>WOM Sync History</h4>
-          ${
-            history.length === 0
-              ? `<p class="empty-note">No sync has changed this WOM yet.</p>`
-              : `<table class="detail-table wom-sync-history-table">
-                  <thead><tr><th>Synced</th><th>What changed</th></tr></thead>
-                  <tbody>
-                    ${history
-                      .map((h) => `<tr><td>${new Date(h.syncedAt).toLocaleString()}</td><td>${escapeHtml(h.fields.join(", "))}</td></tr>`)
-                      .join("")}
-                  </tbody>
-                </table>`
-          }
-        </div>
-      `;
+      [history, syncHistory, tasks] = await Promise.all([
+        api.get(`/api/woms/${encodeURIComponent(w.code)}/history`),
+        api.get(`/api/woms/${encodeURIComponent(w.code)}/sync-history`),
+        api.get(`/api/woms/${encodeURIComponent(w.code)}/tasks`),
+      ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
     }
+
+    const statusLabel = (v) => (v == null ? "—" : WOM_STATUS_LABELS[v] || v);
+
+    host.innerHTML = `
+      <div class="vendor-overview-card">
+        <h4>Status History</h4>
+        ${
+          history.length === 0
+            ? `<p class="empty-note">No status change recorded for this WOM yet.</p>`
+            : `<table class="detail-table">
+                <thead><tr><th>When</th><th>Change</th><th>By</th></tr></thead>
+                <tbody>
+                  ${history
+                    .map(
+                      (h) => `<tr>
+                    <td>${new Date(h.changedAt || h.detectedAt).toLocaleString()}</td>
+                    <td>${statusLabel(h.previousValue)} &rarr; ${statusLabel(h.newValue)}</td>
+                    <td>${escapeHtml(h.changedByName || (h.source === "smartsheet_sync" ? "Smartsheet sync" : "—"))}</td>
+                  </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      </div>
+      <div class="vendor-overview-card">
+        <h4>WOM Sync History</h4>
+        ${
+          syncHistory.length === 0
+            ? `<p class="empty-note">No sync has changed this WOM yet.</p>`
+            : `<table class="detail-table wom-sync-history-table">
+                <thead><tr><th>Synced</th><th>What changed</th></tr></thead>
+                <tbody>
+                  ${syncHistory
+                    .map((h) => `<tr><td>${new Date(h.syncedAt).toLocaleString()}</td><td>${escapeHtml(h.fields.join(", "))}</td></tr>`)
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      </div>
+      <div class="vendor-overview-card">
+        <h4>Task Activity</h4>
+        ${
+          tasks.length === 0
+            ? `<p class="empty-note">No task has ever been linked to this WOM.</p>`
+            : `<table class="detail-table">
+                <thead><tr><th>Created</th><th>Task</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${tasks
+                    .map(
+                      (t) => `<tr>
+                    <td>${new Date(t.createdAt).toLocaleDateString()}</td>
+                    <td>${escapeHtml(t.title)}</td>
+                    <td><span class="badge badge-${WOM_TASK_STATUS_BADGE_CLASS[t.status] || "draft"}">${escapeHtml(t.status)}</span></td>
+                  </tr>`
+                    )
+                    .join("")}
+                </tbody>
+              </table>`
+        }
+      </div>
+    `;
   }
 
   // Friendlier sentence-case wording for the Overview tab's billing
@@ -6006,7 +6059,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </table>
       `
         : "";
-    openModal({
+    const { body, close } = openModal({
       title: w.description || w.code,
       bodyHtml: `
         <table class="detail-table">
@@ -6017,7 +6070,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           </tbody>
         </table>
         ${poListHtml}
+        <button type="button" class="btn btn-link cost-detail-open-profile">Open full profile &rarr;</button>
       `,
+    });
+    body.querySelector(".cost-detail-open-profile").addEventListener("click", () => {
+      close();
+      openWomProfile(w.code);
     });
   }
 
@@ -6101,6 +6159,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       detail.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
       const wom = await api.get(`/api/woms/${encodeURIComponent(select.value)}/lookup`);
       detail.innerHTML = renderWomLookupDetail(wom);
+      detail.querySelector(".wom-lookup-open-profile").addEventListener("click", () => openWomProfile(wom.code));
     });
   }
 
@@ -6124,6 +6183,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <strong>${escapeHtml(wom.description)}</strong>
           <span class="badge badge-${womStatusBadgeClass(wom.status)}">${escapeHtml(WOM_STATUS_LABELS[wom.status] || wom.status)}</span>
           ${wom.smartsheetLineNumber ? `<span class="wom-line-tag">Line ${escapeHtml(String(wom.smartsheetLineNumber))}</span>` : ""}
+          <button type="button" class="btn btn-link wom-lookup-open-profile">View full profile &rarr;</button>
         </div>
         <div class="wom-lookup-stats">
           <div><span class="wom-lookup-stat-label">Location</span>${escapeHtml(wom.locationCode || "—")}</div>

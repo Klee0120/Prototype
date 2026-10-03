@@ -159,7 +159,19 @@ router.get("/:code/lookup", requireAuth, (req, res) => {
 // its own right now for seeing how a WOM actually got where it is.
 router.get("/:code/history", requireAuth, requireAdmin, (req, res) => {
   if (!db.findWom(req.params.code)) return res.status(404).json({ error: "WOM not found" });
-  res.json(db.listWomStatusHistory(req.params.code));
+  const rows = db.listWomStatusHistory(req.params.code).map((r) => {
+    const changer = r.changed_by ? db.findTechnician(r.changed_by) : null;
+    return {
+      field: r.field,
+      previousValue: r.previous_value,
+      newValue: r.new_value,
+      changedAt: r.changed_at,
+      detectedAt: r.detected_at,
+      changedByName: changer ? changer.name : null,
+      source: r.source,
+    };
+  });
+  res.json(rows);
 });
 
 // Which past Smartsheet syncs actually touched this WOM, and what they

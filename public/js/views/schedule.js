@@ -228,10 +228,11 @@ function buildWeekRuns(week, byDate, keyOf) {
 // since a mixed-site day is hard to read at a glance. Clicking an entry
 // shows that WOM's own detail (status, pricing, budget) without leaving the
 // calendar.
-export async function renderSchedule(container) {
+export async function renderSchedule(container, options = {}) {
   if (!state.scheduleMonth) state.scheduleMonth = currentMonthIso();
   if (state.scheduleLocation === undefined) state.scheduleLocation = "";
 
+  const onOpenWom = options.onOpenWom || (() => {});
   const isAdmin = state.user && state.user.role === "admin";
   let detailEntry = null;
   let entriesByKey = {};
@@ -423,6 +424,7 @@ export async function renderSchedule(container) {
           ${e.subsidiaryCode ? `<div>Subsidiary ${escapeHtml(e.subsidiaryCode)}</div>` : ""}
           ${budgetLine}
           ${priceLine}
+          ${isAdmin ? `<button type="button" class="btn btn-link schedule-detail-open-profile">View full project &rarr;</button>` : ""}
           ${
             canManage
               ? `<div class="schedule-detail-actions">
@@ -438,6 +440,8 @@ export async function renderSchedule(container) {
         detailEntry = null;
         renderDetail();
       });
+      const openProfileBtn = detailHost.querySelector(".schedule-detail-open-profile");
+      if (openProfileBtn) openProfileBtn.addEventListener("click", () => onOpenWom(e.womCode));
       if (!canManage) return;
 
       const datesInRange = datesBetween(e.dateIso, e.dateIsoEnd || e.dateIso);

@@ -717,4 +717,20 @@ test("WOM profile: gl-links and tasks routes", async (t) => {
     const res = await server.call("GET", "/api/woms/WOM-PROFILE-1/tasks", { userId: "T1001" });
     assert.equal(res.status, 403);
   });
+
+  // The Activity tab's Status History section resolves changedBy into a
+  // real name server-side, same convention as every other activity feed in
+  // the app, rather than handing the frontend a bare technician id.
+  await t.test("status history resolves changedBy into the admin's name", async () => {
+    const changeRes = await server.call("PATCH", "/api/woms/WOM-PROFILE-1", { userId: "ADMIN", body: { status: "invoiced" } });
+    assert.equal(changeRes.status, 200);
+
+    const historyRes = await server.call("GET", "/api/woms/WOM-PROFILE-1/history", { userId: "ADMIN" });
+    assert.equal(historyRes.status, 200);
+    const entry = historyRes.body.find((h) => h.newValue === "invoiced");
+    assert.ok(entry, "expected a status-change entry for the new status");
+    assert.equal(entry.previousValue, "open");
+    assert.equal(entry.changedByName, "Krista Lee");
+    assert.equal(entry.source, "manual");
+  });
 });

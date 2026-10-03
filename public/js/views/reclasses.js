@@ -48,6 +48,11 @@ export async function renderReclasses(container, options = {}) {
   // One-shot deep link from a WOM's own detail modal's "+ Flag a reclass for
   // this WOM" button -- opens the flag form pre-filled with that WOM #.
   let flagPrefillWom = options.flagPrefillWom || null;
+  // Set by adminReview.js's call site to jump straight to a WOM's own full
+  // profile when a "WOM <code>" reference in this tab is clicked, rather
+  // than this module (which can't import adminReview.js's openWomProfile
+  // directly) having its own notion of navigation.
+  const onOpenWom = options.onOpenWom || (() => {});
 
   draw();
 
@@ -475,8 +480,8 @@ export async function renderReclasses(container, options = {}) {
       bodyHtml: `
         <table class="detail-table">
           <tbody>
-            <tr><th>From</th><td>${escapeHtml(codingString(item.fromJobNumber, item.fromObjectCode, item.fromSubsidiary))}${item.fromWomNumber ? ` / WOM ${escapeHtml(item.fromWomNumber)}` : ""}</td><th>Amount</th><td>${formatMoney(item.fromAmount)}</td></tr>
-            <tr><th>To</th><td>${escapeHtml(codingString(item.toJobNumber, item.toObjectCode, item.toSubsidiary))}${item.toWomNumber ? ` / WOM ${escapeHtml(item.toWomNumber)}` : ""}</td><th>Amount</th><td>${formatMoney(item.toAmount)}</td></tr>
+            <tr><th>From</th><td>${escapeHtml(codingString(item.fromJobNumber, item.fromObjectCode, item.fromSubsidiary))}${item.fromWomNumber ? ` / <button type="button" class="btn btn-link reclass-wom-link" data-wom="${escapeHtml(item.fromWomNumber)}">WOM ${escapeHtml(item.fromWomNumber)}</button>` : ""}</td><th>Amount</th><td>${formatMoney(item.fromAmount)}</td></tr>
+            <tr><th>To</th><td>${escapeHtml(codingString(item.toJobNumber, item.toObjectCode, item.toSubsidiary))}${item.toWomNumber ? ` / <button type="button" class="btn btn-link reclass-wom-link" data-wom="${escapeHtml(item.toWomNumber)}">WOM ${escapeHtml(item.toWomNumber)}</button>` : ""}</td><th>Amount</th><td>${formatMoney(item.toAmount)}</td></tr>
             <tr><th>Vendor</th><td>${escapeHtml(item.vendor || "—")}</td><th>Impacts Final Invoice</th><td>${escapeHtml(item.impactsFinalInvoice || "—")}</td></tr>
             <tr><th>Caused By</th><td>${escapeHtml(item.causedBy || "—")}</td><th>Root Cause</th><td>${escapeHtml(item.rootCause || "—")}</td></tr>
             <tr><th>Source</th><td>${item.source === "imported" ? "Imported" : "Manual"}</td><th>Region</th><td>${escapeHtml(item.region || "—")}</td></tr>
@@ -507,7 +512,13 @@ export async function renderReclasses(container, options = {}) {
         </form>
       `,
     });
-    loadReclassGlLinks(body, item);
+    body.querySelectorAll(".reclass-wom-link").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        close();
+        onOpenWom(btn.dataset.wom);
+      });
+    });
+    loadReclassGlLinks(body, item, close);
     const form = body.querySelector(".reclass-status-form");
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -536,7 +547,7 @@ export async function renderReclasses(container, options = {}) {
   //    Tracker and whatever GL has posted against it, same as before.
   // Neither auto-declares a match; the admin still decides and records it
   // via confirmedGlReference themselves.
-  async function loadReclassGlLinks(body, item) {
+  async function loadReclassGlLinks(body, item, close) {
     const wrap = body.querySelector(".reclass-gl-links");
     if (!wrap) return;
     let data;
@@ -604,7 +615,7 @@ export async function renderReclasses(container, options = {}) {
                   (po) => `
           <table class="detail-table">
             <tbody>
-              <tr><th>${side.label} WOM</th><td>${escapeHtml(side.womNumber)}</td><th>PO #</th><td class="wom-code">${escapeHtml(po.poNumber || "—")}</td></tr>
+              <tr><th>${side.label} WOM</th><td><button type="button" class="btn btn-link reclass-wom-link" data-wom="${escapeHtml(side.womNumber)}">${escapeHtml(side.womNumber)}</button></td><th>PO #</th><td class="wom-code">${escapeHtml(po.poNumber || "—")}</td></tr>
               <tr><th>PO Status</th><td>${escapeHtml(po.poStatus || "—")}</td><th>PO Amount</th><td>${formatMoney(po.poAmount)}</td></tr>
               <tr><th>GL lines</th><td>${po.glLineCount}</td><th>Actual paid (GL)</th><td>${formatMoney(po.actualPaid)}</td></tr>
             </tbody>
@@ -643,5 +654,11 @@ export async function renderReclasses(container, options = {}) {
           : ""
       }
     `;
+    wrap.querySelectorAll(".reclass-wom-link").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        close();
+        onOpenWom(btn.dataset.wom);
+      });
+    });
   }
 }
