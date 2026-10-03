@@ -198,6 +198,9 @@ h1, h2, h3, h4 {
   background: var(--sidebar-bg);
   color: #fff;
   box-shadow: var(--shadow-sm);
+  position: sticky;
+  top: 0;
+  z-index: 15;
 }
 
 .subtab-band {

@@ -122,6 +122,15 @@ router.post("/:id/remarks", (req, res) => {
   res.status(201).json(remarks);
 });
 
+// Real territories this vendor has been used in, derived from its own PO/WOM
+// history -- distinct from the free-text onboarding notes ("Coverage outside
+// Midwest", "Midwest sites seen").
+router.get("/:id/territories", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.getVendorTerritories(vendor.id));
+});
+
 // Onboarding/compliance case log (e.g. a ServiceEdge COI Case, Toyota
 // Onboarding Case, Payment Details Case) -- same request-type +
 // reference-number pattern as a technician's device IT requests, but with

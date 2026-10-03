@@ -1389,6 +1389,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <div><dt>PO email</dt><dd>${v.poEmail ? escapeHtml(v.poEmail) : "Not provided"}</dd></div>
             <div><dt>JDE Vendor #</dt><dd>${v.jdeVendorNumber ? escapeHtml(v.jdeVendorNumber) : "Not on file"}</dd></div>
             <div><dt>Services</dt><dd>${v.services ? escapeHtml(formatServicesList(v.services)) : "Not set"}</dd></div>
+            <div><dt>Used in territory</dt><dd class="vendor-territories">Loading&hellip;</dd></div>
             <div><dt>Coverage outside Midwest</dt><dd>${v.coverageOutsideMidwest ? escapeHtml(v.coverageOutsideMidwest) : "Not confirmed"}</dd></div>
             <div><dt>Midwest sites seen</dt><dd>${v.midwestSitesSeen ? escapeHtml(v.midwestSitesSeen) : "None on file"}</dd></div>
           </dl>
@@ -1418,6 +1419,18 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     const remarkForm = host.querySelector(".vendor-remark-form");
     const remarksList = host.querySelector(".vendor-remarks-list");
+    const territoriesEl = host.querySelector(".vendor-territories");
+
+    async function refreshTerritories() {
+      let territories;
+      try {
+        territories = await api.get(`/api/admin/vendors/${v.id}/territories`);
+      } catch (err) {
+        territoriesEl.textContent = "Unable to load";
+        return;
+      }
+      territoriesEl.textContent = territories.length === 0 ? "None on file" : territories.join(", ");
+    }
 
     async function refreshRemarks() {
       let remarks;
@@ -1450,6 +1463,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       await refreshRemarks();
     });
 
+    await refreshTerritories();
     await refreshRemarks();
   }
 

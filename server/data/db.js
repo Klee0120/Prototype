@@ -1693,6 +1693,24 @@ function findVendor(id) {
   return row ? presentVendorRow(row) : null;
 }
 
+// Real territories this vendor has actually been used in, derived from its
+// own PO/WOM history rather than a manual note -- a PO's own `region` is
+// already resolved from its E&F Contract Job # at import time, and a WOM's
+// territory comes from its location's own `territory` field. Distinct from
+// the existing "Coverage outside Midwest"/"Midwest sites seen" fields,
+// which are free-text notes entered at onboarding, not computed from data.
+function getVendorTerritories(vendorId) {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT region AS territory FROM pos WHERE vendor_id = ? AND region IS NOT NULL AND region != ''
+       UNION
+       SELECT DISTINCT l.territory AS territory FROM woms w JOIN locations l ON l.code = w.location_code
+         WHERE w.vendor_id = ? AND l.territory IS NOT NULL AND l.territory != ''`
+    )
+    .all(vendorId, vendorId);
+  return rows.map((r) => r.territory).filter(Boolean).sort();
+}
+
 function createVendor(fields) {
   const now = new Date().toISOString();
   const coiLimits = fields.coiLimits || {};
@@ -6041,6 +6059,7 @@ module.exports = {
   ONBOARDING_STAGES,
   listVendors,
   findVendor,
+  getVendorTerritories,
   createVendor,
   updateVendor,
   deleteVendor,
