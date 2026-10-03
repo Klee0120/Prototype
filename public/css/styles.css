@@ -3504,6 +3504,13 @@ button.vendor-preferred-star:hover {
   font-size: 13px;
 }
 
+/* A "?" accounting code -- hover for which location/WOM field is missing. */
+.accounting-code-gap {
+  color: var(--danger);
+  cursor: help;
+  text-decoration: underline dotted;
+}
+
 .danger-link {
   color: var(--danger) !important;
 }

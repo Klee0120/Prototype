@@ -2907,16 +2907,35 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // Job Number + the standard E&F subsidiary code for E&F time, or a WOM's
   // own location's WOM Job Number + that WOM's own subsidiary code for WOM
   // time -- "?" wherever one of those hasn't been entered yet, so a missing
-  // code is obvious rather than silently blank.
+  // code is obvious rather than silently blank. Returns the gap reason too
+  // (null when there isn't one) so callers can explain the "?" instead of
+  // leaving it looking like a bug -- see accountingCodeCell.
   function accountingCode(a, locationByCode, womByCode) {
-    if (a.type === "timeoff") return "—";
+    if (a.type === "timeoff") return { text: "—", gap: null };
     if (a.type === "wom") {
       const wom = womByCode[a.womCode];
       const loc = wom ? locationByCode[wom.locationCode] : null;
-      return `${(loc && loc.womJobNumber) || "?"}.${(wom && wom.subsidiaryCode) || "?"}`;
+      const jobNumber = loc && loc.womJobNumber;
+      const subsidiary = wom && wom.subsidiaryCode;
+      let gap = null;
+      if (!wom) gap = `WOM ${a.womCode} not found.`;
+      else if (!loc) gap = `WOM ${a.womCode} has no location on file -- set one on its WOM profile.`;
+      else if (!jobNumber) gap = `${loc.name} has no WOM Job Number on file -- add it on the Locations page.`;
+      else if (!subsidiary) gap = `WOM ${a.womCode} has no subsidiary code on file -- set one on its WOM profile.`;
+      return { text: `${jobNumber || "?"}.${subsidiary || "?"}`, gap };
     }
     const loc = locationByCode[a.locationCode];
-    return `${(loc && loc.efJobNumber) || "?"}.${(loc && loc.efSubsidiaryCode) || "20920000"}`;
+    const gap = !loc
+      ? `Location ${a.locationCode} not found.`
+      : !loc.efJobNumber
+        ? `${loc.name} has no E&F Contract Job Number on file -- add it on the Locations page.`
+        : null;
+    return { text: `${(loc && loc.efJobNumber) || "?"}.${(loc && loc.efSubsidiaryCode) || "20920000"}`, gap };
+  }
+
+  function accountingCodeCell(a, locationByCode, womByCode) {
+    const { text, gap } = accountingCode(a, locationByCode, womByCode);
+    return `<td${gap ? ` class="accounting-code-gap" title="${escapeHtml(gap)}"` : ""}>${escapeHtml(text)}</td>`;
   }
 
   function renderDetailTable(detail, locationByCode, womByCode) {
@@ -2926,7 +2945,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const rows = detail.allocations
       .map(
         (a) =>
-          `<tr><td>${a.day}</td><td>${escapeHtml(describeAllocation(a, locationByCode))}</td><td>${escapeHtml(accountingCode(a, locationByCode, womByCode))}</td><td>${a.hours}h</td></tr>`
+          `<tr><td>${a.day}</td><td>${escapeHtml(describeAllocation(a, locationByCode))}</td>${accountingCodeCell(a, locationByCode, womByCode)}<td>${a.hours}h</td></tr>`
       )
       .join("");
     return `
@@ -2967,7 +2986,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <tr>
               <td>${a.day}</td>
               <td>${escapeHtml(describeAllocation(a, locationByCode))}</td>
-              <td>${escapeHtml(accountingCode(a, locationByCode, womByCode))}</td>
+              ${accountingCodeCell(a, locationByCode, womByCode)}
               <td><input type="text" inputmode="decimal" class="weekend-edit-hours" data-idx="${i}" value="${a.hours}" /></td>
             </tr>`
             )
@@ -3046,7 +3065,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                           (a, i) => `
                         <tr>
                           <td>${escapeHtml(describeAllocation(a, locationByCode))}</td>
-                          <td>${escapeHtml(accountingCode(a, locationByCode, womByCode))}</td>
+                          ${accountingCodeCell(a, locationByCode, womByCode)}
                           <td><input type="text" inputmode="decimal" class="punch-issue-edit-hours" data-idx="${i}" value="${a.hours}" /></td>
                         </tr>`
                         )
