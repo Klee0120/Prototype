@@ -20,6 +20,7 @@ const CATEGORY_LABELS = {
   po_doc: "PO Document",
   quote: "Vendor Quote",
   quote_revision: "Approved Quote Revision",
+  invoice: "Invoice Document",
 };
 
 function formatSize(bytes) {

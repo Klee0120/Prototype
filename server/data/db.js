@@ -2717,6 +2717,39 @@ function findWom(code) {
   return womWithRemaining(db.prepare("SELECT * FROM woms WHERE code = ?").get(code));
 }
 
+// Whether an actual invoice file is attached here -- the one requirement
+// sync alone can never satisfy, since it only ever reads Smartsheet
+// data, never files. See server/routes/files.js's "invoice" category.
+function hasWomInvoiceDocument(code) {
+  return Boolean(db.prepare("SELECT 1 FROM files WHERE related_type = 'wom' AND related_id = ? AND category = 'invoice' LIMIT 1").get(code));
+}
+
+// WOMs whose work is done (per Smartsheet) but aren't fully invoiced yet in
+// this app's own bookkeeping -- a real invoice #, a real batch #, AND the
+// actual invoice document attached (not just the reference numbers).
+// Invoice #/batch # arrive on their own via sync (see
+// applyWomSourceEvidence); the document never does, which is the one gap
+// this queue exists to surface. Never includes a cancelled or already-
+// closed WOM -- a closed WOM's invoicing is done by definition, and
+// applying this (new) document requirement retroactively to historical
+// closed WOMs would flood the queue with nothing actionable.
+function listWomsNeedingInvoicing() {
+  return db
+    .prepare(
+      `SELECT w.* FROM woms w
+       WHERE w.source_work_completed = 1
+       AND w.status NOT IN ('cancelled', 'closed')
+       AND NOT (
+         w.invoice_number IS NOT NULL AND w.invoice_number != ''
+         AND w.batch_number IS NOT NULL AND w.batch_number != ''
+         AND EXISTS (SELECT 1 FROM files f WHERE f.related_type = 'wom' AND f.related_id = w.code AND f.category = 'invoice')
+       )
+       ORDER BY w.code`
+    )
+    .all()
+    .map(womWithRemaining);
+}
+
 function createWom(code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber) {
   db.prepare(
     "INSERT INTO woms (code, description, status, location_code, budget_hours, subsidiary_code, maximo_number) VALUES (?, ?, 'open', ?, ?, ?, ?)"
@@ -6568,6 +6601,8 @@ module.exports = {
   TERRITORIES,
   listWoms,
   findWom,
+  hasWomInvoiceDocument,
+  listWomsNeedingInvoicing,
   createWom,
   countWomAllocatedHours,
   womHoursByTechnician,

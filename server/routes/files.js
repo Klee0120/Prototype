@@ -13,7 +13,11 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Which upload categories make sense for which kind of record.
 const CATEGORY_BY_RELATED = {
   week: new Set(["receipt", "ukg_screenshot"]),
-  wom: new Set(["wom_doc"]),
+  // "invoice" is the actual invoice file for charging Toyota, checked by
+  // the Financials > Invoicing queue (see db.listWomsNeedingInvoicing) --
+  // distinct from wom_doc/quote/quote_revision, which aren't evidence of
+  // invoicing.
+  wom: new Set(["wom_doc", "quote", "quote_revision", "invoice"]),
   technician: new Set(["tech_form", "document"]),
   // Kept under the one existing relatedType (not renamed) so already-
   // uploaded labor reports stay attached to their month instead of being

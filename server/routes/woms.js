@@ -321,6 +321,27 @@ router.get("/cost-summary", requireAuth, requireAdmin, (req, res) => {
   res.json(db.getWomCostSummary());
 });
 
+// WOMs whose work is done but aren't fully invoiced yet in this app's own
+// bookkeeping -- Financials > Invoicing's queue. Invoice #/batch # arrive on
+// their own via sync the moment Smartsheet shows them (see
+// applyWomSourceEvidence in db.js); the one thing sync can never do is
+// attach the actual invoice file, so that's the one requirement this route
+// calls out explicitly per WOM rather than leaving it implicit.
+router.get("/invoicing-queue", requireAuth, requireAdmin, (req, res) => {
+  const woms = db.listWomsNeedingInvoicing();
+  res.json(
+    woms.map((w) => {
+      const presented = presentWom(w);
+      const hasInvoiceDocument = db.hasWomInvoiceDocument(w.code);
+      const missingRequirements = [];
+      if (!presented.invoiceNumber) missingRequirements.push("Invoice #");
+      if (!presented.batchNumber) missingRequirements.push("Batch #");
+      if (!hasInvoiceDocument) missingRequirements.push("Invoice document");
+      return { ...presented, hasInvoiceDocument, missingRequirements };
+    })
+  );
+});
+
 // RFM's two options once a WOM lifecycle task is flagged for a change
 // order or a plain missing Toyota PO: proceed with Toyota's own paperwork,
 // or (change orders only) hand it to finance to see if labor can be

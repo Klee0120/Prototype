@@ -9,6 +9,7 @@ import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { renderPos } from "./pos.js";
 import { renderReclasses } from "./reclasses.js";
+import { renderInvoicing } from "./invoicing.js";
 import { renderGlReconciliation } from "./gl.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
@@ -73,7 +74,7 @@ const NAV_SECTIONS = [
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup", "schedule"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
-  { key: "financials", label: "Financials", tabs: ["costanalysis", "reclasses", "glreconciliation", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "laborreports"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
 
@@ -85,6 +86,7 @@ const TAB_LABELS = {
   overview: "Overview",
   review: "Weekly Review",
   costanalysis: "Cost Analysis",
+  invoicing: "Invoicing",
   reclasses: "Reclasses",
   glreconciliation: "GL Reconciliation",
   laborreports: "Reports",
@@ -326,6 +328,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "pos") await renderPos(content);
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
+    else if (activeTab === "invoicing") {
+      await renderInvoicing(content, { onOpenWom: (code) => openWomProfile(code, "documents") });
+    }
     else if (activeTab === "reclasses") {
       const openItemId = reclassItemToOpen;
       reclassItemToOpen = null;
@@ -3966,6 +3971,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         { value: "wom_doc", label: "Document / Photo" },
         { value: "quote", label: "Vendor Quote" },
         { value: "quote_revision", label: "Approved Quote Revision" },
+        { value: "invoice", label: "Invoice Document" },
       ],
       canUpload: true,
       emptyText: "No documents attached yet.",
