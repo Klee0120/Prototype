@@ -745,6 +745,11 @@ export function renderTechniciansTab(content, openTo) {
         original.hireDate = form.hireDate.value;
         original.terminationDate = form.terminationDate.value;
         original.standardDailyHours = form.standardDailyHours.value;
+        // Keep the in-memory tech record current so switching to Devices in
+        // this same visit prefills a Phone device from the number just saved,
+        // not a stale one from before this edit.
+        tech.phone = form.phone.value.trim();
+        tech.email = form.email.value.trim();
         if (form.homeLocationCode.value !== original.homeLocationCode) {
           await api.patch(`/api/admin/technicians/${tech.id}/home-location`, { locationCode: form.homeLocationCode.value || null });
           original.homeLocationCode = form.homeLocationCode.value;
@@ -886,10 +891,11 @@ export function renderTechniciansTab(content, openTo) {
           <option value="ipad">iPad</option>
           <option value="laptop">Laptop</option>
         </select>
-        <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" required />
+        <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" value="${escapeHtml(tech.phone || "")}" required />
         <input name="notes" placeholder="Notes (optional)" />
         <button type="submit" class="btn btn-secondary">Assign device</button>
       </form>
+      ${!tech.phone ? `<p class="empty-note">No phone # on file yet -- add one on Basic Info and it'll prefill here.</p>` : ""}
     `;
 
     function renderRequestRow(d, r) {
@@ -949,7 +955,13 @@ export function renderTechniciansTab(content, openTo) {
     const errorEl = tabContent.querySelector(".device-error");
 
     tabContent.querySelector('select[name="deviceType"]').addEventListener("change", (e) => {
-      tabContent.querySelector('input[name="deviceName"]').placeholder = DEVICE_IDENTIFIER_PLACEHOLDER[e.target.value];
+      const nameInput = tabContent.querySelector('input[name="deviceName"]');
+      nameInput.placeholder = DEVICE_IDENTIFIER_PLACEHOLDER[e.target.value];
+      // Phone # on Basic Info is this technician's one real number -- no
+      // reason to type it again for a Phone-type device. Switching away
+      // clears it since a phone number isn't a sensible default for a
+      // laptop/iPad's asset tag.
+      nameInput.value = e.target.value === "phone" ? tech.phone || "" : "";
     });
 
     tabContent.querySelectorAll(".device-upgrade-save").forEach((btn) => {
