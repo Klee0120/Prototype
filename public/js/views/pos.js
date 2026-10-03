@@ -28,7 +28,7 @@ const PO_DOC_CATEGORIES = [
 export async function renderPos(container) {
   let subTab = "active"; // "active" | "needs_organization"
   let detailId = null;
-  const filters = { search: "", locationCode: "", vendorUnmatched: false, regionUnassigned: false };
+  const filters = { search: "", locationCode: "", vendorUnmatched: false, regionUnassigned: false, womLinkMissing: false };
   const selectedIds = new Set();
   let listCache = null;
   let locationsCache = null;
@@ -47,6 +47,7 @@ export async function renderPos(container) {
             ...(filters.locationCode ? { locationCode: filters.locationCode } : {}),
             ...(filters.vendorUnmatched ? { vendorUnmatched: "true" } : {}),
             ...(filters.regionUnassigned ? { regionUnassigned: "true" } : {}),
+            ...(filters.womLinkMissing ? { womLinkMissing: "true" } : {}),
           })}`
         ),
         api.get("/api/admin/pos/last-import"),
@@ -97,6 +98,7 @@ export async function renderPos(container) {
         </select>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-vendor-unmatched" ${filters.vendorUnmatched ? "checked" : ""} /> Unmatched vendor</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-region-unassigned" ${filters.regionUnassigned ? "checked" : ""} /> Unassigned region</label>
+        <label class="po-filter-checkbox"><input type="checkbox" class="po-wom-link-missing" ${filters.womLinkMissing ? "checked" : ""} /> WOM coding, no WOM #</label>
       </div>
       <p class="po-count"></p>
       <div class="po-bulk-toolbar task-bulk-toolbar" id="po-bulk-toolbar"></div>
@@ -132,6 +134,10 @@ export async function renderPos(container) {
     });
     container.querySelector(".po-region-unassigned").addEventListener("change", (e) => {
       filters.regionUnassigned = e.target.checked;
+      draw();
+    });
+    container.querySelector(".po-wom-link-missing").addEventListener("change", (e) => {
+      filters.womLinkMissing = e.target.checked;
       draw();
     });
 

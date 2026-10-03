@@ -116,6 +116,7 @@ function catchUpTasks() {
   db.ensureRecurringTasks();
   db.refreshAllOpenWomLifecycles();
   db.refreshAllVendorComplianceTasks();
+  db.refreshAllPoWomLinkTasks();
 }
 
 router.get("/", requireAuth, (req, res) => {

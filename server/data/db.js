@@ -4906,6 +4906,13 @@ function listPos(filters = {}) {
   if (filters.regionUnassigned) {
     clauses.push("region IS NULL");
   }
+  // "Cut with WOM coding but no WOM # listed": the real PO Request Tracking
+  // export carries E1 WOM Job # and WOM Number as two separate columns --
+  // a PO can have the former (coded as WOM-type work in E1) without the
+  // latter ever being filled in.
+  if (filters.womLinkMissing) {
+    clauses.push("(e1_wom_job_number IS NOT NULL AND e1_wom_job_number != '' AND (wom_number IS NULL OR wom_number = ''))");
+  }
   if (filters.search) {
     clauses.push("(vendor_name LIKE ? OR description LIKE ? OR po_number LIKE ? OR requestor LIKE ?)");
     const like = `%${filters.search}%`;
@@ -5040,6 +5047,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
           existing.id
         );
         maybeAutoActivatePo(existing.id);
+        refreshPoWomLinkTask(existing.id);
         if (changed) updated++;
         else unchanged++;
       } else {
@@ -5089,6 +5097,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
           );
         touchedIds.add(Number(result.lastInsertRowid));
         maybeAutoActivatePo(Number(result.lastInsertRowid));
+        refreshPoWomLinkTask(Number(result.lastInsertRowid));
         created++;
       }
     }
@@ -5145,6 +5154,54 @@ function maybeAutoActivatePo(id) {
   const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(id);
   if (po && po.lifecycle_status === "needs_organization" && isPoFullyResolved(po)) {
     db.prepare("UPDATE pos SET lifecycle_status = 'active', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+  }
+}
+
+function poWomLinkTaskSourceKey(poId) {
+  return `PO-${poId}-MISSING-WOM-LINK`;
+}
+
+// Same real-column gap as listPos' womLinkMissing filter: E1 WOM Job # and
+// WOM Number are separate fields on the PO Request Tracking export, and a
+// PO can carry the former without the latter ever getting filled in.
+function poMissingWomLink(po) {
+  const hasE1WomCoding = Boolean(po.e1_wom_job_number && String(po.e1_wom_job_number).trim());
+  const hasWomNumber = Boolean(po.wom_number && String(po.wom_number).trim());
+  return hasE1WomCoding && !hasWomNumber;
+}
+
+// Mirrors refreshVendorComplianceTask's pattern: a task that tracks a live
+// condition, created the moment the gap appears and auto-completed the
+// moment it's fixed (by correcting the WOM Number in the source file and
+// re-importing -- there's no manual per-field PO edit, matching this
+// screen's existing "nothing here is guessed" / import-is-truth model).
+// Only checked once a PO is Active: a still-needs_organization record
+// already has its own catch-all task, and flagging a WOM gap before it's
+// even been looked at would just be noise on top of that.
+function refreshPoWomLinkTask(poId) {
+  const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(poId);
+  if (!po) return;
+  const sourceKey = poWomLinkTaskSourceKey(poId);
+  if (po.lifecycle_status === "active" && poMissingWomLink(po)) {
+    upsertTaskBySourceKey(sourceKey, {
+      title: `Confirm WOM # for PO ${po.po_number || poId}`,
+      description: `This PO has an E1 WOM Job # (${po.e1_wom_job_number}) but no WOM Number recorded -- confirm which WOM this ties back to and correct it in the next PO Tracker import.`,
+      category: "po_wom_link",
+      assignedRole: "financial",
+      priority: "normal",
+      relatedPoId: poId,
+      source: "po_wom_link",
+      sourceRecordId: String(poId),
+      workflowRule: "po_wom_link",
+    });
+  } else {
+    completeTaskBySourceKey(sourceKey);
+  }
+}
+
+function refreshAllPoWomLinkTasks() {
+  for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'active'").all()) {
+    refreshPoWomLinkTask(row.id);
   }
 }
 
@@ -5742,6 +5799,7 @@ module.exports = {
   requestWomChangeOrderPo,
   refreshVendorComplianceTask,
   refreshAllVendorComplianceTasks,
+  refreshAllPoWomLinkTasks,
   listVendorComplianceTasks,
   countWomLifecyclePseNotSent,
   cleanupLegacyPseWorkflowTasks,
