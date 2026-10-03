@@ -83,11 +83,12 @@ router.get("/", requireAuth, (req, res) => {
     return res.status(400).json({ error: "relatedType and relatedId query params are required" });
   }
   if (!canRead(req.user, relatedType, relatedId)) return res.status(403).json({ error: "Not authorized" });
-  res.json(db.listFiles(relatedType, relatedId));
+  const files = db.listFiles(relatedType, relatedId);
+  res.json(req.user.role === "admin" ? files : files.filter((f) => f.accessLevel !== "restricted"));
 });
 
 router.post("/", requireAuth, upload.single("file"), (req, res) => {
-  const { relatedType, relatedId, category, formType, expiresAt } = req.body || {};
+  const { relatedType, relatedId, category, formType, expiresAt, accessLevel } = req.body || {};
   if (!req.file) return res.status(400).json({ error: "file is required" });
   if (!relatedType || !relatedId || !category) {
     return res.status(400).json({ error: "relatedType, relatedId, and category are required" });
@@ -105,6 +106,9 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
   }
   if (expiresAt && !DATE_RE.test(expiresAt)) {
     return res.status(400).json({ error: "expiresAt must be a YYYY-MM-DD date" });
+  }
+  if (accessLevel && !["standard", "restricted"].includes(accessLevel)) {
+    return res.status(400).json({ error: "accessLevel must be 'standard' or 'restricted'" });
   }
 
   const id = crypto.randomUUID();
@@ -125,6 +129,9 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
     uploadedAt: new Date().toISOString(),
     formType: formType || null,
     expiresAt: expiresAt || null,
+    // Only an admin can mark a file restricted at upload time -- anyone
+    // else's upload is always 'standard', whatever they send.
+    accessLevel: req.user.role === "admin" && accessLevel === "restricted" ? "restricted" : "standard",
   });
 
   db.addAudit(
@@ -175,10 +182,35 @@ router.patch("/:id/relocate", requireAuth, (req, res) => {
   res.json(updated);
 });
 
+// Toggles a file between standard and restricted access, independent of
+// relocating/re-categorizing it. Admin-only, same as every other
+// compliance-document write in this file.
+router.patch("/:id/access", requireAuth, (req, res) => {
+  const file = db.getFile(req.params.id);
+  if (!file) return res.status(404).json({ error: "File not found" });
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Not authorized" });
+
+  const { accessLevel } = req.body || {};
+  if (!["standard", "restricted"].includes(accessLevel)) {
+    return res.status(400).json({ error: "accessLevel must be 'standard' or 'restricted'" });
+  }
+
+  const updated = db.setFileAccessLevel(file.id, accessLevel);
+  db.addAudit(
+    req.user.id,
+    "FILE_ACCESS_CHANGED",
+    `${req.user.name} marked "${file.originalName}" as ${accessLevel}`
+  );
+  res.json(updated);
+});
+
 router.get("/:id/download", requireAuth, (req, res) => {
   const file = db.getFile(req.params.id);
   if (!file) return res.status(404).json({ error: "File not found" });
   if (!canRead(req.user, file.relatedType, file.relatedId)) return res.status(403).json({ error: "Not authorized" });
+  if (file.accessLevel === "restricted" && req.user.role !== "admin") {
+    return res.status(403).json({ error: "Not authorized" });
+  }
 
   const filePath = path.join(db.UPLOADS_DIR, file.storedName);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File missing on disk" });

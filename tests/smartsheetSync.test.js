@@ -788,6 +788,13 @@ const STATUS_COLUMNS = [
   { id: 4, title: "Work Completed" },
   { id: 5, title: "Invoice Status" },
   { id: 6, title: "Requested By" },
+  { id: 7, title: "C&W Invoice" },
+  { id: 8, title: "Batch #" },
+  { id: 9, title: "Vendor INV Attached" },
+  { id: 10, title: "Invoice Attached" },
+  { id: 11, title: "Journal Edit" },
+  { id: 12, title: "Ariba Confirm" },
+  { id: 13, title: "Sent to Jason" },
 ];
 
 function statusSheetWith(rows) {
@@ -798,7 +805,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
   const server = await startServer();
   t.after(() => server.close());
 
-  await t.test("a brand-new row whose sheet data already says done/invoiced is created straight into 'invoiced'", async () => {
+  await t.test("Work Completed alone only marks the work_complete step -- it never promotes status to invoiced", async () => {
     const restore = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -823,24 +830,36 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       assert.equal(res.body.sourceWorkCompletedColumn, "Work Completed");
       assert.equal(res.body.sourceBillingColumn, "Invoice Status");
       assert.equal(res.body.sourceRequestedByColumn, "Requested By");
+      assert.equal(res.body.invoiceNumberColumn, "C&W Invoice");
+      assert.equal(res.body.batchNumberColumn, "Batch #");
 
       const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
-      // Smartsheet is the authority on completion -- a real WOM # whose
-      // sheet data already says done/invoiced by the time this app first
-      // sees it lands straight on 'invoiced', not 'open'.
-      assert.equal(wom.status, "invoiced");
+      // Status/Billing free text never drives `status` -- only a real
+      // invoice # does, and there isn't one on this row, so this stays
+      // "open" even though the Status cell says "Invoiced."
+      assert.equal(wom.status, "open", "Status/Billing text alone must never promote the app's own status");
       assert.equal(wom.sourceStatusRaw, "Status 99 - Invoiced");
       assert.equal(wom.sourceWorkCompletedRaw, "True");
       assert.equal(wom.sourceWorkCompleted, 1);
+      assert.equal(wom.workCompleted, 1);
       assert.equal(wom.sourceBillingRaw, "WOM fully invoiced");
       assert.equal(wom.sourceRequestedBy, "J. Smith");
-      assert.equal(wom.statusConflict, false, "app status already reflects what the sheet says");
+      assert.equal(wom.statusConflict, false, "no real invoice evidence yet, so no conflict to flag");
+      assert.ok(
+        wom.lifecycleSteps.find((s) => s.key === "work_complete").completedAt,
+        "Work Completed should mark the work_complete step"
+      );
+      assert.equal(
+        wom.lifecycleSteps.find((s) => s.key === "invoiced").completedAt,
+        null,
+        "the invoiced step must stay open -- no invoice # on file"
+      );
     } finally {
       restore();
     }
   });
 
-  await t.test("re-syncing the same done data again doesn't re-flag or change anything further", async () => {
+  await t.test("a real invoice # on the sheet promotes a brand-new row straight to invoiced", async () => {
     const restore = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -850,16 +869,50 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
             cells: [
               { columnId: 1, value: "20099001", displayValue: "20099001" },
               { columnId: 2, value: "Install drop ceiling", displayValue: "Install drop ceiling" },
-              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
               { columnId: 4, value: "True", displayValue: "True" },
-              { columnId: 5, value: "WOM fully invoiced", displayValue: "WOM fully invoiced" },
-              { columnId: 6, value: "J. Smith", displayValue: "J. Smith" },
+              { columnId: 7, value: "INV-55214", displayValue: "INV-55214" },
+              { columnId: 8, value: "B-901", displayValue: "B-901" },
             ],
           },
         ]),
     });
     try {
-      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+
+      const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.status, "invoiced");
+      assert.equal(wom.invoiceNumber, "INV-55214");
+      assert.equal(wom.batchNumber, "B-901");
+      assert.equal(wom.statusConflict, false, "app status already reflects what the sheet says");
+      assert.ok(wom.lifecycleSteps.find((s) => s.key === "invoiced").completedAt);
+      assert.ok(wom.lifecycleSteps.find((s) => s.key === "work_complete").completedAt);
+    } finally {
+      restore();
+    }
+  });
+
+  await t.test("re-syncing identical data again doesn't re-flag or change anything further", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9001,
+            cells: [
+              { columnId: 1, value: "20099001", displayValue: "20099001" },
+              { columnId: 2, value: "Install drop ceiling", displayValue: "Install drop ceiling" },
+              { columnId: 4, value: "True", displayValue: "True" },
+              { columnId: 7, value: "INV-55214", displayValue: "INV-55214" },
+              { columnId: 8, value: "B-901", displayValue: "B-901" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const changed = res.body.changedWoms.find((c) => c.code === "20099001");
+      assert.equal(changed, undefined, "nothing actually changed on this sync -- it shouldn't show up as changed");
       const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
       assert.equal(wom.status, "invoiced");
       assert.equal(wom.statusConflict, false);
@@ -868,7 +921,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
     }
   });
 
-  await t.test("an already-open WOM gets auto-promoted to invoiced once a later sync's sheet data says it's done", async () => {
+  await t.test("an already-open WOM: Work Completed only marks the checklist step, status stays open until an invoice # appears", async () => {
     const createOpen = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -890,7 +943,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       createOpen();
     }
 
-    const markDone = stubFetchOnce({
+    const markWorkComplete = stubFetchOnce({
       ok: true,
       json: async () =>
         statusSheetWith([
@@ -909,17 +962,47 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       const changed = res.body.changedWoms.find((c) => c.code === "20099004");
       assert.ok(changed, "expected this WOM to show up in the sync's changed list");
+      assert.deepEqual(changed.fields, ["Work marked complete"], "wording should name exactly what changed, not a generic status message");
+
+      const wom = (await server.call("GET", "/api/woms/20099004/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.status, "open", "Work Completed by itself must never promote status to invoiced");
+      assert.equal(wom.statusConflict, false);
+    } finally {
+      markWorkComplete();
+    }
+
+    const addInvoice = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9004,
+            cells: [
+              { columnId: 1, value: "20099004", displayValue: "20099004" },
+              { columnId: 2, value: "Replace exterior lighting", displayValue: "Replace exterior lighting" },
+              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+              { columnId: 4, value: "True", displayValue: "True" },
+              { columnId: 7, value: "INV-77310", displayValue: "INV-77310" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const changed = res.body.changedWoms.find((c) => c.code === "20099004");
+      assert.ok(changed.fields.includes("Invoice number added"));
       assert.ok(changed.fields.some((f) => f.includes("now invoiced")));
 
       const wom = (await server.call("GET", "/api/woms/20099004/lookup", { userId: "ADMIN" })).body;
-      assert.equal(wom.status, "invoiced", "sync should have auto-promoted this from open to invoiced");
+      assert.equal(wom.status, "invoiced", "a real invoice # arriving should promote this to invoiced");
+      assert.equal(wom.invoiceNumber, "INV-77310");
       assert.equal(wom.statusConflict, false);
     } finally {
-      markDone();
+      addInvoice();
     }
   });
 
-  await t.test("a cancelled WOM is never auto-promoted even if the sheet later says done -- it only flags a conflict", async () => {
+  await t.test("a cancelled WOM is never auto-promoted even once a real invoice # appears -- it only flags a conflict", async () => {
     const createOpen = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -940,7 +1023,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
     }
     await server.call("PATCH", "/api/woms/20099005", { userId: "ADMIN", body: { status: "cancelled" } });
 
-    const markDone = stubFetchOnce({
+    const addInvoice = stubFetchOnce({
       ok: true,
       json: async () =>
         statusSheetWith([
@@ -949,7 +1032,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
             cells: [
               { columnId: 1, value: "20099005", displayValue: "20099005" },
               { columnId: 2, value: "Cancelled project", displayValue: "Cancelled project" },
-              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+              { columnId: 7, value: "INV-00999", displayValue: "INV-00999" },
             ],
           },
         ]),
@@ -958,13 +1041,16 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       const wom = (await server.call("GET", "/api/woms/20099005/lookup", { userId: "ADMIN" })).body;
       assert.equal(wom.status, "cancelled", "a cancelled WOM is a deliberate admin call sync never overrides");
+      // The invoice # still gets written (it's real data worth keeping on
+      // file), it just never flips a cancelled WOM's own status.
+      assert.equal(wom.invoiceNumber, "INV-00999");
       assert.equal(wom.statusConflict, true, "still worth flagging as a disagreement to look at by hand");
     } finally {
-      markDone();
+      addInvoice();
     }
   });
 
-  await t.test("a vendor-only job marked done on the sheet before a real WOM # is ever typed in still gets promoted to invoiced, checklist and all", async () => {
+  await t.test("a vendor-only job (no real WOM # yet) only gets its work_complete step marked -- invoicing still needs a real invoice #", async () => {
     const restore = stubFetchOnce({
       ok: true,
       json: async () =>
@@ -990,15 +1076,76 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       const wom = list.body.find((w) => w.description === "HP D Flooring Repair");
       assert.ok(wom, "expected a PENDING-<rowId> WOM to have been created");
       assert.equal(wom.code.startsWith("PENDING-"), true);
-      // Smartsheet is the authority -- done is done, real WOM # or not.
-      assert.equal(wom.status, "invoiced");
+      // Status text alone is not evidence of invoicing -- a vendor-only job
+      // can look "done" on the Status column well before it's actually
+      // billed.
+      assert.equal(wom.status, "pending");
       assert.equal(wom.statusConflict, false);
-      assert.ok(
-        wom.lifecycleSteps.every((s) => s.completedAt),
-        "every lifecycle checklist step should show complete once Smartsheet says the work is done"
-      );
+      assert.ok(wom.lifecycleSteps.find((s) => s.key === "work_complete").completedAt, "Work Completed should still mark this step");
+      assert.equal(wom.lifecycleSteps.find((s) => s.key === "invoiced").completedAt, null);
     } finally {
       restore();
+    }
+  });
+
+  await t.test("the billing checklist completing is its own message, separate from Work Completed or an invoice #", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9007,
+            cells: [
+              { columnId: 1, value: "20099007", displayValue: "20099007" },
+              { columnId: 2, value: "Repave loading dock", displayValue: "Repave loading dock" },
+            ],
+          },
+        ]),
+    });
+    try {
+      await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+    } finally {
+      restore();
+    }
+
+    const completeChecklist = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9007,
+            cells: [
+              { columnId: 1, value: "20099007", displayValue: "20099007" },
+              { columnId: 2, value: "Repave loading dock", displayValue: "Repave loading dock" },
+              { columnId: 9, value: "true", displayValue: "true" },
+              { columnId: 10, value: "true", displayValue: "true" },
+              { columnId: 11, value: "true", displayValue: "true" },
+              { columnId: 12, value: "true", displayValue: "true" },
+              { columnId: 13, value: "true", displayValue: "true" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      const changed = res.body.changedWoms.find((c) => c.code === "20099007");
+      assert.ok(changed);
+      assert.ok(changed.fields.includes("Billing checklist completed"));
+      assert.ok(
+        !changed.fields.some((f) => f.includes("now invoiced")),
+        "applyWomSourceEvidence only promotes status from the invoice-number branch -- the checklist alone doesn't trigger that message, even though it does count as invoicing evidence below"
+      );
+
+      const wom = (await server.call("GET", "/api/woms/20099007/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.billingChecklistComplete, true);
+      assert.ok(wom.billingChecklist.every((c) => c.done));
+      // A fully-complete billing checklist is itself accepted invoicing
+      // evidence (see sourceImpliesInvoiced) even with no invoice # typed in
+      // yet -- so this still flags for an admin to confirm/finish up, same
+      // as the cancelled-WOM case above, rather than silently sitting open.
+      assert.equal(wom.statusConflict, true, "billing checklist complete is real invoicing evidence the app status hasn't caught up to");
+    } finally {
+      completeChecklist();
     }
   });
 

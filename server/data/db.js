@@ -880,6 +880,26 @@ if (!hasColumn("woms", "source_status_raw")) {
   db.exec("ALTER TABLE woms ADD COLUMN source_billing_raw TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN source_requested_by TEXT");
 }
+// The tracker's own billing checklist (Vendor INV Attached, Invoice
+// Attached, Journal Edit, Ariba Confirm, Sent to Jason) -- the real,
+// granular evidence of billing progress, kept fully separate from Work
+// Completed. Work Completed says the job itself is done; these say where it
+// actually stands in getting invoiced. Never used to set `status` by
+// themselves (see sourceImpliesInvoiced/WOM_BILLING_CHECKLIST_FIELDS below,
+// which also folds in a real invoice_number -- the only other accepted
+// evidence of invoicing).
+if (!hasColumn("woms", "source_vendor_inv_attached")) {
+  db.exec("ALTER TABLE woms ADD COLUMN source_vendor_inv_attached_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_vendor_inv_attached INTEGER");
+  db.exec("ALTER TABLE woms ADD COLUMN source_invoice_attached_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_invoice_attached INTEGER");
+  db.exec("ALTER TABLE woms ADD COLUMN source_journal_edit_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_journal_edit INTEGER");
+  db.exec("ALTER TABLE woms ADD COLUMN source_ariba_confirm_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_ariba_confirm INTEGER");
+  db.exec("ALTER TABLE woms ADD COLUMN source_sent_to_jason_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_sent_to_jason INTEGER");
+}
 // One-time cleanup for tasks left behind by the old 9-stage PSE state
 // machine this app used before the WOM lifecycle checklist replaced it
 // ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
@@ -994,6 +1014,14 @@ if (!hasColumn("files", "form_type")) {
 }
 if (!hasColumn("files", "expires_at")) {
   db.exec("ALTER TABLE files ADD COLUMN expires_at TEXT");
+}
+// Restricted files (e.g. a vendor's banking/ACH details) are admin-only to
+// view or download, regardless of relatedType's usual read rules -- a non-
+// admin never sees them listed at all. Defaults to 'standard' so every
+// already-uploaded file stays visible exactly as it was before this column
+// existed.
+if (!hasColumn("files", "access_level")) {
+  db.exec("ALTER TABLE files ADD COLUMN access_level TEXT NOT NULL DEFAULT 'standard'");
 }
 // COI (Certificate of Insurance) coverage limits requested/on file per
 // vendor -- a fixed, small set of coverage types (matches the real vendor
@@ -3052,25 +3080,22 @@ function checkWomLifecycleAutoSteps(code) {
     if (!isDone("vendor_scheduled")) markWomLifecycleStepComplete(code, "vendor_scheduled", "sync");
     if (!isDone("work_complete")) markWomLifecycleStepComplete(code, "work_complete", "sync");
   }
-  // Smartsheet is the authority on completion -- if its own Status/Work
-  // Completed/Billing data says this WOM is done, every remaining step in
-  // this internal checklist is done too, by definition: the vendor was
-  // scheduled and finished, a cost was applied, and charges were reviewed,
-  // whether or not anyone separately clicked through each of those steps in
-  // this app. Doesn't touch the actual estimated/applied dollar figures
-  // themselves (see parseDollarAmount/sync above) -- only marks the
-  // checklist steps that track whether each stage happened.
-  if (
-    sourceImpliesDone({
-      sourceStatusRaw: wom.source_status_raw,
-      sourceWorkCompletedRaw: wom.source_work_completed_raw,
-      sourceWorkCompleted: wom.source_work_completed,
-      sourceBillingRaw: wom.source_billing_raw,
-    })
-  ) {
-    for (const step of WOM_LIFECYCLE_STEPS) {
-      if (!isDone(step.key)) markWomLifecycleStepComplete(code, step.key, "sync");
-    }
+  // Smartsheet's Work Completed checkbox is evidence the work itself is
+  // done -- nothing more. It used to also blanket-complete every remaining
+  // checklist step (including "Invoice"), which is exactly how a WOM still
+  // mid-billing got wrongly marked Invoiced off of unrelated Status text.
+  // Work Completed now only ever touches this one step.
+  if (!isDone("work_complete") && wom.source_work_completed === 1) {
+    markWomLifecycleStepComplete(code, "work_complete", "sync");
+  }
+  // A real invoice number on file (or the full billing checklist completed)
+  // is the only evidence this app accepts that a WOM has actually been
+  // invoiced -- never Status/Billing free text alone. `status` itself is
+  // promoted to "invoiced" by syncWomsFromSheetRows the moment that
+  // evidence appears (see applyWomSourceEvidence); this just catches the
+  // checklist step up to match.
+  if (!isDone("invoiced") && sourceImpliesInvoiced(wom)) {
+    markWomLifecycleStepComplete(code, "invoiced", "sync");
   }
   refreshWomLifecycleTask(code);
 }
@@ -4427,39 +4452,61 @@ const WOM_COST_BREAKDOWN_FIELDS = [
   { dbColumn: "toyota_po_value", jsField: "toyotaPoValue", diffLabel: "Toyota PO value" },
 ];
 
-// Verbatim Status/Work Completed/Billing/Requested-By values from the
-// sheet -- same centralized-columns-list treatment as
+// Verbatim Status/Work Completed/Billing/Requested-By/billing-checklist
+// values from the sheet -- same centralized-columns-list treatment as
 // WOM_COST_BREAKDOWN_FIELDS above, for the same reason (one entry here
-// instead of a hand-edit to 5 SQL statements + diffFields). Never read by
-// anything that writes `status` itself -- see the woms.source_status_raw
-// migration comment and computeWomStatusConflict in routes/woms.js.
-// source_work_completed (the derived 1/0/null flag) has no diffLabel of its
-// own since source_work_completed_raw already reports that change.
+// instead of a hand-edit to several SQL statements + diffFields). Never
+// read by anything that writes `status` itself -- see the
+// woms.source_status_raw migration comment and computeWomStatusConflict in
+// routes/woms.js. Every diffLabel here is null on purpose: these are raw
+// text/checkbox cells that change often and mean nothing on their own (see
+// the "Install drop ceiling" bug this replaced -- a Status cell saying
+// something unrelated used to read as "done"). applyWomSourceEvidence below
+// is what turns an actual, meaningful change in these into a message.
 const WOM_SOURCE_FIELDS = [
-  { dbColumn: "source_status_raw", jsField: "sourceStatusRaw", diffLabel: "source status" },
-  { dbColumn: "source_work_completed_raw", jsField: "sourceWorkCompletedRaw", diffLabel: "source work completed" },
+  { dbColumn: "source_status_raw", jsField: "sourceStatusRaw", diffLabel: null },
+  { dbColumn: "source_work_completed_raw", jsField: "sourceWorkCompletedRaw", diffLabel: null },
   { dbColumn: "source_work_completed", jsField: "sourceWorkCompleted", diffLabel: null },
-  { dbColumn: "source_billing_raw", jsField: "sourceBillingRaw", diffLabel: "source billing status" },
+  { dbColumn: "source_billing_raw", jsField: "sourceBillingRaw", diffLabel: null },
   { dbColumn: "source_requested_by", jsField: "sourceRequestedBy", diffLabel: "requested by" },
+  { dbColumn: "source_vendor_inv_attached_raw", jsField: "vendorInvAttachedRaw", diffLabel: null },
+  { dbColumn: "source_vendor_inv_attached", jsField: "vendorInvAttached", diffLabel: null },
+  { dbColumn: "source_invoice_attached_raw", jsField: "invoiceAttachedRaw", diffLabel: null },
+  { dbColumn: "source_invoice_attached", jsField: "invoiceAttached", diffLabel: null },
+  { dbColumn: "source_journal_edit_raw", jsField: "journalEditRaw", diffLabel: null },
+  { dbColumn: "source_journal_edit", jsField: "journalEdit", diffLabel: null },
+  { dbColumn: "source_ariba_confirm_raw", jsField: "aribaConfirmRaw", diffLabel: null },
+  { dbColumn: "source_ariba_confirm", jsField: "aribaConfirm", diffLabel: null },
+  { dbColumn: "source_sent_to_jason_raw", jsField: "sentToJasonRaw", diffLabel: null },
+  { dbColumn: "source_sent_to_jason", jsField: "sentToJason", diffLabel: null },
 ];
 
-// Smartsheet is the source of truth for whether a WOM is actually done --
-// when the sheet's own Status/Work Completed/Billing text clearly says so,
-// syncWomsFromSheetRows below promotes an "open" WOM straight to "invoiced"
-// itself, the same way it already auto-promotes pending -> requested -> open
-// from the sheet's own Date Requested/WOM # columns. The shared predicate
-// lives here (not duplicated in routes/woms.js) since both the sync-time
-// auto-promotion and computeWomStatusConflict's remaining-edge-case banner
-// (a cancelled WOM the sheet says is done, or one with no real WOM # yet)
-// need to agree on exactly what "the sheet says done" means.
-const SOURCE_DONE_PATTERN = /\b(invoiced|closed|complete|completed|99)\b/i;
-function sourceImpliesDone(fields) {
-  return Boolean(
-    fields.sourceWorkCompleted === 1 ||
-      SOURCE_DONE_PATTERN.test(fields.sourceStatusRaw || "") ||
-      SOURCE_DONE_PATTERN.test(fields.sourceBillingRaw || "") ||
-      SOURCE_DONE_PATTERN.test(fields.sourceWorkCompletedRaw || "")
-  );
+// The 5 billing-checklist sub-steps, specifically -- a subset of
+// WOM_SOURCE_FIELDS used to ask "is billing fully done," separate from
+// whether the work itself is done (source_work_completed, a different
+// question entirely).
+const WOM_BILLING_CHECKLIST_FIELDS = [
+  { dbColumn: "source_vendor_inv_attached", jsField: "vendorInvAttached", label: "Vendor INV Attached" },
+  { dbColumn: "source_invoice_attached", jsField: "invoiceAttached", label: "Invoice Attached" },
+  { dbColumn: "source_journal_edit", jsField: "journalEdit", label: "Journal Edit" },
+  { dbColumn: "source_ariba_confirm", jsField: "aribaConfirm", label: "Ariba Confirm" },
+  { dbColumn: "source_sent_to_jason", jsField: "sentToJason", label: "Sent to Jason" },
+];
+
+function isWomBillingChecklistComplete(w) {
+  return WOM_BILLING_CHECKLIST_FIELDS.every((f) => w[f.dbColumn] === 1);
+}
+
+// The only evidence this app accepts that a WOM has actually been invoiced:
+// a real invoice number on file, or the full billing checklist completed.
+// Deliberately NOT Status/Work Completed/Billing free text -- that's what
+// used to cause a WOM still mid-billing to get marked Invoiced purely
+// because its Status cell said something unrelated ("Install drop ceiling").
+// Shared here (not duplicated in routes/woms.js) since both the sync-time
+// auto-promotion (applyWomSourceEvidence) and computeWomStatusConflict's
+// banner need to agree on exactly what "the sheet says invoiced" means.
+function sourceImpliesInvoiced(w) {
+  return Boolean(w.invoice_number) || isWomBillingChecklistComplete(w);
 }
 
 function diffFields(existing, next) {
@@ -4479,12 +4526,55 @@ function diffFields(existing, next) {
   return fields;
 }
 
+// The one place a sync turns real evidence (not raw Status/Billing text)
+// into an actual change: Work Completed marks only the "work_complete"
+// lifecycle step; a new invoice number (or batch number) is written
+// straight onto the WOM and, the first time one appears, promotes `status`
+// itself to "invoiced" -- the same two facts a human enters by hand via
+// completeWomLifecycleStep's "invoiced" step, just arriving from the sheet
+// instead. `before` is the WOM row as it stood immediately before this
+// sync's main UPDATE/INSERT; returns the specific messages (if any) to
+// surface in this sync's change log, never a generic "status changed."
+function applyWomSourceEvidence(code, before, sourceWorkCompleted, billingFields, invoiceNumber, batchNumber) {
+  const messages = [];
+
+  if (sourceWorkCompleted === 1 && before.source_work_completed !== 1) {
+    messages.push("Work marked complete");
+  }
+
+  const billingNowComplete = WOM_BILLING_CHECKLIST_FIELDS.every((f) => billingFields[f.jsField] === 1);
+  const billingWasComplete = WOM_BILLING_CHECKLIST_FIELDS.every((f) => before[f.dbColumn] === 1);
+  if (billingNowComplete && !billingWasComplete) {
+    messages.push("Billing checklist completed");
+  }
+
+  if (invoiceNumber && invoiceNumber !== before.invoice_number) {
+    const isNew = !before.invoice_number;
+    db.prepare("UPDATE woms SET invoice_number = ?, batch_number = COALESCE(?, batch_number) WHERE code = ?").run(
+      invoiceNumber,
+      batchNumber,
+      code
+    );
+    messages.push(isNew ? "Invoice number added" : "Invoice number updated");
+    if (isNew && !["invoiced", "closed", "cancelled"].includes(before.status)) {
+      setWomStatus(code, "invoiced", { source: "smartsheet_sync" });
+      messages.push("status: now invoiced (invoice # on file)");
+    }
+  } else if (batchNumber && batchNumber !== before.batch_number) {
+    db.prepare("UPDATE woms SET batch_number = ? WHERE code = ?").run(batchNumber, code);
+    messages.push(before.batch_number ? "Batch number updated" : "Batch number added");
+  }
+
+  return messages;
+}
+
 function syncWomsFromSheetRows(rows, columns) {
   const { wom: womColumn, estimate: estimateColumn, applied: appliedColumn, description: descriptionColumn } = columns;
   const { dateRequested: dateRequestedColumn, maximo: maximoColumn, location: locationColumn, subsidiary: subsidiaryColumn } = columns;
   const { vendor: vendorColumn } = columns;
   const { sourceStatus: sourceStatusColumn, sourceWorkCompleted: sourceWorkCompletedColumn } = columns;
   const { sourceBilling: sourceBillingColumn, sourceRequestedBy: sourceRequestedByColumn } = columns;
+  const { invoiceNumber: invoiceNumberColumn, batchNumber: batchNumberColumn } = columns;
   // The Smartsheet column title for each breakdown category, resolved once
   // up front -- looked up by row below, not re-resolved every row.
   const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
@@ -4532,7 +4622,19 @@ function syncWomsFromSheetRows(rows, columns) {
     const sourceWorkCompleted = parseWorkCompletedFlag(sourceWorkCompletedRaw);
     const sourceBillingRaw = (sourceBillingColumn && row[sourceBillingColumn] && String(row[sourceBillingColumn]).trim()) || null;
     const sourceRequestedBy = (sourceRequestedByColumn && row[sourceRequestedByColumn] && String(row[sourceRequestedByColumn]).trim()) || null;
-    const sourceFields = { sourceStatusRaw, sourceWorkCompletedRaw, sourceWorkCompleted, sourceBillingRaw, sourceRequestedBy };
+    // The billing checklist -- 5 checkbox columns, each parsed the same way
+    // Work Completed is (true/yes/x/1 -> 1, false/no/0 -> 0, anything else
+    // -> null for "not on this sheet/not set").
+    const billingFields = {};
+    for (const f of WOM_BILLING_CHECKLIST_FIELDS) {
+      const colTitle = columns[f.jsField];
+      const raw = (colTitle && row[colTitle] != null && String(row[colTitle]).trim()) || null;
+      billingFields[f.jsField] = parseWorkCompletedFlag(raw);
+      billingFields[`${f.jsField}Raw`] = raw;
+    }
+    const invoiceNumber = (invoiceNumberColumn && row[invoiceNumberColumn] && String(row[invoiceNumberColumn]).trim()) || null;
+    const batchNumber = (batchNumberColumn && row[batchNumberColumn] && String(row[batchNumberColumn]).trim()) || null;
+    const sourceFields = { sourceStatusRaw, sourceWorkCompletedRaw, sourceWorkCompleted, sourceBillingRaw, sourceRequestedBy, ...billingFields };
     const sourceParams = WOM_SOURCE_FIELDS.map((f) => sourceFields[f.jsField]);
     const rawData = JSON.stringify(row);
     const breakdown = { matchedVendorId };
@@ -4601,10 +4703,7 @@ function syncWomsFromSheetRows(rows, columns) {
           rowId,
           code
         );
-        if (["pending", "requested", "open"].includes(collision.status) && sourceImpliesDone(sourceFields)) {
-          setWomStatus(code, "invoiced", { source: "smartsheet_sync" });
-          fields.push("status: now invoiced (Smartsheet marked it done)");
-        }
+        fields.push(...applyWomSourceEvidence(code, collision, sourceWorkCompleted, billingFields, invoiceNumber, batchNumber));
         if (fields.length > 0) {
           updated++;
           changedWoms.push({ code, description: collision.description, fields });
@@ -4612,18 +4711,19 @@ function syncWomsFromSheetRows(rows, columns) {
         checkWomLifecycleAutoSteps(code);
         continue;
       }
-      // Smartsheet is the authority here -- a brand-new row whose sheet data
-      // already says done/invoiced by the time this app first sees it goes
-      // straight to "invoiced" instead of landing on "open"/"requested"/
-      // "pending" and waiting for a second sync to catch up. This applies
-      // even with no real WOM # yet (realCode null) -- a vendor-only job can
-      // be marked done on the sheet before that column is ever filled in.
-      const status = sourceImpliesDone(sourceFields) ? "invoiced" : realCode ? "open" : requested ? "requested" : "pending";
+      // A brand-new row whose sheet data already carries a real invoice
+      // number by the time this app first sees it goes straight to
+      // "invoiced" instead of landing on "open"/"requested"/"pending" and
+      // waiting for a second sync to catch up. This applies even with no
+      // real WOM # yet (realCode null) -- a vendor-only job can be invoiced
+      // on the sheet before that column is ever filled in.
+      const status = invoiceNumber ? "invoiced" : realCode ? "open" : requested ? "requested" : "pending";
       db.prepare(
         `INSERT INTO woms (code, description, status, estimated_price, applied_price, maximo_number, subsidiary_code,
          location_code, ${breakdownInsertColumnsSql}, ${sourceInsertColumnsSql}, vendor_id, date_requested,
+         invoice_number, batch_number,
          smartsheet_raw_data, smartsheet_row_id, smartsheet_row_number, smartsheet_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${breakdownInsertPlaceholders}, ${sourceInsertPlaceholders}, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${breakdownInsertPlaceholders}, ${sourceInsertPlaceholders}, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         code,
         description,
@@ -4637,6 +4737,8 @@ function syncWomsFromSheetRows(rows, columns) {
         ...sourceParams,
         matchedVendorId,
         dateRequestedValue,
+        invoiceNumber,
+        batchNumber,
         rawData,
         String(rowId),
         rowNumber,
@@ -4648,11 +4750,7 @@ function syncWomsFromSheetRows(rows, columns) {
     }
 
     if ((existing.status === "pending" || existing.status === "requested") && realCode) {
-      // Same Smartsheet-is-the-authority reasoning as the new-insert branch
-      // above -- if the sheet already says this one's done by the time its
-      // real WOM # shows up, land it straight on "invoiced" instead of
-      // "open."
-      const promotedStatus = sourceImpliesDone(sourceFields) ? "invoiced" : "open";
+      const promotedStatus = "open";
       db.prepare(
         `UPDATE woms SET code = ?, status = ?, estimated_price = ?, applied_price = ?, maximo_number = ?,
          subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
@@ -4676,21 +4774,22 @@ function syncWomsFromSheetRows(rows, columns) {
         existing.code
       );
       promoted++;
+      recordWomStatusChange(realCode, "status", existing.status, promotedStatus, { source: "smartsheet_sync" });
+      // Evidence-driven: if an invoice number already sits on the sheet by
+      // the time a real WOM # arrives, this promotes it straight on to
+      // "invoiced" right after, recorded as its own, separate transition.
+      const evidenceMessages = applyWomSourceEvidence(realCode, existing, sourceWorkCompleted, billingFields, invoiceNumber, batchNumber);
       changedWoms.push({
         code: realCode,
         description: existing.description,
-        fields: [`status: now ${promotedStatus} (real WOM # arrived${promotedStatus === "invoiced" ? ", Smartsheet marked it done" : ""})`],
+        fields: ["status: now open (real WOM # arrived)", ...evidenceMessages],
       });
-      recordWomStatusChange(realCode, "status", existing.status, promotedStatus, { source: "smartsheet_sync" });
       checkWomLifecycleAutoSteps(realCode);
       continue;
     }
 
     if (existing.status === "pending" && requested) {
-      // Same Smartsheet-is-the-authority reasoning as the other promotion
-      // branches -- a job the sheet already marks done skips "requested"
-      // entirely rather than waiting for a real WOM # to arrive first.
-      const promotedStatus = sourceImpliesDone(sourceFields) ? "invoiced" : "requested";
+      const promotedStatus = "requested";
       db.prepare(
         `UPDATE woms SET status = ?, estimated_price = ?, applied_price = ?, maximo_number = ?,
          subsidiary_code = ?, location_code = COALESCE(location_code, ?), ${breakdownSetSql}, ${sourceSetSql}, vendor_id = COALESCE(vendor_id, ?), date_requested = ?,
@@ -4713,12 +4812,13 @@ function syncWomsFromSheetRows(rows, columns) {
         existing.code
       );
       updated++;
+      recordWomStatusChange(existing.code, "status", "pending", promotedStatus, { source: "smartsheet_sync" });
+      const evidenceMessages = applyWomSourceEvidence(existing.code, existing, sourceWorkCompleted, billingFields, invoiceNumber, batchNumber);
       changedWoms.push({
         code: existing.code,
         description: existing.description,
-        fields: [`status: now ${promotedStatus}${promotedStatus === "invoiced" ? " (Smartsheet marked it done)" : ""}`],
+        fields: ["status: now requested", ...evidenceMessages],
       });
-      recordWomStatusChange(existing.code, "status", "pending", promotedStatus, { source: "smartsheet_sync" });
       checkWomLifecycleAutoSteps(existing.code);
       continue;
     }
@@ -4753,19 +4853,12 @@ function syncWomsFromSheetRows(rows, columns) {
         rowNumber,
         existing.code
       );
-      // Smartsheet is the authority on whether this is actually done -- a
-      // WOM (open, or even still pending/requested with no real WOM # typed
-      // into that column yet -- a vendor-only job can be marked done on the
-      // sheet before its WOM # field is ever filled in) whose sheet data now
-      // clearly says invoiced/complete gets promoted here automatically
-      // rather than just flagged for an admin to notice and change by hand.
-      // Never touches "cancelled" (a deliberate admin call, not something
-      // sync should second-guess -- see computeWomStatusConflict in
-      // routes/woms.js) or "closed"/"invoiced" (already done).
-      if (["pending", "requested", "open"].includes(existing.status) && sourceImpliesDone(sourceFields)) {
-        setWomStatus(existing.code, "invoiced", { source: "smartsheet_sync" });
-        fields.push("status: now invoiced (Smartsheet marked it done)");
-      }
+      // A real invoice number appearing is the only thing that promotes
+      // `status` to "invoiced" here -- never touches "cancelled" (a
+      // deliberate admin call, not something sync should second-guess -- see
+      // computeWomStatusConflict in routes/woms.js) or "closed"/"invoiced"
+      // (already done); applyWomSourceEvidence itself guards against both.
+      fields.push(...applyWomSourceEvidence(existing.code, existing, sourceWorkCompleted, billingFields, invoiceNumber, batchNumber));
       if (fields.length > 0) {
         updated++;
         changedWoms.push({ code: existing.code, description: existing.description, fields });
@@ -5114,8 +5207,8 @@ function listAudit() {
 
 function insertFile(file) {
   db.prepare(`
-    INSERT INTO files (id, related_type, related_id, category, original_name, stored_name, mime_type, size, uploaded_by, uploaded_at, form_type, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO files (id, related_type, related_id, category, original_name, stored_name, mime_type, size, uploaded_by, uploaded_at, form_type, expires_at, access_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     file.id,
     file.relatedType,
@@ -5128,7 +5221,8 @@ function insertFile(file) {
     file.uploadedBy,
     file.uploadedAt,
     file.formType || null,
-    file.expiresAt || null
+    file.expiresAt || null,
+    file.accessLevel || "standard"
   );
   return getFile(file.id);
 }
@@ -5138,7 +5232,7 @@ function listFiles(relatedType, relatedId) {
     .prepare(
       `SELECT id, related_type AS relatedType, related_id AS relatedId, category, original_name AS originalName,
               stored_name AS storedName, mime_type AS mimeType, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt,
-              form_type AS formType, expires_at AS expiresAt
+              form_type AS formType, expires_at AS expiresAt, access_level AS accessLevel
        FROM files WHERE related_type = ? AND related_id = ? ORDER BY uploaded_at DESC`
     )
     .all(relatedType, relatedId);
@@ -5149,7 +5243,7 @@ function getFile(id) {
     .prepare(
       `SELECT id, related_type AS relatedType, related_id AS relatedId, category, original_name AS originalName,
               stored_name AS storedName, mime_type AS mimeType, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt,
-              form_type AS formType, expires_at AS expiresAt
+              form_type AS formType, expires_at AS expiresAt, access_level AS accessLevel
        FROM files WHERE id = ?`
     )
     .get(id);
@@ -5160,6 +5254,14 @@ function deleteFile(id) {
   if (!file) return null;
   db.prepare("DELETE FROM files WHERE id = ?").run(id);
   return file;
+}
+
+// Admin-only toggle, independent of relocating/re-categorizing a file --
+// see canWrite's accessLevel handling in routes/files.js for who can reach
+// this.
+function setFileAccessLevel(id, accessLevel) {
+  db.prepare("UPDATE files SET access_level = ? WHERE id = ?").run(accessLevel, id);
+  return getFile(id);
 }
 
 // A document parked on a task (e.g. a COI that arrived before it was clear
@@ -5173,7 +5275,7 @@ function listTaskDocuments() {
     .prepare(
       `SELECT f.id, f.related_type AS relatedType, f.related_id AS relatedId, f.category, f.original_name AS originalName,
               f.stored_name AS storedName, f.mime_type AS mimeType, f.size, f.uploaded_by AS uploadedBy, f.uploaded_at AS uploadedAt,
-              f.form_type AS formType, f.expires_at AS expiresAt, t.title AS taskTitle
+              f.form_type AS formType, f.expires_at AS expiresAt, f.access_level AS accessLevel, t.title AS taskTitle
        FROM files f LEFT JOIN tasks t ON t.id = CAST(f.related_id AS INTEGER)
        WHERE f.related_type = 'task'
        ORDER BY f.uploaded_at DESC`
@@ -6436,7 +6538,9 @@ module.exports = {
   WOM_LIFECYCLE_STEPS,
   getWomLifecycleSteps,
   checkWomLifecycleAutoSteps,
-  sourceImpliesDone,
+  sourceImpliesInvoiced,
+  isWomBillingChecklistComplete,
+  WOM_BILLING_CHECKLIST_FIELDS,
   refreshAllOpenWomLifecycles,
   lifecycleTaskSourceKey,
   referWomChangeOrderToAdmin,
@@ -6509,6 +6613,7 @@ module.exports = {
   listFiles,
   getFile,
   deleteFile,
+  setFileAccessLevel,
   listTaskDocuments,
   relocateFile,
   listExpiringForms,

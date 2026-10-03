@@ -3746,12 +3746,43 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (womProfileTab === "tasks") renderWomPlaceholderTab(body, "Tasks");
     else if (womProfileTab === "vendorspos") renderWomPlaceholderTab(body, "Vendors & POs");
     else if (womProfileTab === "financials") renderWomPlaceholderTab(body, "Labor & Financials");
-    else if (womProfileTab === "activity") renderWomPlaceholderTab(body, "Activity");
+    else if (womProfileTab === "activity") await renderWomActivityTab(body, w);
     else await renderWomOverviewTab(body, w, content, locationByCode, locations);
   }
 
   function renderWomPlaceholderTab(host, label) {
     host.innerHTML = `<p class="empty-note">${escapeHtml(label)} is coming in a future update.</p>`;
+  }
+
+  // What every past Smartsheet sync actually changed on this WOM, in its own
+  // always-visible section -- not hidden behind a button inside the
+  // Smartsheet Detail modal (see openSmartsheetDetailModal), so "why does
+  // this keep showing as changed every sync" has a real home on the profile
+  // itself, named for what it is.
+  async function renderWomActivityTab(host, w) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    try {
+      const history = await api.get(`/api/woms/${encodeURIComponent(w.code)}/sync-history`);
+      host.innerHTML = `
+        <div class="vendor-overview-card">
+          <h4>WOM Sync History</h4>
+          ${
+            history.length === 0
+              ? `<p class="empty-note">No sync has changed this WOM yet.</p>`
+              : `<table class="detail-table wom-sync-history-table">
+                  <thead><tr><th>Synced</th><th>What changed</th></tr></thead>
+                  <tbody>
+                    ${history
+                      .map((h) => `<tr><td>${new Date(h.syncedAt).toLocaleString()}</td><td>${escapeHtml(h.fields.join(", "))}</td></tr>`)
+                      .join("")}
+                  </tbody>
+                </table>`
+          }
+        </div>
+      `;
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    }
   }
 
   async function renderWomOverviewTab(host, w, content, locationByCode, locations) {
@@ -3768,22 +3799,52 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       (s) => `<option value="${s}" ${w.status === s ? "selected" : ""}>${escapeHtml(WOM_STATUS_LABELS[s])}</option>`
     ).join("");
 
-    const hasSourceStatus = w.sourceStatusRaw || w.sourceWorkCompletedRaw || w.sourceBillingRaw;
-    const sourceStatusCard = hasSourceStatus
-      ? `
+    // Work completion and billing are two different facts Smartsheet
+    // reports separately -- never collapsed into one combined status, and
+    // never read from Status/Billing free text (see workCompleted/
+    // billingChecklist in presentWom). Work Completed says the job itself
+    // is done; the billing checklist + a real invoice # say where it
+    // actually stands in getting invoiced.
+    const workCompletedLabel = w.workCompleted === 1 ? "Yes" : w.workCompleted === 0 ? "No" : "Not reported yet";
+    const workCompletionCard = `
       <div class="vendor-overview-card">
-        <h4>Status reported by Smartsheet</h4>
+        <h4>Work completion</h4>
         <dl class="vendor-overview-fields">
-          ${w.sourceStatusRaw ? `<div><dt>Status</dt><dd>${escapeHtml(w.sourceStatusRaw)}</dd></div>` : ""}
-          ${w.sourceWorkCompletedRaw ? `<div><dt>Work completed</dt><dd>${escapeHtml(w.sourceWorkCompletedRaw)}</dd></div>` : ""}
-          ${w.sourceBillingRaw ? `<div><dt>Billing</dt><dd>${escapeHtml(w.sourceBillingRaw)}</dd></div>` : ""}
+          <div><dt>Work completed</dt><dd>${escapeHtml(workCompletedLabel)}</dd></div>
         </dl>
         ${
-          w.statusConflict
-            ? `<p class="review-checklist-hint">Smartsheet's own data says this WOM is done/invoiced, but the app status below still says otherwise. The next sync will auto-promote this to Invoiced -- this only sticks around for a status sync deliberately won't touch on its own, like a cancelled WOM.</p>`
+          w.sourceStatusRaw
+            ? `<p class="review-checklist-hint">As reported by Smartsheet's Status column: "${escapeHtml(w.sourceStatusRaw)}" (shown for reference only -- never drives status).</p>`
             : ""
         }
-      </div>`
+      </div>`;
+
+    const billingChecklistRows = w.billingChecklist
+      .map(
+        (c) => `
+        <div class="wom-lifecycle-step${c.done ? " wom-lifecycle-step-done" : ""}">
+          <span class="wom-lifecycle-step-icon">${c.done ? "✓" : "○"}</span>
+          <span class="wom-lifecycle-step-label">${escapeHtml(c.label)}</span>
+        </div>`
+      )
+      .join("");
+    const billingStatusCard = `
+      <div class="vendor-overview-card">
+        <h4>Billing status</h4>
+        <dl class="vendor-overview-fields">
+          <div><dt>Invoice #</dt><dd>${w.invoiceNumber ? escapeHtml(w.invoiceNumber) : "—"}</dd></div>
+          <div><dt>Batch #</dt><dd>${w.batchNumber ? escapeHtml(w.batchNumber) : "—"}</dd></div>
+        </dl>
+        <div class="wom-lifecycle-checklist">${billingChecklistRows}</div>
+        ${
+          w.sourceBillingRaw
+            ? `<p class="review-checklist-hint">As reported by Smartsheet's Billing column: "${escapeHtml(w.sourceBillingRaw)}" (shown for reference only -- never drives status).</p>`
+            : ""
+        }
+      </div>`;
+
+    const conflictHint = w.statusConflict
+      ? `<div class="vendor-overview-card"><p class="review-checklist-hint">Smartsheet shows real invoicing evidence (an invoice # on file, or the full billing checklist complete) that the app status below hasn't caught up to yet. The next sync auto-promotes this to Invoiced -- unless this WOM is cancelled, which a sync never auto-changes, so this will keep flagging until an admin looks at it.</p></div>`
       : "";
 
     host.innerHTML = `
@@ -3797,10 +3858,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="vendor-overview-card">
           <h4>App status</h4>
           <select class="wom-overview-status-select">${statusOptions}</select>
-          <p class="review-checklist-hint">An admin can set this manually at any time. Smartsheet is the authority on completion, though -- a sync auto-promotes this to Invoiced the moment the sheet's own data says the work is done.</p>
+          <p class="review-checklist-hint">An admin can set this manually at any time. A sync auto-promotes this to Invoiced only once a real invoice # appears on the sheet -- never from Status/Billing free text alone.</p>
         </div>
       </div>
-      ${sourceStatusCard}
+      ${conflictHint}
+      <div class="vendor-overview-grid">
+        ${workCompletionCard}
+        ${billingStatusCard}
+      </div>
       <div class="vendor-overview-card">
         <h4>Lifecycle checklist</h4>
         <div class="wom-lifecycle-checklist">

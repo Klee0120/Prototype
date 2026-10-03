@@ -5,28 +5,24 @@ const smartsheet = require("../utils/smartsheet");
 
 const router = express.Router();
 
-// Smartsheet is the authority on completion -- syncWomsFromSheetRows (db.js)
+// A real invoice number on file (or the full billing checklist completed)
+// is the only thing this app treats as evidence of invoicing -- never
+// Status/Work Completed/Billing free text (see db.sourceImpliesInvoiced,
+// the same predicate used here, and its comment for the real bug that
+// caused -- a WOM still mid-billing got marked Invoiced purely because its
+// Status cell said something unrelated). syncWomsFromSheetRows (db.js)
 // already auto-promotes a pending/requested/open WOM straight to "invoiced"
-// the moment the sheet's own Status/Work Completed/Billing data says it's
-// done (via db.sourceImpliesDone, the same predicate used here), even one
-// with no real WOM # typed into that column yet -- a vendor-only job can be
-// marked done on the sheet before that. This banner only remains for what
-// that auto-promotion deliberately doesn't touch: a cancelled WOM the sheet
-// now says is invoiced -- a real contradiction (cancelled means never
-// billed), so cancelled is deliberately *not* treated as "already done" here
-// the way invoiced/closed are; sync still never auto-changes a cancelled
-// WOM's status itself, but this still flags the disagreement for an admin to
-// look at.
+// the moment that evidence appears. This banner only remains for what that
+// auto-promotion deliberately doesn't touch: a cancelled WOM the sheet now
+// shows invoice evidence for -- a real contradiction (cancelled means never
+// billed), so cancelled is deliberately *not* treated as "already done"
+// here the way invoiced/closed are; sync still never auto-changes a
+// cancelled WOM's status itself, but this still flags the disagreement for
+// an admin to look at.
 const APP_DONE_STATUSES = ["invoiced", "closed"];
 function computeWomStatusConflict(w) {
-  const sourceImpliesDoneFlag = db.sourceImpliesDone({
-    sourceStatusRaw: w.source_status_raw,
-    sourceWorkCompletedRaw: w.source_work_completed_raw,
-    sourceWorkCompleted: w.source_work_completed,
-    sourceBillingRaw: w.source_billing_raw,
-  });
   const appAlreadyDone = APP_DONE_STATUSES.includes(w.status);
-  return Boolean(sourceImpliesDoneFlag && !appAlreadyDone);
+  return Boolean(db.sourceImpliesInvoiced(w) && !appAlreadyDone);
 }
 
 function presentWom(w) {
@@ -111,9 +107,22 @@ function presentWom(w) {
     sourceWorkCompleted: w.source_work_completed,
     sourceBillingRaw: w.source_billing_raw,
     sourceRequestedBy: w.source_requested_by,
-    // True only when the sheet's own data says this WOM is done/invoiced
-    // while the app's own status still shows it open or earlier -- see
-    // computeWomStatusConflict above.
+    // Work completion and billing are two different facts the tracker
+    // reports separately -- never collapsed into one combined status. Work
+    // Completed says the job itself is done; the billing checklist (plus a
+    // real invoice #) says where it stands on actually getting invoiced.
+    // null until a sync with that column has touched this WOM.
+    workCompleted: w.source_work_completed,
+    billingChecklist: db.WOM_BILLING_CHECKLIST_FIELDS.map((f) => ({
+      key: f.jsField,
+      label: f.label,
+      done: w[f.dbColumn] === 1,
+      raw: w[`${f.dbColumn}_raw`],
+    })),
+    billingChecklistComplete: db.isWomBillingChecklistComplete(w),
+    // True only when the sheet shows real invoice evidence (a real invoice
+    // #, or the full billing checklist complete) while the app's own status
+    // still shows it open or earlier -- see computeWomStatusConflict above.
     statusConflict: computeWomStatusConflict(w),
   };
 }

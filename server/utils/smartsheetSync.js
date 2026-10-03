@@ -78,6 +78,21 @@ async function runSmartsheetSync({ actorId, actorName }) {
     sourceWorkCompleted: smartsheet.findColumn(sheet.columns, ["work", "completed"]),
     sourceBilling: smartsheet.findAnyColumn(sheet.columns, [["invoice", "status"], ["billing"], ["wom", "invoiced"]]),
     sourceRequestedBy: smartsheet.findAnyColumn(sheet.columns, [["requested", "by"], ["technician"]]),
+    // Real invoicing evidence, pulled straight onto the WOM (see
+    // db.applyWomSourceEvidence) -- never inferred from Status/Billing free
+    // text. The real tracker's column is "C&W Invoice" (the actual invoice
+    // number C&W issued), not "Invoice #" -- "c&w" is specific enough on its
+    // own to not also match "Invoice Attached"/"Vendor INV Attached" below.
+    invoiceNumber: smartsheet.findColumn(sheet.columns, ["c&w", "invoice"]),
+    batchNumber: smartsheet.findColumn(sheet.columns, ["batch", "#"]),
+    // The billing checklist -- granular sub-steps on the way to an invoice
+    // actually going out, shown on the WOM for visibility but never used by
+    // themselves to flip `status` (only a real invoice # does that).
+    vendorInvAttached: smartsheet.findColumn(sheet.columns, ["vendor", "inv", "attached"]),
+    invoiceAttached: smartsheet.findColumn(sheet.columns, ["invoice", "attached"]),
+    journalEdit: smartsheet.findColumn(sheet.columns, ["journal", "edit"]),
+    aribaConfirm: smartsheet.findColumn(sheet.columns, ["ariba", "confirm"]),
+    sentToJason: smartsheet.findColumn(sheet.columns, ["sent", "jason"]),
   };
   // Snapshot every task's status before the sync so the diff afterward
   // can say how many of the resulting task-engine writes were this sync's
@@ -144,6 +159,13 @@ async function runSmartsheetSync({ actorId, actorName }) {
     sourceWorkCompletedColumn: columns.sourceWorkCompleted,
     sourceBillingColumn: columns.sourceBilling,
     sourceRequestedByColumn: columns.sourceRequestedBy,
+    invoiceNumberColumn: columns.invoiceNumber,
+    batchNumberColumn: columns.batchNumber,
+    vendorInvAttachedColumn: columns.vendorInvAttached,
+    invoiceAttachedColumn: columns.invoiceAttached,
+    journalEditColumn: columns.journalEdit,
+    aribaConfirmColumn: columns.aribaConfirm,
+    sentToJasonColumn: columns.sentToJason,
   };
 }
 
