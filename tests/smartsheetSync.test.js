@@ -788,13 +788,15 @@ const STATUS_COLUMNS = [
   { id: 4, title: "Work Completed" },
   { id: 5, title: "Invoice Status" },
   { id: 6, title: "Requested By" },
-  { id: 7, title: "C&W Invoice" },
+  { id: 7, title: "C&W Invoice # - TOY" },
   { id: 8, title: "Batch #" },
   { id: 9, title: "Vendor INV Attached" },
   { id: 10, title: "Invoice Attached" },
   { id: 11, title: "Journal Edit" },
   { id: 12, title: "Ariba Confirm" },
   { id: 13, title: "Sent to Jason" },
+  { id: 14, title: "Billing" },
+  { id: 15, title: "Billing Ref #" },
 ];
 
 function statusSheetWith(rows) {
@@ -830,7 +832,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       assert.equal(res.body.sourceWorkCompletedColumn, "Work Completed");
       assert.equal(res.body.sourceBillingColumn, "Invoice Status");
       assert.equal(res.body.sourceRequestedByColumn, "Requested By");
-      assert.equal(res.body.invoiceNumberColumn, "C&W Invoice");
+      assert.equal(res.body.invoiceNumberColumn, "C&W Invoice # - TOY");
       assert.equal(res.body.batchNumberColumn, "Batch #");
 
       const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
@@ -1122,6 +1124,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
               { columnId: 11, value: "true", displayValue: "true" },
               { columnId: 12, value: "true", displayValue: "true" },
               { columnId: 13, value: "true", displayValue: "true" },
+              { columnId: 14, value: "true", displayValue: "true" },
             ],
           },
         ]),
@@ -1130,7 +1133,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       const changed = res.body.changedWoms.find((c) => c.code === "20099007");
       assert.ok(changed);
-      assert.ok(changed.fields.includes("Billing checklist completed"));
+      assert.ok(changed.fields.includes("Billing checklist completed"), "all 6 checklist items (including the Billing/Batch-posted-confirmed column) must be true");
       assert.ok(
         !changed.fields.some((f) => f.includes("now invoiced")),
         "applyWomSourceEvidence only promotes status from the invoice-number branch -- the checklist alone doesn't trigger that message, even though it does count as invoicing evidence below"
@@ -1146,6 +1149,37 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       assert.equal(wom.statusConflict, true, "billing checklist complete is real invoicing evidence the app status hasn't caught up to");
     } finally {
       completeChecklist();
+    }
+  });
+
+  await t.test("Billing Ref # comes through as its own display-only field, separate from the checklist and invoice #", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9008,
+            cells: [
+              { columnId: 1, value: "20099008", displayValue: "20099008" },
+              { columnId: 2, value: "Seal parking garage", displayValue: "Seal parking garage" },
+              { columnId: 15, value: "RITM73266372", displayValue: "RITM73266372" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.body.billingRefNumberColumn, "Billing Ref #");
+
+      const wom = (await server.call("GET", "/api/woms/20099008/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.billingRefNumber, "RITM73266372");
+      // A billing ref # by itself (no invoice #, no completed checklist) is
+      // not evidence of invoicing -- it's Krista's own manual note, kept for
+      // reference only.
+      assert.equal(wom.status, "open");
+      assert.equal(wom.statusConflict, false);
+    } finally {
+      restore();
     }
   });
 

@@ -85,14 +85,21 @@ async function runSmartsheetSync({ actorId, actorName }) {
     // own to not also match "Invoice Attached"/"Vendor INV Attached" below.
     invoiceNumber: smartsheet.findColumn(sheet.columns, ["c&w", "invoice"]),
     batchNumber: smartsheet.findColumn(sheet.columns, ["batch", "#"]),
+    // A verbatim reference # (e.g. a RITM#) Krista enters by hand once a
+    // batch is billed -- display-only, not evidence by itself.
+    billingRefNumber: smartsheet.findColumn(sheet.columns, ["billing", "ref"]),
     // The billing checklist -- granular sub-steps on the way to an invoice
     // actually going out, shown on the WOM for visibility but never used by
-    // themselves to flip `status` (only a real invoice # does that).
+    // themselves to flip `status` (only a real invoice # does that, or the
+    // full checklist including this one completing -- see
+    // sourceImpliesInvoiced). "Billing" alone, excluding "ref" so this
+    // doesn't also match "Billing Ref #" above.
     vendorInvAttached: smartsheet.findColumn(sheet.columns, ["vendor", "inv", "attached"]),
     invoiceAttached: smartsheet.findColumn(sheet.columns, ["invoice", "attached"]),
     journalEdit: smartsheet.findColumn(sheet.columns, ["journal", "edit"]),
     aribaConfirm: smartsheet.findColumn(sheet.columns, ["ariba", "confirm"]),
     sentToJason: smartsheet.findColumn(sheet.columns, ["sent", "jason"]),
+    batchPostedConfirmed: smartsheet.findColumn(sheet.columns, ["billing"], ["ref"]),
   };
   // Snapshot every task's status before the sync so the diff afterward
   // can say how many of the resulting task-engine writes were this sync's
@@ -161,11 +168,13 @@ async function runSmartsheetSync({ actorId, actorName }) {
     sourceRequestedByColumn: columns.sourceRequestedBy,
     invoiceNumberColumn: columns.invoiceNumber,
     batchNumberColumn: columns.batchNumber,
+    billingRefNumberColumn: columns.billingRefNumber,
     vendorInvAttachedColumn: columns.vendorInvAttached,
     invoiceAttachedColumn: columns.invoiceAttached,
     journalEditColumn: columns.journalEdit,
     aribaConfirmColumn: columns.aribaConfirm,
     sentToJasonColumn: columns.sentToJason,
+    batchPostedConfirmedColumn: columns.batchPostedConfirmed,
   };
 }
 

@@ -3834,6 +3834,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <dl class="vendor-overview-fields">
           <div><dt>Invoice #</dt><dd>${w.invoiceNumber ? escapeHtml(w.invoiceNumber) : "—"}</dd></div>
           <div><dt>Batch #</dt><dd>${w.batchNumber ? escapeHtml(w.batchNumber) : "—"}</dd></div>
+          <div><dt>Billing ref #</dt><dd>${w.billingRefNumber ? escapeHtml(w.billingRefNumber) : "—"}</dd></div>
         </dl>
         <div class="wom-lifecycle-checklist">${billingChecklistRows}</div>
         ${
@@ -3841,6 +3842,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             ? `<p class="review-checklist-hint">As reported by Smartsheet's Billing column: "${escapeHtml(w.sourceBillingRaw)}" (shown for reference only -- never drives status).</p>`
             : ""
         }
+        <p class="review-checklist-hint">Billing ref # and the checklist above were added to the tracker recently -- older closed/invoiced WOMs may legitimately show these blank.</p>
       </div>`;
 
     const conflictHint = w.statusConflict

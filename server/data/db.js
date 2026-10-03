@@ -900,6 +900,18 @@ if (!hasColumn("woms", "source_vendor_inv_attached")) {
   db.exec("ALTER TABLE woms ADD COLUMN source_sent_to_jason_raw TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN source_sent_to_jason INTEGER");
 }
+// Two more real tracker columns, added recently on the sheet so older
+// closed/invoiced WOMs legitimately predate them and will just show these
+// blank -- not a sync bug, nothing to backfill. "Billing Ref #" is a
+// verbatim reference number (e.g. a RITM#) kept for display only, same as
+// the other source_* raw fields. The "Billing" checkbox -- "have you
+// confirmed the batch was posted" -- is real billing-checklist evidence,
+// so it's a 6th entry in WOM_BILLING_CHECKLIST_FIELDS alongside the other 5.
+if (!hasColumn("woms", "source_billing_ref_number")) {
+  db.exec("ALTER TABLE woms ADD COLUMN source_billing_ref_number TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_batch_posted_confirmed_raw TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_batch_posted_confirmed INTEGER");
+}
 // One-time cleanup for tasks left behind by the old 9-stage PSE state
 // machine this app used before the WOM lifecycle checklist replaced it
 // ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
@@ -4479,9 +4491,15 @@ const WOM_SOURCE_FIELDS = [
   { dbColumn: "source_ariba_confirm", jsField: "aribaConfirm", diffLabel: null },
   { dbColumn: "source_sent_to_jason_raw", jsField: "sentToJasonRaw", diffLabel: null },
   { dbColumn: "source_sent_to_jason", jsField: "sentToJason", diffLabel: null },
+  // "Billing Ref #" -- a verbatim reference number (e.g. a RITM#) Krista
+  // enters by hand once a batch is billed. Display-only, like the other raw
+  // fields above; the "Billing" checkbox right below is the real evidence.
+  { dbColumn: "source_billing_ref_number", jsField: "billingRefNumber", diffLabel: "billing reference #" },
+  { dbColumn: "source_batch_posted_confirmed_raw", jsField: "batchPostedConfirmedRaw", diffLabel: null },
+  { dbColumn: "source_batch_posted_confirmed", jsField: "batchPostedConfirmed", diffLabel: null },
 ];
 
-// The 5 billing-checklist sub-steps, specifically -- a subset of
+// The 6 billing-checklist sub-steps, specifically -- a subset of
 // WOM_SOURCE_FIELDS used to ask "is billing fully done," separate from
 // whether the work itself is done (source_work_completed, a different
 // question entirely).
@@ -4491,6 +4509,7 @@ const WOM_BILLING_CHECKLIST_FIELDS = [
   { dbColumn: "source_journal_edit", jsField: "journalEdit", label: "Journal Edit" },
   { dbColumn: "source_ariba_confirm", jsField: "aribaConfirm", label: "Ariba Confirm" },
   { dbColumn: "source_sent_to_jason", jsField: "sentToJason", label: "Sent to Jason" },
+  { dbColumn: "source_batch_posted_confirmed", jsField: "batchPostedConfirmed", label: "Batch Posted Confirmed" },
 ];
 
 function isWomBillingChecklistComplete(w) {
@@ -4575,6 +4594,7 @@ function syncWomsFromSheetRows(rows, columns) {
   const { sourceStatus: sourceStatusColumn, sourceWorkCompleted: sourceWorkCompletedColumn } = columns;
   const { sourceBilling: sourceBillingColumn, sourceRequestedBy: sourceRequestedByColumn } = columns;
   const { invoiceNumber: invoiceNumberColumn, batchNumber: batchNumberColumn } = columns;
+  const { billingRefNumber: billingRefNumberColumn } = columns;
   // The Smartsheet column title for each breakdown category, resolved once
   // up front -- looked up by row below, not re-resolved every row.
   const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
@@ -4622,7 +4642,8 @@ function syncWomsFromSheetRows(rows, columns) {
     const sourceWorkCompleted = parseWorkCompletedFlag(sourceWorkCompletedRaw);
     const sourceBillingRaw = (sourceBillingColumn && row[sourceBillingColumn] && String(row[sourceBillingColumn]).trim()) || null;
     const sourceRequestedBy = (sourceRequestedByColumn && row[sourceRequestedByColumn] && String(row[sourceRequestedByColumn]).trim()) || null;
-    // The billing checklist -- 5 checkbox columns, each parsed the same way
+    const billingRefNumber = (billingRefNumberColumn && row[billingRefNumberColumn] && String(row[billingRefNumberColumn]).trim()) || null;
+    // The billing checklist -- 6 checkbox columns, each parsed the same way
     // Work Completed is (true/yes/x/1 -> 1, false/no/0 -> 0, anything else
     // -> null for "not on this sheet/not set").
     const billingFields = {};
@@ -4634,7 +4655,15 @@ function syncWomsFromSheetRows(rows, columns) {
     }
     const invoiceNumber = (invoiceNumberColumn && row[invoiceNumberColumn] && String(row[invoiceNumberColumn]).trim()) || null;
     const batchNumber = (batchNumberColumn && row[batchNumberColumn] && String(row[batchNumberColumn]).trim()) || null;
-    const sourceFields = { sourceStatusRaw, sourceWorkCompletedRaw, sourceWorkCompleted, sourceBillingRaw, sourceRequestedBy, ...billingFields };
+    const sourceFields = {
+      sourceStatusRaw,
+      sourceWorkCompletedRaw,
+      sourceWorkCompleted,
+      sourceBillingRaw,
+      sourceRequestedBy,
+      billingRefNumber,
+      ...billingFields,
+    };
     const sourceParams = WOM_SOURCE_FIELDS.map((f) => sourceFields[f.jsField]);
     const rawData = JSON.stringify(row);
     const breakdown = { matchedVendorId };

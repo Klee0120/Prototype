@@ -107,6 +107,10 @@ function presentWom(w) {
     sourceWorkCompleted: w.source_work_completed,
     sourceBillingRaw: w.source_billing_raw,
     sourceRequestedBy: w.source_requested_by,
+    // A verbatim reference # (e.g. a RITM#) Krista enters by hand once a
+    // batch is billed -- display-only, never evidence of invoicing by
+    // itself (the "Batch Posted Confirmed" billing-checklist item below is).
+    billingRefNumber: w.source_billing_ref_number,
     // Work completion and billing are two different facts the tracker
     // reports separately -- never collapsed into one combined status. Work
     // Completed says the job itself is done; the billing checklist (plus a
