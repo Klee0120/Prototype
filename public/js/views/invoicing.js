@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { escapeHtml } from "../app.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -22,7 +23,7 @@ export async function renderInvoicing(container, options = {}) {
   await draw();
 
   async function draw() {
-    container.innerHTML = `<p class="empty-note">Loading…</p>`;
+    renderLoadingState(container, loadingLabelFor("Invoicing"));
     try {
       items = await api.get("/api/woms/invoicing-queue");
     } catch (err) {

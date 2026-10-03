@@ -4,6 +4,7 @@ import { openModal } from "../modal.js";
 import { renderAttachments } from "./attachments.js";
 import { TERRITORIES, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 import { getTerritory } from "../globalFilters.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -38,7 +39,7 @@ export async function renderPos(container, { openPoId } = {}) {
   draw();
 
   async function draw() {
-    container.innerHTML = `<p class="empty-note">Loading…</p>`;
+    renderLoadingState(container, loadingLabelFor("Budget PO Tracker"));
     try {
       [listCache, lastImport, locationsCache] = await Promise.all([
         api.get(

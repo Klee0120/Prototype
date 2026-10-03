@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { escapeHtml } from "../app.js";
 import { openModal } from "../modal.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -106,7 +107,7 @@ export async function renderGlReconciliation(container) {
   await draw();
 
   async function draw() {
-    container.innerHTML = `<p class="empty-note">Loading…</p>`;
+    renderLoadingState(container, loadingLabelFor("GL Reconciliation"));
     try {
       [summary, imports, status] = await Promise.all([
         api.get("/api/admin/gl/reconciliation/summary"),

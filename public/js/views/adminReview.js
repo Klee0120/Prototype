@@ -14,7 +14,7 @@ import { renderGlReconciliation } from "./gl.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
-import { renderLoadingState } from "../loadingState.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -328,7 +328,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // shared loading state shown here -- overwritten the moment that tab's
     // own draw function sets content.innerHTML -- is enough to make every
     // page's loading look the same without each one building its own.
-    renderLoadingState(content, (TAB_LABELS[activeTab] || "content").toLowerCase());
+    renderLoadingState(content, loadingLabelFor(TAB_LABELS[activeTab] || "content"));
     // No admin tab currently fills this back in (Tech Allocation's own
     // technician/week picker moved into the sub-tab band instead -- see
     // drawTechAllocation); still cleared up front in case a future tab

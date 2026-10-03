@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { escapeHtml } from "../app.js";
 import { openModal } from "../modal.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -65,7 +66,7 @@ export async function renderReclasses(container, options = {}) {
   }
 
   async function draw() {
-    container.innerHTML = `<p class="empty-note">Loading…</p>`;
+    renderLoadingState(container, loadingLabelFor("Reclasses"));
     try {
       const params = currentFilterParams();
       const [items, summary, batches, metaResp, activity] = await Promise.all([

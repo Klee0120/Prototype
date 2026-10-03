@@ -5,7 +5,7 @@ import { renderAttachments } from "./attachments.js";
 import { renderSchedule } from "./schedule.js";
 import { renderTaskBoard } from "./tasks.js";
 import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
-import { renderLoadingState } from "../loadingState.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
@@ -57,8 +57,8 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     const content = container.querySelector("#tab-content");
     // Same shared loading state as the admin view's draw() -- every tab
     // here fetches before rendering, so this covers all of them for free.
-    const loadingLabels = { mywork: "my work", week: "my week", schedule: "schedule", locations: "locations", vendors: "vendors", documents: "my documents" };
-    renderLoadingState(content, loadingLabels[activeTab] || "content");
+    const loadingLabels = { mywork: "My Work", week: "My Week", schedule: "Schedule", locations: "Locations & WOM", vendors: "Vendors", documents: "My Documents" };
+    renderLoadingState(content, loadingLabelFor(loadingLabels[activeTab] || "content"));
     if (activeTab === "mywork") await renderTaskBoard(content);
     else if (activeTab === "schedule") await renderSchedule(content);
     else if (activeTab === "locations") await drawLocationsAndWoms(content);
