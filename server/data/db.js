@@ -5721,37 +5721,53 @@ function parseObjectAccountCode(raw) {
   return match ? match[1] : null;
 }
 
-// Krista's real 2026 Monthly Close Calendar -- period number lines up
-// exactly with the calendar month (period 7 = July, fiscal year 26 = 2026),
-// confirmed against her real GL files. hfmCorporateLoad is the last close
+// Krista's real C&W Services Monthly Closing Schedule (CW-Services-CY2026,
+// the actual uploaded file) -- period number lines up exactly with the
+// calendar month (period 7 = July), confirmed directly against that
+// document for both FY25 and FY26. hfmCorporateLoad is the last close
 // milestone for that period (HFM/Corporate Load EOD) -- the point at which
-// that month's GL is genuinely final, not just "month-end passed." Only
-// 2026 is seeded; once 2027's calendar exists this needs the same rows
-// added, not a new mechanism.
-const GL_FISCAL_CALENDAR_2026 = [
-  { periodNumber: 1, fiscalYear: 26, monthName: "January", hfmCorporateLoad: "2026-02-05" },
-  { periodNumber: 2, fiscalYear: 26, monthName: "February", hfmCorporateLoad: "2026-03-05" },
-  { periodNumber: 3, fiscalYear: 26, monthName: "March", hfmCorporateLoad: "2026-04-06" },
-  { periodNumber: 4, fiscalYear: 26, monthName: "April", hfmCorporateLoad: "2026-05-06" },
-  { periodNumber: 5, fiscalYear: 26, monthName: "May", hfmCorporateLoad: "2026-06-04" },
-  { periodNumber: 6, fiscalYear: 26, monthName: "June", hfmCorporateLoad: "2026-07-07" },
-  { periodNumber: 7, fiscalYear: 26, monthName: "July", hfmCorporateLoad: "2026-08-06" },
-  { periodNumber: 8, fiscalYear: 26, monthName: "August", hfmCorporateLoad: "2026-09-04" },
-  { periodNumber: 9, fiscalYear: 26, monthName: "September", hfmCorporateLoad: "2026-10-06" },
-  { periodNumber: 10, fiscalYear: 26, monthName: "October", hfmCorporateLoad: "2026-11-05" },
-  { periodNumber: 11, fiscalYear: 26, monthName: "November", hfmCorporateLoad: "2026-12-04" },
-  { periodNumber: 12, fiscalYear: 26, monthName: "December", hfmCorporateLoad: "2027-01-07" },
+// that month's GL is genuinely final, not just "month-end passed."
+// womCloseDate is that same document's own WOM close deadline for the
+// period, for later use anywhere a reclass/WOM cutoff needs to key off the
+// real close calendar instead of a guessed month-end. Only FY25-FY26 are
+// seeded (what that document covers); once a later year's calendar is
+// published, add its rows here the same way, not a new mechanism.
+const GL_FISCAL_CALENDAR = [
+  { periodNumber: 1, fiscalYear: 25, monthName: "January", hfmCorporateLoad: "2025-02-06", womCloseDate: "2025-01-21" },
+  { periodNumber: 2, fiscalYear: 25, monthName: "February", hfmCorporateLoad: "2025-03-06", womCloseDate: "2025-02-18" },
+  { periodNumber: 3, fiscalYear: 25, monthName: "March", hfmCorporateLoad: "2025-04-04", womCloseDate: "2025-03-24" },
+  { periodNumber: 4, fiscalYear: 25, monthName: "April", hfmCorporateLoad: "2025-05-06", womCloseDate: "2025-04-22" },
+  { periodNumber: 5, fiscalYear: 25, monthName: "May", hfmCorporateLoad: "2025-06-05", womCloseDate: "2025-05-20" },
+  { periodNumber: 6, fiscalYear: 25, monthName: "June", hfmCorporateLoad: "2025-07-07", womCloseDate: "2025-06-23" },
+  { periodNumber: 7, fiscalYear: 25, monthName: "July", hfmCorporateLoad: "2025-08-06", womCloseDate: "2025-07-22" },
+  { periodNumber: 8, fiscalYear: 25, monthName: "August", hfmCorporateLoad: "2025-09-05", womCloseDate: "2025-08-19" },
+  { periodNumber: 9, fiscalYear: 25, monthName: "September", hfmCorporateLoad: "2025-10-06", womCloseDate: "2025-09-22" },
+  { periodNumber: 10, fiscalYear: 25, monthName: "October", hfmCorporateLoad: "2025-11-06", womCloseDate: "2025-10-21" },
+  { periodNumber: 11, fiscalYear: 25, monthName: "November", hfmCorporateLoad: "2025-12-04", womCloseDate: "2025-11-18" },
+  { periodNumber: 12, fiscalYear: 25, monthName: "December", hfmCorporateLoad: "2026-01-07", womCloseDate: "2025-12-22" },
+  { periodNumber: 1, fiscalYear: 26, monthName: "January", hfmCorporateLoad: "2026-02-05", womCloseDate: "2026-01-20" },
+  { periodNumber: 2, fiscalYear: 26, monthName: "February", hfmCorporateLoad: "2026-03-05", womCloseDate: "2026-02-17" },
+  { periodNumber: 3, fiscalYear: 26, monthName: "March", hfmCorporateLoad: "2026-04-06", womCloseDate: "2026-03-23" },
+  { periodNumber: 4, fiscalYear: 26, monthName: "April", hfmCorporateLoad: "2026-05-06", womCloseDate: "2026-04-21" },
+  { periodNumber: 5, fiscalYear: 26, monthName: "May", hfmCorporateLoad: "2026-06-04", womCloseDate: "2026-05-19" },
+  { periodNumber: 6, fiscalYear: 26, monthName: "June", hfmCorporateLoad: "2026-07-07", womCloseDate: "2026-06-22" },
+  { periodNumber: 7, fiscalYear: 26, monthName: "July", hfmCorporateLoad: "2026-08-06", womCloseDate: "2026-07-21" },
+  { periodNumber: 8, fiscalYear: 26, monthName: "August", hfmCorporateLoad: "2026-09-04", womCloseDate: "2026-08-18" },
+  { periodNumber: 9, fiscalYear: 26, monthName: "September", hfmCorporateLoad: "2026-10-06", womCloseDate: "2026-09-21" },
+  { periodNumber: 10, fiscalYear: 26, monthName: "October", hfmCorporateLoad: "2026-11-05", womCloseDate: "2026-10-20" },
+  { periodNumber: 11, fiscalYear: 26, monthName: "November", hfmCorporateLoad: "2026-12-04", womCloseDate: "2026-11-16" },
+  { periodNumber: 12, fiscalYear: 26, monthName: "December", hfmCorporateLoad: "2027-01-07", womCloseDate: "2026-12-21" },
 ];
 
 // Whether the most recently-closed GL period (per the real close calendar,
 // not a guessed "percent through the month") has a report imported yet.
 // null expectedPeriod means no period has even closed yet under this
-// calendar (too early in 2026, or past the last period this calendar
+// calendar (too early in the seeded range, or past the last period it
 // covers) -- genuinely nothing to expect yet, not an error.
 function getGlImportStatus() {
   const today = new Date().toISOString().slice(0, 10);
   let expected = null;
-  for (const period of GL_FISCAL_CALENDAR_2026) {
+  for (const period of GL_FISCAL_CALENDAR) {
     if (period.hfmCorporateLoad <= today && (!expected || period.hfmCorporateLoad > expected.hfmCorporateLoad)) {
       expected = period;
     }
@@ -5771,12 +5787,15 @@ function getGlImportStatus() {
   };
 }
 
-// Every period in the close calendar, each marked with whether it's been
-// imported and whether it's even closed yet -- so the admin can see at a
-// glance how much of the fiscal year is actually covered rather than just
-// the single most-recent gap getGlImportStatus flags. "Not closed yet" is
-// distinct from "missing": nothing to import there yet either way.
-function getGlFiscalYearCoverage() {
+// Every period in one fiscal year of the close calendar, each marked with
+// whether it's been imported and whether it's even closed yet -- so the
+// admin can see at a glance how much of the fiscal year is actually covered
+// rather than just the single most-recent gap getGlImportStatus flags.
+// "Not closed yet" is distinct from "missing": nothing to import there yet
+// either way. Defaults to FY26 (today's working year) -- the GL
+// Reconciliation coverage strip shows one fiscal year at a time, not every
+// seeded year at once.
+function getGlFiscalYearCoverage(fiscalYear = 26) {
   const today = new Date().toISOString().slice(0, 10);
   const importedPeriods = new Set(
     db
@@ -5784,7 +5803,7 @@ function getGlFiscalYearCoverage() {
       .all()
       .map((r) => `${r.periodNumber}|${r.fiscalYear}`)
   );
-  return GL_FISCAL_CALENDAR_2026.map((period) => ({
+  return GL_FISCAL_CALENDAR.filter((period) => period.fiscalYear === fiscalYear).map((period) => ({
     periodNumber: period.periodNumber,
     fiscalYear: period.fiscalYear,
     monthName: period.monthName,
