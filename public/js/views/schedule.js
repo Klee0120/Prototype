@@ -68,6 +68,90 @@ function mondayOfIso(dateIso) {
   return addDaysIso(dateIso, -mondayIndexOf(dateIso));
 }
 
+function datesBetween(startIso, endIso) {
+  const dates = [];
+  for (let cur = startIso; cur <= endIso; cur = addDaysIso(cur, 1)) {
+    dates.push(cur);
+    if (dates.length > 62) break; // sanity cap -- about two months
+  }
+  return dates;
+}
+
+// Writes a WOM across every date in `dates` via schedule-wom, one PUT per
+// affected day, preserving whatever else is already on that day -- shared
+// by the initial "Schedule a WOM" add flow and reschedule's "add the new
+// dates" step.
+async function applyWomToDates(techId, wom, hours, dates) {
+  const datesByWeek = {};
+  for (const d of dates) {
+    const weekMonday = mondayOfIso(d);
+    (datesByWeek[weekMonday] = datesByWeek[weekMonday] || []).push(d);
+  }
+  let scheduledDays = 0;
+  const dayErrors = [];
+  for (const [weekMonday, weekDates] of Object.entries(datesByWeek)) {
+    let week;
+    try {
+      week = await api.get(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}`);
+    } catch (err) {
+      for (const d of weekDates) dayErrors.push(`${d}: ${err.message}`);
+      continue;
+    }
+    for (const d of weekDates) {
+      const day = DAY_HEADERS[mondayIndexOf(d)];
+      const existingForDay = week.allocations.filter((a) => a.day === day);
+      const allocations = [...existingForDay, { day, type: "wom", locationCode: wom.locationCode, womCode: wom.code, hours }];
+      try {
+        await api.put(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}/schedule-wom`, { day, allocations });
+        scheduledDays += 1;
+      } catch (err) {
+        dayErrors.push(`${d}: ${err.message}`);
+      }
+    }
+  }
+  return { scheduledDays, dayErrors };
+}
+
+// The inverse: removes the one matching WOM/hours row from every date in
+// `dates`, leaving anything else that day (another WOM, E&F, time off)
+// untouched -- used by both Cancel and Reschedule's "clear the old dates"
+// step.
+async function removeWomFromDates(techId, womCode, hours, dates) {
+  const datesByWeek = {};
+  for (const d of dates) {
+    const weekMonday = mondayOfIso(d);
+    (datesByWeek[weekMonday] = datesByWeek[weekMonday] || []).push(d);
+  }
+  let removedDays = 0;
+  const dayErrors = [];
+  for (const [weekMonday, weekDates] of Object.entries(datesByWeek)) {
+    let week;
+    try {
+      week = await api.get(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}`);
+    } catch (err) {
+      for (const d of weekDates) dayErrors.push(`${d}: ${err.message}`);
+      continue;
+    }
+    for (const d of weekDates) {
+      const day = DAY_HEADERS[mondayIndexOf(d)];
+      const dayAllocs = week.allocations.filter((a) => a.day === day);
+      const idx = dayAllocs.findIndex((a) => a.type === "wom" && a.womCode === womCode && Number(a.hours) === Number(hours));
+      if (idx === -1) {
+        dayErrors.push(`${d}: already removed`);
+        continue;
+      }
+      const remaining = dayAllocs.slice(0, idx).concat(dayAllocs.slice(idx + 1));
+      try {
+        await api.put(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}/schedule-wom`, { day, allocations: remaining });
+        removedDays += 1;
+      } catch (err) {
+        dayErrors.push(`${d}: ${err.message}`);
+      }
+    }
+  }
+  return { removedDays, dayErrors };
+}
+
 // Groups a week's day-by-day entries into contiguous "runs" -- the same
 // technician + WOM + hours appearing on consecutive days -- so the
 // calendar can draw one bar spanning those days instead of repeating an
@@ -310,6 +394,9 @@ export async function renderSchedule(container) {
         e.estimatedPrice == null && e.appliedPrice == null
           ? ""
           : `<div>Est. $${formatMoney(e.estimatedPrice)} / Applied $${formatMoney(e.appliedPrice)}</div>`;
+      // Same permission as putting it on the calendar in the first place:
+      // admin can manage anyone's; a technician only their own.
+      const canManage = isAdmin || (state.user && state.user.id === e.techId);
       detailHost.innerHTML = `
         <div class="schedule-detail-panel">
           <button type="button" class="btn btn-link schedule-detail-close">Close</button>
@@ -321,11 +408,106 @@ export async function renderSchedule(container) {
           ${e.subsidiaryCode ? `<div>Subsidiary ${escapeHtml(e.subsidiaryCode)}</div>` : ""}
           ${budgetLine}
           ${priceLine}
+          ${
+            canManage
+              ? `<div class="schedule-detail-actions">
+                  <button type="button" class="btn btn-secondary schedule-detail-reschedule">Reschedule</button>
+                  <button type="button" class="btn btn-link danger-link schedule-detail-cancel">Cancel schedule</button>
+                </div>
+                <span class="save-message schedule-detail-message"></span>`
+              : ""
+          }
         </div>
       `;
       detailHost.querySelector(".schedule-detail-close").addEventListener("click", () => {
         detailEntry = null;
         renderDetail();
+      });
+      if (!canManage) return;
+
+      const datesInRange = datesBetween(e.dateIso, e.dateIsoEnd || e.dateIso);
+      const msgEl = detailHost.querySelector(".schedule-detail-message");
+
+      detailHost.querySelector(".schedule-detail-cancel").addEventListener("click", async () => {
+        if (!window.confirm(`Remove ${e.womCode} from ${dateLabel} for ${e.techName}? This can't be undone from here.`)) return;
+        msgEl.textContent = "Removing…";
+        const { removedDays, dayErrors } = await removeWomFromDates(e.techId, e.womCode, e.hours, datesInRange);
+        if (dayErrors.length === 0) {
+          detailEntry = null;
+          await draw();
+        } else {
+          msgEl.textContent = `${removedDays} day(s) removed. Some failed: ${dayErrors.join("; ")}`;
+        }
+      });
+      detailHost.querySelector(".schedule-detail-reschedule").addEventListener("click", () => {
+        openRescheduleModal(e, datesInRange);
+      });
+    }
+
+    // Moves an already-scheduled WOM run to a new date range (and/or a new
+    // hours/day figure) -- clears the old dates, then schedules the new ones,
+    // same per-day schedule-wom writes "Schedule a WOM" itself uses.
+    function openRescheduleModal(entry, oldDates) {
+      const oldRangeLabel = oldDates.length > 1 ? `${oldDates[0]} – ${oldDates[oldDates.length - 1]}` : oldDates[0];
+      const { body, close } = openModal({
+        title: `Reschedule ${entry.womCode}`,
+        bodyHtml: `
+          <form class="schedule-reschedule-form modal-form">
+            <p class="review-checklist-hint">
+              Moves ${escapeHtml(entry.description || entry.womCode)} for ${escapeHtml(entry.techName)} off
+              ${escapeHtml(oldRangeLabel)} onto a new date range below.
+            </p>
+            <div class="schedule-add-daterange">
+              <label class="schedule-add-field"><span>New first day</span><input name="startDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
+              <label class="schedule-add-field"><span>New last day</span><input name="endDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" required /></label>
+            </div>
+            <label class="schedule-add-field"><span>Hours per day</span><input name="hours" type="number" min="0.5" step="0.5" value="${entry.hours}" required /></label>
+            <div class="modal-form-actions">
+              <button type="submit" class="btn btn-primary">Reschedule</button>
+            </div>
+            <span class="save-message schedule-reschedule-message"></span>
+          </form>
+        `,
+      });
+      wireDateMaskInput(body.querySelector('input[name="startDate"]'));
+      wireDateMaskInput(body.querySelector('input[name="endDate"]'));
+      body.querySelector(".schedule-reschedule-form").addEventListener("submit", async (e2) => {
+        e2.preventDefault();
+        const form = e2.target;
+        const msg = form.querySelector(".schedule-reschedule-message");
+        const startDate = isoFromUs(form.startDate.value);
+        const endDate = isoFromUs(form.endDate.value);
+        const hours = Number(form.hours.value);
+        if (!startDate || !endDate) {
+          msg.textContent = "Dates must be a full MM/DD/YYYY.";
+          return;
+        }
+        if (endDate < startDate) {
+          msg.textContent = "Last day can't be before first day.";
+          return;
+        }
+        const newDates = datesBetween(startDate, endDate);
+        if (newDates.length > 62) {
+          msg.textContent = "That range is too long -- try 62 days or fewer at a time.";
+          return;
+        }
+
+        msg.textContent = "Rescheduling…";
+        const removeResult = await removeWomFromDates(entry.techId, entry.womCode, entry.hours, oldDates);
+        const addResult = await applyWomToDates(
+          entry.techId,
+          { code: entry.womCode, locationCode: entry.locationCode },
+          hours,
+          newDates
+        );
+        const allErrors = [...removeResult.dayErrors, ...addResult.dayErrors];
+        if (allErrors.length === 0) {
+          close();
+          detailEntry = null;
+          await draw();
+        } else {
+          msg.textContent = `Done, with some issues: ${allErrors.join("; ")}`;
+        }
       });
     }
 
@@ -476,50 +658,19 @@ export async function renderSchedule(container) {
           msg.textContent = "Last day can't be before first day.";
           return;
         }
-        const dates = [];
-        for (let cur = startDate; cur <= endDate; cur = addDaysIso(cur, 1)) {
-          dates.push(cur);
-          if (dates.length > 62) break; // sanity cap -- about two months
-        }
+        const dates = datesBetween(startDate, endDate);
         if (dates.length > 62) {
           msg.textContent = "That range is too long -- try 62 days or fewer at a time.";
           return;
         }
 
         const wom = openWoms.find((w) => w.code === womCode);
-        const datesByWeek = {};
-        for (const d of dates) {
-          const weekMonday = mondayOfIso(d);
-          (datesByWeek[weekMonday] = datesByWeek[weekMonday] || []).push(d);
-        }
-
         msg.textContent = "Scheduling…";
-        let scheduledDays = 0;
-        const dayErrors = [];
         // Each day is saved on its own via schedule-wom (day-scoped, ignores
         // the week's own edit lock/window -- scheduling is a planning action,
         // not a timesheet edit), fetching that day's existing entries first
         // so a WOM already on that day isn't clobbered, just added alongside.
-        for (const [weekMonday, weekDates] of Object.entries(datesByWeek)) {
-          let week;
-          try {
-            week = await api.get(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}`);
-          } catch (err) {
-            for (const d of weekDates) dayErrors.push(`${d}: ${err.message}`);
-            continue;
-          }
-          for (const d of weekDates) {
-            const day = DAY_HEADERS[mondayIndexOf(d)];
-            const existingForDay = week.allocations.filter((a) => a.day === day);
-            const allocations = [...existingForDay, { day, type: "wom", locationCode: wom.locationCode, womCode, hours }];
-            try {
-              await api.put(`/api/technicians/${encodeURIComponent(techId)}/weeks/${weekMonday}/schedule-wom`, { day, allocations });
-              scheduledDays += 1;
-            } catch (err) {
-              dayErrors.push(`${d}: ${err.message}`);
-            }
-          }
-        }
+        const { scheduledDays, dayErrors } = await applyWomToDates(techId, wom, hours, dates);
 
         if (dayErrors.length === 0) {
           close();
