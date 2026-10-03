@@ -5,17 +5,18 @@ const smartsheet = require("../utils/smartsheet");
 
 const router = express.Router();
 
-// Smartsheet is the authority on completion -- syncWomsFromSheetRows
-// (db.js) already auto-promotes an "open" WOM straight to "invoiced" the
-// moment the sheet's own Status/Work Completed/Billing data says it's done
-// (via db.sourceImpliesDone, the same predicate used here). This banner
-// covers what that auto-promotion deliberately doesn't touch: a WOM with no
-// real WOM # yet (pending/requested) the sheet already marks done, or a
-// cancelled WOM the sheet now says is invoiced -- a real contradiction
-// (cancelled means never billed), so cancelled is deliberately *not* treated
-// as "already done" here the way invoiced/closed are; sync still never
-// auto-changes a cancelled WOM's status itself, but this still flags the
-// disagreement for an admin to look at.
+// Smartsheet is the authority on completion -- syncWomsFromSheetRows (db.js)
+// already auto-promotes a pending/requested/open WOM straight to "invoiced"
+// the moment the sheet's own Status/Work Completed/Billing data says it's
+// done (via db.sourceImpliesDone, the same predicate used here), even one
+// with no real WOM # typed into that column yet -- a vendor-only job can be
+// marked done on the sheet before that. This banner only remains for what
+// that auto-promotion deliberately doesn't touch: a cancelled WOM the sheet
+// now says is invoiced -- a real contradiction (cancelled means never
+// billed), so cancelled is deliberately *not* treated as "already done" here
+// the way invoiced/closed are; sync still never auto-changes a cancelled
+// WOM's status itself, but this still flags the disagreement for an admin to
+// look at.
 const APP_DONE_STATUSES = ["invoiced", "closed"];
 function computeWomStatusConflict(w) {
   const sourceImpliesDoneFlag = db.sourceImpliesDone({

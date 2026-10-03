@@ -3780,7 +3780,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </dl>
         ${
           w.statusConflict
-            ? `<p class="review-checklist-hint">Smartsheet's own data says this WOM is done/invoiced, but the app status below still says otherwise. The next sync will auto-promote this to Invoiced if it's still open -- this only sticks around for a status sync won't touch on its own, like a cancelled WOM or one with no real WOM # yet.</p>`
+            ? `<p class="review-checklist-hint">Smartsheet's own data says this WOM is done/invoiced, but the app status below still says otherwise. The next sync will auto-promote this to Invoiced -- this only sticks around for a status sync deliberately won't touch on its own, like a cancelled WOM.</p>`
             : ""
         }
       </div>`

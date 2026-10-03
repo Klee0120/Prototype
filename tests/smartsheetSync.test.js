@@ -964,6 +964,44 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
     }
   });
 
+  await t.test("a vendor-only job marked done on the sheet before a real WOM # is ever typed in still gets promoted to invoiced, checklist and all", async () => {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        statusSheetWith([
+          {
+            id: 9006,
+            rowNumber: 88,
+            cells: [
+              // No "WOM #" cell at all -- this row never got a real WOM #
+              // entered on the sheet, so it creates as PENDING-<rowId>.
+              { columnId: 2, value: "HP D Flooring Repair", displayValue: "HP D Flooring Repair" },
+              { columnId: 3, value: "Status 99 - Invoiced", displayValue: "Status 99 - Invoiced" },
+              { columnId: 4, value: "True", displayValue: "True" },
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+
+      const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+      const wom = list.body.find((w) => w.description === "HP D Flooring Repair");
+      assert.ok(wom, "expected a PENDING-<rowId> WOM to have been created");
+      assert.equal(wom.code.startsWith("PENDING-"), true);
+      // Smartsheet is the authority -- done is done, real WOM # or not.
+      assert.equal(wom.status, "invoiced");
+      assert.equal(wom.statusConflict, false);
+      assert.ok(
+        wom.lifecycleSteps.every((s) => s.completedAt),
+        "every lifecycle checklist step should show complete once Smartsheet says the work is done"
+      );
+    } finally {
+      restore();
+    }
+  });
+
   await t.test("a row with ordinary in-progress sheet data shows no conflict", async () => {
     const restore = stubFetchOnce({
       ok: true,
