@@ -3591,6 +3591,13 @@ function getWomCostSummary() {
   for (const v of vendorSpend) {
     v.shareOfMatchedCosts = totalMatchedVendorCosts !== 0 ? (v.totalAppliedContracted / totalMatchedVendorCosts) * 100 : null;
   }
+  // What's actually posted to the GL against each vendor's matched POs --
+  // a different, more authoritative figure than the WOM-reported applied
+  // cost above (which comes from the project tracker, not a GL import).
+  // Independent of the region/location/status filters Vendor Spend Overview
+  // applies to the WOM-side figures: GL entries attach to POs, not WOMs, so
+  // there's no shared per-WOM link to filter this the same way.
+  const vendorGlTotals = getVendorGlTotals();
 
   const categoryOverages = SIMPLE_OVERCHARGE_CATEGORIES.map((cat) => {
     const items = categoryOvercharges[cat.key].sort((a, b) => b.overage - a.overage);
@@ -3666,6 +3673,7 @@ function getWomCostSummary() {
     vendorAboveQuote,
     vendorSpend,
     vendorSpendDetail,
+    vendorGlTotals,
     contractedUnallocated: { count: unallocatedContractedCount, total: unallocatedContractedTotal },
     categoryOverages,
     remainingToyotaPoCount: remainingToyotaPo.length,
@@ -6422,6 +6430,23 @@ function listGlImports() {
 // looking at whether a reclass naming this WOM actually shows up in the
 // GL yet. Never used to auto-confirm a reclass; that's still the admin's
 // own call (see confirmed_gl_reference on reclass_items).
+// Real GL-posted $ per vendor, via each vendor's matched POs -- used
+// alongside Vendor Spend Overview's WOM-reported applied cost so Krista can
+// compare the project tracker's own number against what the GL actually
+// shows. Keyed by vendor id; a vendor with no GL-matched PO at all is just
+// absent from the map (not a 0, which would look like a confirmed non-spend).
+function getVendorGlTotals() {
+  return db
+    .prepare(
+      `SELECT p.vendor_id AS vendorId, SUM(g.amount) AS totalGlAmount, COUNT(*) AS glLineCount
+       FROM gl_entries g
+       JOIN pos p ON p.id = g.matched_po_id
+       WHERE p.vendor_id IS NOT NULL
+       GROUP BY p.vendor_id`
+    )
+    .all();
+}
+
 function getPoGlLinksByWom(womNumber) {
   if (!womNumber) return [];
   const pos = db

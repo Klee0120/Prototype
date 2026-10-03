@@ -167,9 +167,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // and which of its tabs -- same pattern as vendorProfileId/vendorProfileTab.
   let womProfileCode = null;
   let womProfileTab = "overview";
-  function openWomProfile(code, tab) {
+  // Where "back" should actually go -- a WOM profile can be opened from
+  // somewhere other than the WOM Projects list itself (e.g. a row in
+  // Financials > Invoicing), and jumping to the WOM Projects list on the
+  // way back loses that place entirely, which is its own reported
+  // annoyance. null means "opened from the WOM Projects list" (the default,
+  // original behavior); anything else is a tab key to goTo() instead.
+  let womProfileReturnTo = null;
+  function openWomProfile(code, tab, returnTo) {
     womProfileCode = code;
     womProfileTab = tab || "overview";
+    womProfileReturnTo = returnTo || null;
     goTo("woms");
   }
   const locationEditing = new Set();
@@ -329,7 +337,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "pos") await renderPos(content);
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
     else if (activeTab === "invoicing") {
-      await renderInvoicing(content, { onOpenWom: (code) => openWomProfile(code, "documents") });
+      await renderInvoicing(content, { onOpenWom: (code) => openWomProfile(code, "documents", "invoicing") });
     }
     else if (activeTab === "reclasses") {
       const openItemId = reclassItemToOpen;
@@ -3719,10 +3727,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="wom-profile-body"></div>
     `;
 
-    content.querySelector(".wom-profile-back-btn").addEventListener("click", () => {
+    function backToList() {
+      const returnTo = womProfileReturnTo;
       womProfileCode = null;
-      drawWoms(content);
-    });
+      womProfileReturnTo = null;
+      if (returnTo) goTo(returnTo);
+      else drawWoms(content);
+    }
+    content.querySelector(".wom-profile-back-btn").addEventListener("click", backToList);
     content.querySelector(".wom-profile-edit-btn").addEventListener("click", () => {
       openWomEditFormModal(w, content, locationByCode, locations);
     });
@@ -3745,8 +3757,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (!window.confirm(`Delete "${w.description}" (${w.code})? This can't be undone.`)) return;
       try {
         await api.delete(`/api/woms/${encodeURIComponent(w.code)}`);
-        womProfileCode = null;
-        await drawWoms(content);
+        backToList();
       } catch (err) {
         if (err.status === 409 && err.payload && err.payload.allocatedHours != null) {
           const forceConfirmed = window.confirm(
@@ -3755,8 +3766,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           if (!forceConfirmed) return;
           try {
             await api.delete(`/api/woms/${encodeURIComponent(w.code)}`, { force: true });
-            womProfileCode = null;
-            await drawWoms(content);
+            backToList();
           } catch (err2) {
             window.alert(`Could not delete ${w.code}: ${err2.message}`);
           }
@@ -4751,7 +4761,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   function renderVendorSpendDetail(v, locationByCode) {
     const items = [...v.items].sort((a, b) => b.applied - a.applied);
     return `
-      <tr class="cost-row-nested-wrap"><td colspan="5">
+      <tr class="cost-row-nested-wrap"><td colspan="6">
         <div class="va-detail">
           <button type="button" class="btn-link va-vendor-profile-link" data-vendor-id="${v.vendorId}">View vendor profile &rsaquo;</button>
           <table class="detail-table va-detail-table">
@@ -4776,7 +4786,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
   }
 
-  function renderVendorSpendTable(rows, locationByCode) {
+  function renderVendorSpendTable(rows, locationByCode, vendorGlTotalsById) {
     if (rows.length === 0) {
       return `<p class="empty-note">No WOM matching these filters has both a vendor match and an applied contracted-services cost.</p>`;
     }
@@ -4788,6 +4798,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <th class="sortable" data-va-sort="vendorName">Vendor${vaSortArrow(vaSpendSort, "vendorName")}</th>
             <th class="sortable" data-va-sort="womCount">Linked WOMs${vaSortArrow(vaSpendSort, "womCount")}</th>
             <th class="sortable" data-va-sort="totalAppliedContracted">Reported Applied Cost${vaSortArrow(vaSpendSort, "totalAppliedContracted")}</th>
+            <th title="What's actually posted to the GL against this vendor's matched POs -- all periods imported, not scoped to the filters above.">GL Reported Total &#9432;</th>
             <th class="sortable" data-va-sort="shareOfMatchedCosts">Share of Matched Vendor Costs${vaSortArrow(vaSpendSort, "shareOfMatchedCosts")}</th>
             <th></th>
           </tr>
@@ -4796,11 +4807,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           ${sorted
             .map((v) => {
               const expanded = vaSpendExpanded.has(String(v.vendorId));
+              const gl = vendorGlTotalsById.get(v.vendorId);
               const row = `
               <tr class="cost-vendor-group-row va-spend-row" data-vendor-id="${v.vendorId}">
                 <td>${escapeHtml(v.vendorName || "Unknown vendor")}</td>
                 <td>${v.womCount}</td>
                 <td>$${formatMoney(v.totalAppliedContracted)}</td>
+                <td>${gl ? `$${formatMoney(gl.totalGlAmount)}` : "No GL match"}</td>
                 <td>${formatPct(v.shareOfMatchedCosts)}</td>
                 <td class="cost-row-chevron">${expanded ? "▼" : "▶"}</td>
               </tr>`;
@@ -4829,6 +4842,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const aboveQuoteRows = vaAggregateAboveQuote(comparisons);
     const filteredAboveQuoteRows = vaReviewStatusFilter ? aboveQuoteRows.filter((r) => r.reviewStatus === vaReviewStatusFilter) : aboveQuoteRows;
     const spendRows = vaAggregateSpend(spendDetail);
+    const vendorGlTotalsById = new Map((summary.vendorGlTotals || []).map((g) => [g.vendorId, g]));
 
     const allItemsForFilters = [...summary.contractedComparisons, ...summary.vendorSpendDetail];
     const regionsInUse = [
@@ -4881,7 +4895,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="va-above-quote-wrap"></div>
 
       <h3>Vendor Spend Overview</h3>
-      <p class="review-checklist-hint">Reported applied contracted-services costs by vendor across imported WOMs.</p>
+      <p class="review-checklist-hint">
+        Reported applied contracted-services costs by vendor across imported WOMs, alongside what's actually posted
+        to the GL against that vendor's matched POs (all GL periods imported -- not scoped to the filters above).
+      </p>
       <div class="va-spend-wrap"></div>
 
       ${
@@ -4896,7 +4913,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
 
     wrap.querySelector(".va-above-quote-wrap").innerHTML = renderVendorAboveQuoteTable(filteredAboveQuoteRows, locationByCode);
-    wrap.querySelector(".va-spend-wrap").innerHTML = renderVendorSpendTable(spendRows, locationByCode);
+    wrap.querySelector(".va-spend-wrap").innerHTML = renderVendorSpendTable(spendRows, locationByCode, vendorGlTotalsById);
 
     wrap.querySelector(".va-region-filter").addEventListener("change", (e) => {
       vaRegionFilter = e.target.value;

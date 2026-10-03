@@ -5,6 +5,7 @@ process.env.SMARTSHEET_API_TOKEN = "test-token";
 process.env.SMARTSHEET_SHEET_ID = "6392545882886020";
 
 const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
 
 function stubFetchOnce(response) {
   const original = global.fetch;
@@ -1106,6 +1107,34 @@ test("WOM lifecycle: labor/contracted-services breakdown and vendor cost analysi
     // Only one vendor is matched across this test's WOMs so far -- it holds
     // 100% of the matched-vendor total.
     assert.equal(spend.shareOfMatchedCosts, 100);
+  });
+
+  await t.test("vendorGlTotals sums what's actually posted to the GL against this vendor's matched POs", async () => {
+    const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const now = new Date().toISOString();
+    const poResult = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, vendor_id, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("gl-total-po-1", "95001", vendorId, now, now, now, now);
+    const poId = Number(poResult.lastInsertRowid);
+    raw.prepare("INSERT INTO gl_entries (matched_po_id, amount, created_at) VALUES (?, ?, ?)").run(poId, 450.5, now);
+    raw.prepare("INSERT INTO gl_entries (matched_po_id, amount, created_at) VALUES (?, ?, ?)").run(poId, 200, now);
+    raw.close();
+
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const gl = res.body.vendorGlTotals.find((v) => v.vendorId === vendorId);
+    assert.ok(gl, "expected a GL total for this vendor");
+    assert.equal(gl.totalGlAmount, 650.5);
+    assert.equal(gl.glLineCount, 2);
+  });
+
+  await t.test("a vendor with no GL-matched PO at all has no entry in vendorGlTotals", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "No GL Match Co" } });
+    const noGlVendorId = res.body.id;
+    const summary = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    assert.ok(!summary.body.vendorGlTotals.some((v) => v.vendorId === noGlVendorId));
   });
 
   await t.test("the vendor's own profile shows the same contracted spend total and no last-invoiced date yet", async () => {

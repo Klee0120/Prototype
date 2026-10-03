@@ -41,9 +41,9 @@ function expiryBadge(expiresAt) {
 
 function accessBadge(f) {
   if (f.accessLevel === "restricted") {
-    return `<span class="badge badge-warn">&#128274; Restricted access</span>`;
+    return `<span class="badge badge-warn" title="Admins only -- hidden from technicians entirely.">&#128274; Restricted access</span>`;
   }
-  return `<span class="badge badge-draft">Standard access</span>`;
+  return `<span class="badge badge-draft" title="Visible to anyone who can open this record, technicians included.">Standard access</span>`;
 }
 
 /**
@@ -449,13 +449,21 @@ export async function renderAttachments(host, opts) {
           }
           ${
             isAdmin
-              ? `<select class="attachments-upload-access">
+              ? `<select class="attachments-upload-access" title="Standard access: visible to anyone who can open this record, technicians included. Restricted access: admins only -- hidden from technicians entirely.">
                   <option value="standard">Standard access</option>
                   <option value="restricted">Restricted access</option>
                 </select>`
               : ""
           }
         </div>
+        ${
+          isAdmin
+            ? `<p class="review-checklist-hint">
+                 <strong>Standard access</strong> -- visible to anyone who can open this record (technicians included).
+                 <strong>Restricted access</strong> &#128274; -- admins only; hidden from technicians entirely.
+               </p>`
+            : ""
+        }
         <div class="attachments-dropzone">
           <input type="file" class="attachments-dropzone-input" hidden />
           <div class="attachments-dropzone-icon">&#128228;</div>
