@@ -6,6 +6,7 @@ const { presentAllocation } = require("../utils/allocation");
 const { computeReceipt } = require("../utils/receipt");
 const mailer = require("../utils/mailer");
 const smartsheet = require("../utils/smartsheet");
+const { runSmartsheetSync } = require("../utils/smartsheetSync");
 
 const OT_NOT_ON_WOM_FLAG_THRESHOLD = 3;
 const OT_TREND_WEEKS = 8;
@@ -573,147 +574,16 @@ router.get("/smartsheet/preview", async (req, res) => {
 // record here for each one, tracked by the underlying Smartsheet row (not
 // just its WOM # cell, which starts blank and gets filled in later -- see
 // syncWomsFromSheetRows for the full create/promote/update behavior).
-// Admin-triggered for now (a "Sync" button); on a schedule is a natural
-// next step once this has been used successfully a few times.
+// Shared with the scheduled auto-sync (server/scheduler.js) via
+// utils/smartsheetSync.runSmartsheetSync -- same logic either way, just
+// this route reports who (the logged-in admin) ran it.
 router.post("/smartsheet/sync-woms", async (req, res) => {
-  if (!smartsheet.isConfigured()) {
-    return res.status(409).json({ error: "Smartsheet isn't connected yet -- set SMARTSHEET_API_TOKEN and SMARTSHEET_SHEET_ID" });
-  }
   try {
-    const sheet = await smartsheet.fetchSimplifiedSheet();
-    const womColumn = sheet.columns.includes("WOM #") ? "WOM #" : null;
-    if (!womColumn) {
-      return res.status(502).json({ error: 'Could not find a "WOM #" column in the connected sheet' });
-    }
-    const columns = {
-      wom: womColumn,
-      estimate: smartsheet.findColumn(sheet.columns, ["estimate", "wom", "$"]),
-      applied: smartsheet.findColumn(sheet.columns, ["applied", "wom", "$"]),
-      description: smartsheet.findColumn(sheet.columns, ["project", "name"]),
-      dateRequested: smartsheet.findColumn(sheet.columns, ["date", "requested"]),
-      maximo: smartsheet.findColumn(sheet.columns, ["maximo"]),
-      location: smartsheet.findColumn(sheet.columns, ["site", "location"]),
-      // "subsid" (not "subsidiary") on purpose -- the real tracker's column
-      // is misspelled "Subsidary Code" (missing the second "i"), and this
-      // shorter root matches both the correct and the misspelled version.
-      subsidiary: smartsheet.findColumn(sheet.columns, ["subsid", "code"]),
-      // The itemized estimate/applied breakdown, mirroring the aggregate
-      // estimate/applied columns above but per category -- lets Cost
-      // Analysis tell "labor overcharged" apart from "contracted services
-      // increased" instead of only knowing the project total moved. Any of
-      // these can be null if the connected sheet doesn't have that column
-      // (an older sheet, or one that's never itemized this way); the fields
-      // they'd feed just stay unset rather than the sync failing.
-      // No "$" requirement on either side -- the real tracker is
-      // inconsistent about it ("Estimate Labor $" has one, "Applied Labor"
-      // doesn't), and "estimate"/"applied" + "labor" alone is specific
-      // enough with nothing else on the sheet containing "labor" at all.
-      estimatedLabor: smartsheet.findColumn(sheet.columns, ["estimate", "labor"]),
-      // "Contracted Services" and "PO" are both names real sheets have used
-      // for the same vendor-contracted dollar figure -- see findAnyColumn.
-      estimatedContracted: smartsheet.findAnyColumn(sheet.columns, [
-        ["estimate", "contracted", "$"],
-        ["estimate", "po", "$"],
-      ]),
-      appliedLabor: smartsheet.findColumn(sheet.columns, ["applied", "labor"]),
-      appliedContracted: smartsheet.findAnyColumn(sheet.columns, [
-        ["applied", "contracted", "$"],
-        ["applied", "po", "$"],
-      ]),
-      estimatedMaterials: smartsheet.findColumn(sheet.columns, ["estimate", "materials"]),
-      appliedMaterials: smartsheet.findColumn(sheet.columns, ["applied", "materials"]),
-      estimatedOtherDirect: smartsheet.findColumn(sheet.columns, ["estimate", "other", "direct"]),
-      appliedOtherDirect: smartsheet.findColumn(sheet.columns, ["applied", "other", "direct"]),
-      estimatedTax: smartsheet.findColumn(sheet.columns, ["estimate", "tax"]),
-      appliedTax: smartsheet.findColumn(sheet.columns, ["applied", "tax"]),
-      estimatedContingency: smartsheet.findColumn(sheet.columns, ["estimate", "contingency"]),
-      // No "applied" (or any other) word of its own on the real tracker --
-      // just "Contingency $" -- so this excludes the estimate-side column
-      // instead of matching on a keyword the applied column doesn't have.
-      appliedContingency: smartsheet.findColumn(sheet.columns, ["contingency"], ["estimate", "estimated"]),
-      // The actual dollar amount on the real Toyota-approved PO ("TOY
-      // Value" in the tracker) -- distinct from the estimate/applied
-      // figures above, which are this app's own numbers, not Toyota's.
-      toyotaPoValue: smartsheet.findColumn(sheet.columns, ["toy", "value"]),
-      vendor: smartsheet.findColumn(sheet.columns, ["vendor"]),
-      // Verbatim sheet fields surfaced on the WOM profile's Overview tab so
-      // the tracker's own account of completion/invoicing is visible instead
-      // of only ever landing inside the opaque smartsheet_raw_data blob --
-      // never fed into this app's own `status` (see
-      // computeWomStatusConflict in routes/woms.js and the woms.status
-      // migration comment in db.js for why).
-      sourceStatus: smartsheet.findAnyColumn(sheet.columns, [["wom", "status"], ["status"]]),
-      sourceWorkCompleted: smartsheet.findColumn(sheet.columns, ["work", "completed"]),
-      sourceBilling: smartsheet.findAnyColumn(sheet.columns, [["invoice", "status"], ["billing"], ["wom", "invoiced"]]),
-      sourceRequestedBy: smartsheet.findAnyColumn(sheet.columns, [["requested", "by"], ["technician"]]),
-    };
-    // Snapshot every task's status before the sync so the diff afterward
-    // can say how many of the resulting task-engine writes were this sync's
-    // doing -- syncWomsFromSheetRows itself only reports WOM row outcomes.
-    const beforeTasks = new Map(db.listTasks({}).map((t) => [t.id, { status: t.status, isException: Boolean(t.is_exception) }]));
-    const result = db.syncWomsFromSheetRows(sheet.rows, columns);
-    let tasksCreated = 0;
-    let tasksCompleted = 0;
-    let exceptionsFlagged = 0;
-    for (const t of db.listTasks({})) {
-      const before = beforeTasks.get(t.id);
-      if (!before) tasksCreated++;
-      else if (before.status !== "completed" && t.status === "completed") tasksCompleted++;
-      if (t.is_exception && (!before || !before.isException)) exceptionsFlagged++;
-    }
-
-    const lastSync = db.recordSyncLog({
-      syncedBy: req.user.id,
-      womsCreated: result.created,
-      womsPromoted: result.promoted,
-      womsUpdated: result.updated,
-      tasksCreated,
-      tasksCompleted,
-      exceptionsFlagged,
-      totalRows: result.total,
-      changedWoms: result.changedWoms,
-    });
-
-    db.addAudit(
-      req.user.id,
-      "SMARTSHEET_WOMS_SYNCED",
-      `${req.user.name} synced WOMs from Smartsheet (${result.created} created, ${result.promoted} promoted from pending, ${result.updated} updated, ${tasksCreated} tasks created, ${tasksCompleted} tasks completed, ${exceptionsFlagged} workflow exceptions)`
-    );
-    res.json({
-      ...result,
-      tasksCreated,
-      tasksCompleted,
-      exceptionsFlagged,
-      lastSync,
-      womColumn: columns.wom,
-      estimateColumn: columns.estimate,
-      appliedColumn: columns.applied,
-      descriptionColumn: columns.description,
-      dateRequestedColumn: columns.dateRequested,
-      maximoColumn: columns.maximo,
-      locationColumn: columns.location,
-      subsidiaryColumn: columns.subsidiary,
-      estimatedLaborColumn: columns.estimatedLabor,
-      estimatedContractedColumn: columns.estimatedContracted,
-      appliedLaborColumn: columns.appliedLabor,
-      appliedContractedColumn: columns.appliedContracted,
-      estimatedMaterialsColumn: columns.estimatedMaterials,
-      appliedMaterialsColumn: columns.appliedMaterials,
-      estimatedOtherDirectColumn: columns.estimatedOtherDirect,
-      appliedOtherDirectColumn: columns.appliedOtherDirect,
-      estimatedTaxColumn: columns.estimatedTax,
-      appliedTaxColumn: columns.appliedTax,
-      estimatedContingencyColumn: columns.estimatedContingency,
-      appliedContingencyColumn: columns.appliedContingency,
-      toyotaPoValueColumn: columns.toyotaPoValue,
-      vendorColumn: columns.vendor,
-      sourceStatusColumn: columns.sourceStatus,
-      sourceWorkCompletedColumn: columns.sourceWorkCompleted,
-      sourceBillingColumn: columns.sourceBilling,
-      sourceRequestedByColumn: columns.sourceRequestedBy,
-    });
+    const result = await runSmartsheetSync({ actorId: req.user.id, actorName: req.user.name });
+    res.json(result);
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    const status = err.message.includes("isn't connected yet") || err.message.includes('Could not find a "WOM #"') ? 409 : 502;
+    res.status(status).json({ error: err.message });
   }
 });
 
