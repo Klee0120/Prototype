@@ -586,4 +586,83 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.equal(res.status, 400);
     assert.match(res.body.error, /Description/);
   });
+
+  await t.test("a location's territory is read from its section header, not defaulted to Midwest", async () => {
+    const buffer = coaWorkbook([
+      [null, null, null, null, "EAST REGION (Contract)", null, null, null],
+      ["09001", 100110099001, 100110099002, 100110099003, "Brand New East Site", "Region 1", "Nowhere", "FL"],
+      [null, null, null, null, "WEST REGION (Contract)", null, null, null],
+      ["09002", 100110099011, 100110099012, 100110099013, "Brand New West Site", "Region 2", "Nowhere", "CA"],
+    ]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.createdCount, 2);
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const east = list.body.find((l) => l.name === "Brand New East Site");
+    const west = list.body.find((l) => l.name === "Brand New West Site");
+    assert.ok(east);
+    assert.ok(west);
+    assert.equal(east.territory, "East");
+    assert.equal(west.territory, "West");
+  });
+
+  await t.test("re-importing with a recognized section header corrects an already-wrong territory", async () => {
+    // Simulates the earlier bug: this location exists with territory
+    // hardcoded to Midwest from before section-header parsing existed.
+    const create = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "LOC-MISTAGGED", name: "Mistagged East Site", territory: "Midwest" },
+    });
+    assert.equal(create.status, 201);
+
+    const buffer = coaWorkbook([
+      [null, null, null, null, "EAST REGION (Contract)", null, null, null],
+      ["09003", 100110099021, 100110099022, 100110099023, "Mistagged East Site", "Region 1", "Nowhere", "FL"],
+    ]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const match = res.body.results.find((r) => r.locationCode === "LOC-MISTAGGED");
+    assert.ok(match);
+    assert.equal(match.territory.before, "Midwest");
+    assert.equal(match.territory.after, "East");
+
+    const after = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.equal(after.body.find((l) => l.code === "LOC-MISTAGGED").territory, "East");
+  });
+
+  await t.test("a row under an unrecognized section (not a known territory) leaves an existing location's territory alone", async () => {
+    const create = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "LOC-OVERHEAD", name: "Overhead Line Item", territory: "East" },
+    });
+    assert.equal(create.status, 201);
+
+    const buffer = coaWorkbook([
+      [null, null, null, null, "GENERAL MGT & ADMIN", null, null, null],
+      ["09004", 100110099031, 100110099032, 100110099033, "Overhead Line Item", "Region 9", "Nowhere", "ZZ"],
+    ]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const after = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.equal(after.body.find((l) => l.code === "LOC-OVERHEAD").territory, "East", "unrecognized section must not overwrite an existing territory");
+  });
 });

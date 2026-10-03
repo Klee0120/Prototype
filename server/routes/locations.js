@@ -49,18 +49,47 @@ function parseCoaWorkbook(buffer) {
   if (!ppsCol) missingColumns.push("PPS Contract Job Number");
   if (!regionCol) missingColumns.push("Region (E&F)");
 
-  // Most rows are category headers ("GENERAL MGT & ADMIN") with no job
-  // numbers at all and no real location behind them -- skipped here rather
-  // than surfaced as noise in the unmatched list.
-  const rows = raw
-    .map((r) => ({
-      description: r[descriptionCol] == null ? null : String(r[descriptionCol]).trim(),
-      efJobNumber: efCol ? toJobNumberString(r[efCol]) : null,
-      womJobNumber: womCol ? toJobNumberString(r[womCol]) : null,
-      ppsJobNumber: ppsCol ? toJobNumberString(r[ppsCol]) : null,
-      region: regionCol && r[regionCol] != null ? String(r[regionCol]).trim() || null : null,
-    }))
-    .filter((r) => r.description && (r.efJobNumber || r.womJobNumber || r.ppsJobNumber || r.region));
+  // The sheet is organized into section-header rows -- "EAST REGION
+  // (Contract)", "MIDWEST REGION (Contract)", "HQ PLANO REGION (Contract)",
+  // "WEST REGION (Contract)", "TdPR REGION (Contract)", "NORTH REGION
+  // (Contract)" -- with no job numbers of their own, followed by every
+  // location in that territory until the next header. This is the only
+  // place a location's actual FM territory appears in the file at all (the
+  // "Region 1"/"Region 4A"/etc. values in the bare E&F column are a
+  // different, finer-grained Toyota region code, not this). Matched only
+  // against the app's own TERRITORIES, case/whitespace-insensitively -- a
+  // header this doesn't recognize ("GENERAL MGT & ADMIN", "TEMA REGION",
+  // "PROJECT MANAGEMENT (WOM)", Toyota Motor Manufacturing plants) leaves
+  // territory unset rather than guessing one that could be wrong, same
+  // reasoning as leaving an unmatched row's territory for a human to set.
+  const SECTION_TERRITORY_PATTERNS = [
+    [/east region/i, "East"],
+    [/hq plano region/i, "HQ Plano"],
+    [/midwest region/i, "Midwest"],
+    [/west region/i, "West"],
+    [/tdpr region/i, "TdPR REGION"],
+    [/north region/i, "North"],
+  ];
+
+  let currentTerritory = null;
+  const rows = [];
+  for (const r of raw) {
+    const description = r[descriptionCol] == null ? null : String(r[descriptionCol]).trim();
+    const sectionMatch = description && SECTION_TERRITORY_PATTERNS.find(([re]) => re.test(description));
+    if (sectionMatch) {
+      currentTerritory = sectionMatch[1];
+      continue;
+    }
+    const efJobNumber = efCol ? toJobNumberString(r[efCol]) : null;
+    const womJobNumber = womCol ? toJobNumberString(r[womCol]) : null;
+    const ppsJobNumber = ppsCol ? toJobNumberString(r[ppsCol]) : null;
+    const region = regionCol && r[regionCol] != null ? String(r[regionCol]).trim() || null : null;
+    // Most remaining non-matching rows are category headers ("GENERAL MGT &
+    // ADMIN") with no job numbers at all and no real location behind them --
+    // skipped here rather than surfaced as noise in the unmatched list.
+    if (!description || !(efJobNumber || womJobNumber || ppsJobNumber || region)) continue;
+    rows.push({ description, efJobNumber, womJobNumber, ppsJobNumber, region, territory: currentTerritory });
+  }
 
   return { sheetName, rows, missingColumns };
 }

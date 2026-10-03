@@ -2743,10 +2743,10 @@ function runLocationCoaImport(rows, { commit, createUnmatched } = {}) {
       if (createUnmatched) {
         const suggestedCode = uniqueLocationCode(slugifyLocationCode(row.description));
         if (commit) {
-          createLocation(suggestedCode, row.description, row.efJobNumber, row.region, row.womJobNumber, "Midwest", row.ppsJobNumber);
+          createLocation(suggestedCode, row.description, row.efJobNumber, row.region, row.womJobNumber, row.territory || "Midwest", row.ppsJobNumber);
         }
         createdCount++;
-        results.push({ description: row.description, matched: false, willCreate: true, locationCode: suggestedCode });
+        results.push({ description: row.description, matched: false, willCreate: true, locationCode: suggestedCode, territory: row.territory || "Midwest" });
       } else {
         results.push({ description: row.description, matched: false, willCreate: false });
       }
@@ -2757,19 +2757,26 @@ function runLocationCoaImport(rows, { commit, createUnmatched } = {}) {
     const nextWom = row.womJobNumber || location.wom_job_number;
     const nextPps = row.ppsJobNumber || location.pps_job_number;
     const nextRegion = row.region || location.region;
+    // row.territory only comes from a section header the sheet parser
+    // recognized (see parseCoaWorkbook) -- a row with none leaves whatever
+    // territory the location already has alone, same "don't guess" rule as
+    // the unmatched-row create path.
+    const nextTerritory = row.territory || location.territory;
     const changed =
       nextEf !== location.ef_job_number ||
       nextWom !== location.wom_job_number ||
       nextPps !== location.pps_job_number ||
-      nextRegion !== location.region;
+      nextRegion !== location.region ||
+      nextTerritory !== location.territory;
     if (changed) {
       changedCount++;
       if (commit) {
-        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ?, pps_job_number = ?, region = ? WHERE code = ?").run(
+        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ?, pps_job_number = ?, region = ?, territory = ? WHERE code = ?").run(
           nextEf || null,
           nextWom || null,
           nextPps || null,
           nextRegion || null,
+          nextTerritory || "Midwest",
           location.code
         );
       }
@@ -2784,6 +2791,7 @@ function runLocationCoaImport(rows, { commit, createUnmatched } = {}) {
       womJobNumber: { before: location.wom_job_number, after: nextWom },
       ppsJobNumber: { before: location.pps_job_number, after: nextPps },
       region: { before: location.region, after: nextRegion },
+      territory: { before: location.territory, after: nextTerritory },
     });
   }
 
