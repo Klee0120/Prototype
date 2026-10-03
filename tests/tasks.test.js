@@ -1,0 +1,1655 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+process.env.SMARTSHEET_API_TOKEN = "test-token";
+process.env.SMARTSHEET_SHEET_ID = "6392545882886020";
+
+const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
+
+function stubFetchOnce(response) {
+  const original = global.fetch;
+  global.fetch = async (url, ...rest) => {
+    if (typeof url === "string" && url.startsWith("https://api.smartsheet.com/")) return response;
+    return original(url, ...rest);
+  };
+  return () => {
+    global.fetch = original;
+  };
+}
+
+const COLUMNS = [
+  { id: 1, title: "WOM #" },
+  { id: 4, title: "Project Name" },
+];
+
+function sheetWith(rows) {
+  return { name: "Midwest PSE Request Tracker", columns: COLUMNS, rows };
+}
+
+async function syncOneOpenWom(server, code, rowId) {
+  const restore = stubFetchOnce({
+    ok: true,
+    json: async () =>
+      sheetWith([{ id: rowId, cells: [{ columnId: 1, value: code, displayValue: code }, { columnId: 4, value: "Test job", displayValue: "Test job" }] }]),
+  });
+  try {
+    const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    return res.body;
+  } finally {
+    restore();
+  }
+}
+
+test("task engine: manual tasks, statuses, comments, and role scoping", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let taskId;
+
+  await t.test("admin creates a manual task assigned to a technician", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Check the ladder", description: "Inspect before next job", assignedTo: "T1001", priority: "high" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.title, "Check the ladder");
+    assert.equal(res.body.assignedTo, "T1001");
+    assert.ok(res.body.assignedToName, "expected the assignee's name to be resolved");
+    assert.equal(res.body.status, "open");
+    assert.equal(res.body.source, "manual");
+    assert.ok(res.body.createdAt);
+    taskId = res.body.id;
+  });
+
+  await t.test("title is required", async () => {
+    const res = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { description: "no title" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("an unknown WOM code is rejected", async () => {
+    const res = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "x", relatedWomCode: "NOPE" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("the assigned technician sees it under My Work", async () => {
+    const res = await server.call("GET", "/api/tasks?view=my", { userId: "T1001" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((t2) => t2.id === taskId));
+  });
+
+  await t.test("a different technician does not see it under My Work", async () => {
+    const res = await server.call("GET", "/api/tasks?view=my", { userId: "T1002" });
+    assert.ok(!res.body.some((t2) => t2.id === taskId));
+  });
+
+  await t.test("a technician can't fetch a task that isn't theirs", async () => {
+    const res = await server.call("GET", `/api/tasks/${taskId}`, { userId: "T1002" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("the assigned technician can move it to in_progress, setting startedAt", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/status`, { userId: "T1001", body: { status: "in_progress" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "in_progress");
+    assert.ok(res.body.startedAt);
+  });
+
+  await t.test("an invalid status is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/status`, { userId: "T1001", body: { status: "bogus" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("the technician completes it, setting completedAt", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/status`, { userId: "T1001", body: { status: "completed" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "completed");
+    assert.ok(res.body.completedAt);
+  });
+
+  await t.test("it now shows up under the Completed view but not My Work", async () => {
+    const completed = await server.call("GET", "/api/tasks?view=completed", { userId: "T1001" });
+    assert.ok(completed.body.some((t2) => t2.id === taskId));
+    const my = await server.call("GET", "/api/tasks?view=my", { userId: "T1001" });
+    assert.ok(!my.body.some((t2) => t2.id === taskId));
+  });
+
+  await t.test("a technician can comment on their own task", async () => {
+    const res = await server.call("POST", `/api/tasks/${taskId}/comments`, { userId: "T1001", body: { body: "Done, ladder is fine." } });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.length, 1);
+    assert.equal(res.body[0].body, "Done, ladder is fine.");
+  });
+
+  await t.test("an empty comment is rejected", async () => {
+    const res = await server.call("POST", `/api/tasks/${taskId}/comments`, { userId: "T1001", body: { body: "   " } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician creating their own task can't assign it to someone else", async () => {
+    const res = await server.call("POST", "/api/tasks", { userId: "T1002", body: { title: "Self task", assignedTo: "T1003" } });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.assignedTo, "T1002");
+    assert.equal(res.body.assignedRole, "tech");
+  });
+
+  await t.test("only an admin can reassign a task", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "T1001", body: { assignedTo: "T1002" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician cannot assign a task to someone else, even a different technician", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "T1002", body: { assignedTo: "T1003" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician CAN claim their own unclaimed tech-bucket task", async () => {
+    const roleQueued = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Clean the shop truck", assignedRole: "tech" } });
+    const res = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "T1001", body: { assignedTo: "T1001" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.assignedTo, "T1001");
+    assert.equal(res.body.assignedRole, "tech");
+  });
+
+  await t.test("a technician cannot use the self-claim carve-out to claim it for someone else", async () => {
+    const roleQueued = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Another unclaimed tech task", assignedRole: "tech" } });
+    const res = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "T1001", body: { assignedTo: "T1002" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician cannot claim a task that's already assigned to someone else", async () => {
+    const assignedAlready = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Already someone's", assignedTo: "T1002" } });
+    const res = await server.call("PATCH", `/api/tasks/${assignedAlready.body.id}/assign`, { userId: "T1001", body: { assignedTo: "T1001" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("admin reassigns the task", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "ADMIN", body: { assignedTo: "T1002" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.assignedTo, "T1002");
+  });
+
+  await t.test("assigning to an unknown employee is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}/assign`, { userId: "ADMIN", body: { assignedTo: "NOBODY" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("assigning a person to a role-queued task doesn't silently wipe its role", async () => {
+    const roleQueued = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Admin-bucket task", assignedRole: "admin" } });
+    const assigned = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "ADMIN", body: { assignedTo: "T1001" } });
+    assert.equal(assigned.body.assignedTo, "T1001");
+    assert.equal(assigned.body.assignedRole, "admin", "the role bucket must survive a plain {assignedTo} call");
+
+    // "Back to role queue" -- clearing the person must not also clear the
+    // role it would otherwise fall back into.
+    const cleared = await server.call("PATCH", `/api/tasks/${roleQueued.body.id}/assign`, { userId: "ADMIN", body: { assignedTo: null } });
+    assert.equal(cleared.body.assignedTo, null);
+    assert.equal(cleared.body.assignedRole, "admin", "clearing the person must not also clear the role");
+  });
+
+  await t.test("a technician can't view the admin-only Unassigned queue", async () => {
+    const res = await server.call("GET", "/api/tasks?view=unassigned", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("admin can filter tasks by assignee", async () => {
+    const res = await server.call("GET", "/api/tasks?assignedTo=T1002", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.every((t2) => t2.assignedTo === "T1002"));
+  });
+
+  await t.test("admin's dashboard summary counts high-priority open tasks", async () => {
+    const res = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(typeof res.body.highPriority === "number");
+    assert.ok(typeof res.body.overdue === "number");
+    assert.ok(typeof res.body.dueToday === "number");
+    assert.ok(typeof res.body.waiting === "number");
+    assert.ok(typeof res.body.recurring === "number");
+    assert.ok(typeof res.body.exceptions === "number");
+  });
+
+  await t.test("an emergency-priority task always reads as the top urgency tier and counts as high priority", async () => {
+    const before = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    // The summary's tiles are scoped to the viewer (assigned to them, or
+    // unclaimed for their role) -- assign it to ADMIN explicitly so it's
+    // actually counted, same as a real self-assigned task would be.
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Urgent PO entered", priority: "emergency", assignedTo: "ADMIN" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.priority, "emergency");
+    assert.equal(res.body.urgency, "emergency");
+
+    const after = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    assert.equal(after.body.highPriority, before.body.highPriority + 1);
+  });
+
+  await t.test("an invalid priority is rejected", async () => {
+    const res = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "x", priority: "bogus" } });
+    assert.equal(res.status, 400);
+  });
+});
+
+test("task engine: editing a hand-added task (title/type/priority/due date/related WOM, vendor, employee)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let taskId;
+  let vendorId;
+
+  await t.test("set up: a manual task and a vendor to relate it to", async () => {
+    const taskRes = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Update COI", description: "old desc" } });
+    assert.equal(taskRes.status, 201);
+    taskId = taskRes.body.id;
+
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Acme Fire & Safety" } });
+    assert.equal(vendorRes.status, 201);
+    vendorId = vendorRes.body.id;
+  });
+
+  await t.test("admin edits title, type, priority, due date, and links a vendor", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, {
+      userId: "ADMIN",
+      body: {
+        title: "Update COI -- renewal",
+        description: "new desc",
+        category: "vendor_compliance",
+        priority: "high",
+        dueAt: "2026-11-01",
+        dueTime: "09:00",
+        relatedVendorId: vendorId,
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.title, "Update COI -- renewal");
+    assert.equal(res.body.description, "new desc");
+    assert.equal(res.body.category, "vendor_compliance");
+    assert.equal(res.body.priority, "high");
+    assert.equal(res.body.dueAt, "2026-11-01T09:00");
+    assert.equal(res.body.relatedVendorId, vendorId);
+    assert.equal(res.body.relatedVendorName, "Acme Fire & Safety");
+  });
+
+  await t.test("fields left out of the request keep their current value", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { priority: "urgent" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.priority, "urgent");
+    assert.equal(res.body.title, "Update COI -- renewal", "title should be unchanged");
+    assert.equal(res.body.relatedVendorId, vendorId, "vendor link should be unchanged");
+  });
+
+  await t.test("linking an employee instead, and clearing the vendor", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, {
+      userId: "ADMIN",
+      body: { relatedVendorId: null, relatedTechId: "T1001" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedVendorId, null);
+    assert.equal(res.body.relatedTechId, "T1001");
+    assert.ok(res.body.relatedTechName, "expected the related employee's name to be resolved");
+  });
+
+  await t.test("linking to a real WOM", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "WOM-EDIT-1", description: "Edit-link test" } });
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { relatedWomCode: "WOM-EDIT-1" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedWomCode, "WOM-EDIT-1");
+  });
+
+  await t.test("an unknown WOM code is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { relatedWomCode: "NOPE-1" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("an invalid priority is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { priority: "bogus" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("clearing the title is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "ADMIN", body: { title: "" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can edit their own hand-added task", async () => {
+    const own = await server.call("POST", "/api/tasks", { userId: "T1001", body: { title: "My own follow-up" } });
+    assert.equal(own.status, 201);
+    const res = await server.call("PATCH", `/api/tasks/${own.body.id}`, { userId: "T1001", body: { title: "My own follow-up (updated)" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.title, "My own follow-up (updated)");
+  });
+
+  await t.test("a technician can't edit someone else's hand-added task", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${taskId}`, { userId: "T1002", body: { title: "hijacked" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a technician can't edit an automated WOM-workflow task", async () => {
+    await syncOneOpenWom(server, "20500001", 9001);
+    const list = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const autoTask = list.body.find((x) => x.relatedWomCode === "20500001");
+    assert.ok(autoTask, "expected the WOM sync to have created a workflow task");
+    const res = await server.call("PATCH", `/api/tasks/${autoTask.id}`, { userId: "T1001", body: { title: "hijacked" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("editing an unknown task 404s", async () => {
+    const res = await server.call("PATCH", "/api/tasks/999999", { userId: "ADMIN", body: { title: "x" } });
+    assert.equal(res.status, 404);
+  });
+});
+
+test("task engine: overdue, waiting, and exception views", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let overdueId;
+
+  await t.test("create an overdue task and a waiting task", async () => {
+    const overdue = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Overdue thing", assignedTo: "T1001", dueAt: "2000-01-01" },
+    });
+    assert.equal(overdue.status, 201);
+    overdueId = overdue.body.id;
+
+    const waiting = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Waiting thing", assignedTo: "T1001" } });
+    await server.call("PATCH", `/api/tasks/${waiting.body.id}/status`, { userId: "ADMIN", body: { status: "waiting" } });
+  });
+
+  await t.test("the overdue task shows up under Overdue", async () => {
+    const res = await server.call("GET", "/api/tasks?view=overdue", { userId: "ADMIN" });
+    assert.ok(res.body.some((t2) => t2.id === overdueId));
+    assert.equal(res.body.find((t2) => t2.id === overdueId).urgency, "urgent");
+  });
+
+  await t.test("the waiting task shows up under Waiting", async () => {
+    const res = await server.call("GET", "/api/tasks?view=waiting", { userId: "ADMIN" });
+    assert.ok(res.body.some((t2) => t2.status === "waiting"));
+  });
+});
+
+test("task engine: recurring tasks are idempotent within the same period", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let recurringIds;
+
+  await t.test("first load generates the recurring tasks", async () => {
+    const res = await server.call("GET", "/api/tasks?view=recurring", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 6);
+    recurringIds = res.body.map((t2) => t2.id).sort();
+  });
+
+  await t.test("loading again does not create duplicates", async () => {
+    const res = await server.call("GET", "/api/tasks?view=recurring", { userId: "ADMIN" });
+    assert.deepEqual(res.body.map((t2) => t2.id).sort(), recurringIds);
+  });
+
+  await t.test("completing one and reloading does not un-complete it", async () => {
+    const target = recurringIds[0];
+    await server.call("PATCH", `/api/tasks/${target}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    const res = await server.call("GET", "/api/tasks?view=recurring", { userId: "ADMIN" });
+    assert.equal(res.body.find((t2) => t2.id === target).status, "completed");
+  });
+});
+
+test("task engine: WOM sync creates one persistent lifecycle task that tracks the checklist's next step", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a synced WOM gets one lifecycle task, assigned to the reviewer role (its first step)", async () => {
+    await syncOneOpenWom(server, "40000001", 950);
+    const res = await server.call("GET", "/api/tasks?view=team&role=reviewer", { userId: "ADMIN" });
+    const task = res.body.find((t2) => t2.relatedWomCode === "40000001");
+    assert.ok(task, "expected a lifecycle task for the synced WOM");
+    assert.equal(task.sourceKey, "WOM-40000001-LIFECYCLE");
+    assert.equal(task.source, "wom_workflow");
+    assert.equal(task.category, "wom_workflow");
+    assert.equal(task.assignedRole, "reviewer");
+    // Nothing's been sent to Toyota yet -- this should read as High so it
+    // doesn't get buried behind Normal-priority tasks with an earlier due
+    // date.
+    assert.equal(task.priority, "high");
+  });
+
+  await t.test("re-syncing the same row doesn't duplicate the task", async () => {
+    await syncOneOpenWom(server, "40000001", 950);
+    const res = await server.call("GET", "/api/tasks?view=team&role=reviewer&status=open", { userId: "ADMIN" });
+    const matches = res.body.filter((t2) => t2.relatedWomCode === "40000001");
+    assert.equal(matches.length, 1);
+  });
+
+  await t.test("completing the reviewer step moves the same task's role to financial (its next step)", async () => {
+    const advance = await server.call("POST", "/api/woms/40000001/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota@example.com" },
+    });
+    assert.equal(advance.status, 200);
+    assert.equal(advance.body.lifecycleSteps.find((s) => s.key === "sent_to_toyota").completedAt !== null, true);
+
+    const res = await server.call("GET", "/api/tasks?view=team&role=financial", { userId: "ADMIN" });
+    const task = res.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
+    assert.ok(task, "expected the same task to now show under the financial role");
+    assert.equal(task.status, "open");
+    // Sent to Toyota now, no change order, no PO-less contracted spend yet
+    // -- back down to Normal.
+    assert.equal(task.priority, "normal");
+  });
+
+  await t.test("a hand-entered Maximo/PO # auto-completes 'Create WOM & PO' and advances the task to the tech role", async () => {
+    const res = await server.call("PATCH", "/api/woms/40000001/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-999", locationCode: "PRINCETON" },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.lifecycleSteps.find((s) => s.key === "wom_po_created").completedAt);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team&role=tech", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
+    assert.ok(task, "expected the task to now be assigned to the tech role (Schedule vendor)");
+  });
+
+  await t.test("a tech putting the WOM on their calendar auto-completes 'Schedule vendor'", async () => {
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: { day: "Mon", allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "40000001", hours: 4 }] },
+    });
+    assert.equal(put.status, 200);
+
+    // The check runs lazily on the next task-list read (same pattern as
+    // ensureRecurringTasks), not on the allocation write itself.
+    const res = await server.call("GET", "/api/woms/40000001/lookup", { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    const after = await server.call("GET", "/api/woms/40000001/lookup", { userId: "ADMIN" });
+    assert.ok(!res.body.lifecycleSteps.find((s) => s.key === "vendor_scheduled").completedAt, "should not be complete before the catch-up read");
+    assert.ok(after.body.lifecycleSteps.find((s) => s.key === "vendor_scheduled").completedAt, "should be complete after the catch-up read");
+  });
+
+  await t.test("tech-complete auto-completes 'Work complete' and applied cost auto-completes 'Post applied cost'", async () => {
+    const complete = await server.call("POST", "/api/woms/40000001/complete", { userId: "T1001" });
+    assert.equal(complete.status, 200);
+    assert.ok(complete.body.lifecycleSteps.find((s) => s.key === "work_complete").completedAt);
+
+    const pricing = await server.call("PATCH", "/api/woms/40000001/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+    assert.equal(pricing.status, 200);
+    assert.ok(pricing.body.lifecycleSteps.find((s) => s.key === "cost_applied").completedAt);
+  });
+
+  await t.test("'Review charges' can be completed by either role -- a technician can't take it", async () => {
+    const asTech = await server.call("POST", "/api/woms/40000001/lifecycle/charges_reviewed", { userId: "T1001" });
+    assert.equal(asTech.status, 403);
+
+    const asAdmin = await server.call("POST", "/api/woms/40000001/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    assert.equal(asAdmin.status, 200);
+    assert.ok(asAdmin.body.lifecycleSteps.find((s) => s.key === "charges_reviewed").completedAt);
+  });
+
+  await t.test("invoicing requires both a batch # and an invoice #", async () => {
+    const missing = await server.call("POST", "/api/woms/40000001/lifecycle/invoiced", { userId: "ADMIN", body: { batchNumber: "B1" } });
+    assert.equal(missing.status, 400);
+  });
+
+  await t.test("invoicing completes the checklist, flips the WOM to invoiced, and completes the task", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/invoiced", {
+      userId: "ADMIN",
+      body: { batchNumber: "B1", invoiceNumber: "INV-1" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "invoiced");
+    assert.equal(res.body.batchNumber, "B1");
+    assert.equal(res.body.invoiceNumber, "INV-1");
+    assert.ok(res.body.lifecycleSteps.every((s) => s.completedAt), "expected every step to be complete");
+
+    const tasks = await server.call("GET", "/api/tasks?view=team&status=completed", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000001-LIFECYCLE");
+    assert.ok(task, "expected the lifecycle task to be marked completed");
+  });
+
+  await t.test("completing an already-done step is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    assert.equal(res.status, 409);
+  });
+
+  await t.test("completing an unknown step is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/nope", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("trying to manually complete an auto-trigger step is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/40000001/lifecycle/wom_po_created", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can't view WOM history", async () => {
+    const res = await server.call("GET", "/api/woms/40000001/history", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a cost overage after 'Post applied cost' flags the task as a Toyota change order, High priority", async () => {
+    await syncOneOpenWom(server, "40000004", 960);
+    // A Maximo/PO # already on file -- isolates this test to the change-
+    // order condition specifically, without also tripping the separate
+    // "needs change order or PO" case for having no PO at all.
+    await server.call("PATCH", "/api/woms/40000004/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-4004" },
+    });
+    await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
+    // Not scoped to any one role -- applying pricing this early auto-
+    // completes "Post applied cost" out of order (ahead of sent_to_toyota),
+    // which per the furthest-progress rule can legitimately move the task's
+    // queue role forward too; the role itself isn't what this test is about.
+    let tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    let task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
+    assert.equal(task.priority, "high", "still pending sent_to_toyota, no overage yet");
+    assert.ok(!task.title.includes("change order"));
+
+    // The applied cost comes in higher than what was originally estimated
+    // -- Toyota needs to sign off on the difference.
+    const res = await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1400 } });
+    assert.equal(res.status, 200);
+
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
+    assert.equal(task.priority, "high");
+    assert.ok(task.title.includes("Needs Toyota PO change order"));
+    assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM");
+    assert.equal(task.isException, true);
+    assert.equal(task.isChangeOrder, true, "a real cost overage is the change-order case specifically, not just a missing-PO gap");
+
+    // Correcting the applied price back in line clears the flag -- it's
+    // re-derived live every time, not stamped once and stuck.
+    const corrected = await server.call("PATCH", "/api/woms/40000004/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
+    assert.equal(corrected.status, 200);
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000004-LIFECYCLE");
+    assert.ok(!task.title.includes("change order"));
+    assert.equal(task.isException, false);
+    assert.equal(task.isChangeOrder, false);
+  });
+
+  await t.test("a missing-PO gap reads 'warn' (orange); a real change order reads 'urgent' (red) -- never the same color", async () => {
+    await syncOneOpenWom(server, "40000005", 961);
+    await server.call("PATCH", "/api/woms/40000005/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+
+    let tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    let task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000005-LIFECYCLE");
+    assert.equal(task.isChangeOrder, false, "no PO on file, but no overage either -- the plain missing-PO case");
+    assert.equal(task.urgency, "warn");
+
+    await server.call("PATCH", "/api/woms/40000005/details", { userId: "ADMIN", body: { description: "Test job", maximoNumber: "PO-4005" } });
+    await server.call("PATCH", "/api/woms/40000005/pricing", { userId: "ADMIN", body: { estimatedPrice: 500, appliedPrice: 900 } });
+
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-40000005-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true);
+    assert.equal(task.urgency, "urgent", "a real cost overage reads as the same red tier as overdue -- one notch above a plain PO gap");
+  });
+});
+
+test("WOM change order: request Toyota PO, or refer to admin to try reducing labor instead", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("setup: a WOM with a real cost overage, flagged as a change order", async () => {
+    await syncOneOpenWom(server, "90000001", 980);
+    await server.call("PATCH", "/api/woms/90000001/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-5001" },
+    });
+    const res = await server.call("PATCH", "/api/woms/90000001/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1400 } });
+    assert.equal(res.status, 200);
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true);
+    assert.equal(task.assignedRole, "reviewer");
+  });
+
+  await t.test("requesting the PO on a WOM that isn't flagged is rejected", async () => {
+    await syncOneOpenWom(server, "90000002", 981);
+    const res = await server.call("POST", "/api/woms/90000002/change-order/request-po", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: new Date().toISOString() },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("referring to admin on a WOM that isn't a change order is rejected", async () => {
+    const res = await server.call("POST", "/api/woms/90000002/change-order/refer-to-admin", {
+      userId: "ADMIN",
+      body: { note: "try reducing labor" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can't request the PO or refer to admin", async () => {
+    const res1 = await server.call("POST", "/api/woms/90000001/change-order/request-po", {
+      userId: "T1001",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: new Date().toISOString() },
+    });
+    assert.equal(res1.status, 403);
+    const res2 = await server.call("POST", "/api/woms/90000001/change-order/refer-to-admin", {
+      userId: "T1001",
+      body: { note: "try reducing labor" },
+    });
+    assert.equal(res2.status, 403);
+  });
+
+  await t.test("referring the change order to admin routes it to finance's queue instead of RFM, and logs a comment", async () => {
+    const res = await server.call("POST", "/api/woms/90000001/change-order/refer-to-admin", {
+      userId: "ADMIN",
+      body: { note: "Can we trim labor hours to avoid the change order?" },
+    });
+    assert.equal(res.status, 200);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.assignedRole, "financial", "handed off to finance's queue, not RFM's");
+    // With only one active admin in this fixture (the seed's default
+    // "ADMIN"), defaultAssigneeForRole auto-assigns the financial queue's
+    // only possible owner directly rather than leaving it sitting
+    // unclaimed -- see withAutoAssignee in db.js.
+    assert.equal(task.assignedTo, "ADMIN", "auto-assigned -- there's only one admin this could possibly go to");
+    assert.ok(task.referredToAdminAt, "expected the referral timestamp to be set");
+
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.ok(
+      detail.body.comments.some((c) => c.body.includes("Can we trim labor hours")),
+      "expected the note to be logged as a comment"
+    );
+  });
+
+  await t.test("a later task-list read doesn't undo the referral", async () => {
+    await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.assignedRole, "financial", "the lazy refresh on every GET must not snap this back to reviewer");
+  });
+
+  await t.test("finance fixing the labor cost clears the referral and resolves the change order", async () => {
+    const res = await server.call("PATCH", "/api/woms/90000001/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 950 } });
+    assert.equal(res.status, 200);
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.isChangeOrder, false);
+    assert.equal(task.referredToAdminAt, null, "the referral shouldn't linger once there's nothing left to refer");
+  });
+
+  await t.test("a fresh change order on the same WOM doesn't inherit the stale referral", async () => {
+    const res = await server.call("PATCH", "/api/woms/90000001/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1500 } });
+    assert.equal(res.status, 200);
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true);
+    assert.equal(task.assignedRole, "reviewer", "a brand new overage routes back to RFM, not finance");
+  });
+
+  await t.test("requesting the Toyota PO logs a comment, puts the task on waiting, and clears any referral", async () => {
+    await server.call("POST", "/api/woms/90000001/change-order/refer-to-admin", {
+      userId: "ADMIN",
+      body: { note: "one more try" },
+    });
+    const res = await server.call("POST", "/api/woms/90000001/change-order/request-po", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: "2026-10-02T00:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000001-LIFECYCLE");
+    assert.equal(task.status, "waiting");
+    assert.equal(task.referredToAdminAt, null);
+
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.ok(
+      detail.body.comments.some((c) => c.body.includes("Requested Toyota PO change order approval") && c.body.includes("pse@toyota.example")),
+      "expected the PO request to be logged as a comment"
+    );
+  });
+
+  await t.test("requesting a plain missing-PO (not a change order) logs without the 'change order' wording", async () => {
+    await syncOneOpenWom(server, "90000003", 982);
+    await server.call("PATCH", "/api/woms/90000003/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+    let tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    let task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000003-LIFECYCLE");
+    assert.equal(task.isException, true);
+    assert.equal(task.isChangeOrder, false);
+
+    const res = await server.call("POST", "/api/woms/90000003/change-order/request-po", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "pse@toyota.example", sentAt: "2026-11-03T00:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+
+    tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    task = tasks.body.find((t2) => t2.sourceKey === "WOM-90000003-LIFECYCLE");
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.ok(
+      detail.body.comments.some(
+        (c) => c.body.startsWith("Requested Toyota PO approval -- sent to pse@toyota.example on") && !c.body.includes("change order")
+      )
+    );
+  });
+
+  await t.test("the WOM lookup exposes the cost breakdown fields the task detail view reads", async () => {
+    const wom = await server.call("GET", "/api/woms/90000001/lookup", { userId: "ADMIN" });
+    assert.equal(wom.status, 200);
+    assert.equal(wom.body.estimatedPrice, 1000);
+    assert.equal(wom.body.appliedPrice, 1500);
+  });
+});
+
+test("WOM lifecycle: a step completing out of order moves the task's queue role forward", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a WOM synced in with a Maximo/PO # already on file routes straight to the tech queue, not RFM", async () => {
+    // Most of the existing backlog looks exactly like this on day one of
+    // the checklist feature: Toyota's already approved a real PO, but
+    // nobody's gone back and clicked "Send PSE to Toyota" in this app to
+    // log it. The task should reflect the real progress (PO's in hand,
+    // waiting on a tech to schedule it) rather than getting stuck showing
+    // as the RFM's problem forever just because step 1's box was never
+    // checked.
+    const created = await syncOneOpenWom(server, "70000001", 990);
+    await server.call("PATCH", "/api/woms/70000001/details", {
+      userId: "ADMIN",
+      body: { description: "Test job", maximoNumber: "PO-777", locationCode: "PRINCETON" },
+    });
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-70000001-LIFECYCLE");
+    assert.ok(task, "expected a lifecycle task for the synced WOM");
+    assert.equal(task.assignedRole, "tech", "wom_po_created is done, so the next real gap is scheduling the vendor");
+
+    const wom = await server.call("GET", "/api/woms/70000001/lookup", { userId: "ADMIN" });
+    assert.ok(wom.body.lifecycleSteps.find((s) => s.key === "wom_po_created").completedAt);
+    assert.ok(!wom.body.lifecycleSteps.find((s) => s.key === "sent_to_toyota").completedAt, "sent_to_toyota is still genuinely unlogged");
+  });
+
+  await t.test("once every step after the gap is also done, the task falls back to the lingering earlier gap instead of closing", async () => {
+    const meta = await server.call("GET", "/api/meta/current-week");
+    const week = meta.body.weekMonday;
+    const put = await server.call("PUT", `/api/technicians/T1001/weeks/${week}/schedule-wom`, {
+      userId: "T1001",
+      body: { day: "Mon", allocations: [{ day: "Mon", type: "wom", locationCode: "PRINCETON", womCode: "70000001", hours: 4 }] },
+    });
+    assert.equal(put.status, 200);
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" }); // lazy catch-up
+    await server.call("POST", "/api/woms/70000001/complete", { userId: "T1001" });
+    await server.call("PATCH", "/api/woms/70000001/pricing", { userId: "ADMIN", body: { appliedPrice: 400 } });
+    await server.call("POST", "/api/woms/70000001/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    const invoiced = await server.call("POST", "/api/woms/70000001/lifecycle/invoiced", {
+      userId: "ADMIN",
+      body: { batchNumber: "B9", invoiceNumber: "INV-9" },
+    });
+    assert.equal(invoiced.status, 200);
+
+    // Every step except sent_to_toyota is now done -- the task must NOT
+    // silently complete (it's still missing that one record), and it
+    // should fall back to routing to whoever owns that lingering gap.
+    const tasks = await server.call("GET", "/api/tasks?view=team&status=open", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-70000001-LIFECYCLE");
+    assert.ok(task, "expected the lifecycle task to still be open, not completed");
+    assert.equal(task.assignedRole, "reviewer");
+  });
+});
+
+test("WOM lifecycle: a vendor-only job with a request date and applied cost but no PO -- real-world shape", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const COLUMNS_WITH_REQUESTED_DATE = [
+    { id: 1, title: "WOM #" },
+    { id: 3, title: "Applied WOM $ - Project Summary" },
+    { id: 4, title: "Project Name" },
+    { id: 5, title: "Date Requested" },
+  ];
+  function sheetWithDateRequested(rows) {
+    return { name: "Midwest PSE Request Tracker", columns: COLUMNS_WITH_REQUESTED_DATE, rows };
+  }
+
+  await t.test(
+    "a WOM with a Date Requested and an applied cost, but no Maximo #, auto-completes everything except " +
+      "wom_po_created and flags a Toyota paperwork gap",
+    async () => {
+      const restore = stubFetchOnce({
+        ok: true,
+        json: async () =>
+          sheetWithDateRequested([
+            {
+              id: 900,
+              cells: [
+                { columnId: 1, value: "20552227", displayValue: "20552227" },
+                { columnId: 3, value: 450, displayValue: "$450.00" },
+                { columnId: 4, value: "Vendor-only repair job", displayValue: "Vendor-only repair job" },
+                { columnId: 5, value: "2026-08-15", displayValue: "8/15/2026" },
+              ],
+            },
+          ]),
+      });
+      try {
+        const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+        assert.equal(res.status, 200);
+      } finally {
+        restore();
+      }
+
+      const wom = await server.call("GET", "/api/woms/20552227/lookup", { userId: "ADMIN" });
+      assert.equal(wom.status, 200);
+      const stepDone = (key) => Boolean(wom.body.lifecycleSteps.find((s) => s.key === key).completedAt);
+      // A request date on file is proof enough Toyota already approved
+      // this, even though nobody clicked "Send PSE to Toyota" in this app.
+      assert.ok(stepDone("sent_to_toyota"), "sent_to_toyota should auto-complete from the tracker's own Date Requested column");
+      // No Maximo/PO # ever arrived for this row -- correctly still open,
+      // and exactly what should get flagged below.
+      assert.ok(!stepDone("wom_po_created"));
+      // Cost has been applied -- for a vendor-only job with no internal
+      // technician hours ever logged against it, that alone is proof the
+      // work was scheduled and finished.
+      assert.ok(stepDone("vendor_scheduled"), "an applied cost implies the vendor was scheduled, even with no internal allocation on file");
+      assert.ok(stepDone("work_complete"), "an applied cost implies the work is done");
+      assert.ok(stepDone("cost_applied"));
+      assert.ok(!stepDone("charges_reviewed"));
+      assert.ok(!stepDone("invoiced"));
+
+      const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+      const task = tasks.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
+      assert.ok(task, "expected a lifecycle task for this WOM");
+      assert.ok(task.title.includes("Needs Toyota PO"), "an applied cost with no PO on file is a Toyota paperwork gap");
+      assert.ok(!task.title.includes("change order"), "no cost overage here -- this is the plain missing-PO case, not a change order");
+      assert.equal(task.assignedRole, "reviewer", "a Toyota paperwork gap routes straight to RFM regardless of checklist progress");
+      assert.equal(task.priority, "high");
+      assert.equal(task.isException, true);
+      assert.equal(task.isChangeOrder, false, "missing a PO alone isn't a change order -- reads orange, not red");
+
+      // Once a real Maximo/PO # lands, the gap closes and the task moves on
+      // to the next genuinely open step -- Review charges, a shared step
+      // with no role gate.
+      const patched = await server.call("PATCH", "/api/woms/20552227/details", {
+        userId: "ADMIN",
+        body: { description: "Vendor-only repair job", maximoNumber: "PO-22227" },
+      });
+      assert.equal(patched.status, 200);
+      const after = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+      const taskAfter = after.body.find((t2) => t2.sourceKey === "WOM-20552227-LIFECYCLE");
+      assert.ok(!taskAfter.title.includes("Needs Toyota PO"));
+      // Review charges has no role GATE -- either RFM or Admin can act on
+      // it (see roleAllowed in tasks.js) -- but it still defaults to RFM's
+      // queue for visibility, so it doesn't silently fall into Unassigned,
+      // the one step this would otherwise happen on since every other step
+      // has a real owner.
+      assert.equal(taskAfter.assignedRole, "reviewer");
+      // Work is already done -- invoicing what's left is still worth
+      // flagging, even with no paperwork gap anymore.
+      assert.equal(taskAfter.priority, "high");
+    }
+  );
+});
+
+test("tasks: the summary's PSE-not-sent count and exception flag", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a synced WOM (sent_to_toyota still open) counts toward pseNotSent", async () => {
+    await syncOneOpenWom(server, "80000001", 995);
+    const summary = await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" });
+    assert.equal(summary.status, 200);
+    assert.ok(summary.body.pseNotSent >= 1);
+  });
+
+  await t.test("sending the PSE to Toyota removes it from the count", async () => {
+    const before = (await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" })).body.pseNotSent;
+    await server.call("POST", "/api/woms/80000001/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota@example.com" },
+    });
+    const after = (await server.call("GET", "/api/tasks/summary", { userId: "ADMIN" })).body.pseNotSent;
+    assert.equal(after, before - 1);
+  });
+
+  await t.test("a task with isException true is flagged in the API response", async () => {
+    await syncOneOpenWom(server, "80000002", 996);
+    await server.call("PATCH", "/api/woms/80000002/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-80000002-LIFECYCLE");
+    assert.equal(task.isException, true, "applied cost with no Maximo/PO # on file is a Toyota paperwork gap");
+  });
+});
+
+test("WOM lifecycle: recording the Toyota email/date sent, and the cost summary", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  await syncOneOpenWom(server, "40000002", 951);
+
+  await t.test("sent_to_toyota without an email is rejected -- it's required to complete this step", async () => {
+    const res = await server.call("POST", "/api/woms/40000002/lifecycle/sent_to_toyota", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("sent_to_toyota records the Toyota email and sent date", async () => {
+    const res = await server.call("POST", "/api/woms/40000002/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota.contact@toyota.com", sentAt: "2026-03-01T09:00:00.000Z" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.pseToyotaEmail, "toyota.contact@toyota.com");
+    assert.equal(res.body.pseToyotaSentAt, "2026-03-01T09:00:00.000Z");
+  });
+
+  // Rescheduling when a step needs to be followed up later isn't a
+  // lifecycle-specific concept anymore -- it's just editing the one
+  // persistent task's own due date, the same as any other task (see the
+  // general PATCH /api/tasks/:id edit tests).
+
+  await t.test("cost summary totals estimated/applied across every non-cancelled WOM", async () => {
+    await syncOneOpenWom(server, "40000003", 952);
+    await server.call("PATCH", "/api/woms/40000002/pricing", { userId: "ADMIN", body: { estimatedPrice: 5000, appliedPrice: 3000 } });
+    await server.call("PATCH", "/api/woms/40000003/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1500 } });
+
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.totalEstimated >= 6000);
+    assert.ok(res.body.totalApplied >= 4500);
+  });
+
+  await t.test("a WOM with estimate > applied counts as overquoted, with the overage amount", async () => {
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.overquoted.find((o) => o.code === "40000002");
+    assert.ok(entry, "expected 40000002 (est 5000 > applied 3000) in the overquoted list");
+    assert.equal(entry.overage, 2000);
+    // 40000003 (est 1000 < applied 1500) should NOT be in the overquoted list.
+    assert.ok(!res.body.overquoted.some((o) => o.code === "40000003"));
+  });
+
+  await t.test("a WOM with an applied price but no Maximo #/PO shows up in appliedNoPo", async () => {
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    assert.ok(res.body.appliedNoPo.some((o) => o.code === "40000002"));
+  });
+
+  await t.test("a technician can't view the cost summary", async () => {
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+});
+
+test("WOM lifecycle: labor/contracted-services breakdown and vendor cost analysis", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const ITEMIZED_COLUMNS = [
+    { id: 1, title: "WOM #" },
+    { id: 4, title: "Project Name" },
+    { id: 8, title: "Maximo #" },
+    { id: 9, title: "Estimate Labor $" },
+    { id: 10, title: "Estimate PO $ - Contracted Services" },
+    { id: 11, title: "Applied Labor $" },
+    { id: 12, title: "Applied PO $ - Contracted Services" },
+    { id: 13, title: "Vendor(s) Name/#/Phone" },
+  ];
+  function itemizedSheet(rows) {
+    return { name: "Midwest PSE Request Tracker", columns: ITEMIZED_COLUMNS, rows };
+  }
+  async function syncItemizedRow(rowId, fields) {
+    const restore = stubFetchOnce({
+      ok: true,
+      json: async () =>
+        itemizedSheet([
+          {
+            id: rowId,
+            cells: [
+              { columnId: 1, value: fields.code, displayValue: fields.code },
+              { columnId: 4, value: fields.description || "Test job", displayValue: fields.description || "Test job" },
+              ...(fields.maximoNumber ? [{ columnId: 8, value: fields.maximoNumber, displayValue: fields.maximoNumber }] : []),
+              ...(fields.estimatedLabor != null ? [{ columnId: 9, value: fields.estimatedLabor, displayValue: String(fields.estimatedLabor) }] : []),
+              ...(fields.estimatedContracted != null
+                ? [{ columnId: 10, value: fields.estimatedContracted, displayValue: String(fields.estimatedContracted) }]
+                : []),
+              ...(fields.appliedLabor != null ? [{ columnId: 11, value: fields.appliedLabor, displayValue: String(fields.appliedLabor) }] : []),
+              ...(fields.appliedContracted != null
+                ? [{ columnId: 12, value: fields.appliedContracted, displayValue: String(fields.appliedContracted) }]
+                : []),
+              ...(fields.vendorText ? [{ columnId: 13, value: fields.vendorText, displayValue: fields.vendorText }] : []),
+            ],
+          },
+        ]),
+    });
+    try {
+      const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(res.status, 200);
+      return res.body;
+    } finally {
+      restore();
+    }
+  }
+
+  let vendorId;
+  await t.test("setup: create the vendor these WOMs will match by name", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Acme Mechanical" } });
+    assert.equal(res.status, 201);
+    vendorId = res.body.id;
+  });
+
+  await t.test("applied labor over estimated labor shows up in laborOvercharged", async () => {
+    await syncItemizedRow(800, { code: "60000001", estimatedLabor: 1000, appliedLabor: 1600 });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.laborOvercharged.find((o) => o.code === "60000001");
+    assert.ok(entry, "expected 60000001 in laborOvercharged");
+    assert.equal(entry.overage, 600);
+  });
+
+  await t.test("applied contracted-services over estimate shows up in contractedIncreased, with the matched vendor", async () => {
+    await syncItemizedRow(801, {
+      code: "60000002",
+      estimatedContracted: 500,
+      appliedContracted: 900,
+      vendorText: "Acme Mechanical - 5551234",
+    });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.contractedIncreased.find((o) => o.code === "60000002");
+    assert.ok(entry, "expected 60000002 in contractedIncreased");
+    assert.equal(entry.overage, 400);
+    assert.equal(entry.vendorId, vendorId);
+    assert.equal(entry.vendorName, "Acme Mechanical");
+  });
+
+  await t.test("a WOM with contracted spend applied but no Toyota PO on file is High priority, even once sent to Toyota", async () => {
+    // Complete sent_to_toyota first, so the assertion below is actually
+    // testing the contracted-no-PO condition and not just riding along on
+    // "hasn't been sent to Toyota yet" also being High.
+    const sent = await server.call("POST", "/api/woms/60000002/lifecycle/sent_to_toyota", {
+      userId: "ADMIN",
+      body: { toyotaEmail: "toyota@example.com" },
+    });
+    assert.equal(sent.status, 200);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-60000002-LIFECYCLE");
+    assert.ok(task, "expected a lifecycle task for 60000002");
+    assert.equal(task.priority, "high");
+  });
+
+  await t.test("a second WOM above quote with the same vendor makes them show up in vendorAboveQuote", async () => {
+    await syncItemizedRow(802, {
+      code: "60000003",
+      estimatedContracted: 200,
+      appliedContracted: 300,
+      vendorText: "Acme Mechanical - 5551234",
+    });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.vendorAboveQuote.find((v) => v.vendorId === vendorId);
+    assert.ok(entry, "expected Acme Mechanical to show up as repeatedly above quote");
+    assert.equal(entry.comparableWomCount, 2);
+    assert.equal(entry.aboveQuoteCount, 2);
+    assert.equal(entry.totalAboveQuote, 500);
+    assert.equal(entry.totalComparisonQuote, 700);
+    assert.equal(Math.round(entry.pctAboveQuote * 100) / 100, Math.round((500 / 700) * 100 * 100) / 100);
+    assert.equal(entry.reviewStatus, "needs_review");
+  });
+
+  await t.test("vendorSpend totals every WOM's applied contracted cost for that vendor, overage or not", async () => {
+    // A third WOM for the same vendor that did NOT run over its estimate --
+    // still counts toward total business done with them.
+    await syncItemizedRow(803, {
+      code: "60000004",
+      estimatedContracted: 1000,
+      appliedContracted: 1000,
+      vendorText: "Acme Mechanical - 5551234",
+    });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const spend = res.body.vendorSpend.find((v) => v.vendorId === vendorId);
+    assert.ok(spend);
+    assert.equal(spend.womCount, 3);
+    assert.equal(spend.totalAppliedContracted, 900 + 300 + 1000);
+    // Only one vendor is matched across this test's WOMs so far -- it holds
+    // 100% of the matched-vendor total.
+    assert.equal(spend.shareOfMatchedCosts, 100);
+  });
+
+  await t.test("vendorGlTotals sums what's actually posted to the GL against this vendor's matched POs", async () => {
+    const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const now = new Date().toISOString();
+    const poResult = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, vendor_id, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("gl-total-po-1", "95001", vendorId, now, now, now, now);
+    const poId = Number(poResult.lastInsertRowid);
+    raw.prepare("INSERT INTO gl_entries (matched_po_id, amount, created_at) VALUES (?, ?, ?)").run(poId, 450.5, now);
+    raw.prepare("INSERT INTO gl_entries (matched_po_id, amount, created_at) VALUES (?, ?, ?)").run(poId, 200, now);
+    raw.close();
+
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const gl = res.body.vendorGlTotals.find((v) => v.vendorId === vendorId);
+    assert.ok(gl, "expected a GL total for this vendor");
+    assert.equal(gl.totalGlAmount, 650.5);
+    assert.equal(gl.glLineCount, 2);
+  });
+
+  await t.test("a vendor with no GL-matched PO at all has no entry in vendorGlTotals", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "No GL Match Co" } });
+    const noGlVendorId = res.body.id;
+    const summary = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    assert.ok(!summary.body.vendorGlTotals.some((v) => v.vendorId === noGlVendorId));
+  });
+
+  await t.test("the vendor's own profile shows the same contracted spend total and no last-invoiced date yet", async () => {
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.totalContractedApplied, 900 + 300 + 1000);
+    assert.equal(vendor.contractedWomCount, 3);
+    assert.equal(vendor.lastInvoicedAt, null);
+  });
+
+  await t.test("invoicing one of the vendor's WOMs sets the vendor's lastInvoicedAt", async () => {
+    await syncItemizedRow(801, { code: "60000002", maximoNumber: "PO-1", estimatedContracted: 500, appliedContracted: 900 });
+    const complete = await server.call("POST", "/api/woms/60000002/complete", { userId: "T1001" });
+    assert.equal(complete.status, 200);
+    await server.call("POST", "/api/woms/60000002/lifecycle/charges_reviewed", { userId: "ADMIN" });
+    const invoiced = await server.call("POST", "/api/woms/60000002/lifecycle/invoiced", {
+      userId: "ADMIN",
+      body: { batchNumber: "B2", invoiceNumber: "INV-2" },
+    });
+    assert.equal(invoiced.status, 200);
+
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.ok(vendor.lastInvoicedAt, "expected a last-invoiced date now that one of this vendor's WOMs is invoiced");
+  });
+
+  await t.test("a WOM with no vendor match at all doesn't appear in any vendor rollup", async () => {
+    await syncItemizedRow(804, { code: "60000005", estimatedContracted: 100, appliedContracted: 200, vendorText: "Totally Unknown Co - 9999" });
+    const res = await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" });
+    const entry = res.body.contractedIncreased.find((o) => o.code === "60000005");
+    assert.ok(entry);
+    assert.equal(entry.vendorId, null);
+    assert.equal(entry.vendorName, null);
+  });
+});
+
+test("smartsheet sync: task/exception counters and the persisted last-sync summary", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a sync that enters a new WOM into the pipeline reports one task created", async () => {
+    const result = await syncOneOpenWom(server, "50000001", 970);
+    assert.equal(result.tasksCreated, 1);
+    assert.equal(result.tasksCompleted, 0);
+    assert.ok(result.lastSync);
+    assert.equal(result.lastSync.tasks_created, 1);
+  });
+
+  await t.test("status now reflects the persisted last sync", async () => {
+    const res = await server.call("GET", "/api/admin/smartsheet/status", { userId: "ADMIN" });
+    assert.ok(res.body.lastSync);
+    assert.equal(res.body.lastSync.tasks_created, 1);
+  });
+});
+
+// A user-defined recurring task ("remind me every Monday and Wednesday")
+// is a template, not a single task row -- ensureRecurringTasks (called
+// lazily on every GET, same lazy-on-read pattern the app's own fixed
+// recurring responsibilities already use) upserts today's occurrence
+// whenever today's weekday is in the template's days.
+test("tasks: user-defined recurring tasks", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const today = new Date().getDay();
+  const notToday = (today + 3) % 7;
+
+  await t.test("a technician can't create a recurring task", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "T1001",
+      body: { title: "Weekly thing", recurring: true, recurrenceDays: [today] },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects an empty recurrenceDays array", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Weekly thing", recurring: true, recurrenceDays: [] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rejects an out-of-range weekday number", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Weekly thing", recurring: true, recurrenceDays: [7] },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("creating a recurring task that includes today generates today's occurrence immediately", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Check the mail", recurring: true, recurrenceDays: [today], assignedRole: "admin" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.recurring, true);
+    assert.ok(res.body.todayTask, "expected today's occurrence to already exist");
+    assert.equal(res.body.todayTask.title, "Check the mail");
+    assert.equal(res.body.todayTask.category, "recurring");
+  });
+
+  await t.test("creating a recurring task that excludes today does not generate an occurrence yet", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Not today's thing", recurring: true, recurrenceDays: [notToday] },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.todayTask, null);
+  });
+
+  await t.test("the generated occurrence shows up on the admin-role board (Unclaimed -- Admin, not Unassigned)", async () => {
+    // Carries a role (admin), just no specific person -- that's Unclaimed,
+    // a different state from genuinely Unassigned (neither a person nor a
+    // role), which is covered separately below.
+    const res = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    assert.ok(res.body.some((t) => t.title === "Check the mail"));
+
+    const unassigned = await server.call("GET", "/api/tasks?view=unassigned", { userId: "ADMIN" });
+    assert.ok(!unassigned.body.some((t) => t.title === "Check the mail"), "a role-queued task must not also show up as genuinely Unassigned");
+  });
+
+  await t.test("re-fetching the task list doesn't duplicate today's occurrence", async () => {
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    const res = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    assert.equal(res.body.filter((t) => t.title === "Check the mail").length, 1);
+  });
+
+  let checkTheMailId;
+  await t.test("commenting on an open recurring task pushes its due date out, clearing overdue", async () => {
+    const list = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    const occurrence = list.body.find((t) => t.title === "Check the mail");
+    checkTheMailId = occurrence.id;
+    const dueBefore = new Date(occurrence.dueAt).getTime();
+
+    await server.call("POST", `/api/tasks/${checkTheMailId}/comments`, { userId: "ADMIN", body: { body: "Still chipping away at this." } });
+
+    const after = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    const dueAfter = new Date(after.body.dueAt).getTime();
+    assert.ok(dueAfter > dueBefore, "expected the comment to push the due date forward");
+    assert.ok(dueAfter >= Date.now() + 6 * 86400000, "expected roughly a week's push");
+  });
+
+  await t.test("re-reading the task list afterward doesn't undo the push (ensureRecurringTasks runs on every GET)", async () => {
+    const before = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    const after = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    assert.equal(after.body.dueAt, before.body.dueAt, "re-fetching the task list must not reset a comment-pushed due date back to the recurring spec's own computed value");
+  });
+
+  await t.test("a second comment never pulls an already-further-out due date back in", async () => {
+    const before = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    await server.call("POST", `/api/tasks/${checkTheMailId}/comments`, { userId: "ADMIN", body: { body: "Second note, same day." } });
+    const after = await server.call("GET", `/api/tasks/${checkTheMailId}`, { userId: "ADMIN" });
+    // A second same-day comment still computes "7 days from right now," a
+    // few milliseconds later than the first -- it's never going to be
+    // *less* than what's already there, which is the actual guarantee.
+    assert.ok(new Date(after.body.dueAt).getTime() >= new Date(before.body.dueAt).getTime(), "a second comment must never move the due date earlier");
+  });
+
+  await t.test("commenting on a plain (non-recurring) task never touches its due date", async () => {
+    const manual = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "One-time thing", dueAt: new Date().toISOString().slice(0, 10) },
+    });
+    const dueBefore = manual.body.dueAt;
+    await server.call("POST", `/api/tasks/${manual.body.id}/comments`, { userId: "ADMIN", body: { body: "Working on it." } });
+    const after = await server.call("GET", `/api/tasks/${manual.body.id}`, { userId: "ADMIN" });
+    assert.equal(after.body.dueAt, dueBefore, "a one-time task's real deadline must never move just because someone commented");
+  });
+
+  await t.test("completing today's occurrence doesn't get re-opened by the next fetch, same as other recurring tasks", async () => {
+    const list = await server.call("GET", "/api/tasks?view=team&role=admin", { userId: "ADMIN" });
+    const occurrence = list.body.find((t) => t.title === "Check the mail");
+    await server.call("PATCH", `/api/tasks/${occurrence.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    const after = await server.call("GET", `/api/tasks?view=completed`, { userId: "ADMIN" });
+    assert.ok(after.body.some((t) => t.id === occurrence.id && t.status === "completed"));
+  });
+
+  await t.test("rejects a malformed dueTime", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Bad time", dueTime: "25:99" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a plain (non-recurring) task combines dueAt date and dueTime into one timestamp", async () => {
+    const res = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Timed task", dueAt: "2026-05-01", dueTime: "14:30" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.dueAt, "2026-05-01T14:30");
+  });
+});
+
+test("tasks: sorted by priority tier first, then due date", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a High-priority task with a later due date still sorts above a Normal one due sooner", async () => {
+    const normalSooner = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Normal, due soon", assignedTo: "T1003", priority: "normal", dueAt: "2026-01-01" },
+    });
+    assert.equal(normalSooner.status, 201);
+
+    const highLater = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "High, due later", assignedTo: "T1003", priority: "high", dueAt: "2026-12-01" },
+    });
+    assert.equal(highLater.status, 201);
+
+    const res = await server.call("GET", "/api/tasks?view=team&assignedTo=T1003", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.indexOf(highLater.body.id) < ids.indexOf(normalSooner.body.id), "expected the High task to sort before the Normal one");
+  });
+
+  await t.test("Emergency still sorts above High regardless of due date", async () => {
+    const high = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "High, due soon", assignedTo: "T1002", priority: "high", dueAt: "2026-01-01" },
+    });
+    const emergency = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Emergency, due later", assignedTo: "T1002", priority: "emergency", dueAt: "2026-12-01" },
+    });
+    const res = await server.call("GET", "/api/tasks?view=team&assignedTo=T1002", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.indexOf(emergency.body.id) < ids.indexOf(high.body.id));
+  });
+});
+
+test("tasks: an admin can look up another role's queue while still on the My Work view", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("filtering by role=tech under the default (My Work) view isn't silently scoped to the admin's own roles", async () => {
+    // An admin's own roles never include "tech" -- before the fix, adding
+    // an explicit role filter on top of the default view="my" scope ANDed
+    // the two together and always returned nothing for a role the viewer
+    // doesn't personally have, even though the task genuinely exists.
+    const created = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "Unclaimed tech task", assignedRole: "tech" },
+    });
+    assert.equal(created.status, 201);
+
+    const withoutView = await server.call("GET", "/api/tasks?role=tech", { userId: "ADMIN" });
+    assert.ok(
+      withoutView.body.some((t2) => t2.id === created.body.id),
+      "expected the unclaimed tech task to show up when looking it up by role, even on the default view"
+    );
+  });
+
+  await t.test("filtering by a specific person also isn't scoped to the admin's own roles", async () => {
+    const created = await server.call("POST", "/api/tasks", {
+      userId: "ADMIN",
+      body: { title: "For T1002 specifically", assignedTo: "T1002" },
+    });
+    assert.equal(created.status, 201);
+
+    const res = await server.call("GET", "/api/tasks?assignedTo=T1002", { userId: "ADMIN" });
+    assert.ok(res.body.some((t2) => t2.id === created.body.id));
+  });
+});
+
+test("tasks: reschedule/snooze a task into the Upcoming tab", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  async function makeTask(title) {
+    const created = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title } });
+    assert.equal(created.status, 201);
+    return created.body.id;
+  }
+
+  await t.test("rescheduling requires a note", async () => {
+    const taskId = await makeTask("Needs a note");
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "ADMIN",
+      body: { snoozedUntil: "2099-01-01" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rescheduling requires a valid snoozedUntil date", async () => {
+    const taskId = await makeTask("Needs a date");
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "Labor posted, waiting on vendor invoice.", snoozedUntil: "not-a-date" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a non-admin can't reschedule a task", async () => {
+    const taskId = await makeTask("Not yours to snooze");
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "T1002",
+      body: { note: "trying anyway", snoozedUntil: "2099-01-01" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("a successful reschedule hides the task from My/Team Work and surfaces it in Upcoming only", async () => {
+    const taskId = await makeTask("$100 expenses posted, still waiting on vendor $");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const res = await server.call("POST", `/api/tasks/${taskId}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "$100 expenses posted, labor posted, still waiting on vendor $.", snoozedUntil: future },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.snoozedUntil);
+
+    const team = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!team.body.some((t2) => t2.id === taskId), "snoozed task must not show up in Team Work");
+
+    const my = await server.call("GET", "/api/tasks", { userId: "ADMIN" });
+    assert.ok(!my.body.some((t2) => t2.id === taskId), "snoozed task must not show up in My Work");
+
+    const upcoming = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    assert.ok(upcoming.body.some((t2) => t2.id === taskId), "snoozed task should be visible in Upcoming");
+
+    const detail = await server.call("GET", `/api/tasks/${taskId}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 1);
+    assert.equal(detail.body.rescheduleNotes[0].note, "$100 expenses posted, labor posted, still waiting on vendor $.");
+    assert.equal(detail.body.rescheduleNotes[0].createdByName, "Krista Lee");
+  });
+
+  await t.test("repeated reschedules build a growing history, most recent last", async () => {
+    const taskId = await makeTask("Follow-up chain");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${taskId}/reschedule`, { userId: "ADMIN", body: { note: "Round one.", snoozedUntil: future } });
+    await server.call("POST", `/api/tasks/${taskId}/reschedule`, { userId: "ADMIN", body: { note: "Round two.", snoozedUntil: future } });
+
+    const detail = await server.call("GET", `/api/tasks/${taskId}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 2);
+    assert.equal(detail.body.rescheduleNotes[0].note, "Round one.");
+    assert.equal(detail.body.rescheduleNotes[1].note, "Round two.");
+  });
+
+  await t.test("Bring back now (unsnooze) immediately restores default visibility", async () => {
+    const taskId = await makeTask("Pull this back up");
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${taskId}/reschedule`, { userId: "ADMIN", body: { note: "Waiting on PO.", snoozedUntil: future } });
+
+    const stillHidden = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!stillHidden.body.some((t2) => t2.id === taskId));
+
+    const unsnooze = await server.call("POST", `/api/tasks/${taskId}/unsnooze`, { userId: "ADMIN" });
+    assert.equal(unsnooze.status, 200);
+    assert.equal(unsnooze.body.snoozedUntil, null);
+
+    const restored = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(restored.body.some((t2) => t2.id === taskId), "task should reappear in Team Work right away");
+
+    const upcoming = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    assert.ok(!upcoming.body.some((t2) => t2.id === taskId), "task should no longer sit in Upcoming once brought back");
+
+    const detail = await server.call("GET", `/api/tasks/${taskId}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 1, "unsnoozing clears visibility but keeps the status-note history");
+  });
+
+  await t.test("only an admin can view the Upcoming tab", async () => {
+    const res = await server.call("GET", "/api/tasks?view=upcoming", { userId: "T1002" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("snoozing a WOM-lifecycle task doesn't alter its own priority, role, or exception state", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "SNOOZE-WOM-1", description: "Vendor-only job" } });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-1/details", {
+      userId: "ADMIN",
+      body: { description: "Vendor-only job", locationCode: "PRINCETON" },
+    });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-1/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+
+    const before = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = before.body.find((t2) => t2.sourceKey === "WOM-SNOOZE-WOM-1-LIFECYCLE");
+    assert.ok(task, "expected the lifecycle task to exist");
+    assert.equal(task.priority, "high");
+    assert.equal(task.isException, true);
+
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${task.id}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "Expenses posted, waiting on PO.", snoozedUntil: future },
+    });
+
+    const upcoming = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    const snoozed = upcoming.body.find((t2) => t2.id === task.id);
+    assert.ok(snoozed);
+    assert.equal(snoozed.priority, "high", "snoozing must not change the underlying priority computation");
+    assert.equal(snoozed.isException, true, "snoozing must not change the underlying exception computation");
+  });
+
+  // Directly answers "does a WOM update erase my snooze/claim/notes" -- the
+  // lifecycle task's computed fields (title/priority/role/exception) are
+  // meant to re-derive live off the WOM's current data on every touch
+  // (a sync, a hand-edit, even just loading the task list), but visibility
+  // (snoozed_until), who claimed it, its open/waiting status, and its
+  // reschedule-note history are a human's own record of where things stand
+  // and must survive that untouched -- upsertTaskBySourceKey (db.js) simply
+  // never includes those columns in its UPDATE.
+  await t.test("a later WOM update (sync/hand-edit) re-derives title/priority but never touches an existing snooze, claim, or note history", async () => {
+    await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "SNOOZE-WOM-2", description: "Vendor-only job 2" } });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-2/details", {
+      userId: "ADMIN",
+      body: { description: "Vendor-only job 2", locationCode: "PRINCETON" },
+    });
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-2/pricing", { userId: "ADMIN", body: { appliedPrice: 500 } });
+
+    const before = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = before.body.find((t2) => t2.sourceKey === "WOM-SNOOZE-WOM-2-LIFECYCLE");
+    assert.ok(task.title.includes("Needs Toyota PO") && !task.title.includes("change order"));
+
+    // Claim it, then snooze it with a note -- both things a human did on
+    // purpose and would be upset to lose.
+    await server.call("PATCH", `/api/tasks/${task.id}/assign`, { userId: "ADMIN", body: { assignedTo: "T1001" } });
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await server.call("POST", `/api/tasks/${task.id}/reschedule`, {
+      userId: "ADMIN",
+      body: { note: "$500 applied, waiting on Toyota PO confirmation.", snoozedUntil: future },
+    });
+
+    // Now something changes on the WOM itself -- same thing a Smartsheet
+    // sync does when it re-syncs a WOM's numbers (PATCH .../pricing and
+    // .../details both funnel through checkWomLifecycleAutoSteps the same
+    // way a sync row does).
+    await server.call("PATCH", "/api/woms/SNOOZE-WOM-2/details", {
+      userId: "ADMIN",
+      body: { description: "Vendor-only job 2, updated scope", locationCode: "PRINCETON", maximoNumber: "PO-99999" },
+    });
+
+    const after = await server.call("GET", "/api/tasks?view=upcoming", { userId: "ADMIN" });
+    const updated = after.body.find((t2) => t2.id === task.id);
+    assert.ok(updated, "the task must still be snoozed/visible in Upcoming -- the sync must not have cleared the snooze");
+    assert.ok(updated.snoozedUntil, "snoozedUntil itself must survive untouched");
+    assert.equal(updated.assignedTo, "T1001", "the claim must survive untouched");
+    assert.ok(
+      !updated.title.includes("Needs Toyota PO"),
+      "the title SHOULD re-derive now that a real PO landed -- that's intentional live recomputation, not data loss"
+    );
+
+    const detail = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.equal(detail.body.rescheduleNotes.length, 1, "the reschedule note history must survive untouched");
+    assert.equal(detail.body.rescheduleNotes[0].note, "$500 applied, waiting on Toyota PO confirmation.");
+  });
+});
+
+test("tasks: a WOM lifecycle task can't be force-completed or force-cancelled through the generic status route", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "NOFORCE-1", description: "Do not force-close" } });
+  await server.call("PATCH", "/api/woms/NOFORCE-1/details", { userId: "ADMIN", body: { description: "Do not force-close", locationCode: "PRINCETON" } });
+  const list = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+  const task = list.body.find((t2) => t2.sourceKey === "WOM-NOFORCE-1-LIFECYCLE");
+  assert.ok(task, "expected the lifecycle task to exist");
+
+  await t.test("PATCH .../status with completed is rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${task.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    assert.equal(res.status, 400);
+    const after = await server.call("GET", `/api/tasks/${task.id}`, { userId: "ADMIN" });
+    assert.notEqual(after.body.status, "completed", "the task must not have actually closed");
+  });
+
+  await t.test("PATCH .../status with cancelled is also rejected", async () => {
+    const res = await server.call("PATCH", `/api/tasks/${task.id}/status`, { userId: "ADMIN", body: { status: "cancelled" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a plain manual task is unaffected by the guard", async () => {
+    const manual = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Ordinary task" } });
+    const res = await server.call("PATCH", `/api/tasks/${manual.body.id}/status`, { userId: "ADMIN", body: { status: "completed" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "completed");
+  });
+});
+
+test("tasks: filtering by territory inherits it from the related location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "LOC-WEST-1", name: "West Site", territory: "West" } });
+  const midwestTask = await server.call("POST", "/api/tasks", {
+    userId: "ADMIN",
+    body: { title: "Midwest task", relatedLocationCode: "PRINCETON" },
+  });
+  const westTask = await server.call("POST", "/api/tasks", {
+    userId: "ADMIN",
+    body: { title: "West task", relatedLocationCode: "LOC-WEST-1" },
+  });
+  const noLocationTask = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "No location task" } });
+
+  await t.test("filtering by territory=West returns only the West task", async () => {
+    const res = await server.call("GET", "/api/tasks?view=team&territory=West", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.includes(westTask.body.id));
+    assert.ok(!ids.includes(midwestTask.body.id));
+    assert.ok(!ids.includes(noLocationTask.body.id));
+  });
+
+  await t.test("filtering by territory=Midwest returns the Midwest task but not the West one", async () => {
+    const res = await server.call("GET", "/api/tasks?view=team&territory=Midwest", { userId: "ADMIN" });
+    const ids = res.body.map((t2) => t2.id);
+    assert.ok(ids.includes(midwestTask.body.id));
+    assert.ok(!ids.includes(westTask.body.id));
+  });
+
+  await t.test("a technician's own territory filter is ignored -- cross-employee filtering is admin-only", async () => {
+    const res = await server.call("GET", "/api/tasks?view=my&territory=West", { userId: "T1001" });
+    assert.equal(res.status, 200);
+  });
+});

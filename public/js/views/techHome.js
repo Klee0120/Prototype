@@ -1,0 +1,246 @@
+import { api } from "../api.js";
+import { state, escapeHtml } from "../app.js";
+import { renderTechWeek } from "./techWeek.js";
+import { renderAttachments } from "./attachments.js";
+import { renderSchedule } from "./schedule.js";
+import { renderTaskBoard } from "./tasks.js";
+import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
+import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
+
+const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
+const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
+
+function formatMoney(n) {
+  if (n == null) return "—";
+  return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
+ * Technician's own view: their weekly allocation, plus read-only tabs for
+ * Locations & WOM (so they can see what's out there and what they've worked
+ * on historically, without being able to add/edit/close anything) and their
+ * own Forms/Documents (view only -- they can't upload or delete here; an
+ * admin manages those from the Technicians tab).
+ */
+export async function renderTechHome(container, navHost, topbarHost, subtabHost) {
+  let activeTab = "week";
+  const TECH_TABS = [
+    ["mywork", "My Work"],
+    ["week", "My Week"],
+    ["schedule", "Schedule"],
+    ["locations", "Locations &amp; WOM"],
+    ["vendors", "Vendors"],
+    ["documents", "My Documents"],
+  ];
+
+  draw();
+
+  async function draw() {
+    navHost.innerHTML = TECH_TABS.map(
+      ([key, label]) => `<button class="sidebar-nav-item ${activeTab === key ? "active" : ""}" data-tab="${key}"><span>${label}</span></button>`
+    ).join("");
+    navHost.querySelectorAll(".sidebar-nav-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        activeTab = btn.dataset.tab;
+        draw();
+      });
+    });
+
+    container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
+    // Only My Week has its own page-context picker (the week nav) -- see
+    // the matching reset in adminReview.js's draw(). The tech view's top-
+    // level tabs are already the sidebar nav, so there's never a sub-tab
+    // row for the gray band here.
+    topbarHost.innerHTML = "";
+    subtabHost.innerHTML = "";
+
+    const content = container.querySelector("#tab-content");
+    // Same shared loading state as the admin view's draw() -- every tab
+    // here fetches before rendering, so this covers all of them for free.
+    const loadingLabels = { mywork: "My Work", week: "My Week", schedule: "Schedule", locations: "Locations & WOM", vendors: "Vendors", documents: "My Documents" };
+    renderLoadingState(content, loadingLabelFor(loadingLabels[activeTab] || "content"));
+    if (activeTab === "mywork") await renderTaskBoard(content);
+    else if (activeTab === "schedule") await renderSchedule(content);
+    else if (activeTab === "locations") await drawLocationsAndWoms(content);
+    else if (activeTab === "vendors") await drawApprovedVendors(content);
+    else if (activeTab === "documents") await drawMyDocuments(content);
+    else await renderTechWeek(content, undefined, topbarHost);
+  }
+
+  // Deliberately not the same list the admin Vendors tab shows: this is
+  // only vendors cleared to actually use (server-side filtered in
+  // server/routes/vendorLookup.js on cwStatus/toyotaStatus/formsStatus,
+  // plus excluding a vendor actively denied in a case recheck) -- a
+  // vendor that isn't active/approved, has outdated forms, or was just
+  // denied is left off entirely rather than shown with a different badge,
+  // since a vendor just *appearing* here reads as "this is fine to use."
+  async function drawApprovedVendors(content) {
+    const vendors = await api.get("/api/vendors");
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Vendors cleared to use right now. One still being onboarded, or one with a compliance issue
+        to sort out, won't show up here yet -- ask an admin if you don't see one you're expecting.
+      </p>
+      <input class="tech-vendor-search" type="text" placeholder="Vendor name or service" />
+      <p class="vendor-count"></p>
+      <div class="review-list" id="tech-vendor-list"></div>
+    `;
+    const countEl = content.querySelector(".vendor-count");
+    const listEl = content.querySelector("#tech-vendor-list");
+
+    function renderList(query) {
+      const q = query.trim().toLowerCase();
+      const matches = q
+        ? vendors.filter((v) => v.name.toLowerCase().includes(q) || (v.services || "").toLowerCase().includes(q))
+        : vendors;
+      countEl.textContent = `${matches.length} vendor${matches.length === 1 ? "" : "s"}.`;
+      if (matches.length === 0) {
+        listEl.innerHTML = `<p class="empty-note">No approved vendors match.</p>`;
+        return;
+      }
+      listEl.innerHTML = "";
+      matches
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .forEach((v) => {
+          const row = document.createElement("div");
+          row.className = "review-row";
+          row.innerHTML = `
+            <div class="review-row-summary">
+              <span class="review-row-name">${escapeHtml(v.name)}</span>
+              ${v.services ? `<span class="wom-desc">${escapeHtml(v.services)}</span>` : ""}
+              ${v.phone ? `<span class="vendor-jde">${escapeHtml(v.phone)}</span>` : ""}
+              ${v.email ? `<span class="vendor-jde">${escapeHtml(v.email)}</span>` : ""}
+            </div>
+          `;
+          listEl.appendChild(row);
+        });
+    }
+
+    renderList("");
+    content.querySelector(".tech-vendor-search").addEventListener("input", (e) => renderList(e.target.value));
+  }
+
+  async function drawLocationsAndWoms(content) {
+    const [locations, allWoms] = await Promise.all([api.get("/api/locations"), api.get("/api/woms")]);
+    // Pending/requested WOMs have no real WOM # yet -- nothing to look up
+    // or charge time to, so they're left out of this reference list.
+    const woms = allWoms.filter((w) => w.status !== "pending" && w.status !== "requested");
+    const locationByCode = Object.fromEntries(locations.map((l) => [l.code, l]));
+
+    content.innerHTML = `
+      <div class="review-actions">
+        <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
+        <a class="btn btn-secondary" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a C&amp;W PO ↗</a>
+      </div>
+      <p class="review-checklist-hint">
+        The lists below are view only -- for anything else (a location, or changing an existing WOM), ask an admin.
+      </p>
+      <h3>Locations</h3>
+      <div class="review-list" id="tech-location-list"></div>
+      <h3>WOM Projects (including past/closed)</h3>
+      <div class="review-list" id="tech-wom-list"></div>
+    `;
+
+    const locationList = content.querySelector("#tech-location-list");
+    if (locations.length === 0) {
+      locationList.innerHTML = `<p class="empty-note">No locations on file.</p>`;
+    } else {
+      locations.forEach((l) => {
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(l.name)}</span>
+            ${l.region ? `<span class="wom-desc">${escapeHtml(l.region)}</span>` : ""}
+          </div>
+        `;
+        locationList.appendChild(row);
+      });
+    }
+
+    const womList = content.querySelector("#tech-wom-list");
+    if (woms.length === 0) {
+      womList.innerHTML = `<p class="empty-note">No WOM projects on file.</p>`;
+    } else {
+      woms.forEach((w) => {
+        const loc = locationByCode[w.locationCode];
+        const budgetLabel = w.budgetHours == null ? "" : ` &middot; ${w.remainingHours}h left of ${w.budgetHours}h`;
+        const row = document.createElement("div");
+        row.className = "review-row";
+        row.innerHTML = `
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(w.code)} <span class="wom-desc">${escapeHtml(w.description)}${loc ? ` &middot; ${escapeHtml(loc.name)}` : ""}${budgetLabel}</span></span>
+            <span class="badge badge-${WOM_STATUS_BADGE_CLASS[w.status] || "draft"}">${escapeHtml(WOM_STATUS_LABELS[w.status] || w.status)}</span>
+            <button class="btn btn-link wom-lookup-toggle" type="button">Details</button>
+          </div>
+          <div class="review-row-detail tech-wom-detail" hidden></div>
+        `;
+        // Lazy-loaded (and cached per row) rather than fetched for every WOM
+        // up front -- who's logged hours against a project and its pricing
+        // is only worth a round trip once someone actually wants to see it.
+        const toggleBtn = row.querySelector(".wom-lookup-toggle");
+        const detail = row.querySelector(".tech-wom-detail");
+        let loaded = false;
+        toggleBtn.addEventListener("click", async () => {
+          detail.hidden = !detail.hidden;
+          toggleBtn.textContent = detail.hidden ? "Details" : "Hide";
+          if (!detail.hidden && !loaded) {
+            loaded = true;
+            detail.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
+            const lookup = await api.get(`/api/woms/${encodeURIComponent(w.code)}/lookup`);
+            detail.innerHTML = renderWomLookupDetail(lookup);
+          }
+        });
+        womList.appendChild(row);
+      });
+    }
+  }
+
+  // Total hours worked and posted pricing for a WOM, all-time -- same data
+  // and endpoint the admin's own WOM Lookup sub-tab uses, just presented
+  // inline here since a technician's Locations & WOM list already has each
+  // WOM's row to expand rather than a separate lookup screen of its own.
+  function renderWomLookupDetail(wom) {
+    const hoursLine =
+      wom.budgetHours == null
+        ? `${wom.totalHours}h logged (no budget set)`
+        : `${wom.totalHours}h of ${wom.budgetHours}h budgeted (${wom.remainingHours}h left)`;
+    const byTech =
+      wom.hoursByTechnician.length === 0
+        ? `<p class="review-checklist-hint">No hours logged against this WOM yet.</p>`
+        : `<table class="detail-table">
+            <thead><tr><th>Technician</th><th>Hours</th></tr></thead>
+            <tbody>${wom.hoursByTechnician.map((h) => `<tr><td>${escapeHtml(h.techName)}</td><td>${h.hours}</td></tr>`).join("")}</tbody>
+          </table>`;
+    return `
+      <div class="wom-lookup-stats">
+        <div><span class="wom-lookup-stat-label">Hours</span>${hoursLine}</div>
+        <div><span class="wom-lookup-stat-label">Estimated</span>$${formatMoney(wom.estimatedPrice)}</div>
+        <div><span class="wom-lookup-stat-label">Applied (posted)</span>$${formatMoney(wom.appliedPrice)}</div>
+      </div>
+      ${byTech}
+    `;
+  }
+
+  async function drawMyDocuments(content) {
+    content.innerHTML = `<div id="tech-forms-host"></div><div id="tech-docs-host"></div>`;
+    await renderAttachments(content.querySelector("#tech-forms-host"), {
+      title: "My Forms & Certifications",
+      relatedType: "technician",
+      relatedId: state.user.id,
+      categories: [{ value: "tech_form", label: "Form / Certification" }],
+      canUpload: false,
+      emptyText: "No forms on file.",
+      trackExpiration: true,
+    });
+    await renderAttachments(content.querySelector("#tech-docs-host"), {
+      title: "My Documents",
+      relatedType: "technician",
+      relatedId: state.user.id,
+      categories: [{ value: "document", label: "Document" }],
+      canUpload: false,
+      emptyText: "No documents on file.",
+    });
+  }
+}

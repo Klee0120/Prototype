@@ -1,0 +1,4 @@
+node_modules/
+server/data/store.json
+server/data/store.sqlite
+server/data/uploads/
