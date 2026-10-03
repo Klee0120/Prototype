@@ -75,7 +75,10 @@ async function runSmartsheetSync({ actorId, actorName }) {
     // computeWomStatusConflict in routes/woms.js and the woms.status
     // migration comment in db.js for why).
     sourceStatus: smartsheet.findAnyColumn(sheet.columns, [["wom", "status"], ["status"]]),
-    sourceWorkCompleted: smartsheet.findColumn(sheet.columns, ["work", "completed"]),
+    // Excludes "date" so this never also matches "Work Completed Date"
+    // below -- both contain "work" and "completed", and findColumn has no
+    // way to prefer the shorter/more-specific title on its own.
+    sourceWorkCompleted: smartsheet.findColumn(sheet.columns, ["work", "completed"], ["date"]),
     sourceBilling: smartsheet.findAnyColumn(sheet.columns, [["invoice", "status"], ["billing"], ["wom", "invoiced"]]),
     sourceRequestedBy: smartsheet.findAnyColumn(sheet.columns, [["requested", "by"], ["technician"]]),
     // Real invoicing evidence, pulled straight onto the WOM (see
@@ -100,6 +103,10 @@ async function runSmartsheetSync({ actorId, actorName }) {
     aribaConfirm: smartsheet.findColumn(sheet.columns, ["ariba", "confirm"]),
     sentToJason: smartsheet.findColumn(sheet.columns, ["sent", "jason"]),
     batchPostedConfirmed: smartsheet.findColumn(sheet.columns, ["billing"], ["ref"]),
+    // Dates shown alongside the Billing progress card -- when work actually
+    // wrapped and when the batch posted, not just whether they did.
+    workCompletedDate: smartsheet.findColumn(sheet.columns, ["work", "completed", "date"]),
+    batchDate: smartsheet.findColumn(sheet.columns, ["batch", "date"]),
   };
   // Snapshot every task's status before the sync so the diff afterward
   // can say how many of the resulting task-engine writes were this sync's
@@ -175,6 +182,8 @@ async function runSmartsheetSync({ actorId, actorName }) {
     aribaConfirmColumn: columns.aribaConfirm,
     sentToJasonColumn: columns.sentToJason,
     batchPostedConfirmedColumn: columns.batchPostedConfirmed,
+    workCompletedDateColumn: columns.workCompletedDate,
+    batchDateColumn: columns.batchDate,
   };
 }
 

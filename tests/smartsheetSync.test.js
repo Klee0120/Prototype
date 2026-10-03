@@ -797,6 +797,8 @@ const STATUS_COLUMNS = [
   { id: 13, title: "Sent to Jason" },
   { id: 14, title: "Billing" },
   { id: 15, title: "Billing Ref #" },
+  { id: 16, title: "Work Completed Date" },
+  { id: 17, title: "Batch Date" },
 ];
 
 function statusSheetWith(rows) {
@@ -821,6 +823,8 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
               { columnId: 4, value: "True", displayValue: "True" },
               { columnId: 5, value: "WOM fully invoiced", displayValue: "WOM fully invoiced" },
               { columnId: 6, value: "J. Smith", displayValue: "J. Smith" },
+              { columnId: 16, value: "2026-01-20", displayValue: "2026-01-20" },
+              { columnId: 17, value: "2026-01-25", displayValue: "2026-01-25" },
             ],
           },
         ]),
@@ -829,13 +833,19 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       assert.equal(res.status, 200);
       assert.equal(res.body.sourceStatusColumn, "WOM Status");
+      // Must resolve to the plain checkbox column, not "Work Completed
+      // Date" -- both titles contain "work" and "completed".
       assert.equal(res.body.sourceWorkCompletedColumn, "Work Completed");
       assert.equal(res.body.sourceBillingColumn, "Invoice Status");
       assert.equal(res.body.sourceRequestedByColumn, "Requested By");
       assert.equal(res.body.invoiceNumberColumn, "C&W Invoice # - TOY");
       assert.equal(res.body.batchNumberColumn, "Batch #");
+      assert.equal(res.body.workCompletedDateColumn, "Work Completed Date");
+      assert.equal(res.body.batchDateColumn, "Batch Date");
 
       const wom = (await server.call("GET", "/api/woms/20099001/lookup", { userId: "ADMIN" })).body;
+      assert.equal(wom.workCompletedDate, "2026-01-20");
+      assert.equal(wom.batchDate, "2026-01-25");
       // Status/Billing free text never drives `status` -- only a real
       // invoice # does, and there isn't one on this row, so this stays
       // "open" even though the Status cell says "Invoiced."

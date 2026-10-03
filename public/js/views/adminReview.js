@@ -3941,8 +3941,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
               </div>
             </div>
             <dl class="vendor-overview-fields">
+              <div><dt>Maximo #</dt><dd>${w.maximoNumber ? escapeHtml(w.maximoNumber) : "—"}</dd></div>
               <div><dt>Invoice #</dt><dd>${w.invoiceNumber ? escapeHtml(w.invoiceNumber) : "Not recorded"}</dd></div>
               <div><dt>Batch #</dt><dd>${w.batchNumber ? escapeHtml(w.batchNumber) : "Not recorded"}</dd></div>
+              <div><dt>Batch date</dt><dd>${w.batchDate ? escapeHtml(w.batchDate) : "Not recorded"}</dd></div>
+              <div><dt>Work completed date</dt><dd>${w.workCompletedDate ? escapeHtml(w.workCompletedDate) : "Not recorded"}</dd></div>
               <div><dt>Billing reference</dt><dd>${w.billingRefNumber ? escapeHtml(w.billingRefNumber) : "Not recorded"}</dd></div>
             </dl>
             <div class="wom-checklist">${billingChecklistRows}</div>

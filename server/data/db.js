@@ -912,6 +912,14 @@ if (!hasColumn("woms", "source_billing_ref_number")) {
   db.exec("ALTER TABLE woms ADD COLUMN source_batch_posted_confirmed_raw TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN source_batch_posted_confirmed INTEGER");
 }
+// "Work Completed Date" and "Batch Date" -- verbatim sheet dates shown
+// alongside the Billing progress card so an admin can see when work
+// actually wrapped and when a batch posted, not just whether it did.
+// Display-only, same as the other source_* raw fields.
+if (!hasColumn("woms", "source_work_completed_date")) {
+  db.exec("ALTER TABLE woms ADD COLUMN source_work_completed_date TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN source_batch_date TEXT");
+}
 // One-time cleanup for tasks left behind by the old 9-stage PSE state
 // machine this app used before the WOM lifecycle checklist replaced it
 // ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
@@ -4536,6 +4544,8 @@ const WOM_SOURCE_FIELDS = [
   { dbColumn: "source_billing_ref_number", jsField: "billingRefNumber", diffLabel: "billing reference #" },
   { dbColumn: "source_batch_posted_confirmed_raw", jsField: "batchPostedConfirmedRaw", diffLabel: null },
   { dbColumn: "source_batch_posted_confirmed", jsField: "batchPostedConfirmed", diffLabel: null },
+  { dbColumn: "source_work_completed_date", jsField: "workCompletedDate", diffLabel: "work completed date" },
+  { dbColumn: "source_batch_date", jsField: "batchDate", diffLabel: "batch date" },
 ];
 
 // The 6 billing-checklist sub-steps, specifically -- a subset of
@@ -4634,6 +4644,7 @@ function syncWomsFromSheetRows(rows, columns) {
   const { sourceBilling: sourceBillingColumn, sourceRequestedBy: sourceRequestedByColumn } = columns;
   const { invoiceNumber: invoiceNumberColumn, batchNumber: batchNumberColumn } = columns;
   const { billingRefNumber: billingRefNumberColumn } = columns;
+  const { workCompletedDate: workCompletedDateColumn, batchDate: batchDateColumn } = columns;
   // The Smartsheet column title for each breakdown category, resolved once
   // up front -- looked up by row below, not re-resolved every row.
   const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
@@ -4694,6 +4705,8 @@ function syncWomsFromSheetRows(rows, columns) {
     }
     const invoiceNumber = (invoiceNumberColumn && row[invoiceNumberColumn] && String(row[invoiceNumberColumn]).trim()) || null;
     const batchNumber = (batchNumberColumn && row[batchNumberColumn] && String(row[batchNumberColumn]).trim()) || null;
+    const workCompletedDate = (workCompletedDateColumn && row[workCompletedDateColumn] && String(row[workCompletedDateColumn]).trim()) || null;
+    const batchDate = (batchDateColumn && row[batchDateColumn] && String(row[batchDateColumn]).trim()) || null;
     const sourceFields = {
       sourceStatusRaw,
       sourceWorkCompletedRaw,
@@ -4701,6 +4714,8 @@ function syncWomsFromSheetRows(rows, columns) {
       sourceBillingRaw,
       sourceRequestedBy,
       billingRefNumber,
+      workCompletedDate,
+      batchDate,
       ...billingFields,
     };
     const sourceParams = WOM_SOURCE_FIELDS.map((f) => sourceFields[f.jsField]);

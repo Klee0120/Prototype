@@ -111,6 +111,10 @@ function presentWom(w) {
     // batch is billed -- display-only, never evidence of invoicing by
     // itself (the "Batch Posted Confirmed" billing-checklist item below is).
     billingRefNumber: w.source_billing_ref_number,
+    // Verbatim dates from the tracker -- when work actually wrapped and
+    // when the batch posted, shown alongside Billing progress.
+    workCompletedDate: w.source_work_completed_date,
+    batchDate: w.source_batch_date,
     // Work completion and billing are two different facts the tracker
     // reports separately -- never collapsed into one combined status. Work
     // Completed says the job itself is done; the billing checklist (plus a
