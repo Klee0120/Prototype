@@ -125,6 +125,7 @@ router.get("/", (req, res) => {
       status: req.query.status,
       vendorUnmatched: req.query.vendorUnmatched === "true",
       regionUnassigned: req.query.regionUnassigned === "true",
+      adminUnmatched: req.query.adminUnmatched === "true",
       womLinkMissing: req.query.womLinkMissing === "true",
       search: req.query.search,
     })

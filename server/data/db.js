@@ -1418,11 +1418,11 @@ function listAdmins() {
   return db.prepare("SELECT * FROM technicians WHERE role = 'admin' ORDER BY rowid").all();
 }
 
-function createAdmin({ id, name, pin }) {
+function createAdmin({ id, name, pin, homeLocationCode }) {
   db.prepare(
-    `INSERT INTO technicians (id, name, pin, role, active, employment_status)
-     VALUES (?, ?, ?, 'admin', 1, 'active')`
-  ).run(id, name, hashPin(pin));
+    `INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code)
+     VALUES (?, ?, ?, 'admin', 1, 'active', ?)`
+  ).run(id, name, hashPin(pin), homeLocationCode || null);
   return findTechnician(id);
 }
 
@@ -2495,15 +2495,27 @@ function matchAdminByName(name) {
   return listAdmins().find((a) => String(a.name || "").trim().toLowerCase() === target) || null;
 }
 
+// Same name match, but only counts a *currently active* admin account -- a
+// terminated admin's old home location isn't authoritative for where a PO
+// sits today (they might have moved territories before leaving, or the
+// location itself could have been reassigned since). Used by both
+// poTerritory and presentPoRow's adminMatched flag, so "does this PO's
+// admin name resolve to someone real" means the same thing everywhere.
+function activeAdminMatch(name) {
+  const admin = matchAdminByName(name);
+  return admin && admin.employment_status === "active" ? admin : null;
+}
+
 // A PO's territory -- the Budget PO Tracker's own Admin column is a more
 // reliable signal than the PO's own location match: every row carries an
 // admin name, while the location match can be missing or wrong, and each
 // admin's home location is deliberately set to the territory they actually
-// serve. Falls back to the PO's own matched location only when the admin
-// name doesn't match a real account (or that admin has no home location
-// with a territory on file); never guessed when neither resolves one.
+// serve. Falls back to the PO's own matched location whenever the admin
+// name doesn't match a real, active account (or that admin has no home
+// location with a territory on file); never guessed when neither resolves
+// one.
 function poTerritory(p) {
-  const admin = matchAdminByName(p.admin_name);
+  const admin = activeAdminMatch(p.admin_name);
   if (admin && admin.home_location_code) {
     const loc = findLocation(admin.home_location_code);
     if (loc && loc.territory) return loc.territory;
@@ -5667,6 +5679,7 @@ function presentPoRow(p) {
     objectCode: p.object_code,
     subsidiary: p.subsidiary,
     adminName: p.admin_name,
+    adminMatched: Boolean(activeAdminMatch(p.admin_name)),
     urgent: Boolean(p.urgent),
     urgentNotes: p.urgent_notes,
     lifecycleStatus: p.lifecycle_status,
@@ -5702,6 +5715,19 @@ function listPos(filters = {}) {
   }
   if (filters.regionUnassigned) {
     clauses.push("region IS NULL");
+  }
+  // "Admin on the PO file isn't a real account yet" -- the same name match
+  // activeAdminMatch does, just as a SQL subquery so it can filter at the
+  // list level. Surfaces exactly who still needs to be added to the Roster
+  // for poTerritory to pick them up.
+  if (filters.adminUnmatched) {
+    clauses.push(
+      `(admin_name IS NOT NULL AND TRIM(admin_name) != '' AND NOT EXISTS (
+        SELECT 1 FROM technicians t
+        WHERE t.role = 'admin' AND t.employment_status = 'active'
+        AND LOWER(TRIM(t.name)) = LOWER(TRIM(pos.admin_name))
+      ))`
+    );
   }
   // "Cut with WOM coding but no WOM # listed": the real PO Request Tracking
   // export carries E1 WOM Job # and WOM Number as two separate columns --

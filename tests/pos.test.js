@@ -610,5 +610,36 @@ test("PO Tracker: a PO's territory comes from its admin, falling back to its own
     assert.equal(res.body.territory, "West");
   });
 
+  await t.test("a terminated admin's name no longer drives territory -- falls back to the PO's own location", async () => {
+    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN3", name: "Gone Fromhere", pin: "1234" } });
+    await server.call("PATCH", "/api/admin/admins/TERRADMIN3/basic-info", { userId: "ADMIN", body: { homeLocationCode: "TERRTEST-EAST" } });
+    await server.call("PATCH", "/api/admin/admins/TERRADMIN3/employment-status", { userId: "ADMIN", body: { status: "terminated" } });
+
+    const poId = insertPo({ composite: "terr-6", poNumber: "PO92006", adminName: "Gone Fromhere", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "West");
+    assert.equal(res.body.adminMatched, false);
+  });
+
+  await t.test("adminMatched is true only for a name matching a currently-active admin", async () => {
+    const matched = insertPo({ composite: "terr-7", poNumber: "PO92007", adminName: "Pat Eastward", locationCode: "TERRTEST-WEST" });
+    const unmatched = insertPo({ composite: "terr-8", poNumber: "PO92008", adminName: "Nobody Real", locationCode: "TERRTEST-WEST" });
+    const matchedRes = await server.call("GET", `/api/admin/pos/${matched}`, { userId: "ADMIN" });
+    const unmatchedRes = await server.call("GET", `/api/admin/pos/${unmatched}`, { userId: "ADMIN" });
+    assert.equal(matchedRes.body.adminMatched, true);
+    assert.equal(unmatchedRes.body.adminMatched, false);
+  });
+
+  await t.test("adminUnmatched filter lists POs whose admin name isn't a currently-active admin, including terminated ones", async () => {
+    const res = await server.call("GET", "/api/admin/pos?adminUnmatched=true", { userId: "ADMIN" });
+    const composites = res.body.map((p) => p.id);
+    const unmatchedRow = await server.call("GET", `/api/admin/pos`, { userId: "ADMIN" });
+    const byComposite = (name) => unmatchedRow.body.find((p) => p.adminName === name);
+
+    assert.ok(composites.includes(byComposite("Gone Fromhere").id), "terminated admin's PO should appear");
+    assert.ok(composites.includes(byComposite("Nobody Real").id), "unknown admin name's PO should appear");
+    assert.ok(!composites.includes(byComposite("Pat Eastward").id), "active matched admin's PO should not appear");
+  });
+
   raw.close();
 });

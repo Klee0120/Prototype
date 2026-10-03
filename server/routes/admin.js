@@ -733,11 +733,14 @@ router.get("/admins", (req, res) => {
 });
 
 router.post("/admins", (req, res) => {
-  const { id, name, pin } = req.body || {};
+  const { id, name, pin, homeLocationCode } = req.body || {};
   if (!id || !name || !pin) return res.status(400).json({ error: "id, name, and pin are required" });
   if (db.findTechnician(id)) return res.status(409).json({ error: "That ID is already in use" });
+  if (homeLocationCode && !db.findLocation(homeLocationCode)) {
+    return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });
+  }
 
-  const admin = db.createAdmin({ id, name, pin });
+  const admin = db.createAdmin({ id, name, pin, homeLocationCode });
   db.addAudit(req.user.id, "ADMIN_CREATED", `${req.user.name} added admin account ${admin.name} (${admin.id})`);
   res.status(201).json(presentAdmin(admin));
 });

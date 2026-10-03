@@ -729,6 +729,28 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.ok(list.body.some((a) => a.id === "ADMIN2"));
   });
 
+  await t.test("admin can set a home location when creating a new admin account", async () => {
+    const create = await server.call("POST", "/api/admin/admins", {
+      userId: "ADMIN",
+      body: { id: "ADMIN3", name: "Casey Rivers", pin: "5566", homeLocationCode: "PRINCETON" },
+    });
+    assert.equal(create.status, 201);
+    assert.equal(create.body.homeLocationCode, "PRINCETON");
+
+    const list = await server.call("GET", "/api/admin/admins", { userId: "ADMIN" });
+    const admin3 = list.body.find((a) => a.id === "ADMIN3");
+    assert.equal(admin3.homeLocationCode, "PRINCETON", "it should show up in the admins list too, not just the create response");
+  });
+
+  await t.test("creating an admin account rejects an unknown home location", async () => {
+    const res = await server.call("POST", "/api/admin/admins", {
+      userId: "ADMIN",
+      body: { id: "ADMIN4", name: "Someone Else", pin: "7788", homeLocationCode: "NOWHERE" },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(!(await server.call("GET", "/api/admin/admins", { userId: "ADMIN" })).body.some((a) => a.id === "ADMIN4"));
+  });
+
   await t.test("cannot create an admin account with an ID already in use", async () => {
     const res = await server.call("POST", "/api/admin/admins", {
       userId: "ADMIN",

@@ -16,6 +16,14 @@ function formatDate(iso) {
   return new Date(`${iso}T00:00:00`).toLocaleDateString();
 }
 
+// Unlike dateRequested (a plain YYYY-MM-DD from the sheet), lastSeenAt is a
+// full ISO timestamp written by the server at import/sync time -- appending
+// "T00:00:00" to that (like formatDate does) breaks Date parsing.
+function formatDateTime(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString();
+}
+
 const PO_DOC_CATEGORIES = [
   { value: "po_doc", label: "PO Document" },
   { value: "document", label: "Document" },
@@ -30,7 +38,7 @@ const PO_DOC_CATEGORIES = [
 export async function renderPos(container, { openPoId } = {}) {
   let subTab = "active"; // "active" | "needs_organization"
   let detailId = openPoId || null;
-  const filters = { search: "", locationCode: "", vendorUnmatched: false, regionUnassigned: false, womLinkMissing: false };
+  const filters = { search: "", locationCode: "", vendorUnmatched: false, regionUnassigned: false, adminUnmatched: false, womLinkMissing: false };
   const selectedIds = new Set();
   let listCache = null;
   let locationsCache = null;
@@ -49,6 +57,7 @@ export async function renderPos(container, { openPoId } = {}) {
             ...(filters.locationCode ? { locationCode: filters.locationCode } : {}),
             ...(filters.vendorUnmatched ? { vendorUnmatched: "true" } : {}),
             ...(filters.regionUnassigned ? { regionUnassigned: "true" } : {}),
+            ...(filters.adminUnmatched ? { adminUnmatched: "true" } : {}),
             ...(filters.womLinkMissing ? { womLinkMissing: "true" } : {}),
           })}`
         ),
@@ -107,6 +116,7 @@ export async function renderPos(container, { openPoId } = {}) {
         </select>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-vendor-unmatched" ${filters.vendorUnmatched ? "checked" : ""} /> Unmatched vendor</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-region-unassigned" ${filters.regionUnassigned ? "checked" : ""} /> Unassigned region</label>
+        <label class="po-filter-checkbox"><input type="checkbox" class="po-admin-unmatched" ${filters.adminUnmatched ? "checked" : ""} /> Unmatched admin</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-wom-link-missing" ${filters.womLinkMissing ? "checked" : ""} /> WOM coding, no WOM #</label>
       </div>
       <p class="po-count"></p>
@@ -143,6 +153,10 @@ export async function renderPos(container, { openPoId } = {}) {
     });
     container.querySelector(".po-region-unassigned").addEventListener("change", (e) => {
       filters.regionUnassigned = e.target.checked;
+      draw();
+    });
+    container.querySelector(".po-admin-unmatched").addEventListener("change", (e) => {
+      filters.adminUnmatched = e.target.checked;
       draw();
     });
     container.querySelector(".po-wom-link-missing").addEventListener("change", (e) => {
@@ -204,6 +218,7 @@ export async function renderPos(container, { openPoId } = {}) {
             <th>Location</th>
             <th>Region</th>
             <th>Vendor</th>
+            <th>Admin</th>
             <th>Amount</th>
             <th>Status</th>
             <th>Last Synced</th>
@@ -225,9 +240,13 @@ export async function renderPos(container, { openPoId } = {}) {
                 ${p.vendorLinkedName ? escapeHtml(p.vendorLinkedName) : escapeHtml(p.vendorName || "—")}
                 <span class="badge ${p.vendorLinkStatus === "matched" ? "badge-approved" : "badge-draft"}">${p.vendorLinkStatus === "matched" ? "Matched" : "Needs matching"}</span>
               </td>
+              <td>
+                ${escapeHtml(p.adminName || "—")}
+                ${p.adminName ? `<span class="badge ${p.adminMatched ? "badge-approved" : "badge-draft"}">${p.adminMatched ? "Matched" : "Not in Roster"}</span>` : ""}
+              </td>
               <td>${formatMoney(p.poAmount)}</td>
               <td>${escapeHtml(p.status || "—")}</td>
-              <td>${p.lastSeenAt ? formatDate(p.lastSeenAt) : "—"}</td>
+              <td>${p.lastSeenAt ? formatDateTime(p.lastSeenAt) : "—"}</td>
             </tr>`
             )
             .join("")}
@@ -524,7 +543,7 @@ export async function renderPos(container, { openPoId } = {}) {
           <tr><th>Date Requested</th><td>${formatDate(po.dateRequested)}</td><th>Requestor</th><td>${escapeHtml(po.requestor || "—")}</td></tr>
           <tr><th>PO Amount</th><td>${formatMoney(po.poAmount)}</td><th>Change Order</th><td>${escapeHtml(po.changeOrder || "—")}</td></tr>
           <tr><th>Status</th><td>${escapeHtml(po.status || "—")}</td><th>Admin</th><td>${escapeHtml(po.adminName || "—")}</td></tr>
-          <tr><th>Last Synced</th><td>${po.lastSeenAt ? formatDate(po.lastSeenAt) : "—"}</td><th></th><td></td></tr>
+          <tr><th>Last Synced</th><td>${po.lastSeenAt ? formatDateTime(po.lastSeenAt) : "—"}</td><th></th><td></td></tr>
           <tr><th>PPS Job #</th><td>${escapeHtml(po.ppsJobNumber || "—")}</td><th>E1 WOM Job #</th><td>${escapeHtml(po.e1WomJobNumber || "—")}</td></tr>
           <tr><th>WOM Number</th><td>${escapeHtml(po.womNumber || "—")}</td><th>Asset #</th><td>${escapeHtml(po.assetNumber || "—")}</td></tr>
           <tr><th>Maximo WO#</th><td>${escapeHtml(po.maximoWo || "—")}</td><th>Object Code</th><td>${escapeHtml(po.objectCode || "—")}</td></tr>
