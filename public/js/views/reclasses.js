@@ -18,6 +18,7 @@ const STATUS_BADGE_CLASS = {
   draft: "draft",
   submitted: "submitted",
   confirmed_posted: "approved",
+  dismissed: "rejected",
 };
 
 // GL Reclasses -- modeled on Krista's real reclass submission sheet (see
@@ -596,7 +597,7 @@ export async function renderReclasses(container, options = {}) {
       ${womSides
         .map((side) =>
           side.links.length === 0
-            ? `<p class="empty-note">${side.label} WOM ${escapeHtml(side.womNumber)}: no PO on file.</p>`
+            ? `<p class="empty-note">${side.label} WOM ${escapeHtml(side.womNumber)}: no PO with GL activity on file yet.</p>`
             : side.links
                 .map(
                   (po) => `

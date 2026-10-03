@@ -134,4 +134,31 @@ test("Reclasses tab: location/month filtering and the Midwest total", async (t) 
     assert.ok(res.body.fiscalPeriods.length >= 24, "expected both FY25 and FY26's 12 periods each");
     assert.ok(res.body.fiscalPeriods.some((p) => p.periodNumber === 2 && p.fiscalYear === 26 && p.monthName === "February"));
   });
+
+  // A shared/home WOM can carry dozens of POs that have nothing to do with
+  // one specific reclass -- most never touched by GL at all. Dumping every
+  // one of them into the reclass detail's "Linked Toyota PO" panel buried
+  // the PO that actually mattered under noise (Krista: "all this should not
+  // be on reclass flag"). getPoGlLinksByWom now only returns POs that
+  // actually have GL activity posted against them.
+  await t.test("getPoGlLinksByWom drops POs with no GL activity instead of listing every PO on the WOM", async () => {
+    const withGlPoId = insertPo({ composite: "gl-1", poNumber: "PO90001", womNumber: "WOM-SHARED-1", region: "Midwest", adminName: "Pat Admin" });
+    insertPo({ composite: "nogl-1", poNumber: "PO90002", womNumber: "WOM-SHARED-1", region: "Midwest", adminName: "Pat Admin" });
+    insertPo({ composite: "nogl-2", poNumber: "PO90003", womNumber: "WOM-SHARED-1", region: "Midwest", adminName: "Pat Admin" });
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (period_number, fiscal_year, gl_date, amount, matched_po_id, created_at)
+         VALUES (2, 26, '2026-02-01', 500, ?, ?)`
+      )
+      .run(withGlPoId, now);
+
+    const links = db.getPoGlLinksByWom("WOM-SHARED-1");
+    assert.equal(links.length, 1, "only the PO with an actual GL line should show up");
+    assert.equal(links[0].poNumber, "PO90001");
+    assert.equal(links[0].glLineCount, 1);
+  });
+
+  await t.test("getPoGlLinksByWom returns nothing for a WOM with no POs at all", () => {
+    assert.deepEqual(db.getPoGlLinksByWom("WOM-DOES-NOT-EXIST"), []);
+  });
 });

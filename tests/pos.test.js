@@ -128,6 +128,30 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.equal(second.body.flaggedCount, 1, "flagging again after the prior one is resolved should create a new entry");
   });
 
+  // The unflag: a reclass someone looked at and decided isn't actually
+  // needed. Keeps the row (audit trail intact) instead of deleting it, but
+  // stops counting as an open flag -- same treatment as confirmed_posted.
+  await t.test("dismissing a flagged item clears the open flag and frees the PO to be flagged again", async () => {
+    const poId = insertPo({ composite: "flag-4", poNumber: "PO60004", e1WomJobNumber: "100110066003", womNumber: null, lifecycleStatus: "active" });
+    const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    const itemId = first.body.items[0].id;
+
+    const dismissRes = await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "dismissed" } });
+    assert.equal(dismissRes.status, 200);
+    assert.equal(dismissRes.body.status, "dismissed");
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, false, "a dismissed flag should no longer count as open");
+
+    const second = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(second.body.flaggedCount, 1, "flagging again after dismissal should create a new entry");
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    const dismissedItem = itemsRes.body.find((i) => i.id === itemId);
+    assert.ok(dismissedItem, "the dismissed item should still exist, not be deleted");
+    assert.equal(dismissedItem.status, "dismissed");
+  });
+
   // A reclass getting confirmed posted means whatever it corrected also
   // needs to be reflected in Smartsheet -- a separate manual step this app
   // can't verify, so it tasks the PO's own Admin column (matched to a real

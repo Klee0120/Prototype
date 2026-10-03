@@ -2025,13 +2025,19 @@ function setWomCostReview(code, { reviewStatus, reviewReason, note }, actorId) {
 
 // ---- GL Reclasses ----
 
-const RECLASS_STATUSES = ["flagged", "reviewed", "draft", "submitted", "confirmed_posted"];
+// "dismissed" is the unflag: a reclass someone looked at and decided
+// doesn't actually need one, after all. Keeps the row (and its audit trail)
+// rather than deleting it -- see attachOpenReclassFlags/flagPosForReclass,
+// both of which already treat it the same as confirmed_posted for "is this
+// still an open flag" purposes.
+const RECLASS_STATUSES = ["flagged", "reviewed", "draft", "submitted", "confirmed_posted", "dismissed"];
 const RECLASS_STATUS_LABELS = {
   flagged: "Flagged",
   reviewed: "Reviewed",
   draft: "Draft",
   submitted: "Submitted",
   confirmed_posted: "Confirmed Posted",
+  dismissed: "Dismissed (not needed)",
 };
 // Matches the real sheet's own category vocabulary exactly (see
 // parseReclassWorkbook in routes/reclasses.js) rather than inventing a
@@ -2401,7 +2407,7 @@ function flagPosForReclass(poIds, createdBy) {
       continue;
     }
     const alreadyFlagged = db
-      .prepare("SELECT 1 FROM reclass_items WHERE related_po_id = ? AND status != 'confirmed_posted' LIMIT 1")
+      .prepare("SELECT 1 FROM reclass_items WHERE related_po_id = ? AND status NOT IN ('confirmed_posted', 'dismissed') LIMIT 1")
       .get(po.id);
     if (alreadyFlagged) {
       skippedCount++;
@@ -5524,13 +5530,17 @@ function listPos(filters = {}) {
   return attachOpenReclassFlags(rows);
 }
 
-// Which of these POs already has an open (not yet confirmed-posted) reclass
-// item flagged against it -- a single bulk lookup rather than one query per
-// row, since the Budget PO Tracker's list can run to a few hundred rows.
+// Which of these POs already has an open (not yet confirmed-posted or
+// dismissed) reclass item flagged against it -- a single bulk lookup rather
+// than one query per row, since the Budget PO Tracker's list can run to a
+// few hundred rows.
 function attachOpenReclassFlags(poRows) {
   if (poRows.length === 0) return poRows;
   const flaggedIds = new Set(
-    db.prepare("SELECT DISTINCT related_po_id FROM reclass_items WHERE related_po_id IS NOT NULL AND status != 'confirmed_posted'").all().map((r) => r.related_po_id)
+    db
+      .prepare("SELECT DISTINCT related_po_id FROM reclass_items WHERE related_po_id IS NOT NULL AND status NOT IN ('confirmed_posted', 'dismissed')")
+      .all()
+      .map((r) => r.related_po_id)
   );
   return poRows.map((p) => ({ ...p, hasOpenReclassFlag: flaggedIds.has(p.id) }));
 }
@@ -6204,27 +6214,29 @@ function getPoGlLinksByWom(womNumber) {
   const pos = db
     .prepare("SELECT id, po_number AS poNumber, po_amount AS poAmount, status AS poStatus, object_code AS objectCode, subsidiary AS subsidiary FROM pos WHERE wom_number = ?")
     .all(womNumber);
-  return pos.map((p) => {
-    const lines = db
-      .prepare(
-        `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, document_type AS documentType,
-                document_number AS documentNumber, object_account AS objectAccount, subsidiary, amount,
-                name_alpha AS nameAlpha, supplier_invoice_number AS supplierInvoiceNumber
-         FROM gl_entries WHERE matched_po_id = ? ORDER BY gl_date`
-      )
-      .all(p.id);
-    return {
-      poId: p.id,
-      poNumber: p.poNumber,
-      poAmount: p.poAmount,
-      poStatus: p.poStatus,
-      objectCode: p.objectCode,
-      subsidiary: p.subsidiary,
-      glLineCount: lines.length,
-      actualPaid: lines.reduce((sum, l) => sum + (l.amount || 0), 0),
-      lines,
-    };
-  });
+  return pos
+    .map((p) => {
+      const lines = db
+        .prepare(
+          `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, document_type AS documentType,
+                  document_number AS documentNumber, object_account AS objectAccount, subsidiary, amount,
+                  name_alpha AS nameAlpha, supplier_invoice_number AS supplierInvoiceNumber
+           FROM gl_entries WHERE matched_po_id = ? ORDER BY gl_date`
+        )
+        .all(p.id);
+      return {
+        poId: p.id,
+        poNumber: p.poNumber,
+        poAmount: p.poAmount,
+        poStatus: p.poStatus,
+        objectCode: p.objectCode,
+        subsidiary: p.subsidiary,
+        glLineCount: lines.length,
+        actualPaid: lines.reduce((sum, l) => sum + (l.amount || 0), 0),
+        lines,
+      };
+    })
+    .filter((p) => p.glLineCount > 0); // a PO with no GL activity at all can't be where a reclass posting shows up -- and a shared/home WOM can carry dozens of unrelated POs, most never touched by GL, which otherwise buries the one PO that matters under noise.
 }
 
 // Krista confirmed against a real GL export that a posted reclass names
