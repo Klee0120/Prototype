@@ -4958,4 +4958,24 @@ button.vendor-preferred-star:hover {
   .attachments-table td {
     white-space: nowrap;
   }
+
+  /* The Schedule tab's month grid (.schedule-calendar-grid) needs a real
+     7-column week row to stay legible -- same reasoning as the tables
+     above, a squeezed version is the actual problem, not the fix -- so it
+     keeps its own min-width:900px and instead scrolls inside this
+     otherwise-unstyled wrapper div, same wrap-and-scroll shape
+     .roster-table-wrap already uses for the Roster table. */
+  #schedule-calendar-host {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* .week-nav packs 5-6 controls (prev/next, month+year pickers, a site
+     filter, "+ Schedule a WOM") into one row with justify-content:
+     space-between -- fine at desktop widths, but there's no room for all
+     of them on a phone without wrapping. Shared with techWeek.js's and
+     adminReview.js's own week-nav bars, so this helps those too. */
+  .week-nav {
+    flex-wrap: wrap;
+  }
 }
