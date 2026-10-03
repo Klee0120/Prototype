@@ -450,3 +450,101 @@ test("Task Manager: PO/GL coding drift -> update Smartsheet coding task", async 
 
   raw.close();
 });
+
+// Replaces the old bare "assign a region" shortcut: a PO with no location
+// match should get a real Location tagged with its own E&F job #, not a
+// region typed directly onto the PO record -- see db.js's tagLocationForPo.
+test("PO Tracker: tag a location with a PO's E&F job # (replaces the old region dropdown)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, efJobNumber, vendorId }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, ef_job_number, vendor_id,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, efJobNumber, vendorId || null, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await t.test("tagging an existing location resolves this PO and every other PO sharing the job #", async () => {
+    const locRes = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "TAGTEST1", name: "Tag Test Site", territory: "Midwest" },
+    });
+    assert.equal(locRes.status, 201);
+
+    const poId1 = insertPo({ composite: "tag-1a", poNumber: "PO91001", efJobNumber: "900000001" });
+    const poId2 = insertPo({ composite: "tag-1b", poNumber: "PO91002", efJobNumber: "900000001" });
+
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId1}/location-tag`, {
+      userId: "ADMIN",
+      body: { locationCode: "TAGTEST1" },
+    });
+    assert.equal(tagRes.status, 200, JSON.stringify(tagRes.body));
+    assert.equal(tagRes.body.locationCode, "TAGTEST1");
+    assert.equal(tagRes.body.region, "Midwest");
+
+    const po2 = await server.call("GET", `/api/admin/pos/${poId2}`, { userId: "ADMIN" });
+    assert.equal(po2.body.locationCode, "TAGTEST1", "a second PO sharing the same job # should resolve too, without being tagged itself");
+  });
+
+  await t.test("tagging an existing location with a matched vendor and real PO # auto-activates it", async () => {
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Tag Test Vendor" } });
+    const poId = insertPo({ composite: "tag-2", poNumber: "91010", efJobNumber: "900000002", vendorId: vendorRes.body.id });
+    await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TAGTEST2", name: "Tag Test Site 2" } });
+
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST2" } });
+    assert.equal(tagRes.body.lifecycleStatus, "active", "PO #, location, and vendor all now matched -- should auto-activate");
+  });
+
+  await t.test("creating a new location inline tags and resolves in one step", async () => {
+    const poId = insertPo({ composite: "tag-3", poNumber: "PO91020", efJobNumber: "900000003" });
+
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, {
+      userId: "ADMIN",
+      body: { newLocation: { code: "TAGTEST3", name: "Brand New Site", territory: "Southeast" } },
+    });
+    assert.equal(tagRes.status, 200, JSON.stringify(tagRes.body));
+    assert.equal(tagRes.body.locationCode, "TAGTEST3");
+    assert.equal(tagRes.body.region, "Southeast");
+
+    const locRes = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const created = locRes.body.find((l) => l.code === "TAGTEST3");
+    assert.ok(created);
+    assert.equal(created.efJobNumber, "900000003");
+  });
+
+  await t.test("a PO with no E&F job # on file can't be tagged", async () => {
+    const poId = insertPo({ composite: "tag-4", poNumber: "PO91030", efJobNumber: null });
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST1" } });
+    assert.equal(tagRes.status, 400);
+    assert.match(tagRes.body.error, /no E&F Contract Job #/);
+  });
+
+  await t.test("tagging a location that's already tied to a different job # is rejected", async () => {
+    await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "TAGTEST5", name: "Already Tagged Site", efJobNumber: "900000005" },
+    });
+    const poId = insertPo({ composite: "tag-5", poNumber: "PO91040", efJobNumber: "900000099" });
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST5" } });
+    assert.equal(tagRes.status, 400);
+    assert.match(tagRes.body.error, /already tagged/);
+  });
+
+  await t.test("the old bare region routes are gone", async () => {
+    const poId = insertPo({ composite: "tag-6", poNumber: "PO91050", efJobNumber: "900000006" });
+    const res = await server.call("PATCH", `/api/admin/pos/${poId}/region`, { userId: "ADMIN", body: { region: "Midwest" } });
+    assert.equal(res.status, 404);
+    const bulkRes = await server.call("POST", "/api/admin/pos/bulk/assign-region", { userId: "ADMIN", body: { ids: [poId], region: "Midwest" } });
+    assert.equal(bulkRes.status, 404);
+  });
+
+  raw.close();
+});

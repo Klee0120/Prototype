@@ -5904,22 +5904,67 @@ function clearPoVendorMatch(id) {
   return findPo(id);
 }
 
-function assignPoRegion(id, region) {
-  db.prepare("UPDATE pos SET region = ?, region_confirmed = 1, updated_at = ? WHERE id = ?").run(
-    region || null,
-    new Date().toISOString(),
-    id
-  );
-  maybeAutoActivatePo(id);
-  return findPo(id);
+// Re-resolves every PO carrying this E&F job # against whatever location is
+// now tagged with it -- not just the one PO an admin was looking at, since
+// the same job # commonly shows up on several PO lines. Mirrors the
+// matching runPoImport already does at import time, just run on demand the
+// moment a location gets tagged instead of waiting for the next import.
+function resolvePosForJobNumber(jobNumber) {
+  const location = findLocationByEfJobNumber(jobNumber);
+  if (!location) return;
+  const rows = db.prepare("SELECT id FROM pos WHERE ef_job_number = ?").all(jobNumber);
+  const now = new Date().toISOString();
+  for (const row of rows) {
+    db.prepare("UPDATE pos SET location_code = ?, region = ?, region_confirmed = 1, updated_at = ? WHERE id = ?").run(
+      location.code,
+      location.territory || null,
+      now,
+      row.id
+    );
+    maybeAutoActivatePo(row.id);
+  }
+}
+
+// Replaces the old assignPoRegion, which let an admin type a bare region
+// directly onto one PO -- that never touched location_code, so the PO could
+// never actually finish resolving (see isPoFullyResolved), and it did
+// nothing for every other PO sharing the same real-world job site. This
+// tags an actual Location with the PO's own E&F job #, the same field
+// runPoImport already matches locations by, so the fix is permanent and
+// shared across every PO (past and future) carrying that job #.
+function tagLocationForPo(poId, { locationCode, newLocation } = {}) {
+  const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(Number(poId));
+  if (!po) throw new Error("PO not found");
+  if (!po.ef_job_number) throw new Error("This PO has no E&F Contract Job # on file to tag a location with");
+
+  if (newLocation) {
+    if (!newLocation.code || !String(newLocation.code).trim()) throw new Error("A new location needs a code");
+    if (!newLocation.name || !String(newLocation.name).trim()) throw new Error("A new location needs a name");
+    if (findLocation(newLocation.code)) throw new Error(`Location ${newLocation.code} already exists`);
+    createLocation(newLocation.code.trim(), newLocation.name.trim(), po.ef_job_number, null, null, newLocation.territory || "Midwest");
+  } else if (locationCode) {
+    const location = findLocation(locationCode);
+    if (!location) throw new Error("Location not found");
+    if (location.ef_job_number && location.ef_job_number !== po.ef_job_number) {
+      throw new Error(`${location.name} is already tagged with a different job # (${location.ef_job_number})`);
+    }
+    setLocationDetails(location.code, {
+      name: location.name,
+      efJobNumber: po.ef_job_number,
+      region: location.region,
+      womJobNumber: location.wom_job_number,
+      territory: location.territory,
+    });
+  } else {
+    throw new Error("locationCode or newLocation is required");
+  }
+
+  resolvePosForJobNumber(po.ef_job_number);
+  return findPo(poId);
 }
 
 function bulkConfirmPoVendor(ids, vendorId) {
   return ids.map((id) => confirmPoVendor(id, vendorId));
-}
-
-function bulkAssignPoRegion(ids, region) {
-  return ids.map((id) => assignPoRegion(id, region));
 }
 
 // The one explicit switch from Needs Organization to Active -- never a side
@@ -6821,9 +6866,8 @@ module.exports = {
   runPoImport,
   confirmPoVendor,
   clearPoVendorMatch,
-  assignPoRegion,
+  tagLocationForPo,
   bulkConfirmPoVendor,
-  bulkAssignPoRegion,
   movePoToActive,
   bulkMovePoToActive,
   listPoTasks,

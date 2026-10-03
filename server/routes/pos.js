@@ -222,10 +222,24 @@ router.delete("/:id/vendor", (req, res) => {
   res.json(db.clearPoVendorMatch(po.id));
 });
 
-router.patch("/:id/region", (req, res) => {
+// Tags a Location with this PO's own E&F job # -- either an existing
+// location (locationCode) or a brand new one (newLocation: {code, name,
+// territory}) -- then re-resolves every PO sharing that job #. Replaces the
+// old bare "assign a region" shortcut, which never actually matched the PO
+// to a real location.
+router.patch("/:id/location-tag", (req, res) => {
   const po = db.findPo(req.params.id);
   if (!po) return res.status(404).json({ error: "PO not found" });
-  res.json(db.assignPoRegion(po.id, req.body ? req.body.region : null));
+  try {
+    const updated = db.tagLocationForPo(po.id, {
+      locationCode: req.body ? req.body.locationCode : null,
+      newLocation: req.body ? req.body.newLocation : null,
+    });
+    db.addAudit(req.user.id, "PO_LOCATION_TAGGED", `${req.user.name} tagged a location for PO record #${po.id} (job # ${po.efJobNumber || "n/a"})`);
+    res.json(updated);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 router.post("/bulk/confirm-vendor", (req, res) => {
@@ -239,14 +253,6 @@ router.post("/bulk/confirm-vendor", (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
-});
-
-router.post("/bulk/assign-region", (req, res) => {
-  const { ids, region } = req.body || {};
-  if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "ids is required" });
-  const updated = db.bulkAssignPoRegion(ids.map(Number), region);
-  db.addAudit(req.user.id, "PO_REGION_ASSIGNED", `${req.user.name} assigned a region to ${ids.length} PO record(s)`);
-  res.json(updated);
 });
 
 router.post("/:id/activate", (req, res) => {

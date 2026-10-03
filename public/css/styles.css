@@ -2040,7 +2040,7 @@ h1, h2, h3, h4 {
   align-items: start;
 }
 
-.wom-overview-right-col {
+.wom-overview-col {
   display: flex;
   flex-direction: column;
   gap: 16px;

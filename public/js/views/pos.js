@@ -272,22 +272,11 @@ export async function renderPos(container) {
     }
     toolbarEl.innerHTML = `
       <span class="task-bulk-count">${selectedIds.size} selected</span>
-      <select class="po-bulk-region">
-        <option value="">Assign region...</option>
-        ${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}
-      </select>
-      <button class="btn btn-secondary po-bulk-region-apply" type="button">Apply</button>
       <button class="btn btn-secondary po-bulk-confirm-vendor" type="button">Confirm vendor...</button>
       ${subTab === "needs_organization" ? `<button class="btn btn-secondary po-bulk-activate" type="button">Move to Active POs</button>` : ""}
       <button class="btn btn-secondary po-bulk-flag-reclass" type="button">Flag for reclass</button>
       <button class="btn btn-link po-bulk-clear" type="button">Clear selection</button>
     `;
-    toolbarEl.querySelector(".po-bulk-region-apply").addEventListener("click", async () => {
-      const region = toolbarEl.querySelector(".po-bulk-region").value;
-      if (!region) return;
-      await api.post("/api/admin/pos/bulk/assign-region", { ids: [...selectedIds], region });
-      await draw();
-    });
     toolbarEl.querySelector(".po-bulk-confirm-vendor").addEventListener("click", () => {
       openVendorPickerModal(async (vendorId) => {
         await api.post("/api/admin/pos/bulk/confirm-vendor", { ids: [...selectedIds], vendorId });
@@ -356,6 +345,95 @@ export async function renderPos(container) {
     }
     body.querySelector(".po-vendor-picker-search").addEventListener("input", (e) => refresh(e.target.value));
     refresh("");
+  }
+
+  // Tags a real Location with this PO's own E&F job # -- either an existing
+  // location that doesn't have a job # on file yet, or a brand new one --
+  // instead of the old shortcut that let a bare region get typed directly
+  // onto the PO. See db.js's tagLocationForPo/resolvePosForJobNumber.
+  function openTagLocationModal(po, onDone) {
+    const { body, close } = openModal({
+      title: "Tag a location",
+      bodyHtml: `
+        <div class="modal-form">
+          <p class="review-checklist-hint">
+            Job # <strong>${escapeHtml(po.efJobNumber)}</strong> has no location match on file. Pick the location this
+            job site is, or create a new one -- every PO carrying this job # will resolve to it right away.
+          </p>
+          <input type="text" class="po-location-picker-search" placeholder="Search locations" />
+          <div class="review-list po-location-picker-list"></div>
+          <button type="button" class="btn btn-link po-location-new-toggle">+ Create a new location instead</button>
+          <form class="po-location-new-form modal-form" hidden>
+            <div class="add-tech-grid">
+              <input name="code" placeholder="Location code" required />
+              <input name="name" placeholder="Location name" required />
+              <select name="territory">${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}</select>
+            </div>
+            <div class="modal-form-actions">
+              <button type="submit" class="btn btn-primary">Create &amp; tag</button>
+            </div>
+          </form>
+          <span class="save-message"></span>
+        </div>
+      `,
+    });
+    const msg = body.querySelector(".save-message");
+
+    async function tag(payload) {
+      msg.textContent = "";
+      try {
+        await api.patch(`/api/admin/pos/${po.id}/location-tag`, payload);
+        close();
+        await onDone();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    }
+
+    let locations = null;
+    async function refresh(query) {
+      if (!locations) locations = await api.get("/api/locations");
+      const q = (query || "").toLowerCase();
+      const filtered = q ? locations.filter((l) => l.name.toLowerCase().includes(q) || l.code.toLowerCase().includes(q)) : locations;
+      const list = body.querySelector(".po-location-picker-list");
+      list.innerHTML = filtered
+        .slice(0, 50)
+        .map(
+          (l) => `<div class="review-row po-location-picker-row" data-code="${escapeHtml(l.code)}">
+            <span class="review-row-name">${escapeHtml(l.name)}</span>
+            <span class="wom-code">${l.efJobNumber ? `Job # ${escapeHtml(l.efJobNumber)}` : "No job # yet"}</span>
+          </div>`
+        )
+        .join("");
+      list.querySelectorAll(".po-location-picker-row").forEach((row) => {
+        row.addEventListener("click", () => tag({ locationCode: row.dataset.code }));
+      });
+    }
+    body.querySelector(".po-location-picker-search").addEventListener("input", (e) => refresh(e.target.value));
+    refresh("");
+
+    const newForm = body.querySelector(".po-location-new-form");
+    const pickerSearch = body.querySelector(".po-location-picker-search");
+    const pickerList = body.querySelector(".po-location-picker-list");
+    body.querySelector(".po-location-new-toggle").addEventListener("click", (e) => {
+      const showingNewForm = newForm.hidden;
+      newForm.hidden = !showingNewForm;
+      e.target.textContent = showingNewForm ? "Pick an existing location instead" : "+ Create a new location instead";
+      // .review-list sets its own display: flex, which beats the [hidden]
+      // UA rule on specificity order -- toggle via inline style instead.
+      pickerSearch.style.display = showingNewForm ? "none" : "";
+      pickerList.style.display = showingNewForm ? "none" : "";
+    });
+    newForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      tag({
+        newLocation: {
+          code: newForm.code.value.trim(),
+          name: newForm.name.value.trim(),
+          territory: newForm.territory.value,
+        },
+      });
+    });
   }
 
   async function runImportPreview(file) {
@@ -443,14 +521,20 @@ export async function renderPos(container) {
       </table>
 
       <h4>Location &amp; Region</h4>
-      <p>E&amp;F Contract Job #: ${escapeHtml(po.efJobNumber || "—")} — ${escapeHtml(po.locationName || "No location match on file")}</p>
-      <div class="po-region-edit">
-        <select class="po-region-select">
-          <option value="">Unassigned</option>
-          ${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}" ${po.region === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
-        </select>
-        <button type="button" class="btn btn-secondary po-region-save">Save</button>
-      </div>
+      <p>E&amp;F Contract Job #: ${escapeHtml(po.efJobNumber || "—")} — ${
+        po.locationCode
+          ? `<strong>${escapeHtml(po.locationName || po.locationCode)}</strong> (${escapeHtml(po.region || "no territory on file")})`
+          : `No location match on file`
+      }</p>
+      ${
+        po.locationCode
+          ? `<p class="review-checklist-hint">Matched by job # against the Locations list. To change it, retag the location on the Locations page.</p>`
+          : po.efJobNumber
+            ? `<div class="po-location-tag">
+                <button type="button" class="btn btn-secondary po-tag-location-btn">Tag a location with this job #</button>
+              </div>`
+            : `<p class="review-checklist-hint">This PO has no E&amp;F Contract Job # on file, so it can't be matched to a location.</p>`
+      }
 
       <h4>Vendor</h4>
       <p>
@@ -491,11 +575,14 @@ export async function renderPos(container) {
         await draw();
       });
     }
-    container.querySelector(".po-region-save").addEventListener("click", async () => {
-      const region = container.querySelector(".po-region-select").value;
-      await api.patch(`/api/admin/pos/${po.id}/region`, { region: region || null });
-      await draw();
-    });
+    const tagLocationBtn = container.querySelector(".po-tag-location-btn");
+    if (tagLocationBtn) {
+      tagLocationBtn.addEventListener("click", () => {
+        openTagLocationModal(po, async () => {
+          await draw();
+        });
+      });
+    }
     container.querySelector(".po-vendor-pick-btn").addEventListener("click", () => {
       openVendorPickerModal(async (vendorId) => {
         await api.patch(`/api/admin/pos/${po.id}/vendor`, { vendorId });

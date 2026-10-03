@@ -3894,16 +3894,36 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       ${statCards}
       ${conflictHint}
       <div class="vendor-overview-grid wom-overview-main-grid">
-        <div class="vendor-overview-card">
-          <div class="wom-overview-card-header">
-            <h4>Project information</h4>
-            <span class="wom-overview-card-header-note" title="Fields imported from the Smartsheet tracker.">&#128229; Imported from Smartsheet &#9432;</span>
+        <div class="wom-overview-col">
+          <div class="vendor-overview-card">
+            <div class="wom-overview-card-header">
+              <h4>Project information</h4>
+              <span class="wom-overview-card-header-note" title="Fields imported from the Smartsheet tracker.">&#128229; Imported from Smartsheet &#9432;</span>
+            </div>
+            <dl class="vendor-overview-fields">
+              ${metaItems.map((m) => `<div><dt>${m.label}</dt><dd>${m.value}</dd></div>`).join("")}
+            </dl>
           </div>
-          <dl class="vendor-overview-fields">
-            ${metaItems.map((m) => `<div><dt>${m.label}</dt><dd>${m.value}</dd></div>`).join("")}
-          </dl>
+          <div class="vendor-overview-card">
+            <h4>Lifecycle checklist</h4>
+            <div class="wom-lifecycle-checklist">
+              ${w.lifecycleSteps
+                .map((s) => {
+                  const done = Boolean(s.completedAt);
+                  const meta = done ? `${s.completedBy === "sync" ? "auto-completed" : "completed"} ${new Date(s.completedAt).toLocaleString()}` : "";
+                  return `
+                  <div class="wom-lifecycle-step${done ? " wom-lifecycle-step-done" : ""}">
+                    <span class="wom-lifecycle-step-icon">${done ? "✓" : "○"}</span>
+                    <span class="wom-lifecycle-step-label">${escapeHtml(s.label)}</span>
+                    <span class="wom-lifecycle-step-meta">${escapeHtml(meta)}</span>
+                  </div>`;
+                })
+                .join("")}
+            </div>
+            <p class="review-checklist-hint">Manage these steps from the Priorities &rarr; Task Manager card for this WOM.</p>
+          </div>
         </div>
-        <div class="wom-overview-right-col">
+        <div class="wom-overview-col">
           <div class="vendor-overview-card">
             <div class="wom-overview-card-header">
               <h4>Project status</h4>
@@ -3929,24 +3949,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <p class="review-checklist-hint">&#8505;&#65039; Historical checklist data may be incomplete.</p>
           </div>
         </div>
-      </div>
-      <div class="vendor-overview-card">
-        <h4>Lifecycle checklist</h4>
-        <div class="wom-lifecycle-checklist">
-          ${w.lifecycleSteps
-            .map((s) => {
-              const done = Boolean(s.completedAt);
-              const meta = done ? `${s.completedBy === "sync" ? "auto-completed" : "completed"} ${new Date(s.completedAt).toLocaleString()}` : "";
-              return `
-              <div class="wom-lifecycle-step${done ? " wom-lifecycle-step-done" : ""}">
-                <span class="wom-lifecycle-step-icon">${done ? "✓" : "○"}</span>
-                <span class="wom-lifecycle-step-label">${escapeHtml(s.label)}</span>
-                <span class="wom-lifecycle-step-meta">${escapeHtml(meta)}</span>
-              </div>`;
-            })
-            .join("")}
-        </div>
-        <p class="review-checklist-hint">Manage these steps from the Priorities &rarr; Task Manager card for this WOM.</p>
       </div>
     `;
 
