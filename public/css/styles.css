@@ -4948,6 +4948,85 @@ button.vendor-preferred-star:hover {
   display: none;
 }
 
+/* Spend Breakdown -- the donut + legend sit side-by-side with the
+   territory table on desktop, stacking on narrow screens (see the media
+   query below). */
+.spend-breakdown-layout {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+  margin: 16px 0 24px;
+}
+.spend-donut-wrap {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.spend-donut-total-label {
+  font-size: 18px;
+  font-weight: 700;
+  fill: var(--ink, #1a1a1a);
+}
+.spend-donut-total-sublabel {
+  font-size: 11px;
+  fill: #767672;
+}
+.spend-donut-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+.spend-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.spend-legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.spend-legend-label {
+  flex: 1;
+  color: var(--ink, #1a1a1a);
+}
+.spend-legend-value {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.spend-territory-wrap {
+  flex: 1;
+  min-width: 260px;
+}
+.spend-section-heading {
+  margin: 20px 0 8px;
+}
+.spend-bar-cell {
+  width: 140px;
+}
+.spend-bar {
+  display: block;
+  height: 8px;
+  background: #2a78d6;
+  border-radius: 4px;
+}
+.spend-unassigned-note {
+  color: var(--warn, #b8590a);
+}
+.spend-po-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ink, #1a1a1a);
+  cursor: pointer;
+}
+
 /* The sidebar's mobile shape: pinned off-canvas by default and slid in as
    an overlay drawer (never squeezed into a horizontal strip, which just
    traded a readable vertical nav for a cramped, scroll-to-find-your-tab

@@ -1348,6 +1348,31 @@ if (!hasColumn("gl_entries", "subsidiary_mismatch")) {
     backfillStmt.run(subsidiaryMismatch, objectCodeMismatch, line.id);
   }
 }
+// The raw "Location Code" column on a GL line (e.g. "20001805 - TOYOTA/HQ DR
+// PLANO, TX") doesn't line up with any existing job-number scheme this app
+// already matches locations by (ef/wom/pps job numbers all come from
+// Toyota's Chart of Accounts export, a different identifier entirely) --
+// but its own name portion matches a real location's name the same tolerant
+// way matchVendorIdByName already does for the PO tracker's vendor column.
+// Backs the Spend Breakdown view's per-territory split (see
+// getGlSpendBreakdown): a line whose location name doesn't match anything
+// on file just reads "Unassigned" there rather than being guessed at.
+if (!hasColumn("gl_entries", "matched_location_code")) {
+  db.exec("ALTER TABLE gl_entries ADD COLUMN matched_location_code TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_gl_entries_matched_location_code ON gl_entries(matched_location_code)");
+  const locationNameCache = new Map();
+  const resolveLocationCode = (raw) => {
+    if (!raw) return null;
+    if (!locationNameCache.has(raw)) locationNameCache.set(raw, matchLocationCodeByName(extractGlLocationName(raw)));
+    return locationNameCache.get(raw);
+  };
+  const glRows = db.prepare("SELECT id, location_code FROM gl_entries WHERE location_code IS NOT NULL").all();
+  const backfillLocStmt = db.prepare("UPDATE gl_entries SET matched_location_code = ? WHERE id = ?");
+  for (const row of glRows) {
+    const matched = resolveLocationCode(row.location_code);
+    if (matched) backfillLocStmt.run(matched, row.id);
+  }
+}
 
 seedIfEmpty();
 
@@ -5017,6 +5042,16 @@ function findWomBySmartsheetRowId(rowId) {
 // drops a suffix, e.g. "NAPCK" for "NAPCK Georgetown"). Returns null (not a
 // guess) if nothing lines up -- that location likely just doesn't exist
 // here yet.
+// A GL line's raw "Location Code" column is "<jde code> - <facility name>"
+// (e.g. "20001805 - TOYOTA/HQ DR PLANO, TX") -- only the name portion is
+// usable against matchLocationCodeByName below, since the numeric prefix
+// doesn't correspond to anything this app already tracks.
+function extractGlLocationName(raw) {
+  if (!raw) return null;
+  const idx = String(raw).indexOf(" - ");
+  return idx === -1 ? String(raw).trim() : String(raw).slice(idx + 3).trim();
+}
+
 function matchLocationCodeByName(rawName) {
   const clean = rawName != null ? String(rawName).trim() : "";
   if (!clean || clean === "-") return null;
@@ -6832,6 +6867,19 @@ function parseObjectAccountCode(raw) {
   return match ? match[1] : null;
 }
 
+// The chart-of-accounts label a GL line's Object Account already carries
+// after its cost-center infix -- "647200 - Gen B&A~Cell Phone" -> "Cell
+// Phone". This is the category a Spend Breakdown pie slice/legend row is
+// grouped by (see getGlSpendBreakdown): the same category name recurs
+// across every cost center that uses it, so e.g. every "~Cell Phone" line
+// collapses into one "Cell Phone" slice regardless of which department's
+// cost center it posted under.
+function parseObjectAccountCategory(raw) {
+  if (raw == null) return null;
+  const match = String(raw).match(/~\s*(.+)$/);
+  return match ? match[1].trim() : null;
+}
+
 // Krista's real C&W Services Monthly Closing Schedule (CW-Services-CY2026,
 // the actual uploaded file) -- period number lines up exactly with the
 // calendar month (period 7 = July), confirmed directly against that
@@ -6958,15 +7006,26 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
     INSERT INTO gl_entries
       (import_id, period_number, fiscal_year, gl_date, document_type, document_number,
        journal_entry_line_number, business_unit, object_account, object_account_code, subsidiary,
-       amount, batch_number, supplier_invoice_number, invoice_date, location_code, name_alpha, remark,
-       purchase_order, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       amount, batch_number, supplier_invoice_number, invoice_date, location_code, matched_location_code,
+       name_alpha, remark, purchase_order, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const findPoByNumber = db.prepare("SELECT id, subsidiary, object_code FROM pos WHERE po_number = ? LIMIT 1");
   const poCache = new Map();
   const lookupPo = (poNumber) => {
     if (!poCache.has(poNumber)) poCache.set(poNumber, findPoByNumber.get(poNumber) || null);
     return poCache.get(poNumber);
+  };
+  // A handful of distinct facility names repeat across thousands of lines --
+  // cache the by-name match (a full locations scan each time) per unique raw
+  // string instead of re-matching every row.
+  const locationCodeCache = new Map();
+  const lookupLocationCode = (rawLocationCode) => {
+    if (!rawLocationCode) return null;
+    if (!locationCodeCache.has(rawLocationCode)) {
+      locationCodeCache.set(rawLocationCode, matchLocationCodeByName(extractGlLocationName(rawLocationCode)));
+    }
+    return locationCodeCache.get(rawLocationCode);
   };
 
   const importRow = db.prepare(
@@ -7017,6 +7076,7 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       r.supplierInvoiceNumber || null,
       r.invoiceDate || null,
       r.locationCode || null,
+      lookupLocationCode(r.locationCode),
       r.nameAlpha || null,
       r.remark || null,
       poNumber,
@@ -7224,6 +7284,83 @@ function getGlReconciliationSummary() {
     unmatchedTotal: unmatchedRow.total,
     noPoReferenceCount: noPoReferenceRow.cnt,
     noPoReferenceTotal: noPoReferenceRow.total,
+  };
+}
+
+// Scoped by default to GL lines with no Purchase Order reference at all --
+// payroll labor/burden distributions, journal entries, Concur, Pcard,
+// fleet accruals -- the bucket GL Reconciliation's own PO-matching tiles
+// don't break down any further (its other two buckets, matched-to-a-PO and
+// PO-number-not-found, are already fully covered there). This is where
+// things like health-insurance burden and cell-phone charges actually
+// post, since neither goes through AP as a PO-backed vendor invoice.
+// Pass noPoReferenceOnly: false to see every GL line regardless of PO
+// status, for comparison. Grouped by the chart-of-accounts category
+// already embedded in each line's own Object Account text (see
+// parseObjectAccountCategory) -- a line with no parseable category
+// (blank/malformed Object Account) falls into "Unknown / Uncategorized"
+// rather than being dropped, so nothing silently disappears from the
+// totals. territory, when given, scopes to lines whose Location Code
+// matched a location in that territory (see matched_location_code); a line
+// that never matched any location falls under "Unassigned" in the
+// territory breakdown and is included in the category breakdown
+// regardless of the territory filter being unable to place it -- excluded
+// only when a specific territory is requested and it can't be confirmed to
+// belong to it. periodNumber/fiscalYear (both required together to take
+// effect) scope to one imported period -- every period on file is
+// combined by default, which is the real point of this view once several
+// months have been imported.
+function getGlSpendBreakdown({ territory, periodNumber, fiscalYear, noPoReferenceOnly = true } = {}) {
+  const conditions = [];
+  const params = [];
+  if (periodNumber != null && fiscalYear != null) {
+    conditions.push("g.period_number = ? AND g.fiscal_year = ?");
+    params.push(periodNumber, fiscalYear);
+  }
+  if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
+
+  const rows = db
+    .prepare(
+      `SELECT g.object_account, g.amount, g.matched_location_code, l.territory AS territory
+       FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
+       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`
+    )
+    .all(...params);
+
+  const byCategory = new Map();
+  const byTerritory = new Map();
+  let totalAmount = 0;
+  let entryCount = 0;
+  let unassignedLocationCount = 0;
+  for (const r of rows) {
+    const rowTerritory = r.territory || null;
+    if (territory && rowTerritory !== territory) continue;
+
+    entryCount++;
+    const amount = r.amount || 0;
+    totalAmount += amount;
+
+    const category = parseObjectAccountCategory(r.object_account) || "Unknown / Uncategorized";
+    const c = byCategory.get(category) || { category, total: 0, count: 0 };
+    c.total += amount;
+    c.count += 1;
+    byCategory.set(category, c);
+
+    const territoryKey = rowTerritory || "Unassigned";
+    if (!rowTerritory) unassignedLocationCount++;
+    const t = byTerritory.get(territoryKey) || { territory: territoryKey, total: 0, count: 0 };
+    t.total += amount;
+    t.count += 1;
+    byTerritory.set(territoryKey, t);
+  }
+
+  const round = (n) => Math.round(n * 100) / 100;
+  return {
+    totalAmount: round(totalAmount),
+    entryCount,
+    unassignedLocationCount,
+    categories: [...byCategory.values()].map((c) => ({ ...c, total: round(c.total) })).sort((a, b) => b.total - a.total),
+    territories: [...byTerritory.values()].map((t) => ({ ...t, total: round(t.total) })).sort((a, b) => b.total - a.total),
   };
 }
 
@@ -7587,6 +7724,7 @@ module.exports = {
   findReclassPostingMatches,
   getGlReclassActivity,
   getGlReconciliationSummary,
+  getGlSpendBreakdown,
   getReconciledPage,
   getUnmatchedEntriesPage,
   getNoPoReferenceEntriesPage,

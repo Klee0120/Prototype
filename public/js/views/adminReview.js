@@ -12,6 +12,7 @@ import { renderReclasses } from "./reclasses.js";
 import { renderInvoicing } from "./invoicing.js";
 import { renderGlReconciliation } from "./gl.js";
 import { renderPerformance } from "./performance.js";
+import { renderSpendBreakdown } from "./spendBreakdown.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
@@ -77,7 +78,7 @@ const NAV_SECTIONS = [
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup", "schedule"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
-  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "spendbreakdown", "laborreports"] },
   { key: "performance", label: "Performance", tabs: ["performance"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
@@ -93,6 +94,7 @@ const TAB_LABELS = {
   invoicing: "Invoicing",
   reclasses: "Reclasses",
   glreconciliation: "GL Reconciliation",
+  spendbreakdown: "Spend Breakdown",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendor Directory",
@@ -369,6 +371,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       await renderReclasses(content, { openItemId, flagPrefillWom, onOpenWom: openWomProfile });
     }
     else if (activeTab === "glreconciliation") await renderGlReconciliation(content);
+    else if (activeTab === "spendbreakdown") await renderSpendBreakdown(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else if (activeTab === "performance") await renderPerformance(content);
     else await drawAudit(content);

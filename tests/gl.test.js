@@ -179,3 +179,131 @@ test("GL Reconciliation: precomputed mismatch flags + server-side pagination", a
 
   raw.close();
 });
+
+// Spend Breakdown: every imported GL line (not just AP vendor invoices --
+// health insurance posts from payroll, with no PO at all) grouped by its
+// own chart-of-accounts category and, separately, by territory (resolved
+// from the raw Location Code column's facility-name portion against a real
+// location -- see extractGlLocationName/matchLocationCodeByName).
+test("GL Spend Breakdown: category + territory grouping", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+
+  const SPEND_PERIOD = { periodNumber: 9, fiscalYear: 26 };
+
+  await t.test("groups by chart-of-accounts category, with an Unknown bucket for unparseable Object Account", () => {
+    db.importGlEntries(
+      [
+        // PRINCETON's real name ("TLS Princeton") -- matches by name, not code.
+        { glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 100, locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-09-01", objectAccount: "647200 - Gen FM~Cell Phone", amount: 50, locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-09-01", objectAccount: "602210 - Gen B&A~H&W Insurance", amount: 200, locationCode: "20001805 - TLS Princeton" },
+        // No "~" at all -- can't be parsed into a category.
+        { glDate: "2026-09-01", objectAccount: "605200", amount: 75, locationCode: "20001805 - TLS Princeton" },
+        // Location name matches nothing on file.
+        { glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 10, locationCode: "99999999 - Nowhere Facility" },
+      ],
+      SPEND_PERIOD.periodNumber,
+      SPEND_PERIOD.fiscalYear,
+      "ADMIN",
+      "t-spend.xlsx"
+    );
+
+    const res = { body: db.getGlSpendBreakdown(SPEND_PERIOD) };
+    const cellPhone = res.body.categories.find((c) => c.category === "Cell Phone");
+    assert.ok(cellPhone, "expected a Cell Phone category");
+    assert.equal(cellPhone.total, 160, "100 + 50 + 10 across both locations");
+    assert.equal(cellPhone.count, 3);
+
+    const insurance = res.body.categories.find((c) => c.category === "H&W Insurance");
+    assert.equal(insurance.total, 200);
+
+    const unknown = res.body.categories.find((c) => c.category === "Unknown / Uncategorized");
+    assert.ok(unknown, "a line with no '~' in Object Account should fall into Unknown / Uncategorized");
+    assert.equal(unknown.total, 75);
+  });
+
+  await t.test("groups by territory via the Location Code's facility name, with Unassigned for no match", async () => {
+    const res = await server.call("GET", `/api/admin/gl/spend-breakdown?periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}`, {
+      userId: "ADMIN",
+    });
+    assert.equal(res.status, 200);
+    const midwest = res.body.territories.find((t2) => t2.territory === "Midwest");
+    assert.ok(midwest, "TLS Princeton should resolve to the Midwest territory");
+    assert.equal(midwest.total, 100 + 50 + 200 + 75);
+
+    const unassigned = res.body.territories.find((t2) => t2.territory === "Unassigned");
+    assert.ok(unassigned, "the unmatched 'Nowhere Facility' location should fall under Unassigned");
+    assert.equal(unassigned.total, 10);
+    assert.ok(res.body.unassignedLocationCount >= 1);
+  });
+
+  await t.test("a territory filter scopes both the totals and entry count to just that territory", async () => {
+    const res = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?territory=Midwest&periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.territories.length, 1);
+    assert.equal(res.body.territories[0].territory, "Midwest");
+    assert.equal(res.body.totalAmount, 100 + 50 + 200 + 75);
+  });
+
+  await t.test("a technician can't reach the Spend Breakdown route", async () => {
+    const res = await server.call("GET", "/api/admin/gl/spend-breakdown", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("defaults to no-PO-reference lines only, excluding a line with a Purchase Order on it", () => {
+    const PO_PERIOD = { periodNumber: 12, fiscalYear: 26 };
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 300, locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 500, locationCode: "20001805 - TLS Princeton", purchaseOrder: "PO-1234" },
+      ],
+      PO_PERIOD.periodNumber,
+      PO_PERIOD.fiscalYear,
+      "ADMIN",
+      "t-spend-po.xlsx"
+    );
+
+    const scoped = db.getGlSpendBreakdown(PO_PERIOD);
+    const scopedCellPhone = scoped.categories.find((c) => c.category === "Cell Phone");
+    assert.equal(scopedCellPhone.total, 300, "the PO-referenced line should be excluded by default");
+
+    const full = db.getGlSpendBreakdown({ ...PO_PERIOD, noPoReferenceOnly: false });
+    const fullCellPhone = full.categories.find((c) => c.category === "Cell Phone");
+    assert.equal(fullCellPhone.total, 800, "noPoReferenceOnly: false should include every line");
+  });
+
+  await t.test("the route's noPoReferenceOnly query param matches the db-level default and override", async () => {
+    const PO_PERIOD = { periodNumber: 13, fiscalYear: 26 };
+    db.importGlEntries(
+      [
+        { glDate: "2026-11-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-11-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 60, locationCode: "20001805 - TLS Princeton", purchaseOrder: "PO-9999" },
+      ],
+      PO_PERIOD.periodNumber,
+      PO_PERIOD.fiscalYear,
+      "ADMIN",
+      "t-spend-po-route.xlsx"
+    );
+
+    const defaultRes = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?periodNumber=${PO_PERIOD.periodNumber}&fiscalYear=${PO_PERIOD.fiscalYear}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(defaultRes.body.categories.find((c) => c.category === "Cell Phone").total, 40);
+
+    const fullRes = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?periodNumber=${PO_PERIOD.periodNumber}&fiscalYear=${PO_PERIOD.fiscalYear}&noPoReferenceOnly=false`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(fullRes.body.categories.find((c) => c.category === "Cell Phone").total, 100);
+  });
+});

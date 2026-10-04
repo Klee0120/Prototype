@@ -207,4 +207,23 @@ router.get("/reconciliation/no-po-reference", (req, res) => {
   res.json(db.getNoPoReferenceEntriesPage({ page: req.query.page, pageSize: req.query.pageSize }));
 });
 
+// Every imported GL line grouped by its own chart-of-accounts category
+// (phone, health insurance, software license, etc. -- see
+// db.getGlSpendBreakdown) and by territory -- the Spend Breakdown view's
+// pie chart and legend. territory is optional and matches the global
+// topbar territory filter's own values. Scoped by default to GL lines with
+// no PO reference (see db.getGlSpendBreakdown); pass
+// noPoReferenceOnly=false to see every GL line instead.
+router.get("/spend-breakdown", (req, res) => {
+  const { territory, periodNumber, fiscalYear, noPoReferenceOnly } = req.query || {};
+  res.json(
+    db.getGlSpendBreakdown({
+      territory: territory || null,
+      periodNumber: periodNumber ? Number(periodNumber) : null,
+      fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+      noPoReferenceOnly: noPoReferenceOnly == null ? true : noPoReferenceOnly !== "false",
+    })
+  );
+});
+
 module.exports = router;
