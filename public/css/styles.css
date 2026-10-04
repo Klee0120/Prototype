@@ -2141,6 +2141,39 @@ h1, h2, h3, h4 {
   display: none;
 }
 
+.task-notify-panel {
+  background: var(--surface-alt, #f7f8fa);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.task-notify-panel-collapsed {
+  display: none;
+}
+.task-notify-intro {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.task-notify-no-email {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.task-notify-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+}
+.task-notify-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
 .task-card-meta {
   font-size: 12px;
   color: var(--muted);

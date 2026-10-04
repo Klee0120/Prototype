@@ -808,6 +808,26 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(admin2.homeLocationCode, "GEORGETOWN", "it should show up in the admins list too, not just the PATCH response");
   });
 
+  await t.test("admin can set an admin account's email, and a later partial update doesn't wipe it", async () => {
+    const withEmail = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
+      userId: "ADMIN",
+      body: { email: "jordan.smith-rivera@example.com" },
+    });
+    assert.equal(withEmail.status, 200);
+    assert.equal(withEmail.body.email, "jordan.smith-rivera@example.com");
+
+    // Only touching ukgId this time -- email (and the other fields set
+    // above) must survive untouched, not get wiped back to blank.
+    const partial = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
+      userId: "ADMIN",
+      body: { ukgId: "6145800" },
+    });
+    assert.equal(partial.status, 200);
+    assert.equal(partial.body.ukgId, "6145800");
+    assert.equal(partial.body.email, "jordan.smith-rivera@example.com");
+    assert.equal(partial.body.homeLocationCode, "GEORGETOWN", "earlier fields should also survive a partial update");
+  });
+
   await t.test("setting an admin's basic info rejects an unknown location", async () => {
     const res = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
       userId: "ADMIN",

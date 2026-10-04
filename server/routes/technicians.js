@@ -124,6 +124,39 @@ router.patch("/:id/notification-pref", requireAuth, (req, res) => {
   res.json({ notificationPref: updated.notification_pref });
 });
 
+// Per-reason task email opt-ins -- works for a tech or an admin alike
+// (unlike notification-pref above, which is tech-only), since a task can be
+// assigned to either. Each reason defaults off until the person themselves
+// (or an admin on their behalf) turns it on.
+router.get("/:id/task-notification-prefs", requireAuth, (req, res) => {
+  const { id } = req.params;
+  if (!canView(req, id)) return res.status(403).json({ error: "Not authorized" });
+  const result = db.getTaskNotificationPrefs(id);
+  if (!result) return res.status(404).json({ error: "Person not found" });
+  res.json({ ...result, reasons: db.TASK_NOTIFICATION_REASONS.map((r) => ({ key: r.key, label: r.label })) });
+});
+
+router.patch("/:id/task-notification-prefs", requireAuth, (req, res) => {
+  const { id } = req.params;
+  const person = db.findTechnician(id);
+  if (!person) return res.status(404).json({ error: "Person not found" });
+  if (!canView(req, id)) return res.status(403).json({ error: "Not authorized" });
+
+  const validKeys = db.TASK_NOTIFICATION_REASONS.map((r) => r.key);
+  const body = req.body || {};
+  const turningOn = validKeys.some((k) => body[k] === true);
+  if (turningOn && !person.email) {
+    return res.status(400).json({ error: "Add an email address before turning on task notifications" });
+  }
+  for (const k of Object.keys(body)) {
+    if (!validKeys.includes(k)) return res.status(400).json({ error: `Unknown notification reason: ${k}` });
+  }
+
+  const updated = db.setTaskNotificationPrefs(id, body);
+  db.addAudit(req.user.id, "TASK_NOTIFICATION_PREFS_CHANGED", `${req.user.name} updated ${person.name}'s task email notification settings`);
+  res.json(updated);
+});
+
 // Shared by the normal PUT allocations route and the weekend-addendum
 // route below -- validates and reshapes a raw allocations array into the
 // { day, type, locationCode, womCode, hours } rows db.saveAllocations (or

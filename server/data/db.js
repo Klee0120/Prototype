@@ -4,6 +4,12 @@ const crypto = require("crypto");
 const { DatabaseSync } = require("node:sqlite");
 const { seed } = require("./seed");
 const { hashPin, verifyPin } = require("../utils/password");
+// A deliberate, narrow exception to "db.js stays pure, routes own side
+// effects": task creation/assignment happens from many places (manual
+// creation, automated workflow rules deep in this file, recurring
+// regeneration), so centralizing the notify-the-assignee check here is far
+// less error-prone than duplicating it at every call site.
+const mailer = require("../utils/mailer");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -609,6 +615,17 @@ if (!hasColumn("technicians", "standard_daily_hours")) {
 // real message (see server/utils/mailer.js) when this is set to 'email'.
 if (!hasColumn("technicians", "notification_pref")) {
   db.exec("ALTER TABLE technicians ADD COLUMN notification_pref TEXT NOT NULL DEFAULT 'in_app'");
+}
+// Per-reason email opt-ins for tasks, independent of notification_pref above
+// (which is specifically the "hours are ready" email) -- a person (tech or
+// admin) turns each of these on for themselves; none fire until they do.
+// Checked in createTask (see TASK_NOTIFICATION_REASONS) whenever a task
+// lands on someone with a real assignee.
+const TASK_NOTIFICATION_COLUMNS = ["notify_task_assigned", "notify_task_urgent", "notify_task_wom", "notify_task_po_discrepancy"];
+for (const col of TASK_NOTIFICATION_COLUMNS) {
+  if (!hasColumn("technicians", col)) {
+    db.exec(`ALTER TABLE technicians ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 0`);
+  }
 }
 
 // employment_status (active/inactive/terminated/retired) replaces the old
@@ -1466,11 +1483,16 @@ function renameAdmin(id, name) {
 // email/phone/position/terminationDate/standardDailyHours and this
 // shouldn't be the thing that silently blanks them out if that ever
 // changes.
-function setAdminBasicInfo(id, { ukgId, hireDate, homeLocationCode }) {
-  db.prepare("UPDATE technicians SET ukg_id = ?, hire_date = ?, home_location_code = ? WHERE id = ? AND role = 'admin'").run(
-    ukgId || null,
-    hireDate || null,
-    homeLocationCode || null,
+function setAdminBasicInfo(id, { ukgId, hireDate, homeLocationCode, email } = {}) {
+  const existing = findTechnician(id);
+  if (!existing) return null;
+  db.prepare(
+    "UPDATE technicians SET ukg_id = ?, hire_date = ?, home_location_code = ?, email = ? WHERE id = ? AND role = 'admin'"
+  ).run(
+    ukgId !== undefined ? ukgId || null : existing.ukg_id,
+    hireDate !== undefined ? hireDate || null : existing.hire_date,
+    homeLocationCode !== undefined ? homeLocationCode || null : existing.home_location_code,
+    email !== undefined ? email || null : existing.email,
     id
   );
   return findTechnician(id);
@@ -1503,6 +1525,27 @@ const NOTIFICATION_PREFS = ["in_app", "email"];
 function setNotificationPref(techId, pref) {
   db.prepare("UPDATE technicians SET notification_pref = ? WHERE id = ?").run(pref, techId);
   return findTechnician(techId);
+}
+
+function getTaskNotificationPrefs(techId) {
+  const person = findTechnician(techId);
+  if (!person) return null;
+  const prefs = {};
+  for (const r of TASK_NOTIFICATION_REASONS) prefs[r.key] = Boolean(person[r.key]);
+  return { email: person.email || "", prefs };
+}
+
+function setTaskNotificationPrefs(techId, prefs) {
+  const person = findTechnician(techId);
+  if (!person) return null;
+  const merged = {};
+  for (const r of TASK_NOTIFICATION_REASONS) {
+    merged[r.key] = prefs[r.key] !== undefined ? Boolean(prefs[r.key]) : Boolean(person[r.key]);
+  }
+  db.prepare(
+    `UPDATE technicians SET ${TASK_NOTIFICATION_REASONS.map((r) => `${r.key} = ?`).join(", ")} WHERE id = ?`
+  ).run(...TASK_NOTIFICATION_REASONS.map((r) => (merged[r.key] ? 1 : 0)), techId);
+  return getTaskNotificationPrefs(techId);
 }
 
 // A fixed checklist for now rather than an admin-editable template — the
@@ -3951,6 +3994,42 @@ function withAutoAssignee(assignedTo, assignedRole) {
   return assignedTo || defaultAssigneeForRole(assignedRole);
 }
 
+// Each reason a person can opt into separately -- "applies" decides whether
+// a given task counts as that reason at all; the column is their own
+// on/off switch for it. A task can match more than one (e.g. an urgent WOM
+// task) -- that's one email naming every reason it matched, not several.
+const TASK_NOTIFICATION_REASONS = [
+  { key: "notify_task_assigned", label: "Tasks assigned to you", applies: () => true },
+  { key: "notify_task_urgent", label: "Marked urgent", applies: (t) => t.priority === "high" },
+  { key: "notify_task_wom", label: "A WOM project task", applies: (t) => Boolean(t.related_wom_code) },
+  {
+    key: "notify_task_po_discrepancy",
+    label: "A PO discrepancy",
+    applies: (t) => t.source === "po_coding_drift" || t.source === "po_vendor_unregistered",
+  },
+];
+
+// Fires once, right when a task first lands on a real person -- never from
+// an automated workflow rule just re-touching a task that was already
+// assigned (see the reassignment-only check in assignTask), so nobody gets
+// re-emailed every time a page load happens to refresh an existing task.
+function maybeNotifyTaskAssignee(task) {
+  if (!task || !task.assigned_to) return;
+  const person = findTechnician(task.assigned_to);
+  if (!person || !person.email) return;
+  const matched = TASK_NOTIFICATION_REASONS.filter((r) => person[r.key] && r.applies(task));
+  if (matched.length === 0) return;
+  mailer
+    .sendMail({
+      to: person.email,
+      subject: `New task: ${task.title}`,
+      text: `Hi ${person.name},\n\nA task was assigned to you:\n\n${task.title}${
+        task.description ? `\n${task.description}` : ""
+      }\n\nWhy you're hearing about this: ${matched.map((r) => r.label).join(", ")}.\n\nOpen Task Manager to view it.\n`,
+    })
+    .catch((err) => console.error(`[mailer] failed to notify ${person.id} of task ${task.id}:`, err.message));
+}
+
 function createTask(fields) {
   const now = new Date().toISOString();
   const assignedTo = withAutoAssignee(fields.assignedTo || null, fields.assignedRole || null);
@@ -3986,7 +4065,9 @@ function createTask(fields) {
       assignedTo ? now : null,
       now
     );
-  return findTask(Number(result.lastInsertRowid));
+  const created = findTask(Number(result.lastInsertRowid));
+  maybeNotifyTaskAssignee(created);
+  return created;
 }
 
 // The core "don't blindly recreate" mechanic behind every automated task --
@@ -4163,13 +4244,19 @@ function updateTask(id, fields) {
 function assignTask(id, { assignedTo, assignedRole } = {}) {
   const existing = findTask(id);
   if (!existing) return null;
+  const nextAssignedTo = assignedTo !== undefined ? assignedTo || null : existing.assigned_to;
   db.prepare("UPDATE tasks SET assigned_to = ?, assigned_role = ?, assigned_at = ? WHERE id = ?").run(
-    assignedTo !== undefined ? assignedTo || null : existing.assigned_to,
+    nextAssignedTo,
     assignedRole !== undefined ? assignedRole || null : existing.assigned_role,
     new Date().toISOString(),
     id
   );
-  return findTask(id);
+  const updated = findTask(id);
+  // Only a real hand-off to someone new is worth an email -- re-saving the
+  // same assignee (e.g. editing the role alongside it) isn't a new "you've
+  // received this task" moment.
+  if (nextAssignedTo && nextAssignedTo !== existing.assigned_to) maybeNotifyTaskAssignee(updated);
+  return updated;
 }
 
 // A flat week rather than deriving each recurring task's own exact cadence
@@ -6984,6 +7071,9 @@ module.exports = {
   setTechnicianBasicInfo,
   NOTIFICATION_PREFS,
   setNotificationPref,
+  TASK_NOTIFICATION_REASONS,
+  getTaskNotificationPrefs,
+  setTaskNotificationPrefs,
   CW_STATUSES,
   TOYOTA_STATUSES,
   FORMS_STATUSES,

@@ -322,6 +322,10 @@ export async function renderTaskBoard(container) {
   // lookup elsewhere), and stays open across redraws once toggled on.
   let filtersOpen = false;
   let searchQuery = "";
+  // Collapsed by default, same spirit as Filters above -- your own task
+  // email alerts, not something to show by default every time this loads.
+  let notifyPanelOpen = false;
+  let notifyPrefsCache = null;
 
   await draw();
 
@@ -467,9 +471,11 @@ export async function renderTaskBoard(container) {
           <p class="page-header-subtitle">Tasks from WOM updates, recurring work and manual entries.</p>
         </div>
         <div class="page-header-actions">
+          <button class="btn btn-secondary task-notify-toggle" type="button">${notifyPanelOpen ? "Hide email alerts" : "Email alerts"}</button>
           <button class="btn btn-primary task-new-btn" type="button">+ New task</button>
         </div>
       </div>
+      <div id="task-notify-panel" class="task-notify-panel ${notifyPanelOpen ? "" : "task-notify-panel-collapsed"}"></div>
       <div class="task-tiles task-tiles-main">
         ${renderTile("Due Today", summary.dueToday, null)}
         ${renderTile("Overdue", summary.overdue, "overdue")}
@@ -519,6 +525,13 @@ export async function renderTaskBoard(container) {
     }
     container.querySelector(".task-legend-btn").addEventListener("click", openLegendModal);
 
+    container.querySelector(".task-notify-toggle").addEventListener("click", async (e) => {
+      notifyPanelOpen = !notifyPanelOpen;
+      e.currentTarget.textContent = notifyPanelOpen ? "Hide email alerts" : "Email alerts";
+      container.querySelector("#task-notify-panel").classList.toggle("task-notify-panel-collapsed", !notifyPanelOpen);
+      if (notifyPanelOpen) await renderNotifyPanel(container.querySelector("#task-notify-panel"));
+    });
+
     container.querySelectorAll(".task-tile[data-view], .task-secondary-stat-link[data-view]").forEach((el) => {
       el.addEventListener("click", () => {
         view = el.dataset.view;
@@ -542,7 +555,55 @@ export async function renderTaskBoard(container) {
     });
 
     if (isAdmin) await renderFilters(container.querySelector("#task-filters"));
+    if (notifyPanelOpen) await renderNotifyPanel(container.querySelector("#task-notify-panel"));
     renderTaskList(container.querySelector("#task-list"), visibleTasks());
+  }
+
+  // "Your own task email alerts" -- per-reason toggles (assigned to you,
+  // marked urgent, a WOM task, a PO discrepancy) for whichever person is
+  // logged in, tech or admin alike. Loaded lazily (only once the panel is
+  // actually opened) and cached for the rest of this view's lifetime, same
+  // as staffCache above.
+  async function renderNotifyPanel(host) {
+    if (!notifyPrefsCache) {
+      notifyPrefsCache = await api.get(`/api/technicians/${state.user.id}/task-notification-prefs`);
+    }
+    const { prefs, reasons, email } = notifyPrefsCache;
+    const hasEmail = Boolean(email);
+    host.innerHTML = `
+      <p class="task-notify-intro">Email me when a task is:</p>
+      ${
+        hasEmail
+          ? ""
+          : `<p class="task-notify-no-email">Add an email address to your profile before turning these on.</p>`
+      }
+      <div class="task-notify-options">
+        ${reasons
+          .map(
+            (r) => `
+          <label class="task-notify-option">
+            <input type="checkbox" data-key="${r.key}" ${prefs[r.key] ? "checked" : ""} ${hasEmail ? "" : "disabled"} />
+            ${escapeHtml(r.label)}
+          </label>`
+          )
+          .join("")}
+      </div>
+    `;
+    host.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+      cb.addEventListener("change", async () => {
+        const key = cb.dataset.key;
+        cb.disabled = true;
+        try {
+          const updated = await api.patch(`/api/technicians/${state.user.id}/task-notification-prefs`, { [key]: cb.checked });
+          notifyPrefsCache = { ...notifyPrefsCache, prefs: updated.prefs };
+        } catch (err) {
+          cb.checked = !cb.checked;
+          alert(err.message || "Couldn't update that setting.");
+        } finally {
+          cb.disabled = !hasEmail;
+        }
+      });
+    });
   }
 
   // Plain-text search against the already-fetched list -- title/description

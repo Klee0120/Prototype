@@ -206,6 +206,7 @@ export function renderTechniciansTab(content, openTo) {
                             <select name="homeLocationCode">${locationOptionsFor(a.homeLocationCode)}</select>
                             <input name="ukgId" placeholder="UKG ID" value="${escapeHtml(a.ukgId || "")}" />
                             <input name="hireDate" type="text" inputmode="numeric" placeholder="Hire date MM/DD/YYYY" maxlength="10" value="${escapeHtml(usFromIso(a.hireDate))}" />
+                            <input name="email" type="email" placeholder="Email (for task notifications)" value="${escapeHtml(a.email || "")}" />
                           </div>
                           <button type="submit" class="btn btn-link">Save</button>
                           <button type="button" class="btn btn-link admin-rename-cancel" data-id="${escapeHtml(a.id)}">Cancel</button>
@@ -339,6 +340,7 @@ export function renderTechniciansTab(content, openTo) {
               homeLocationCode: form.homeLocationCode.value || null,
               ukgId: form.ukgId.value.trim(),
               hireDate: hireDateValue ? isoFromUs(hireDateValue) : null,
+              email: form.email.value.trim(),
             }),
           ]);
           // Renaming yourself should show up in the header immediately,
