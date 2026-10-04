@@ -4873,6 +4873,19 @@ button.vendor-preferred-star:hover {
     flex: 1 1 auto;
     min-width: 0;
   }
+  /* .topbar-global-tools (search + territory + bell) has no wrap of its
+     own, and the territory <select> doesn't shrink below its own text --
+     confirmed on a real phone: "All territories" was running off the right
+     edge of the screen instead of dropping to its own line. Letting the
+     group wrap, and giving the search field a full-width row to itself
+     first, is the same fix already used for .week-nav/.wom-filter-bar. */
+  .topbar-global-tools {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .topbar-search {
+    flex-basis: 100%;
+  }
 
   .app-sidebar {
     position: fixed;

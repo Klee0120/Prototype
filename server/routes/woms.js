@@ -139,6 +139,24 @@ router.get("/", requireAuth, (req, res) => {
   res.json(db.listWoms().map(presentWom));
 });
 
+// The WOM lifecycle checklist: the Financials-wide list of WOMs still
+// mid-checklist, split by role the same way the task board's Unassigned
+// queue is, plus the two manual steps a person actually clicks through.
+// Declared here, before every /:code/... route below, so a later one (e.g.
+// GET /:code/tasks) can never shadow this literal path by matching
+// "lifecycle" as :code first -- Express matches routes in declaration
+// order, and this bit the app for real: adding GET /:code/tasks after this
+// route used to live further down silently 404'd this route with "WOM not
+// found" (code="lifecycle"), which breaks Task Manager's filters panel
+// (loadStaff in tasks.js fetches this unguarded) on every single page load.
+router.get("/lifecycle/tasks", requireAuth, requireAdmin, (req, res) => {
+  res.json({
+    reviewerAdminId: db.getPseReviewerId(),
+    steps: db.WOM_LIFECYCLE_STEPS,
+    tasks: db.listWomLifecycleTasks(req.user).map(presentWom),
+  });
+});
+
 // "WOM Lookup" -- everything about one WOM in one place for a technician
 // or RFM/admin to check: its own status/budget/pricing (already in
 // presentWom), plus who's logged time against it and how much, all-time
@@ -337,17 +355,6 @@ router.post("/:code/complete", requireAuth, (req, res) => {
 
   db.addAudit(req.user.id, "WOM_MARKED_COMPLETE", `${req.user.name} marked ${wom.code} complete`);
   res.json(presentWom(db.findWom(wom.code)));
-});
-
-// The WOM lifecycle checklist: the Financials-wide list of WOMs still
-// mid-checklist, split by role the same way the task board's Unassigned
-// queue is, plus the two manual steps a person actually clicks through.
-router.get("/lifecycle/tasks", requireAuth, requireAdmin, (req, res) => {
-  res.json({
-    reviewerAdminId: db.getPseReviewerId(),
-    steps: db.WOM_LIFECYCLE_STEPS,
-    tasks: db.listWomLifecycleTasks(req.user).map(presentWom),
-  });
 });
 
 router.post("/:code/lifecycle/:stepKey", requireAuth, requireAdmin, (req, res) => {
