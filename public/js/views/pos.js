@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
-import { openModal } from "../modal.js";
+import { openModal, closeModal } from "../modal.js";
 import { renderAttachments } from "./attachments.js";
 import { TERRITORIES, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 import { getTerritory } from "../globalFilters.js";
@@ -359,7 +359,7 @@ export async function renderPos(container, { openPoId } = {}) {
       alert(err.message || "Couldn't load the admin list.");
       return;
     }
-    const { body, close } = openModal({
+    const { body } = openModal({
       title: "Request a C&W PO",
       bodyHtml: `
         <form class="modal-form request-po-form">
@@ -398,16 +398,43 @@ export async function renderPos(container, { openPoId } = {}) {
       e.preventDefault();
       const msg = form.querySelector(".save-message");
       try {
-        await api.post("/api/tasks/request-po", {
+        const created = await api.post("/api/tasks/request-po", {
           assignedTo: form.assignedTo.value,
           note: form.note.value.trim(),
         });
-        close();
-        window.open(CW_PO_REQUEST_FORM_URL, "_blank", "noopener");
+        renderRequestPoConfirmation(body, created);
       } catch (err) {
         msg.textContent = err.message;
       }
     });
+  }
+
+  // Swapping straight to Smartsheet the instant the task was created made
+  // the whole thing feel like it hadn't done anything -- no visible
+  // confirmation the task actually exists before the tab changes out from
+  // under you. This pauses on an explicit confirmation step instead, with
+  // a reference # to hand to whoever fills out the Smartsheet form (put it
+  // in that form's Description field) so the real PO can be matched back
+  // to this task later -- there's no automatic link between the two, this
+  // is the only thread connecting them.
+  function renderRequestPoConfirmation(body, task) {
+    body.innerHTML = `
+      <div class="request-po-confirmation">
+        <p class="review-checklist-hint">Task created -- reference <strong>PO-REQ-${task.id}</strong>.</p>
+        <p class="review-checklist-hint">
+          Put that reference in the PO request form's Description field, so it can be matched back
+          to this task once the real PO shows up in the Budget PO Tracker.
+        </p>
+        <div class="modal-form-actions">
+          <button type="button" class="btn btn-primary request-po-continue-btn">Continue to the PO form ↗</button>
+          <button type="button" class="btn btn-secondary request-po-done-btn">Done</button>
+        </div>
+      </div>
+    `;
+    body.querySelector(".request-po-continue-btn").addEventListener("click", () => {
+      window.open(CW_PO_REQUEST_FORM_URL, "_blank", "noopener");
+    });
+    body.querySelector(".request-po-done-btn").addEventListener("click", closeModal);
   }
 
   // A plain name/JDE# search over the existing vendor directory -- never

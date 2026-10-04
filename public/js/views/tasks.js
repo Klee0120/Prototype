@@ -74,6 +74,7 @@ const CATEGORY_LABELS = {
   wom_workflow: "WOM Workflow",
   wom_invoicing: "WOM Invoicing",
   recurring: "Recurring",
+  po_request: "PO Request",
 };
 // Which of the above a person can actually pick when creating a task by
 // hand -- wom_workflow/recurring are reserved for what the PSE pipeline and
@@ -85,7 +86,7 @@ const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboarding", "i
 // turning into yet another tab to click through. Order here is the order
 // sections render in; a category not listed anywhere falls into "general".
 const TASK_SECTIONS = [
-  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow", "wom_invoicing"] },
+  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow", "wom_invoicing", "po_request"] },
   { key: "compliance", label: "Compliance Items", colorClass: "task-section-compliance", categories: ["vendor_compliance"] },
   { key: "onboarding", label: "Onboarding", colorClass: "task-section-onboarding", categories: ["onboarding"] },
   { key: "it", label: "IT Requests", colorClass: "task-section-it", categories: ["it_request"] },
