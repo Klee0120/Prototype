@@ -24,6 +24,7 @@ const COLUMN_MAP = {
   Status: "status",
   "Vendor Name": "vendorName",
   "Vendor Number": "vendorNumber",
+  "Vendor ID": "vendorIdAlt",
   "PPS Job Number": "ppsJobNumber",
   "E1 WOM Job #": "e1WomJobNumber",
   "WOM Number": "womNumber",
@@ -44,7 +45,12 @@ const COLUMN_MAP = {
 // thing (confirmed directly) -- coalesced into the one `subsidiary` field
 // everywhere else in the app already reads. Optional in the missing-column
 // check since older exports won't have this column at all.
-const OPTIONAL_COLUMNS = new Set(["PPS Subsidiary"]);
+// "Vendor ID" is a second column name some rows use for the same identifier
+// "Vendor Number" names elsewhere on the same tracker -- confirmed directly
+// against real data (a handful of rows had it filled in while "Vendor
+// Number" was blank, which was silently losing the vendor match on those
+// rows). Coalesced below exactly like Subsidiary/PPS Subsidiary just above.
+const OPTIONAL_COLUMNS = new Set(["PPS Subsidiary", "Vendor ID"]);
 
 function toIsoDate(value) {
   if (value == null || value === "") return null;
@@ -102,7 +108,7 @@ function parseWorkbook(buffer) {
       lineNumber: r.__rowNum__ + 1,
       dateRequested: toIsoDate(row.dateRequested),
       poAmount: row.poAmount == null || row.poAmount === "" ? null : Number(row.poAmount),
-      vendorNumber: toCleanNumberString(row.vendorNumber),
+      vendorNumber: toCleanNumberString(row.vendorNumber) || toCleanNumberString(row.vendorIdAlt),
       poNumber: row.poNumber == null ? null : String(row.poNumber).trim(),
       urgent: Boolean(row.urgent),
       description: row.description == null ? null : String(row.description).trim(),

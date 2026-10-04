@@ -288,6 +288,57 @@ test("PO Tracker import: Subsidiary and PPS Subsidiary coalesce into one field",
   assert.equal(po2.subsidiary, "200 Janitorial", "PPS Subsidiary should fill the subsidiary field when Subsidiary itself is blank");
 });
 
+// "Vendor Number" and "Vendor ID" are two separate columns some rows on the
+// real sheet use for the same identifier -- confirmed directly after a real
+// import left a couple of vendors stuck on "Needs matching" despite already
+// having a profile on file, because those specific rows had "Vendor ID"
+// filled in while "Vendor Number" was blank. Same coalesce pattern as
+// Subsidiary/PPS Subsidiary just above.
+test("PO Tracker import: Vendor Number and Vendor ID coalesce into one field", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Slone Plumbing Inc", jdeVendorNumber: "5172733" },
+  });
+  assert.equal(vendorRes.status, 201);
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "Vendor ID", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+  const rows = [
+    headers,
+    // Row with "Vendor Number" filled, "Vendor ID" blank -- the common case.
+    ["2026-01-01", "Normal vendor number row", "Jane Doe", "PO90010", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    // Row with "Vendor ID" filled, "Vendor Number" blank -- the gap this fixes.
+    ["2026-01-02", "prep sink in kitchen is clogged", "David Stayton", "PO90011", null, 100, null, "Open", "Slone Plumbing", null, "5172733", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90011", { userId: "ADMIN" });
+  const po = listRes.body.find((p) => p.poNumber === "PO90011");
+  assert.ok(po, "expected PO90011 to have imported");
+  assert.equal(po.vendorNumber, "5172733", "Vendor ID should fill vendorNumber when Vendor Number itself is blank");
+  assert.equal(po.vendorLinkStatus, "matched", "should auto-match the existing vendor profile by JDE #");
+});
+
 // A PO whose vendor_number doesn't match any vendor profile on file (see
 // listUnregisteredPoVendors) should task the admin who owns that PO to
 // create one -- one task per vendor #, even if several POs share it.
