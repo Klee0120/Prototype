@@ -257,7 +257,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
             <textarea name="note" rows="3" placeholder="What's this PO for?"></textarea>
           </label>
           <div class="modal-form-actions">
-            <button type="submit" class="btn btn-primary">Continue to the PO form</button>
+            <button type="submit" class="btn btn-primary">Submit Task</button>
           </div>
           <span class="save-message"></span>
         </form>
@@ -302,10 +302,10 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
   function renderRequestPoConfirmation(body, task) {
     body.innerHTML = `
       <div class="request-po-confirmation">
-        <p class="review-checklist-hint">Task created -- reference <strong>PO-REQ-${task.id}</strong>.</p>
+        <p class="review-checklist-hint">✓ Task submitted successfully -- PO Request Task #<strong>${task.id}</strong>.</p>
         <p class="review-checklist-hint">
-          Put that reference in the PO request form's Description field, so it can be matched back
-          to this task once the real PO shows up in the Budget PO Tracker.
+          Put "PO Request Task #${task.id}" in the PO request form's Description field, so it can be
+          matched back to this task once the real PO shows up in the Budget PO Tracker.
         </p>
         <div class="modal-form-actions">
           <button type="button" class="btn btn-primary request-po-continue-btn">Continue to the PO form ↗</button>
