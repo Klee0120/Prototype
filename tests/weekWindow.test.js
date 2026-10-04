@@ -100,7 +100,7 @@ test("week window: route enforcement for technicians vs admin", async (t) => {
     });
     assert.equal(goodPut.status, 200);
 
-    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${FUTURE_WEEK}/submit`, { userId: "T1001" });
+    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${FUTURE_WEEK}/submit`, { userId: "T1001", body: { confirmed: true } });
     assert.equal(submit.status, 409);
 
     const get = await server.call("GET", `/api/technicians/T1001/weeks/${FUTURE_WEEK}`, { userId: "T1001" });

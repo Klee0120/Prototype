@@ -27,7 +27,7 @@ test("audit: actions are recorded and only admins can read the log", async (t) =
         })),
       },
     });
-    await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001" });
+    await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001", body: { confirmed: true } });
     await server.call("POST", `/api/admin/weeks/T1001/${week}/approve`, { userId: "ADMIN" });
 
     const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });

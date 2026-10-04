@@ -66,7 +66,7 @@ test("allocation: per-day hour validation, splits, and locking", async (t) => {
     });
     assert.equal(put.status, 200);
 
-    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001" });
+    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001", body: { confirmed: true } });
     assert.equal(submit.status, 400);
     const tueMismatch = submit.body.mismatches.find((m) => m.day === "Tue");
     assert.equal(tueMismatch.allocated, 3);
@@ -95,7 +95,7 @@ test("allocation: per-day hour validation, splits, and locking", async (t) => {
     assert.equal(wed.type, "timeoff");
     assert.equal(wed.timeOffType, "vacation");
 
-    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001" });
+    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001", body: { confirmed: true } });
     assert.equal(submit.status, 200);
     assert.equal(submit.body.status, "submitted");
   });
@@ -187,7 +187,7 @@ test("allocation: per-day hour validation, splits, and locking", async (t) => {
     });
     assert.equal(put.status, 200);
 
-    const submit = await server.call("POST", `/api/technicians/T1002/weeks/${week}/submit`, { userId: "T1002" });
+    const submit = await server.call("POST", `/api/technicians/T1002/weeks/${week}/submit`, { userId: "T1002", body: { confirmed: true } });
     assert.equal(submit.status, 200);
   });
 

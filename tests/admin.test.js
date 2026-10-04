@@ -9,7 +9,7 @@ async function submitFullWeek(server, techId, week, locationCode) {
     .map(([day, hours]) => ({ day, type: "ef", locationCode, hours }));
 
   await server.call("PUT", `/api/technicians/${techId}/weeks/${week}/allocations`, { userId: techId, body: { allocations } });
-  return server.call("POST", `/api/technicians/${techId}/weeks/${week}/submit`, { userId: techId });
+  return server.call("POST", `/api/technicians/${techId}/weeks/${week}/submit`, { userId: techId, body: { confirmed: true } });
 }
 
 test("admin: review, approve, reject, unlock, UKG hours, home location", async (t) => {
@@ -158,7 +158,7 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
       },
     });
     assert.equal(put.status, 200);
-    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "T1003" });
+    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "T1003", body: { confirmed: true } });
     assert.equal(submit.status, 200);
 
     const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
@@ -188,7 +188,7 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
       },
     });
     assert.equal(put.status, 200);
-    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "T1003" });
+    const submit = await server.call("POST", `/api/technicians/T1003/weeks/${week}/submit`, { userId: "T1003", body: { confirmed: true } });
     assert.equal(submit.status, 200);
 
     const overview = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
@@ -313,7 +313,7 @@ test("admin: review, approve, reject, unlock, UKG hours, home location", async (
       },
     });
     assert.equal(put.status, 200);
-    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001" });
+    const submit = await server.call("POST", `/api/technicians/T1001/weeks/${week}/submit`, { userId: "T1001", body: { confirmed: true } });
     assert.equal(submit.status, 200);
 
     const trends = await server.call("GET", `/api/admin/ot-trends/${week}`, { userId: "ADMIN" });

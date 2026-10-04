@@ -61,6 +61,11 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
   }
 
   let saveMessage = "";
+  // True unless an admin is submitting on a technician's behalf -- only the
+  // technician attests that a week reflects work they actually performed
+  // (see the submit route's own confirmed-flag requirement).
+  const isSelfSubmit = state.user.role !== "admin" || state.user.id === techId;
+  let confirmChecked = false;
   // Dismissible for this render session -- resets on remount (e.g. after
   // save/submit or navigating away and back), same as the old post-submit
   // version, but now shown *before* submit so there's still a Submit button
@@ -118,6 +123,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
   // still-open week.
   function canSubmitWeek() {
     if (week.locked) return false;
+    if (isSelfSubmit && !confirmChecked) return false;
     return DAY_NAMES.filter((day) => day !== "Sat" && day !== "Sun").every(
       (day) => Math.abs(dayTotal(day) - (week.ukgHoursByDay[day] || 0)) < 0.01
     );
@@ -320,7 +326,18 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
               : `<div class="side-card">
                   <h4>Quick Actions</h4>
                   <button class="btn btn-primary side-action-btn" id="save-draft" type="button">💾 Save draft</button>
-                  ${timeOffOnly ? "" : `<button class="btn btn-secondary side-action-btn" id="submit-week" type="button" ${canSubmitWeek() ? "" : "disabled"}>📨 Submit for review</button>`}
+                  ${
+                    timeOffOnly
+                      ? ""
+                      : `${
+                          isSelfSubmit
+                            ? `<label class="submit-confirm-row">
+                                <input type="checkbox" id="submit-confirm-checkbox" ${confirmChecked ? "checked" : ""} />
+                                I confirm these allocations reflect the work I performed this week.
+                              </label>`
+                            : ""
+                        }<button class="btn btn-secondary side-action-btn" id="submit-week" type="button" ${canSubmitWeek() ? "" : "disabled"}>📨 Submit for review</button>`
+                  }
                   <button class="btn btn-secondary side-action-btn" id="print-week" type="button">🖨 Print / Export</button>
                   <span class="save-message">${escapeHtml(saveMessage)}</span>
                 </div>`
@@ -420,6 +437,13 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
 
     if (!locked) {
       main.querySelector("#save-draft").addEventListener("click", () => saveDraft());
+      const confirmCheckbox = main.querySelector("#submit-confirm-checkbox");
+      if (confirmCheckbox) {
+        confirmCheckbox.addEventListener("change", () => {
+          confirmChecked = confirmCheckbox.checked;
+          draw();
+        });
+      }
       const submitBtn = main.querySelector("#submit-week");
       if (submitBtn) submitBtn.addEventListener("click", submit);
       main.querySelector("#print-week").addEventListener("click", () => window.print());
@@ -886,7 +910,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
   async function submit() {
     try {
       await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/allocations`, { allocations });
-      await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/submit`);
+      await api.post(`/api/technicians/${techId}/weeks/${state.weekMonday}/submit`, isSelfSubmit ? { confirmed: true } : {});
 
       const codesToComplete = [...new Set(allocations.filter((a) => a.type === "wom" && a._markComplete).map((a) => a.womCode))];
       for (const code of codesToComplete) {

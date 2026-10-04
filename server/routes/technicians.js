@@ -98,6 +98,7 @@ router.get("/:id/weeks/:weekMonday", requireAuth, (req, res) => {
     reviewedBy: week.reviewedBy,
     note: week.note,
     weekendAddendumAt: week.weekendAddendumAt,
+    techConfirmedAt: week.techConfirmedAt,
   });
 });
 
@@ -451,10 +452,22 @@ router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
     }
   }
 
-  db.submitWeek(id, weekMonday);
+  // A technician submitting their own week must actively attest that it
+  // reflects the work they actually performed -- accountability at the
+  // moment of submission, rather than leaning entirely on an after-the-fact
+  // reconciliation against UKG. An admin submitting on a tech's behalf is
+  // exempt: the admin isn't the one who can attest to work they didn't
+  // personally perform, and that path already has its own audit trail.
+  const isSelfSubmit = req.user.role !== "admin" || req.user.id === id;
+  if (isSelfSubmit && req.body.confirmed !== true) {
+    return res.status(400).json({ error: "Please confirm your allocations reflect the work you performed before submitting" });
+  }
+
+  db.submitWeek(id, weekMonday, { confirmedByTech: isSelfSubmit });
   const total = round2(Object.values(allocatedByDay).reduce((s, h) => s + h, 0));
   const onBehalf = req.user.role === "admin" && req.user.id !== id ? ` for ${id}` : "";
-  db.addAudit(req.user.id, "WEEK_SUBMITTED", `${req.user.name} submitted week${onBehalf} ${weekMonday} (${total}h)`);
+  const confirmedNote = isSelfSubmit ? ", confirming allocations reflect work performed" : "";
+  db.addAudit(req.user.id, "WEEK_SUBMITTED", `${req.user.name} submitted week${onBehalf} ${weekMonday} (${total}h)${confirmedNote}`);
 
   res.json({ ok: true, status: "submitted" });
 });

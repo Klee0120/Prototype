@@ -638,6 +638,16 @@ if (!hasColumn("weeks", "ukg_confirmed_at")) {
   db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_at TEXT");
   db.exec("ALTER TABLE weeks ADD COLUMN ukg_confirmed_by TEXT");
 }
+// A technician's own attestation, at submit time, that their allocations
+// reflect the work they actually performed -- distinct from ukg_confirmed_at
+// above (an admin's own internal checklist step) and from submitted_at
+// (set on every submission, including one an admin drives on a tech's
+// behalf). Only ever set when the technician submits their own week; an
+// admin submitting on a tech's behalf leaves it null, since the admin isn't
+// the one attesting to work they didn't personally perform.
+if (!hasColumn("weeks", "tech_confirmed_at")) {
+  db.exec("ALTER TABLE weeks ADD COLUMN tech_confirmed_at TEXT");
+}
 // Set when a technician adds/changes Sat/Sun hours on a week that's already
 // submitted/approved (a weekend callout after the rest of the week was
 // already locked in) -- see saveWeekendAllocations. Flags the week for
@@ -5233,7 +5243,7 @@ function getWeek(techId, weekMonday) {
   const row = db
     .prepare(
       `SELECT status, submitted_at, reviewed_at, reviewed_by, note, ukg_confirmed_at, ukg_confirmed_by,
-              weekend_addendum_at, purelyhr_verified_at
+              weekend_addendum_at, purelyhr_verified_at, tech_confirmed_at
        FROM weeks WHERE tech_id = ? AND week_monday = ?`
     )
     .get(techId, weekMonday);
@@ -5256,6 +5266,7 @@ function getWeek(techId, weekMonday) {
       ukgConfirmedBy: null,
       weekendAddendumAt: null,
       purelyhrVerifiedAt: null,
+      techConfirmedAt: null,
     };
   }
   return {
@@ -5269,6 +5280,7 @@ function getWeek(techId, weekMonday) {
     ukgConfirmedBy: row.ukg_confirmed_by,
     weekendAddendumAt: row.weekend_addendum_at,
     purelyhrVerifiedAt: row.purelyhr_verified_at,
+    techConfirmedAt: row.tech_confirmed_at,
   };
 }
 
@@ -5410,13 +5422,12 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-function submitWeek(techId, weekMonday) {
+function submitWeek(techId, weekMonday, { confirmedByTech = false } = {}) {
   ensureWeekRow(techId, weekMonday);
-  db.prepare("UPDATE weeks SET status = 'submitted', submitted_at = ?, note = '' WHERE tech_id = ? AND week_monday = ?").run(
-    new Date().toISOString(),
-    techId,
-    weekMonday
-  );
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE weeks SET status = 'submitted', submitted_at = ?, note = '', tech_confirmed_at = ? WHERE tech_id = ? AND week_monday = ?"
+  ).run(now, confirmedByTech ? now : null, techId, weekMonday);
   return getWeek(techId, weekMonday);
 }
 

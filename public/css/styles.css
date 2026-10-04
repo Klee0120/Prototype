@@ -1008,6 +1008,20 @@ h1, h2, h3, h4 {
   margin-bottom: 0;
 }
 
+.submit-confirm-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--sidebar-text);
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+.submit-confirm-row input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
 /* ---- Status banner ---- */
 
 .status-banner {
