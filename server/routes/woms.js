@@ -165,10 +165,19 @@ router.get("/:code/lookup", requireAuth, (req, res) => {
   const wom = db.findWom(req.params.code);
   if (!wom) return res.status(404).json({ error: "WOM not found" });
 
+  const presented = presentWom(wom);
+  const hasInvoiceDocument = db.hasWomInvoiceDocument(wom.code);
+  const missingRequirements = [];
+  if (!presented.invoiceNumber) missingRequirements.push("Invoice #");
+  if (!presented.batchNumber) missingRequirements.push("Batch #");
+  if (!hasInvoiceDocument) missingRequirements.push("Invoice document");
+
   res.json({
-    ...presentWom(wom),
+    ...presented,
     totalHours: db.countWomAllocatedHours(wom.code),
     hoursByTechnician: db.womHoursByTechnician(wom.code),
+    hasInvoiceDocument,
+    missingRequirements,
   });
 });
 

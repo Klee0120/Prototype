@@ -3062,14 +3062,34 @@ function womInvoicingTaskSourceKey(code) {
 // due_at is preserved on every later lazy refresh (same
 // preserveDueAtOnUpdate convention as the PO-discrepancy tasks), so it
 // reads as overdue once that window passes rather than resetting every
-// time anyone loads the task list. Clears itself the instant the WOM is
-// fully invoiced (same three checks the Invoicing queue route itself
-// surfaces), same stillOpen-set-then-complete-stale shape as
-// refreshAllUnregisteredVendorTasks above.
+// time anyone loads the task list.
+//
+// Closes once status is already "invoiced" -- a real-world "this is done"
+// signal that arrives automatically the moment an invoice # shows up via
+// sync (see applyWomSourceEvidence), independent of the stricter 3-part
+// check (invoice #, batch #, AND the uploaded document) the Invoicing
+// queue itself still uses for its own documentation-completeness purpose.
+// Confirmed directly: a real backlog of WOMs already marked invoiced but
+// missing just the batch # or the document was flooding the task list with
+// "done" work -- the queue tab is the right place to keep tracking that
+// paperwork gap; the task shouldn't nag about something already closed out.
+//
+// That grandfathering only covers the existing backlog, though -- a WOM
+// *requested* on/after WOM_INVOICING_STRICT_CUTOFF keeps its task open
+// until the full checklist (invoice #, batch #, document) is actually
+// complete, even past the point status flips to "invoiced," since the
+// backlog's missing paperwork has no process behind it to chase but new
+// requests do. A WOM with no Date Requested on file at all is treated the
+// same as "before the cutoff."
 const WOM_INVOICING_SLA_MS = 24 * 60 * 60 * 1000;
+const WOM_INVOICING_STRICT_CUTOFF = new Date("2026-10-05");
 
 function refreshAllWomInvoicingTasks() {
-  const woms = listWomsNeedingInvoicing();
+  const woms = listWomsNeedingInvoicing().filter((w) => {
+    if (w.status !== "invoiced") return true;
+    const requested = w.date_requested ? new Date(w.date_requested) : null;
+    return Boolean(requested) && !isNaN(requested) && requested >= WOM_INVOICING_STRICT_CUTOFF;
+  });
   const stillOpen = new Set(woms.map((w) => w.code));
 
   for (const w of woms) {

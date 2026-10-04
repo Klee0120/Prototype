@@ -1224,7 +1224,7 @@ export async function renderTaskBoard(container) {
     // (see renderPseActions), instead of a generic "mark complete" that
     // would close the task card without touching the WOM's real pse_stage.
     let wom = null;
-    if (t.category === "wom_workflow" && t.relatedWomCode) {
+    if ((t.category === "wom_workflow" || t.category === "wom_invoicing") && t.relatedWomCode) {
       try {
         wom = await api.get(`/api/woms/${encodeURIComponent(t.relatedWomCode)}/lookup`);
       } catch {
@@ -1268,6 +1268,7 @@ export async function renderTaskBoard(container) {
       ${isAdmin ? `<p class="review-checklist-hint"><button class="btn btn-link task-assign-toggle" type="button">Assign</button></p>` : ""}
       ${isAdmin ? `<div class="task-assign-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
+      <div class="task-billing-checklist"></div>
       <div class="task-po-request-actions"></div>
       <div class="review-actions task-status-actions"></div>
       ${isAdmin ? `<div class="task-attachments"></div>` : ""}
@@ -1373,7 +1374,11 @@ export async function renderTaskBoard(container) {
       }
     }
 
-    const tookOverStatus = wom && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
+    const tookOverStatus =
+      wom && t.category === "wom_workflow" && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
+    if (wom && t.category === "wom_invoicing") {
+      renderBillingChecklist(host.querySelector(".task-billing-checklist"), wom);
+    }
     if (isAdmin && t.category === "po_request" && t.poStage === "requested") {
       renderPoRequestActions(host.querySelector(".task-po-request-actions"), t, () => draw());
     }
@@ -1695,6 +1700,29 @@ export async function renderTaskBoard(container) {
         msg.textContent = err.message;
       }
     });
+  }
+
+  // A wom_invoicing task's own at-a-glance checklist -- Invoice #, Batch #,
+  // and the actual uploaded document, same three things
+  // listWomsNeedingInvoicing checks server-side -- so it's visible right on
+  // the task without having to go open the WOM profile separately.
+  function renderBillingChecklist(host, wom) {
+    const items = [
+      { label: "Invoice #", done: Boolean(wom.invoiceNumber) },
+      { label: "Batch #", done: Boolean(wom.batchNumber) },
+      { label: "Invoice document", done: Boolean(wom.hasInvoiceDocument) },
+    ];
+    host.innerHTML = `
+      <p class="review-checklist-hint">Billing checklist for ${escapeHtml(wom.code)}:</p>
+      <p class="task-billing-checklist-items">
+        ${items
+          .map(
+            (i) =>
+              `<span class="badge badge-${i.done ? "approved" : "rejected"}">${i.done ? "✓" : "✗"} ${escapeHtml(i.label)}</span>`
+          )
+          .join(" ")}
+      </p>
+    `;
   }
 
   // The admin's half of a po_request task (see techHome.js's "Request a

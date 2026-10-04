@@ -382,6 +382,18 @@ export async function renderPos(container, { openPoId } = {}) {
       `,
     });
     const form = body.querySelector(".request-po-form");
+    // This form's only fields are a <select> and a <textarea> -- neither
+    // one implicitly submits a form on Enter the way a text <input> does
+    // (confirmed: Chromium just leaves the dropdown sitting there), so
+    // without this a user who picks the admin and hits Enter sees nothing
+    // happen and no task gets created. Skip it inside the textarea, where
+    // Enter should still just add a line break.
+    form.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = form.querySelector(".save-message");

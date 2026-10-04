@@ -117,3 +117,65 @@ test("SLA due dates: a WOM ready to invoice gets a 24h task that doesn't reset a
 
   raw.close();
 });
+
+// A real backlog of WOMs already marked invoiced via sync but still
+// missing their batch #/document was flooding the task list with "done"
+// work (see the test above closing WOM-4502 only once ALL three are
+// actually complete). The fix: once status says invoiced, stop nagging --
+// but only for a WOM that predates the documentation requirement. A WOM
+// requested on/after WOM_INVOICING_STRICT_CUTOFF (2026-10-05) still has to
+// clear the full checklist, even past the point status flips to invoiced.
+test("SLA due dates: wom_invoicing grandfathers pre-cutoff invoiced WOMs but still holds post-cutoff ones to the full checklist", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+
+  await t.test("invoiced, no Date Requested on file at all -> grandfathered, no task", async () => {
+    raw
+      .prepare("INSERT INTO woms (code, description, status, source_work_completed) VALUES (?, ?, 'invoiced', 1)")
+      .run("WOM-9701", "Grandfathered invoiced WOM, no date on file");
+    db.refreshAllWomInvoicingTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.category === "wom_invoicing" && tk.relatedWomCode === "WOM-9701"));
+  });
+
+  await t.test("invoiced, requested before the cutoff -> also grandfathered", async () => {
+    raw
+      .prepare("INSERT INTO woms (code, description, status, source_work_completed, date_requested) VALUES (?, ?, 'invoiced', 1, ?)")
+      .run("WOM-9702", "Pre-cutoff invoiced WOM", "2026-09-01");
+    db.refreshAllWomInvoicingTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.category === "wom_invoicing" && tk.relatedWomCode === "WOM-9702"));
+  });
+
+  await t.test("invoiced, requested on/after the cutoff but missing batch #/document -> task stays open", async () => {
+    raw
+      .prepare("INSERT INTO woms (code, description, status, source_work_completed, date_requested) VALUES (?, ?, 'invoiced', 1, ?)")
+      .run("WOM-9703", "Post-cutoff invoiced but incomplete WOM", "2026-10-10");
+    db.refreshAllWomInvoicingTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.category === "wom_invoicing" && tk.relatedWomCode === "WOM-9703");
+    assert.ok(task, "expected a wom_invoicing task since the checklist is still incomplete");
+  });
+
+  await t.test("completing the checklist for that post-cutoff WOM closes its task", async () => {
+    raw.prepare("UPDATE woms SET invoice_number = ?, batch_number = ? WHERE code = ?").run("INV-9703", "B-9703", "WOM-9703");
+    await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "wom", relatedId: "WOM-9703", category: "invoice" },
+      fileName: "toyota-invoice.pdf",
+      mimeType: "application/pdf",
+    });
+    db.refreshAllWomInvoicingTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.category === "wom_invoicing" && tk.relatedWomCode === "WOM-9703"));
+  });
+
+  raw.close();
+});
