@@ -72,6 +72,7 @@ const CATEGORY_LABELS = {
   it_request: "IT Request",
   financial: "Financial",
   wom_workflow: "WOM Workflow",
+  wom_invoicing: "WOM Invoicing",
   recurring: "Recurring",
 };
 // Which of the above a person can actually pick when creating a task by
@@ -84,7 +85,7 @@ const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboarding", "i
 // turning into yet another tab to click through. Order here is the order
 // sections render in; a category not listed anywhere falls into "general".
 const TASK_SECTIONS = [
-  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow"] },
+  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow", "wom_invoicing"] },
   { key: "compliance", label: "Compliance Items", colorClass: "task-section-compliance", categories: ["vendor_compliance"] },
   { key: "onboarding", label: "Onboarding", colorClass: "task-section-onboarding", categories: ["onboarding"] },
   { key: "it", label: "IT Requests", colorClass: "task-section-it", categories: ["it_request"] },

@@ -119,6 +119,7 @@ function catchUpTasks() {
   db.refreshAllPoWomLinkTasks();
   db.refreshAllPoCodingDriftTasks();
   db.refreshAllUnregisteredVendorTasks();
+  db.refreshAllWomInvoicingTasks();
 }
 
 router.get("/", requireAuth, (req, res) => {

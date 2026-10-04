@@ -3012,6 +3012,61 @@ function listWomsNeedingInvoicing() {
     .map(womWithRemaining);
 }
 
+function womInvoicingTaskSourceKey(code) {
+  return `WOM-${code}-INVOICING`;
+}
+
+// A WOM that's ready to invoice (see listWomsNeedingInvoicing just above)
+// gets a task with a 24h SLA due date the moment it first qualifies --
+// due_at is preserved on every later lazy refresh (same
+// preserveDueAtOnUpdate convention as the PO-discrepancy tasks), so it
+// reads as overdue once that window passes rather than resetting every
+// time anyone loads the task list. Clears itself the instant the WOM is
+// fully invoiced (same three checks the Invoicing queue route itself
+// surfaces), same stillOpen-set-then-complete-stale shape as
+// refreshAllUnregisteredVendorTasks above.
+const WOM_INVOICING_SLA_MS = 24 * 60 * 60 * 1000;
+
+function refreshAllWomInvoicingTasks() {
+  const woms = listWomsNeedingInvoicing();
+  const stillOpen = new Set(woms.map((w) => w.code));
+
+  for (const w of woms) {
+    const missing = [];
+    if (!w.invoice_number) missing.push("Invoice #");
+    if (!w.batch_number) missing.push("Batch #");
+    if (!hasWomInvoiceDocument(w.code)) missing.push("Invoice document");
+    upsertTaskBySourceKey(
+      womInvoicingTaskSourceKey(w.code),
+      {
+        title: `Invoice WOM ${w.code}`,
+        description: `Work is complete but this WOM isn't fully invoiced yet -- missing ${missing.join(", ")}.`,
+        category: "wom_invoicing",
+        assignedRole: "financial",
+        relatedWomCode: w.code,
+        relatedLocationCode: w.location_code,
+        priority: "high",
+        source: "wom_invoicing",
+        sourceRecordId: w.code,
+        workflowRule: "wom_invoicing",
+        dueAt: new Date(Date.now() + WOM_INVOICING_SLA_MS).toISOString(),
+      },
+      { preserveDueAtOnUpdate: true }
+    );
+  }
+
+  // A WOM that was in the queue last time this ran but isn't anymore (got
+  // fully invoiced, or got cancelled/closed) -- clear its task rather than
+  // leaving it open forever.
+  const openTasks = db
+    .prepare("SELECT source_key FROM tasks WHERE category = 'wom_invoicing' AND status NOT IN ('completed', 'cancelled')")
+    .all();
+  for (const row of openTasks) {
+    const code = row.source_key.replace(/^WOM-/, "").replace(/-INVOICING$/, "");
+    if (!stillOpen.has(code)) completeTaskBySourceKey(row.source_key);
+  }
+}
+
 function createWom(code, description, locationCode, budgetHours, subsidiaryCode, maximoNumber) {
   db.prepare(
     "INSERT INTO woms (code, description, status, location_code, budget_hours, subsidiary_code, maximo_number) VALUES (?, ?, 'open', ?, ?, ?, ?)"
@@ -6373,6 +6428,14 @@ function poVendorUnregisteredTaskSourceKey(vendorNumber) {
   return `VENDOR-UNREGISTERED-${vendorNumber}`;
 }
 
+// Both PO-discrepancy task types (an unregistered vendor # and a GL/PO
+// coding mismatch) get a 3-day SLA due date the moment they're first
+// opened -- preserveDueAtOnUpdate below means every later lazy refresh
+// leaves that original due date alone, so it behaves like any other task's
+// due date (flagged overdue once it passes) rather than resetting the
+// clock every time the page loads.
+const PO_DISCREPANCY_SLA_MS = 3 * 24 * 60 * 60 * 1000;
+
 // Tasks the admin who owns the most recently seen unmatched PO for each
 // unregistered vendor # (see listUnregisteredPoVendors) to create or update
 // that vendor's profile. One task per vendor_number group, not per PO --
@@ -6409,7 +6472,8 @@ function refreshAllUnregisteredVendorTasks() {
       source: "po_vendor_unregistered",
       sourceRecordId: g.vendorNumber,
       workflowRule: "po_vendor_unregistered",
-    });
+      dueAt: new Date(Date.now() + PO_DISCREPANCY_SLA_MS).toISOString(),
+    }, { preserveDueAtOnUpdate: true });
   }
 
   // A vendor # that was unregistered last time this ran but isn't anymore
@@ -6481,7 +6545,8 @@ function refreshPoCodingDriftTask(poId) {
     source: "po_coding_drift",
     sourceRecordId: String(poId),
     workflowRule: "po_coding_drift",
-  });
+    dueAt: new Date(Date.now() + PO_DISCREPANCY_SLA_MS).toISOString(),
+  }, { preserveDueAtOnUpdate: true });
 }
 
 function refreshAllPoCodingDriftTasks() {
@@ -7248,6 +7313,7 @@ module.exports = {
   listUnregisteredPoVendors,
   refreshAllUnregisteredVendorTasks,
   refreshAllPoCodingDriftTasks,
+  refreshAllWomInvoicingTasks,
   importGlEntries,
   refreshGlMismatchFlagsForPo,
   listGlImports,
