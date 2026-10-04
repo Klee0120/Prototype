@@ -1394,6 +1394,17 @@ if (!hasColumn("gl_entries", "matched_location_source")) {
   }
 }
 
+// A GL line's own "Subledger - G/L" is its WOM Number when "Subledger Type"
+// is "W" (confirmed 1:1 on real data: that field is set exactly when
+// Subledger Type = "W", never for any other type) -- a labor/time line can
+// be coded straight to a WOM project this way with no Purchase Order at
+// all, which is a different reason for having no PO than payroll burden or
+// an accrual. Lets Spend Breakdown offer a WOM-reference toggle alongside
+// its PO-reference one.
+if (!hasColumn("gl_entries", "subledger_gl")) {
+  db.exec("ALTER TABLE gl_entries ADD COLUMN subledger_gl TEXT");
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -6136,11 +6147,14 @@ function findLocationByEfJobNumber(jobNumber) {
 // This is the precise, no-guessing way to resolve a GL line to a location
 // -- see matchLocationCodeByName for the fuzzy fallback used only when a
 // business unit doesn't appear in any of the three columns at all.
+// Prepared once, not per call -- this runs once for every gl_entries row on
+// a full re-backfill (see the matched_location_source migration), and
+// re-preparing the same statement hundreds of thousands of times measurably
+// slowed server startup on real production data.
+const findLocationByJobNumberStmt = db.prepare("SELECT * FROM locations WHERE ef_job_number = ? OR pps_job_number = ? OR wom_job_number = ?");
 function findLocationByJobNumber(businessUnit) {
   if (!businessUnit) return null;
-  return db
-    .prepare("SELECT * FROM locations WHERE ef_job_number = ? OR pps_job_number = ? OR wom_job_number = ?")
-    .get(businessUnit, businessUnit, businessUnit);
+  return findLocationByJobNumberStmt.get(businessUnit, businessUnit, businessUnit);
 }
 
 // Vendor Number in the source sheet lines up with this app's own JDE
@@ -7042,9 +7056,9 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       (import_id, period_number, fiscal_year, gl_date, document_type, document_number,
        journal_entry_line_number, business_unit, object_account, object_account_code, subsidiary,
        amount, batch_number, supplier_invoice_number, invoice_date, location_code, matched_location_code,
-       matched_location_source, name_alpha, remark, purchase_order, matched_po_id, subsidiary_mismatch,
-       object_code_mismatch, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       matched_location_source, name_alpha, remark, purchase_order, subledger_gl, matched_po_id,
+       subsidiary_mismatch, object_code_mismatch, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const findPoByNumber = db.prepare("SELECT id, subsidiary, object_code FROM pos WHERE po_number = ? LIMIT 1");
   const poCache = new Map();
@@ -7136,6 +7150,7 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       r.nameAlpha || null,
       r.remark || null,
       poNumber,
+      r.subledgerGl || null,
       matchedPoId,
       subsidiaryMismatch,
       objectCodeMismatch,
@@ -7306,6 +7321,33 @@ const GL_ENTRY_COLUMNS = `period_number AS periodNumber, fiscal_year AS fiscalYe
             object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
             purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber`;
 
+// Shared by getGlSpendBreakdown/getGlSpendDetailPage: periodNumber+fiscalYear
+// pins one exact month; fiscalYear alone (optionally narrowed by
+// periodFrom/periodTo, inclusive) covers a range of months within one
+// fiscal year -- "fiscal month to fiscal month" -- so last year's numbers
+// never silently blend into this year's, and a specific stretch of months
+// can be isolated without pinning to just one.
+function buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, periodTo }) {
+  const conditions = [];
+  const params = [];
+  if (periodNumber != null && fiscalYear != null) {
+    conditions.push("g.period_number = ? AND g.fiscal_year = ?");
+    params.push(periodNumber, fiscalYear);
+  } else if (fiscalYear != null) {
+    conditions.push("g.fiscal_year = ?");
+    params.push(fiscalYear);
+    if (periodFrom != null) {
+      conditions.push("g.period_number >= ?");
+      params.push(periodFrom);
+    }
+    if (periodTo != null) {
+      conditions.push("g.period_number <= ?");
+      params.push(periodTo);
+    }
+  }
+  return { conditions, params };
+}
+
 // Cheap aggregate-only counts/totals for the summary tiles -- computed over
 // the whole GL history (not just the current page), but as single SQL
 // aggregates rather than materializing every matched line in JS. Backed by
@@ -7366,14 +7408,14 @@ function getGlReconciliationSummary() {
 // effect) scope to one imported period -- every period on file is
 // combined by default, which is the real point of this view once several
 // months have been imported.
-function getGlSpendBreakdown({ territory, periodNumber, fiscalYear, noPoReferenceOnly = true } = {}) {
-  const conditions = [];
-  const params = [];
-  if (periodNumber != null && fiscalYear != null) {
-    conditions.push("g.period_number = ? AND g.fiscal_year = ?");
-    params.push(periodNumber, fiscalYear);
-  }
+function getGlSpendBreakdown({ territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly = true, noWomReferenceOnly = true } = {}) {
+  const { conditions, params } = buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, periodTo });
   if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
+  // A line can be coded straight to a WOM project (subledger_gl set, no PO
+  // at all) -- a different kind of "no PO" than payroll burden or an
+  // accrual, and tracked through the WOM feature already, so it's excluded
+  // by default here too alongside PO-referenced lines.
+  if (noWomReferenceOnly) conditions.push("g.subledger_gl IS NULL");
 
   const rows = db
     .prepare(
@@ -7418,6 +7460,74 @@ function getGlSpendBreakdown({ territory, periodNumber, fiscalYear, noPoReferenc
     categories: [...byCategory.values()].map((c) => ({ ...c, total: round(c.total) })).sort((a, b) => b.total - a.total),
     territories: [...byTerritory.values()].map((t) => ({ ...t, total: round(t.total) })).sort((a, b) => b.total - a.total),
   };
+}
+
+// The actual GL lines behind one slice of the Spend Breakdown view -- a
+// category row ("Cell Phone") or a territory row, clicked to answer "which
+// phones did we pay for, and when" rather than just a total. Uses the exact
+// same filtering/grouping rules as getGlSpendBreakdown (category from
+// parseObjectAccountCategory, territory from matched_location_code) so a
+// row's own total always matches what drilling into it shows. category
+// and/or territory select the slice; at least one is expected, but neither
+// is required so this can also page through everything a given
+// period/fiscal year/noPoReferenceOnly scope covers.
+function getGlSpendDetailPage({
+  category,
+  territory,
+  periodNumber,
+  fiscalYear,
+  periodFrom,
+  periodTo,
+  noPoReferenceOnly = true,
+  noWomReferenceOnly = true,
+  page = 1,
+  pageSize = GL_PAGE_SIZE_DEFAULT,
+} = {}) {
+  const { conditions, params } = buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, periodTo });
+  if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
+  if (noWomReferenceOnly) conditions.push("g.subledger_gl IS NULL");
+
+  const rows = db
+    .prepare(
+      `SELECT ${GL_ENTRY_COLUMNS}, g.matched_location_code AS matchedLocationCode,
+              g.name_alpha AS nameAlpha, g.remark, l.territory AS territory
+       FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
+       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+       ORDER BY g.gl_date DESC`
+    )
+    .all(...params);
+
+  const matching = rows.filter((r) => {
+    if (category != null) {
+      const rowCategory = parseObjectAccountCategory(r.objectAccount) || "Unknown / Uncategorized";
+      if (rowCategory !== category) return false;
+    }
+    if (territory != null) {
+      const rowTerritory = r.territory || "Unassigned";
+      if (rowTerritory !== territory) return false;
+    }
+    return true;
+  });
+
+  const p = Math.max(1, Number(page) || 1);
+  const ps = Math.max(1, Number(pageSize) || GL_PAGE_SIZE_DEFAULT);
+  const items = matching.slice((p - 1) * ps, p * ps).map((r) => ({
+    periodNumber: r.periodNumber,
+    fiscalYear: r.fiscalYear,
+    glDate: r.glDate,
+    documentType: r.documentType,
+    documentNumber: r.documentNumber,
+    objectAccount: r.objectAccount,
+    subsidiary: r.subsidiary,
+    amount: r.amount,
+    locationCode: r.locationCode,
+    territory: r.territory || "Unassigned",
+    purchaseOrder: r.purchaseOrder,
+    supplierInvoiceNumber: r.supplierInvoiceNumber,
+    vendorOrDescription: r.nameAlpha || r.remark || null,
+  }));
+
+  return { items, total: matching.length, page: p, pageSize: ps };
 }
 
 function buildReconciledFilterClauses(filters) {
@@ -7781,6 +7891,7 @@ module.exports = {
   getGlReclassActivity,
   getGlReconciliationSummary,
   getGlSpendBreakdown,
+  getGlSpendDetailPage,
   getReconciledPage,
   getUnmatchedEntriesPage,
   getNoPoReferenceEntriesPage,

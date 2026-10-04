@@ -5026,6 +5026,43 @@ button.vendor-preferred-star:hover {
   color: var(--ink, #1a1a1a);
   cursor: pointer;
 }
+.spend-filters-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  margin-top: 10px;
+}
+.spend-fy-select-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+}
+.spend-fy-select-label select {
+  font-size: 13px;
+  font-weight: normal;
+  padding: 4px 6px;
+}
+.spend-no-calendar-note {
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  font-style: italic;
+}
+.spend-clickable-table tbody tr {
+  cursor: pointer;
+}
+.spend-clickable-table tbody tr:hover {
+  background: var(--row-hover, #f2f2ee);
+}
+.spend-detail-table {
+  margin-top: 8px;
+}
+.spend-detail-pager {
+  margin-top: 4px;
+}
 
 /* The sidebar's mobile shape: pinned off-canvas by default and slid in as
    an overlay drawer (never squeezed into a horizontal strip, which just

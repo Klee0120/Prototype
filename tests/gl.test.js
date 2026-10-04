@@ -379,3 +379,93 @@ test("GL location matching: Business Unit job number takes priority over the Loc
     assert.equal(line.matched_location_source, "name");
   });
 });
+
+// A line coded straight to a WOM project (Subledger - G/L set, see
+// subledgerGl) never has a PO either -- a different reason for having no PO
+// than payroll burden or an accrual, and already tracked through the WOM
+// feature, so it's excluded by default here too, same shape as the
+// PO-reference toggle. periodFrom/periodTo narrow a fiscal year to a
+// month range ("fiscal month to fiscal month") without pinning to one
+// exact period. getGlSpendDetailPage is the GL-line drill-down behind a
+// clicked category/territory row.
+test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line drill-down", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+
+  await t.test("defaults to no-WOM-reference lines only, excluding a line with a Subledger - G/L set", () => {
+    const PERIOD = { periodNumber: 16, fiscalYear: 26 };
+    db.importGlEntries(
+      [
+        { glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 100 },
+        { glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 200, subledgerGl: "19337866" },
+      ],
+      PERIOD.periodNumber,
+      PERIOD.fiscalYear,
+      "ADMIN",
+      "t-wom.xlsx"
+    );
+
+    const scoped = db.getGlSpendBreakdown(PERIOD);
+    assert.equal(scoped.categories.find((c) => c.category === "Cell Phone").total, 100, "the WOM-referenced line should be excluded by default");
+
+    const full = db.getGlSpendBreakdown({ ...PERIOD, noWomReferenceOnly: false });
+    assert.equal(full.categories.find((c) => c.category === "Cell Phone").total, 300, "noWomReferenceOnly: false should include every line");
+  });
+
+  await t.test("periodFrom/periodTo narrows a fiscal year to a fiscal-month range", () => {
+    db.importGlEntries([{ glDate: "2027-01-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 10 }], 1, 27, "ADMIN", "fy27-p1.xlsx");
+    db.importGlEntries([{ glDate: "2027-02-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 20 }], 2, 27, "ADMIN", "fy27-p2.xlsx");
+    db.importGlEntries([{ glDate: "2027-03-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40 }], 3, 27, "ADMIN", "fy27-p3.xlsx");
+
+    const wholeYear = db.getGlSpendBreakdown({ fiscalYear: 27 });
+    assert.equal(wholeYear.totalAmount, 70, "fiscalYear alone combines every period in that year");
+
+    const narrowed = db.getGlSpendBreakdown({ fiscalYear: 27, periodFrom: 1, periodTo: 2 });
+    assert.equal(narrowed.totalAmount, 30, "periodFrom/periodTo should exclude period 3");
+  });
+
+  await t.test("getGlSpendDetailPage returns the actual GL lines behind a category, paginated, newest first", async () => {
+    const PERIOD = { periodNumber: 17, fiscalYear: 26 };
+    db.importGlEntries(
+      [
+        { glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 10, nameAlpha: "VERIZON" },
+        { glDate: "2026-09-02", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 20, nameAlpha: "ATT" },
+        { glDate: "2026-09-03", objectAccount: "602210 - Gen B&A~H&W Insurance", amount: 999 },
+      ],
+      PERIOD.periodNumber,
+      PERIOD.fiscalYear,
+      "ADMIN",
+      "t-detail.xlsx"
+    );
+
+    const page1 = db.getGlSpendDetailPage({ category: "Cell Phone", ...PERIOD, pageSize: 1, page: 1 });
+    assert.equal(page1.total, 2, "only the two Cell Phone lines, not the H&W Insurance one");
+    assert.equal(page1.items.length, 1);
+    assert.equal(page1.items[0].vendorOrDescription, "ATT", "newest GL date first");
+
+    const page2 = db.getGlSpendDetailPage({ category: "Cell Phone", ...PERIOD, pageSize: 1, page: 2 });
+    assert.equal(page2.items[0].vendorOrDescription, "VERIZON");
+
+    const res = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown/detail?${new URLSearchParams({ category: "Cell Phone", periodNumber: String(PERIOD.periodNumber), fiscalYear: String(PERIOD.fiscalYear) })}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.total, 2);
+  });
+
+  await t.test("a technician can't reach the Spend Breakdown detail route", async () => {
+    const res = await server.call("GET", "/api/admin/gl/spend-breakdown/detail", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("fiscal-calendar route returns that fiscal year's own period/month list", async () => {
+    const res = await server.call("GET", "/api/admin/gl/fiscal-calendar?fiscalYear=26", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((p) => p.periodNumber === 9 && p.monthName === "September"));
+    assert.equal(res.body.length, 12);
+  });
+});

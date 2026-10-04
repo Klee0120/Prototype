@@ -34,6 +34,7 @@ const COLUMN_MAP = {
   "Name - Alpha Explanation": "nameAlpha",
   "Name - Remark Explanation": "remark",
   "Purchase Order": "purchaseOrder",
+  "Subledger - G/L": "subledgerGl",
 };
 
 function toIsoDate(value) {
@@ -93,6 +94,7 @@ function parseWorkbook(buffer) {
       nameAlpha: mapped.nameAlpha != null ? String(mapped.nameAlpha).trim() : null,
       remark: mapped.remark != null ? String(mapped.remark).trim() : null,
       purchaseOrder: mapped.purchaseOrder,
+      subledgerGl: toCleanString(mapped.subledgerGl),
     });
   }
 
@@ -179,6 +181,15 @@ router.get("/status", (req, res) => {
   res.json({ ...db.getGlImportStatus(), coverage: db.getGlFiscalYearCoverage() });
 });
 
+// The fiscal calendar's own period/month names for one fiscal year -- backs
+// Spend Breakdown's "fiscal month to fiscal month" range filter (see
+// db.getGlFiscalYearCoverage, which already has this same period list for
+// GL Reconciliation's coverage strip).
+router.get("/fiscal-calendar", (req, res) => {
+  const fiscalYear = req.query.fiscalYear ? Number(req.query.fiscalYear) : undefined;
+  res.json(db.getGlFiscalYearCoverage(fiscalYear));
+});
+
 // Cheap aggregate-only counts/totals for the summary tiles -- see
 // db.getGlReconciliationSummary for why this is split out from the
 // paginated lists below rather than computed alongside them.
@@ -211,17 +222,46 @@ router.get("/reconciliation/no-po-reference", (req, res) => {
 // (phone, health insurance, software license, etc. -- see
 // db.getGlSpendBreakdown) and by territory -- the Spend Breakdown view's
 // pie chart and legend. territory is optional and matches the global
-// topbar territory filter's own values. Scoped by default to GL lines with
-// no PO reference (see db.getGlSpendBreakdown); pass
-// noPoReferenceOnly=false to see every GL line instead.
+// topbar territory filter's own values. fiscalYear alone scopes to every
+// period in that year combined; periodFrom/periodTo (inclusive) narrow
+// that to a fiscal-month range within the year; fiscalYear + periodNumber
+// scopes to one exact month. Scoped by default to GL lines with no PO
+// reference and no WOM reference (see db.getGlSpendBreakdown); pass
+// noPoReferenceOnly=false and/or noWomReferenceOnly=false to widen either.
 router.get("/spend-breakdown", (req, res) => {
-  const { territory, periodNumber, fiscalYear, noPoReferenceOnly } = req.query || {};
+  const { territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly } = req.query || {};
   res.json(
     db.getGlSpendBreakdown({
       territory: territory || null,
       periodNumber: periodNumber ? Number(periodNumber) : null,
       fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+      periodFrom: periodFrom ? Number(periodFrom) : null,
+      periodTo: periodTo ? Number(periodTo) : null,
       noPoReferenceOnly: noPoReferenceOnly == null ? true : noPoReferenceOnly !== "false",
+      noWomReferenceOnly: noWomReferenceOnly == null ? true : noWomReferenceOnly !== "false",
+    })
+  );
+});
+
+// The actual GL lines behind one Spend Breakdown row -- a category or a
+// territory, clicked to see what's really in it (see
+// db.getGlSpendDetailPage). Same filters as /spend-breakdown, plus
+// optional category/territory to pick the slice and page/pageSize to
+// paginate it.
+router.get("/spend-breakdown/detail", (req, res) => {
+  const { category, territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, page, pageSize } = req.query || {};
+  res.json(
+    db.getGlSpendDetailPage({
+      category: category || null,
+      territory: territory || null,
+      periodNumber: periodNumber ? Number(periodNumber) : null,
+      fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+      periodFrom: periodFrom ? Number(periodFrom) : null,
+      periodTo: periodTo ? Number(periodTo) : null,
+      noPoReferenceOnly: noPoReferenceOnly == null ? true : noPoReferenceOnly !== "false",
+      noWomReferenceOnly: noWomReferenceOnly == null ? true : noWomReferenceOnly !== "false",
+      page,
+      pageSize,
     })
   );
 });
