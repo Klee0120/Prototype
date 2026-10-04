@@ -74,6 +74,10 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
   // vendor that isn't active/approved, has outdated forms, or was just
   // denied is left off entirely rather than shown with a different badge,
   // since a vendor just *appearing* here reads as "this is fine to use."
+  function splitServices(raw) {
+    return (raw || "").split("|").map((s) => s.trim()).filter(Boolean);
+  }
+
   async function drawApprovedVendors(content) {
     const vendors = await api.get("/api/vendors");
     content.innerHTML = `
@@ -87,6 +91,17 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     `;
     const countEl = content.querySelector(".vendor-count");
     const listEl = content.querySelector("#tech-vendor-list");
+
+    // Other approved vendors sharing at least one service with this one --
+    // a quick "who else could I call for this" list, right next to the
+    // vendor itself instead of a separate search.
+    function similarVendors(v) {
+      const myServices = new Set(splitServices(v.services));
+      if (myServices.size === 0) return [];
+      return vendors
+        .filter((other) => other.id !== v.id && splitServices(other.services).some((s) => myServices.has(s)))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
 
     function renderList(query) {
       const q = query.trim().toLowerCase();
@@ -103,16 +118,28 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
         .slice()
         .sort((a, b) => a.name.localeCompare(b.name))
         .forEach((v) => {
+          const similar = similarVendors(v);
           const row = document.createElement("div");
           row.className = "review-row";
           row.innerHTML = `
             <div class="review-row-summary">
               <span class="review-row-name">${escapeHtml(v.name)}</span>
-              ${v.services ? `<span class="wom-desc">${escapeHtml(v.services)}</span>` : ""}
+              ${v.services ? `<span class="wom-desc">${escapeHtml(splitServices(v.services).join(", "))}</span>` : ""}
               ${v.phone ? `<span class="vendor-jde">${escapeHtml(v.phone)}</span>` : ""}
               ${v.email ? `<span class="vendor-jde">${escapeHtml(v.email)}</span>` : ""}
+              <span class="wom-desc">Last invoiced: ${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "not yet"}</span>
+              <button type="button" class="btn btn-link tech-vendor-schedule-btn">Schedule work &rarr;</button>
             </div>
+            ${
+              similar.length > 0
+                ? `<div class="attachment-subtext">Other vendors for similar work: ${similar.map((s) => escapeHtml(s.name)).join(", ")}</div>`
+                : ""
+            }
           `;
+          row.querySelector(".tech-vendor-schedule-btn").addEventListener("click", () => {
+            activeTab = "schedule";
+            draw();
+          });
           listEl.appendChild(row);
         });
     }

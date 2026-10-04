@@ -35,6 +35,7 @@ function presentVendorForLookup(v) {
     email: v.email,
     services: v.services,
     onlineSourceUrl: v.onlineSourceUrl,
+    lastInvoicedAt: v.lastInvoicedAt,
   };
 }
 

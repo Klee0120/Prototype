@@ -66,7 +66,8 @@ test("vendor lookup (technician-facing): gated on real-world status, not the cas
   await t.test("the returned shape is narrow -- no onboarding/compliance internals leak through", async () => {
     const res = await server.call("GET", "/api/vendors", { userId: "T1001" });
     const v = res.body.find((v) => v.id === legacyId);
-    assert.deepEqual(Object.keys(v).sort(), ["email", "id", "name", "onlineSourceUrl", "phone", "services"].sort());
+    assert.deepEqual(Object.keys(v).sort(), ["email", "id", "lastInvoicedAt", "name", "onlineSourceUrl", "phone", "services"].sort());
+    assert.equal(v.lastInvoicedAt, null, "a vendor with no invoiced WOMs yet should read null, not undefined or missing");
   });
 
   await t.test("an admin sees the same filtered list through this endpoint too", async () => {
