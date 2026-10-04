@@ -17,6 +17,10 @@ const TASK_DOC_CATEGORIES = [
   { value: "vpo_waiver", label: "VPO Waiver" },
   { value: "vendor_other", label: "Other Vendor Document" },
   { value: "document", label: "Document" },
+  // The vendor invoice AP already has on hand for an ap_invoice_backfill
+  // po_request task -- distinct from the generated PO document itself,
+  // which the task's own Mark PO generated step uploads separately.
+  { value: "ap_invoice", label: "AP Invoice" },
 ];
 
 // The one reusable task board both the admin Priorities section and the
@@ -1730,6 +1734,17 @@ export async function renderTaskBoard(container) {
   // C&W PO" flow): they generated the real PO outside the app and are
   // reporting that back here.
   function renderPoRequestActions(host, t, onDone) {
+    // Reactive admin work (AP already has an invoice, nobody requested a
+    // PO) reads very differently from a tech's own request -- called out up
+    // front so it's never mistaken for an unfulfilled tech request sitting
+    // too long, and so the AP Invoice upload below makes sense at a glance.
+    const originBanner =
+      t.poOrigin === "ap_invoice_backfill"
+        ? `<p class="review-checklist-hint task-po-origin-banner">
+             AP already has a vendor invoice for this with no PO on file -- upload it below, then
+             generate and attach the missing PO.
+           </p>`
+        : "";
     // Auto-matched on import once the real PO shows up in the Budget PO
     // Tracker with this task's "PO Request Task #<id>" reference in its
     // Description (see db.linkPoRequestTaskFromImport) -- purely
@@ -1744,6 +1759,7 @@ export async function renderTaskBoard(container) {
          </p>`
       : "";
     host.innerHTML = `
+      ${originBanner}
       ${matchedBanner}
       <div class="review-actions"><button type="button" class="btn btn-primary po-request-generated-btn">Mark PO generated</button></div>
     `;

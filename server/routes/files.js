@@ -32,7 +32,11 @@ const CATEGORY_BY_RELATED = {
   // (or the task) being tied to any vendor. Same category vocabulary as
   // `vendor` above, so filing it onto the real vendor record later is a
   // straight re-upload with no re-labeling.
-  task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document", "po_document"]),
+  // "ap_invoice" is the vendor invoice AP already has on hand for an
+  // ap_invoice_backfill po_request task (see POST /tasks/request-po) --
+  // distinct from po_document (the generated PO itself), since this task
+  // needs both on file to show the gap was actually closed.
+  task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document", "po_document", "ap_invoice"]),
   // Budget PO Tracker records -- admin-only, same reasoning as vendor/task
   // compliance documents below.
   po: new Set(["po_doc", "document"]),

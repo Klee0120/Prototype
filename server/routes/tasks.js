@@ -102,6 +102,7 @@ function presentTask(t) {
     referredToAdminAt: t.referred_to_admin_at,
     poStage: t.po_stage,
     poGeneratedAt: t.po_generated_at,
+    poOrigin: t.po_origin || "tech_requested",
     matchedPoId: t.matched_po_id,
     matchedPoNumber: matchedPo ? matchedPo.poNumber : null,
     matchedPoVendorName: matchedPo ? matchedPo.vendorName : null,
@@ -267,6 +268,14 @@ router.get("/assignable-admins", requireAuth, (req, res) => {
   );
 });
 
+// Admin-only: the raw turnaround figures behind the two PO-request origins
+// (see PO_REQUEST_ORIGINS further down) -- not a full dashboard, just the
+// numbers a quick glance at Budget PO Tracker needs. Same "/:id" swallow
+// risk as /summary and /assignable-admins above, so it's registered here.
+router.get("/po-turnaround-kpis", requireAuth, requireAdmin, (req, res) => {
+  res.json(db.getPoRequestTurnaroundStats());
+});
+
 router.get("/:id", requireAuth, (req, res) => {
   const task = db.findTask(Number(req.params.id));
   if (!task) return res.status(404).json({ error: "Task not found" });
@@ -392,9 +401,29 @@ router.post("/", requireAuth, (req, res) => {
 // on an admin and how long it's been. The tech still reaches the Smartsheet
 // form the same way they always did (the frontend opens it right after this
 // call succeeds); this just also creates the task that chases it.
+// origin: "tech_requested" (default -- someone is asking for a PO) or
+// "ap_invoice_backfill" -- AP already has a vendor invoice in hand with no
+// PO on file for it at all, so an admin generates the missing PO after the
+// fact; no tech ever requested it. Kept as the same category/route (same
+// "PO Request Task #<id>" reference, same import-matching, same Mark PO
+// generated step) since the only real difference is which situation
+// triggered it and how that's measured -- see getPoRequestTurnaroundStats.
+const PO_REQUEST_ORIGINS = ["tech_requested", "ap_invoice_backfill"];
+
 router.post("/request-po", requireAuth, (req, res) => {
   const { womCode, assignedTo, note } = req.body || {};
+  const origin = req.body && req.body.origin ? req.body.origin : "tech_requested";
   if (!assignedTo) return res.status(400).json({ error: "assignedTo is required" });
+  if (!PO_REQUEST_ORIGINS.includes(origin)) {
+    return res.status(400).json({ error: `origin must be one of: ${PO_REQUEST_ORIGINS.join(", ")}` });
+  }
+  // An AP-invoice backfill is reactive admin work, not a request someone is
+  // waiting on -- requiring it come from an admin keeps the "who's it
+  // waiting on" framing in the title/audit line honest (a tech "requesting"
+  // a PO for a gap only AP noticed wouldn't make sense).
+  if (origin === "ap_invoice_backfill" && req.user.role !== "admin") {
+    return res.status(403).json({ error: "Only an admin can log an AP-invoice PO backfill" });
+  }
 
   // A WOM is optional -- a tech can ask for a C&W PO without tying it to a
   // specific WOM project at all (e.g. a general supply/service PO). When
@@ -407,8 +436,15 @@ router.post("/request-po", requireAuth, (req, res) => {
   const admin = db.listAdmins().find((a) => a.id === assignedTo && a.active);
   if (!admin) return res.status(400).json({ error: "assignedTo must be a real, active admin account" });
 
+  const title =
+    origin === "ap_invoice_backfill"
+      ? `AP Invoice Received -- Generating PO for Missing Line${wom ? ` (${womCode})` : ""}`
+      : wom
+        ? `Generate C&W PO for ${womCode}`
+        : `Generate C&W PO requested by ${req.user.name}`;
+
   const task = db.createTask({
-    title: wom ? `Generate C&W PO for ${womCode}` : `Generate C&W PO requested by ${req.user.name}`,
+    title,
     description: note || "",
     assignedTo: admin.id,
     assignedRole: "admin",
@@ -421,12 +457,15 @@ router.post("/request-po", requireAuth, (req, res) => {
     source: "po_request",
     createdBy: req.user.id,
     poStage: "requested",
+    poOrigin: origin,
   });
 
   db.addAudit(
     req.user.id,
     "PO_REQUESTED",
-    `${req.user.name} requested a C&W PO${wom ? ` for ${womCode}` : ""}, routed to ${admin.name}`
+    origin === "ap_invoice_backfill"
+      ? `${req.user.name} logged an AP-invoice PO backfill${wom ? ` for ${womCode}` : ""}, routed to ${admin.name}`
+      : `${req.user.name} requested a C&W PO${wom ? ` for ${womCode}` : ""}, routed to ${admin.name}`
   );
   res.status(201).json(presentTask(task));
 });

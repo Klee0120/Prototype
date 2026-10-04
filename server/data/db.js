@@ -1068,6 +1068,19 @@ if (!hasColumn("tasks", "po_generated_at")) {
 if (!hasColumn("tasks", "matched_po_id")) {
   db.exec("ALTER TABLE tasks ADD COLUMN matched_po_id INTEGER");
 }
+// Which situation created this po_request task -- "tech_requested" (the
+// normal flow: a tech asked for a PO, see POST /tasks/request-po) vs.
+// "ap_invoice_backfill" (AP already received a vendor invoice with no PO
+// on file at all -- an admin generates the missing PO after the fact,
+// with no tech ever having asked for one). These measure two genuinely
+// different things: the first is "how long did it take to fulfill a
+// request," the second is "how long did it take to notice and fix a gap"
+// -- averaging them together would misrepresent both. NULL (every row
+// before this column existed) is treated as "tech_requested" everywhere
+// this is read, since that was the only flow before this one existed.
+if (!hasColumn("tasks", "po_origin")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN po_origin TEXT");
+}
 if (!tableExists("task_reschedules")) {
   db.exec(`
     CREATE TABLE task_reschedules (
@@ -4166,8 +4179,8 @@ function createTask(fields) {
       `INSERT INTO tasks (source_key, title, description, assigned_to, assigned_role, category, priority, due_at,
        status, related_wom_code, related_vendor_id, related_location_code, related_tech_id, related_po, related_po_id,
        source, source_record_id, workflow_rule, is_exception, is_change_order, created_by, created_at, assigned_at, last_status_change_at,
-       po_stage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       po_stage, po_origin)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.sourceKey || null,
@@ -4193,7 +4206,8 @@ function createTask(fields) {
       now,
       assignedTo ? now : null,
       now,
-      fields.poStage || null
+      fields.poStage || null,
+      fields.poOrigin || null
     );
   const created = findTask(Number(result.lastInsertRowid));
   maybeNotifyTaskAssignee(created);
@@ -4406,6 +4420,28 @@ function markTaskPoGenerated(id, { vendorId } = {}) {
      due_at = ?, snoozed_until = NULL, last_status_change_at = ? WHERE id = ?`
   ).run(vendorId || existing.related_vendor_id || null, now, dueAt, now, id);
   return findTask(id);
+}
+
+// Tech-requested and AP-invoice-backfill po_request tasks measure two
+// different things -- "how long to fulfill a request someone made" vs "how
+// long to notice and fix a gap nobody flagged" -- so they're kept in
+// separate buckets rather than one blended average. Only counts a task
+// that's actually reached po_generated_at (created_at to po_generated_at
+// is the turnaround figure); a still-open request has nothing to measure
+// yet. NULL po_origin (every row from before that column existed) reads as
+// "tech_requested", the only flow that existed then.
+function getPoRequestTurnaroundStats() {
+  const rows = db
+    .prepare("SELECT po_origin, created_at, po_generated_at FROM tasks WHERE category = 'po_request' AND po_generated_at IS NOT NULL")
+    .all();
+  const hoursFor = (r) => (new Date(r.po_generated_at).getTime() - new Date(r.created_at).getTime()) / 3600000;
+  const techRequested = rows.filter((r) => r.po_origin !== "ap_invoice_backfill").map(hoursFor);
+  const apInvoiceBackfill = rows.filter((r) => r.po_origin === "ap_invoice_backfill").map(hoursFor);
+  const summarize = (hours) => ({
+    count: hours.length,
+    avgHours: hours.length ? round2(hours.reduce((a, b) => a + b, 0) / hours.length) : null,
+  });
+  return { techRequested: summarize(techRequested), apInvoiceBackfill: summarize(apInvoiceBackfill) };
 }
 
 // A flat week rather than deriving each recurring task's own exact cadence
@@ -7383,6 +7419,7 @@ module.exports = {
   listTaskReschedules,
   assignTask,
   markTaskPoGenerated,
+  getPoRequestTurnaroundStats,
   addTaskComment,
   listTaskComments,
   listTasks,

@@ -43,13 +43,14 @@ export async function renderPos(container, { openPoId } = {}) {
   let listCache = null;
   let locationsCache = null;
   let lastImport = null;
+  let poKpisCache = null;
 
   draw();
 
   async function draw() {
     renderLoadingState(container, loadingLabelFor("Budget PO Tracker"));
     try {
-      [listCache, lastImport, locationsCache] = await Promise.all([
+      [listCache, lastImport, locationsCache, poKpisCache] = await Promise.all([
         api.get(
           `/api/admin/pos?${new URLSearchParams({
             lifecycleStatus: subTab,
@@ -63,6 +64,7 @@ export async function renderPos(container, { openPoId } = {}) {
         ),
         api.get("/api/admin/pos/last-import"),
         locationsCache || api.get("/api/locations"),
+        poKpisCache || api.get("/api/tasks/po-turnaround-kpis").catch(() => null),
       ]);
     } catch (err) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -86,6 +88,15 @@ export async function renderPos(container, { openPoId } = {}) {
     return `Last import: ${when} — ${lastImport.created_count} new, ${lastImport.updated_count} updated, ${lastImport.missing_count} not seen in that file.`;
   }
 
+  // "How long to fulfill a request" vs "how long to notice and fix a gap"
+  // -- see server's getPoRequestTurnaroundStats for why these are kept
+  // separate rather than one blended average.
+  function poKpisLine() {
+    if (!poKpisCache) return "";
+    const fmt = (s) => (s.count ? `avg ${s.avgHours < 24 ? `${s.avgHours}h` : `${(s.avgHours / 24).toFixed(1)}d`} (${s.count})` : "none yet");
+    return `PO turnaround -- tech-requested: ${fmt(poKpisCache.techRequested)} · AP-invoice backfills: ${fmt(poKpisCache.apInvoiceBackfill)}`;
+  }
+
   function drawList() {
     const needsCount = subTab === "needs_organization" ? listCache.length : null;
     container.innerHTML = `
@@ -94,8 +105,10 @@ export async function renderPos(container, { openPoId } = {}) {
         <button type="button" class="btn btn-primary po-import-btn">Import Excel</button>
         <input type="file" class="po-import-file" accept=".xlsx,.xls" hidden />
         <button type="button" class="btn btn-outline po-request-cw-po-btn">+ Request C&amp;W PO ↗</button>
+        <button type="button" class="btn btn-outline po-ap-invoice-btn">+ PO for AP Invoice ↗</button>
       </div>
       <p class="review-checklist-hint">${escapeHtml(lastImportLine())}${getTerritory() ? ` Showing <strong>${escapeHtml(getTerritory())}</strong> only.` : ""}</p>
+      <p class="review-checklist-hint">${poKpisLine()}</p>
       <div class="pill-toggle-group po-subtabs">
         <button type="button" class="pill-toggle-btn ${subTab === "active" ? "active" : ""}" data-subtab="active">Active POs</button>
         <button type="button" class="pill-toggle-btn ${subTab === "needs_organization" ? "active" : ""}" data-subtab="needs_organization">Needs Organization</button>
@@ -127,7 +140,8 @@ export async function renderPos(container, { openPoId } = {}) {
     container.querySelector(".po-import-btn").addEventListener("click", () => {
       container.querySelector(".po-import-file").click();
     });
-    container.querySelector(".po-request-cw-po-btn").addEventListener("click", openRequestCwPoModal);
+    container.querySelector(".po-request-cw-po-btn").addEventListener("click", () => openRequestCwPoModal("tech_requested"));
+    container.querySelector(".po-ap-invoice-btn").addEventListener("click", () => openRequestCwPoModal("ap_invoice_backfill"));
     container.querySelector(".po-import-file").addEventListener("change", async (e) => {
       const file = e.target.files[0];
       e.target.value = "";
@@ -351,7 +365,18 @@ export async function renderPos(container, { openPoId } = {}) {
   // openRequestCwPoModal), so a PO requested from here is just as visible
   // in Task Manager, whether the admin is routing it to themselves or to
   // whoever actually owns that territory.
-  async function openRequestCwPoModal() {
+  //
+  // Also reused for the "+ PO for AP Invoice" button (origin:
+  // "ap_invoice_backfill") -- AP already has a vendor invoice with no PO on
+  // file at all, so an admin is generating the missing PO after the fact
+  // rather than fulfilling a tech's request. Same task category, same
+  // reference-number/import-matching/Mark PO generated machinery either
+  // way -- see server/routes/tasks.js's PO_REQUEST_ORIGINS -- just a
+  // different title/copy and a separate KPI bucket (see
+  // getPoRequestTurnaroundStats), since "how long to fulfill a request"
+  // and "how long to notice and fix a gap" measure different things.
+  async function openRequestCwPoModal(origin = "tech_requested") {
+    const isBackfill = origin === "ap_invoice_backfill";
     let admins;
     try {
       admins = await api.get("/api/tasks/assignable-admins");
@@ -360,9 +385,14 @@ export async function renderPos(container, { openPoId } = {}) {
       return;
     }
     const { body } = openModal({
-      title: "Request a C&W PO",
+      title: isBackfill ? "Log an AP-Invoice PO Backfill" : "Request a C&W PO",
       bodyHtml: `
         <form class="modal-form request-po-form">
+          ${
+            isBackfill
+              ? `<p class="review-checklist-hint">For a vendor invoice AP already has on hand with no PO on file -- this logs the gap and tracks generating the missing PO.</p>`
+              : ""
+          }
           <label class="profile-field">
             <span>Which admin should generate it?</span>
             <select name="assignedTo" required>
@@ -372,7 +402,7 @@ export async function renderPos(container, { openPoId } = {}) {
           </label>
           <label class="profile-field">
             <span>Note (optional)</span>
-            <textarea name="note" rows="3" placeholder="What's this PO for?"></textarea>
+            <textarea name="note" rows="3" placeholder="${isBackfill ? "Vendor / invoice details" : "What's this PO for?"}"></textarea>
           </label>
           <div class="modal-form-actions">
             <button type="submit" class="btn btn-primary">Submit Task</button>
@@ -401,6 +431,7 @@ export async function renderPos(container, { openPoId } = {}) {
         const created = await api.post("/api/tasks/request-po", {
           assignedTo: form.assignedTo.value,
           note: form.note.value.trim(),
+          origin,
         });
         renderRequestPoConfirmation(body, created);
       } catch (err) {
