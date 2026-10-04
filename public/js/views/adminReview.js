@@ -1653,6 +1653,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   async function renderVendorDocumentsTab(host, v) {
     host.innerHTML = `<div class="vendor-documents-panel"></div><div class="vendor-assign-task-doc-host"></div>`;
     const documentsPanel = host.querySelector(".vendor-documents-panel");
+    // A VPO waiver is only needed when the vendor's COI falls short of the
+    // standard required limits or language requirements -- it's the sign-off
+    // on that exception, not a blanket requirement every vendor needs.
+    const requiredCategories = ["coi", "w9", "ach", "blank_invoice"];
+    if (!v.coiMeetsRequiredLimits || !v.coiMeetsLanguageRequirements) requiredCategories.push("vpo_waiver");
     const refreshDocumentsPanel = () =>
       renderAttachments(documentsPanel, {
         title: "Vendor Documents",
@@ -1661,7 +1666,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         categories: VENDOR_DOC_CATEGORIES,
         canUpload: true,
         trackExpiration: true,
-        requiredCategories: ["coi", "w9", "ach", "vpo_waiver", "blank_invoice"],
+        requiredCategories,
         emptyText: "No documents on file yet.",
       });
     await refreshDocumentsPanel();
