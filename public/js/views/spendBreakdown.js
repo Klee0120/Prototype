@@ -17,6 +17,24 @@ const OTHER_COLOR = "#8a8a86";
 const MAX_SLICES = PALETTE.length - 1; // one slot reserved for "Other"
 const DETAIL_PAGE_SIZE = 50;
 
+// Display-only friendlier names for a few of GL's own abbreviated category
+// labels -- "Sub" is Toyota's own shorthand for Subcontracting, i.e. the
+// vendor-paid contracted services (landscaping, HVAC, janitorial, etc.)
+// that only show up once the PO-reference toggle is checked. The category
+// used for filtering/the drill-down query is always the real GL label
+// (see data-category below) -- this only swaps what's shown on screen.
+const CATEGORY_DISPLAY_NAMES = {
+  "Sub Recur Labor": "Contracted Services – Recurring Labor",
+  "Sub NonRecur Lab": "Contracted Services – Non-Recurring Labor",
+  "Sub Recur Matl": "Contracted Services – Recurring Materials",
+  "Sub NonRecur Matl": "Contracted Services – Non-Recurring Materials",
+  "Sub NonRecur MatlX": "Contracted Services – Non-Recurring Materials (X)",
+};
+
+function displayCategoryName(category) {
+  return CATEGORY_DISPLAY_NAMES[category] || category;
+}
+
 function polarToCartesian(cx, cy, r, angleDeg) {
   const rad = ((angleDeg - 90) * Math.PI) / 180;
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
@@ -47,7 +65,7 @@ function buildChartSlices(categories) {
   const top = positive.slice(0, MAX_SLICES);
   const rest = positive.slice(MAX_SLICES);
   const otherTotal = rest.reduce((sum, c) => sum + c.total, 0);
-  const slices = top.map((c, i) => ({ label: c.category, total: c.total, color: PALETTE[i] }));
+  const slices = top.map((c, i) => ({ label: displayCategoryName(c.category), total: c.total, color: PALETTE[i] }));
   if (otherTotal > 0) slices.push({ label: `Other (${rest.length})`, total: otherTotal, color: OTHER_COLOR });
   return slices;
 }
@@ -326,7 +344,7 @@ export async function renderSpendBreakdown(container) {
             const barPct = Math.min(100, (Math.abs(c.total) / maxCategoryTotal) * 100);
             return `
           <tr class="spend-drill-row" data-category="${escapeHtml(c.category)}" tabindex="0">
-            <td>${escapeHtml(c.category)}</td>
+            <td>${escapeHtml(displayCategoryName(c.category))}</td>
             <td class="${c.total < 0 ? "cost-amount-danger" : ""}">${formatMoney(c.total)}</td>
             <td>${c.count.toLocaleString()}</td>
             <td class="spend-bar-cell"><span class="spend-bar" style="width:${barPct}%"></span></td>
@@ -402,7 +420,7 @@ function formatGlDetailRow(item) {
 // for, and when" instead of just a total. Same filters as the row it was
 // clicked from, so the modal's own total always lines up with the row.
 async function openSpendDetailModal({ category, territory, territoryGlobal, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, fyLabel }) {
-  const title = category ? `${category} -- GL lines` : `${territory} -- GL lines`;
+  const title = category ? `${displayCategoryName(category)} -- GL lines` : `${territory} -- GL lines`;
   const { body } = openModal({ title, bodyHtml: `<div class="spend-detail-modal-body">Loading…</div>`, size: "large" });
 
   let page = 1;
