@@ -1798,6 +1798,7 @@ function presentVendorRow(v) {
     createdAt: v.created_at,
     updatedAt: v.updated_at,
     openTaskCount: countOpenVendorTasks(v.id),
+    expiredComplianceCategories: listExpiredVendorComplianceCategories(v.id),
     ...getVendorContractedSummary(v.id),
   };
 }
@@ -3391,13 +3392,21 @@ function vendorComplianceTaskSourceKey(vendorId) {
 // doesn't carry on its own, since expiration lives per-document on the
 // files table, not on the vendor row.
 function vendorHasExpiredComplianceDoc(vendorId) {
-  const row = db
+  return listExpiredVendorComplianceCategories(vendorId).length > 0;
+}
+
+// Which of a vendor's COI/W-9/ACH categories currently have an expired
+// upload on file -- the detail behind vendorHasExpiredComplianceDoc's
+// boolean, needed to tell the vendor specifically what to resend rather
+// than just that something is wrong.
+function listExpiredVendorComplianceCategories(vendorId) {
+  const rows = db
     .prepare(
-      `SELECT 1 FROM files WHERE related_type = 'vendor' AND related_id = ? AND category IN ('coi', 'w9', 'ach')
-       AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 1`
+      `SELECT DISTINCT category FROM files WHERE related_type = 'vendor' AND related_id = ? AND category IN ('coi', 'w9', 'ach')
+       AND expires_at IS NOT NULL AND expires_at <= ?`
     )
-    .get(String(vendorId), new Date().toISOString().slice(0, 10));
-  return Boolean(row);
+    .all(String(vendorId), new Date().toISOString().slice(0, 10));
+  return rows.map((r) => r.category);
 }
 
 // Why a vendor currently needs a compliance follow-up -- shown on the task
@@ -6989,6 +6998,7 @@ module.exports = {
   VENDOR_DENIAL_REASONS,
   denyVendor,
   reinstateVendor,
+  listExpiredVendorComplianceCategories,
   addVendorRemark,
   listVendorRemarks,
   WOM_COST_REVIEW_STATUSES,

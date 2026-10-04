@@ -1651,7 +1651,35 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   async function renderVendorDocumentsTab(host, v) {
-    host.innerHTML = `<div class="vendor-documents-panel"></div><div class="vendor-assign-task-doc-host"></div>`;
+    const expiredCategories = v.expiredComplianceCategories || [];
+    const expiredLabels = expiredCategories.map(
+      (c) => (VENDOR_DOC_CATEGORIES.find((cat) => cat.value === c) || {}).label || c
+    );
+    host.innerHTML = `
+      ${
+        expiredCategories.length > 0
+          ? `<div class="vendor-expired-docs-banner">
+               <span>${escapeHtml(expiredLabels.join(", "))} expired on file.</span>
+               <button type="button" class="btn btn-secondary danger-link vendor-notify-expired-btn" ${v.email ? "" : "disabled title=\"No email on file for this vendor\""}>Notify vendor</button>
+             </div>`
+          : ""
+      }
+      <div class="vendor-documents-panel"></div><div class="vendor-assign-task-doc-host"></div>
+    `;
+    const notifyBtn = host.querySelector(".vendor-notify-expired-btn");
+    if (notifyBtn) {
+      notifyBtn.addEventListener("click", async () => {
+        notifyBtn.disabled = true;
+        try {
+          const result = await api.post(`/api/admin/vendors/${v.id}/notify-expired-docs`, {});
+          window.alert(result.sent ? `Notification sent to ${v.email}.` : `Logged, but not actually delivered -- email isn't configured on this server.`);
+        } catch (err) {
+          window.alert(err.message);
+        } finally {
+          notifyBtn.disabled = false;
+        }
+      });
+    }
     const documentsPanel = host.querySelector(".vendor-documents-panel");
     // A VPO waiver is only needed when the vendor's COI falls short of the
     // standard required limits or language requirements -- it's the sign-off

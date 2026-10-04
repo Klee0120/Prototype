@@ -615,3 +615,70 @@ test("vendors: explicit denial (cost/service, not just a document case) + reinst
     assert.equal(reinstateRes.status, 404);
   });
 });
+
+test("vendors: notify vendor of an expired COI/W-9/ACH document", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let vendorId;
+
+  await t.test("set up a vendor with no documents on file", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Expiring Docs Co", email: "ops@expiringdocs.test" },
+    });
+    vendorId = res.body.id;
+  });
+
+  await t.test("a technician cannot trigger the notification", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/notify-expired-docs`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("nothing expired yet -- rejected", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/notify-expired-docs`, { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /no expired/i);
+  });
+
+  await t.test("after a COI expires, it's listed and the vendor's list shows it too", async () => {
+    await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(vendorId), category: "coi", expiresAt: "2020-01-01" },
+      fileName: "coi.pdf",
+    });
+    const list = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const v = list.body.find((v2) => v2.id === vendorId);
+    assert.deepEqual(v.expiredComplianceCategories, ["coi"]);
+
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/notify-expired-docs`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.categories, ["coi"]);
+    // No SMTP configured in tests -- the route still succeeds, just reports it wasn't actually delivered.
+    assert.equal(res.body.sent, false);
+  });
+
+  await t.test("the notification is audited", async () => {
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = audit.body.find((e) => e.action === "VENDOR_NOTIFIED_EXPIRED_DOCS");
+    assert.ok(entry);
+    assert.match(entry.details, /Expiring Docs Co/);
+    assert.match(entry.details, /Certificate of Insurance/);
+  });
+
+  await t.test("a vendor with no email on file is rejected", async () => {
+    const noEmail = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "No Email Co" } });
+    await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(noEmail.body.id), category: "w9", expiresAt: "2020-01-01" },
+      fileName: "w9.pdf",
+    });
+    const res = await server.call("POST", `/api/admin/vendors/${noEmail.body.id}/notify-expired-docs`, { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /no email/i);
+  });
+
+  await t.test("an unknown vendor 404s", async () => {
+    const res = await server.call("POST", "/api/admin/vendors/999999/notify-expired-docs", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+});

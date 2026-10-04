@@ -1,9 +1,12 @@
 const express = require("express");
 const db = require("../data/db");
+const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
+
+const EXPIRED_DOC_LABELS = { coi: "Certificate of Insurance (COI)", w9: "W-9", ach: "ACH / banking details" };
 
 function validateVendorBody(body) {
   const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage } = body || {};
@@ -107,6 +110,36 @@ router.patch("/:id/preferred", (req, res) => {
 
 router.get("/denial-reasons", (req, res) => {
   res.json(db.VENDOR_DENIAL_REASONS);
+});
+
+// Explicit, admin-triggered -- not an automatic background check, since
+// there's no scheduler for compliance the way there is for Smartsheet sync.
+// Sending it is a real action worth a confirm click and its own audit line,
+// same as "Mark sent" elsewhere in onboarding.
+router.post("/:id/notify-expired-docs", async (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const expiredCategories = db.listExpiredVendorComplianceCategories(vendor.id);
+  if (expiredCategories.length === 0) {
+    return res.status(400).json({ error: "No expired COI/W-9/ACH document on file for this vendor" });
+  }
+  if (!vendor.email) {
+    return res.status(400).json({ error: "This vendor has no email on file" });
+  }
+  const labels = expiredCategories.map((c) => EXPIRED_DOC_LABELS[c] || c);
+  const result = await mailer.sendMail({
+    to: vendor.email,
+    subject: "Document renewal needed on file",
+    text: `Hi ${vendor.name},\n\nThe following document${labels.length === 1 ? " has" : "s have"} expired on file with us and need${
+      labels.length === 1 ? "s" : ""
+    } to be renewed before new work can be scheduled:\n\n- ${labels.join("\n- ")}\n\nPlease send an updated copy at your earliest convenience.\n`,
+  });
+  db.addAudit(
+    req.user.id,
+    "VENDOR_NOTIFIED_EXPIRED_DOCS",
+    `${req.user.name} notified ${vendor.name} (${vendor.email}) about expired ${labels.join(", ")}${result.sent ? "" : " (SMTP not configured -- not actually delivered)"}`
+  );
+  res.json({ ok: true, sent: result.sent, categories: expiredCategories });
 });
 
 // An explicit, admin-driven denial -- independent of any one onboarding
