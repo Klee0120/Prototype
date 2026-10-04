@@ -876,4 +876,12 @@ router.get("/search", (req, res) => {
   res.json({ woms, vendors, pos });
 });
 
+// Per-person KPIs for the Performance tab -- see db.getPerformanceKpis for
+// what's actually computed and why. from/to are optional "YYYY-MM-DD"
+// query params scoping each metric by its own completion date.
+router.get("/performance-kpis", (req, res) => {
+  const { from, to } = req.query || {};
+  res.json(db.getPerformanceKpis({ from: from || null, to: to || null }));
+});
+
 module.exports = router;

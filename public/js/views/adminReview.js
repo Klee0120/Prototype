@@ -11,6 +11,7 @@ import { renderPos } from "./pos.js";
 import { renderReclasses } from "./reclasses.js";
 import { renderInvoicing } from "./invoicing.js";
 import { renderGlReconciliation } from "./gl.js";
+import { renderPerformance } from "./performance.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
@@ -77,6 +78,7 @@ const NAV_SECTIONS = [
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup", "schedule"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
   { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "laborreports"] },
+  { key: "performance", label: "Performance", tabs: ["performance"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
 
@@ -99,6 +101,7 @@ const TAB_LABELS = {
   woms: "WOM Projects",
   womlookup: "WOM Lookup",
   pos: "Budget PO Tracker",
+  performance: "Performance",
   audit: "Audit Trail",
 };
 
@@ -367,6 +370,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     else if (activeTab === "glreconciliation") await renderGlReconciliation(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
+    else if (activeTab === "performance") await renderPerformance(content);
     else await drawAudit(content);
 
     refreshPriorityBadge(myGeneration);

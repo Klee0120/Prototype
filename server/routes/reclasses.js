@@ -255,7 +255,7 @@ router.get("/items/:id/gl-links", (req, res) => {
 
 router.patch("/items/:id", (req, res) => {
   try {
-    const updated = db.updateReclassItem(req.params.id, req.body || {});
+    const updated = db.updateReclassItem(req.params.id, { ...(req.body || {}), updatedBy: req.user.id });
     if (!updated) return res.status(404).json({ error: "Reclass item not found" });
     if (req.body && req.body.status) {
       db.addAudit(req.user.id, "RECLASS_STATUS_CHANGED", `${req.user.name} set reclass #${updated.id} to ${db.RECLASS_STATUS_LABELS[updated.status] || updated.status}`);

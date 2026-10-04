@@ -585,7 +585,7 @@ router.patch("/:id/po-generated", requireAuth, requireAdmin, (req, res) => {
   const poDoc = db.listFiles("task", String(task.id)).find((f) => f.category === "po_document");
   if (!poDoc) return res.status(400).json({ error: "Upload the generated PO document before marking this generated" });
 
-  const updated = db.markTaskPoGenerated(task.id, { vendorId });
+  const updated = db.markTaskPoGenerated(task.id, { vendorId, generatedBy: req.user.id });
 
   mailer
     .sendMail({

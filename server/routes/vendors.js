@@ -294,6 +294,7 @@ router.patch("/:id/requests/:requestId", (req, res) => {
     status,
     note,
     asOf,
+    updatedBy: req.user.id,
   });
   db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated a case for ${vendor.name}`);
   auditStageChangeIfAny(req, vendor);

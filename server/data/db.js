@@ -1081,6 +1081,29 @@ if (!hasColumn("tasks", "matched_po_id")) {
 if (!hasColumn("tasks", "po_origin")) {
   db.exec("ALTER TABLE tasks ADD COLUMN po_origin TEXT");
 }
+// Who actually did the generating -- not assumed from assigned_to, which
+// can drift after the fact (reassigned, claimed by someone else) in a way
+// that would misattribute the Performance tab's PO-turnaround KPI to the
+// wrong person. Set once, in markTaskPoGenerated, off the acting user at
+// that moment.
+if (!hasColumn("tasks", "po_generated_by")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN po_generated_by TEXT");
+}
+// Who resolved/updated a vendor compliance case -- the Performance tab's
+// "vendor docs completed" KPI counts these, same reasoning as
+// po_generated_by above (don't infer from whoever's currently viewing the
+// vendor's profile).
+if (!hasColumn("vendor_requests", "updated_by")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN updated_by TEXT");
+}
+// Set the moment a reclass item's status actually transitions into
+// "submitted" (see updateReclassItem) -- created_at to submitted_at is the
+// Performance tab's reclass-turnaround KPI. Never backdated/recomputed on
+// a later edit once set, same spirit as po_generated_at.
+if (!hasColumn("reclass_items", "submitted_at")) {
+  db.exec("ALTER TABLE reclass_items ADD COLUMN submitted_at TEXT");
+  db.exec("ALTER TABLE reclass_items ADD COLUMN submitted_by TEXT");
+}
 if (!tableExists("task_reschedules")) {
   db.exec(`
     CREATE TABLE task_reschedules (
@@ -2206,6 +2229,8 @@ function presentReclassItem(r) {
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    submittedAt: r.submitted_at,
+    submittedBy: r.submitted_by,
   };
 }
 
@@ -2586,10 +2611,17 @@ function updateReclassItem(id, fields) {
   if (fields.status && !RECLASS_STATUSES.includes(fields.status)) {
     throw new Error(`status must be one of: ${RECLASS_STATUSES.join(", ")}`);
   }
+  const now = new Date().toISOString();
+  // Set once, the moment status actually transitions into "submitted" --
+  // never touched again on a later edit while it stays submitted (or moves
+  // on to confirmed_posted), same spirit as po_generated_at not resetting
+  // on a later refresh. This is the Performance tab's reclass-turnaround
+  // KPI (created_at to submitted_at).
+  const enteringSubmitted = fields.status === "submitted" && existing.status !== "submitted";
   db.prepare(
     `UPDATE reclass_items SET
       comments = ?, path_forward = ?, caused_by = ?, root_cause = ?, impacts_final_invoice = ?,
-      status = ?, confirmed_gl_reference = ?, updated_at = ?
+      status = ?, confirmed_gl_reference = ?, updated_at = ?, submitted_at = ?, submitted_by = ?
      WHERE id = ?`
   ).run(
     fields.comments !== undefined ? fields.comments : existing.comments,
@@ -2599,7 +2631,9 @@ function updateReclassItem(id, fields) {
     fields.impactsFinalInvoice !== undefined ? fields.impactsFinalInvoice : existing.impactsFinalInvoice,
     fields.status || existing.status,
     fields.confirmedGlReference !== undefined ? fields.confirmedGlReference : existing.confirmedGlReference,
-    new Date().toISOString(),
+    now,
+    enteringSubmitted ? now : existing.submittedAt,
+    enteringSubmitted ? fields.updatedBy || null : existing.submittedBy,
     Number(id)
   );
   const updated = findReclassItem(id);
@@ -2838,11 +2872,11 @@ function addVendorRequest(vendorId, requestType, referenceNumber, status, note, 
   return listVendorRequests(vendorId);
 }
 
-function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status, note, asOf }) {
+function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status, note, asOf, updatedBy }) {
   const now = new Date().toISOString();
   db.prepare(
-    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ? WHERE id = ? AND vendor_id = ?"
-  ).run(requestType, referenceNumber || "", status || "", note || "", asOf || now.slice(0, 10), now, requestId, vendorId);
+    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ?, updated_by = ? WHERE id = ? AND vendor_id = ?"
+  ).run(requestType, referenceNumber || "", status || "", note || "", asOf || now.slice(0, 10), now, updatedBy || null, requestId, vendorId);
   touchVendorActivity(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
@@ -4410,15 +4444,15 @@ function assignTask(id, { assignedTo, assignedRole } = {}) {
 // genuinely has new, unreviewed state now.
 const PO_FOLLOWUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
-function markTaskPoGenerated(id, { vendorId } = {}) {
+function markTaskPoGenerated(id, { vendorId, generatedBy } = {}) {
   const existing = findTask(id);
   if (!existing) return null;
   const now = new Date().toISOString();
   const dueAt = new Date(Date.now() + PO_FOLLOWUP_WINDOW_MS).toISOString();
   db.prepare(
     `UPDATE tasks SET related_vendor_id = ?, po_stage = 'pending_invoice', po_generated_at = ?,
-     due_at = ?, snoozed_until = NULL, last_status_change_at = ? WHERE id = ?`
-  ).run(vendorId || existing.related_vendor_id || null, now, dueAt, now, id);
+     po_generated_by = ?, due_at = ?, snoozed_until = NULL, last_status_change_at = ? WHERE id = ?`
+  ).run(vendorId || existing.related_vendor_id || null, now, generatedBy || null, dueAt, now, id);
   return findTask(id);
 }
 
@@ -4442,6 +4476,64 @@ function getPoRequestTurnaroundStats() {
     avgHours: hours.length ? round2(hours.reduce((a, b) => a + b, 0) / hours.length) : null,
   });
   return { techRequested: summarize(techRequested), apInvoiceBackfill: summarize(apInvoiceBackfill) };
+}
+
+// Per-person KPIs across every task-receiving person (tech or admin), all
+// computed from timestamps the app already records rather than any new
+// tracking UI: average time to generate a requested PO (po_generated_by,
+// created_at -> po_generated_at), vendor-compliance cases resolved
+// (vendor_requests.updated_by), and reclass request-to-submission
+// turnaround (reclass_items.submitted_by, created_at -> submitted_at).
+// `from`/`to` are plain "YYYY-MM-DD" strings (inclusive) scoping each
+// metric by its own completion date -- a still-open item never counts
+// toward anyone's average since it hasn't finished yet. Both omitted
+// means all-time.
+function getPerformanceKpis({ from, to } = {}) {
+  const inRange = (isoTimestamp) => {
+    if (!isoTimestamp) return false;
+    const day = isoTimestamp.slice(0, 10);
+    if (from && day < from) return false;
+    if (to && day > to) return false;
+    return true;
+  };
+
+  const people = [
+    ...listTechnicians()
+      .filter((t) => t.employment_status === "active")
+      .map((t) => ({ id: t.id, name: t.name, role: "tech" })),
+    ...listAdmins()
+      .filter((a) => a.active)
+      .map((a) => ({ id: a.id, name: a.name, role: "admin" })),
+  ];
+
+  const poRows = db
+    .prepare(
+      "SELECT po_generated_by, created_at, po_generated_at FROM tasks WHERE category = 'po_request' AND po_generated_by IS NOT NULL AND po_generated_at IS NOT NULL"
+    )
+    .all();
+  const vendorRows = db.prepare("SELECT updated_by, updated_at FROM vendor_requests WHERE updated_by IS NOT NULL").all();
+  const reclassRows = db
+    .prepare("SELECT submitted_by, submitted_at, created_at FROM reclass_items WHERE submitted_by IS NOT NULL AND submitted_at IS NOT NULL")
+    .all();
+
+  const avgOf = (hours) => (hours.length ? round2(hours.reduce((a, b) => a + b, 0) / hours.length) : null);
+
+  return people.map((p) => {
+    const poForPerson = poRows.filter((r) => r.po_generated_by === p.id && inRange(r.po_generated_at));
+    const poHours = poForPerson.map((r) => (new Date(r.po_generated_at).getTime() - new Date(r.created_at).getTime()) / 3600000);
+    const reclassForPerson = reclassRows.filter((r) => r.submitted_by === p.id && inRange(r.submitted_at));
+    const reclassHours = reclassForPerson.map((r) => (new Date(r.submitted_at).getTime() - new Date(r.created_at).getTime()) / 3600000);
+    return {
+      id: p.id,
+      name: p.name,
+      role: p.role,
+      poRequestsGenerated: poForPerson.length,
+      poRequestsAvgHours: avgOf(poHours),
+      vendorDocsCompleted: vendorRows.filter((r) => r.updated_by === p.id && inRange(r.updated_at)).length,
+      reclassSubmitted: reclassForPerson.length,
+      reclassAvgHours: avgOf(reclassHours),
+    };
+  });
 }
 
 // A flat week rather than deriving each recurring task's own exact cadence
@@ -7420,6 +7512,7 @@ module.exports = {
   assignTask,
   markTaskPoGenerated,
   getPoRequestTurnaroundStats,
+  getPerformanceKpis,
   addTaskComment,
   listTaskComments,
   listTasks,
