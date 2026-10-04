@@ -514,6 +514,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
   }
   const CASE_STATUS_OPTIONS = ["New", "In Review", "Needs Adjustment", "Approved", "Denied"];
+  // Mirrors db.js's VENDOR_DENIAL_REASONS. An explicit denial an admin picks
+  // directly -- "unacceptable work or service" and "cost" in particular are
+  // business calls no onboarding case status captures, so this exists
+  // alongside (not instead of) a case being denied.
+  const VENDOR_DENIAL_REASONS = [
+    { key: "insurance", label: "Insurance" },
+    { key: "document_chasing", label: "Document chasing" },
+    { key: "unacceptable_service", label: "Unacceptable work or service" },
+    { key: "cost", label: "Cost" },
+    { key: "other", label: "Other" },
+  ];
+  function denialReasonLabel(key) {
+    return (VENDOR_DENIAL_REASONS.find((r) => r.key === key) || {}).label || "";
+  }
   function caseStatusBadgeClass(status) {
     const s = String(status || "").trim().toLowerCase();
     if (s === "approved") return "approved";
@@ -762,10 +776,23 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       ${
         v.onboardingStage === "denied"
           ? `<div class="onboarding-denied-reason">
+               ${v.deniedReasonCategory ? `<span class="badge badge-rejected">${escapeHtml(denialReasonLabel(v.deniedReasonCategory))}</span>` : ""}
                <input type="text" class="onboarding-denied-reason-input" placeholder="Note (optional, e.g. which case and why)" value="${escapeHtml(v.deniedReason)}" />
                <button type="button" class="btn btn-link onboarding-denied-reason-save">Save note</button>
+               <button type="button" class="btn btn-link onboarding-reinstate-btn">Reinstate vendor</button>
              </div>`
-          : ""
+          : `<div class="onboarding-deny-action">
+               <button type="button" class="btn btn-link danger-link onboarding-deny-toggle">Mark vendor denied</button>
+               <div class="onboarding-deny-panel" hidden>
+                 <select class="onboarding-deny-reason-select">
+                   <option value="">Reason for denial…</option>
+                   ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
+                 </select>
+                 <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
+                 <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
+                 <button type="button" class="btn btn-link onboarding-deny-cancel-btn">Cancel</button>
+               </div>
+             </div>`
       }
       <div class="review-row-detail onboarding-case-log" hidden></div>
     `;
@@ -782,6 +809,46 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         try {
           await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
           invalidateVendorsCache();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+
+    const reinstateBtn = el.querySelector(".onboarding-reinstate-btn");
+    if (reinstateBtn) {
+      reinstateBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Reinstate ${v.name}? This clears the denial and re-checks their onboarding cases.`)) return;
+        try {
+          await api.post(`/api/admin/vendors/${v.id}/reinstate`, {});
+          invalidateVendorsCache();
+          await drawVendorOnboarding(content);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+
+    const denyToggle = el.querySelector(".onboarding-deny-toggle");
+    if (denyToggle) {
+      const denyPanel = el.querySelector(".onboarding-deny-panel");
+      denyToggle.addEventListener("click", () => {
+        denyPanel.hidden = !denyPanel.hidden;
+      });
+      el.querySelector(".onboarding-deny-cancel-btn").addEventListener("click", () => {
+        denyPanel.hidden = true;
+      });
+      el.querySelector(".onboarding-deny-confirm-btn").addEventListener("click", async () => {
+        const category = el.querySelector(".onboarding-deny-reason-select").value;
+        const detail = el.querySelector(".onboarding-deny-detail-input").value.trim();
+        if (!category) {
+          window.alert("Pick a reason for the denial first.");
+          return;
+        }
+        try {
+          await api.post(`/api/admin/vendors/${v.id}/deny`, { category, reason: detail });
+          invalidateVendorsCache();
+          await drawVendorOnboarding(content);
         } catch (err) {
           window.alert(err.message);
         }

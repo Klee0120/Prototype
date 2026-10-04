@@ -105,6 +105,44 @@ router.patch("/:id/preferred", (req, res) => {
   res.json(updated);
 });
 
+router.get("/denial-reasons", (req, res) => {
+  res.json(db.VENDOR_DENIAL_REASONS);
+});
+
+// An explicit, admin-driven denial -- independent of any one onboarding
+// case (COI/W-9/Payment), since "unacceptable work or service" and "cost"
+// aren't document outcomes a case status can capture. Sticks (see
+// deriveOnboardingStage) until reinstate below.
+router.post("/:id/deny", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const { category, reason } = req.body || {};
+  const validKeys = db.VENDOR_DENIAL_REASONS.map((r) => r.key);
+  if (!validKeys.includes(category)) {
+    return res.status(400).json({ error: `category must be one of: ${validKeys.join(", ")}` });
+  }
+  const updated = db.denyVendor(vendor.id, { category, reason });
+  const label = db.VENDOR_DENIAL_REASONS.find((r) => r.key === category).label;
+  db.addAudit(
+    req.user.id,
+    "VENDOR_ONBOARDING_STAGE_CHANGED",
+    `${req.user.name} marked ${updated.name} denied (${label})${updated.deniedReason ? `: ${updated.deniedReason}` : ""}`
+  );
+  res.json(updated);
+});
+
+router.post("/:id/reinstate", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const updated = db.reinstateVendor(vendor.id);
+  db.addAudit(
+    req.user.id,
+    "VENDOR_ONBOARDING_STAGE_CHANGED",
+    `${req.user.name} reinstated ${updated.name} (now ${updated.onboardingStage})`
+  );
+  res.json(updated);
+});
+
 // A running, dated log of free-form remarks -- distinct from the vendor's
 // single overwritable Notes field (see vendor_remarks table comment).
 router.get("/:id/remarks", (req, res) => {

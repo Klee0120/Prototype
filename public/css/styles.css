@@ -2497,14 +2497,38 @@ h1, h2, h3, h4 {
 
 .onboarding-denied-reason {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }
 .onboarding-denied-reason input {
   flex: 1;
+  min-width: 160px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+
+.onboarding-deny-action {
+  margin-top: 8px;
+}
+.onboarding-deny-panel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.onboarding-deny-panel select,
+.onboarding-deny-panel input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.onboarding-deny-panel input {
+  flex: 1;
+  min-width: 160px;
 }
 
 .onboarding-case-entry {
@@ -4941,6 +4965,11 @@ button.vendor-preferred-star:hover {
     width: 100%;
   }
   .attachments-upload-settings {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .onboarding-denied-reason,
+  .onboarding-deny-panel {
     flex-direction: column;
     align-items: stretch;
   }

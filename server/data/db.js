@@ -1115,6 +1115,18 @@ if (!hasColumn("vendors", "onboarding_stage")) {
 if (!hasColumn("vendors", "denied_reason")) {
   db.exec("ALTER TABLE vendors ADD COLUMN denied_reason TEXT DEFAULT ''");
 }
+// A structured reason category for an explicit, admin-driven denial --
+// distinct from a case being denied (COI/W-9/Payment, see
+// deriveOnboardingStage), since a vendor can also be denied for reasons no
+// case captures at all (poor work quality, cost). Non-empty here marks the
+// denial as a manual, sticky decision: deriveOnboardingStage short-circuits
+// to "denied" while this is set, so a later case touch (e.g. logging an
+// unrelated COI renewal) can never silently flip the vendor back to
+// onboarded/in_progress out from under that decision -- it only clears via
+// an explicit reinstate (see reinstateVendor).
+if (!hasColumn("vendors", "denied_reason_category")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN denied_reason_category TEXT DEFAULT ''");
+}
 // Krista's own "this is who we go to first" flag for a vendor -- distinct
 // from C&W/Toyota approval status (which is about whether they're allowed
 // to work at all, not whether they're who she'd pick first).
@@ -1771,6 +1783,7 @@ function presentVendorRow(v) {
     w9InvoiceStale,
     onboardingStage: v.onboarding_stage,
     deniedReason: v.denied_reason || "",
+    deniedReasonCategory: v.denied_reason_category || "",
     preferred: Boolean(v.preferred),
     createdAt: v.created_at,
     updatedAt: v.updated_at,
@@ -2570,6 +2583,40 @@ function createReclassSmartsheetUpdateTask(item) {
   );
 }
 
+// Reasons an admin can deny a vendor outright, independent of any one
+// document case -- "unacceptable_service" and "cost" in particular reflect
+// a business decision ServiceEdge's own case types don't capture at all.
+const VENDOR_DENIAL_REASONS = [
+  { key: "insurance", label: "Insurance" },
+  { key: "document_chasing", label: "Document chasing" },
+  { key: "unacceptable_service", label: "Unacceptable work or service" },
+  { key: "cost", label: "Cost" },
+  { key: "other", label: "Other" },
+];
+const VENDOR_DENIAL_REASON_KEYS = VENDOR_DENIAL_REASONS.map((r) => r.key);
+
+// Explicit, admin-driven denial -- sticks (see deriveOnboardingStage) until
+// reinstateVendor clears it. Reason/category are shown on the Onboarding
+// board's Denied list next to the vendor's case history.
+function denyVendor(vendorId, { category, reason } = {}) {
+  const cat = VENDOR_DENIAL_REASON_KEYS.includes(category) ? category : "other";
+  db.prepare(
+    "UPDATE vendors SET onboarding_stage = 'denied', denied_reason_category = ?, denied_reason = ?, updated_at = ? WHERE id = ?"
+  ).run(cat, (reason || "").trim(), new Date().toISOString(), Number(vendorId));
+  return findVendor(vendorId);
+}
+
+// Clears a manual denial and lets onboarding stage resume being derived
+// from actual case history (see deriveOnboardingStage) -- may land back on
+// in_progress, onboarded, or even denied again if a case is itself denied.
+function reinstateVendor(vendorId) {
+  db.prepare(
+    "UPDATE vendors SET denied_reason_category = '', denied_reason = '', updated_at = ? WHERE id = ?"
+  ).run(new Date().toISOString(), Number(vendorId));
+  syncOnboardingStage(vendorId);
+  return findVendor(vendorId);
+}
+
 // A vendor onboarding/compliance case (e.g. a ServiceEdge COI Case, Toyota
 // Onboarding Case, Payment Details Case) tracked with a reference/case
 // number and a free-text status -- the real tracker uses varied statuses
@@ -2615,6 +2662,11 @@ function latestRequestOfType(vendorId, requestType) {
 }
 
 function deriveOnboardingStage(vendorId) {
+  // An explicit manual denial (see denyVendor) always wins -- it's a
+  // standing business decision, not a document-case outcome, so no amount
+  // of case activity below should silently clear it.
+  const manualDenial = db.prepare("SELECT denied_reason_category FROM vendors WHERE id = ?").get(vendorId);
+  if (manualDenial && manualDenial.denied_reason_category) return "denied";
   const request = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.request);
   const coi = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
   const w9 = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.w9);
@@ -6923,6 +6975,9 @@ module.exports = {
   updateVendor,
   deleteVendor,
   setVendorPreferred,
+  VENDOR_DENIAL_REASONS,
+  denyVendor,
+  reinstateVendor,
   addVendorRemark,
   listVendorRemarks,
   WOM_COST_REVIEW_STATUSES,

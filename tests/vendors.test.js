@@ -535,3 +535,83 @@ test("vendors: compliance follow-up task is generated/closed automatically", asy
     assert.equal(res.status, 404);
   });
 });
+
+test("vendors: explicit denial (cost/service, not just a document case) + reinstate", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let vendorId;
+
+  await t.test("the reason list is available", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/denial-reasons", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const keys = res.body.map((r) => r.key);
+    assert.deepEqual(keys, ["insurance", "document_chasing", "unacceptable_service", "cost", "other"]);
+  });
+
+  await t.test("set up a vendor with all three cases approved (fully onboarded)", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Overpriced Overhead Doors" } });
+    vendorId = res.body.id;
+    for (const requestType of ["Onboarding - COI", "Onboarding - W8/W9", "Onboarding - Payment Details"]) {
+      await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN", body: { requestType, status: "Approved" } });
+    }
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "onboarded");
+  });
+
+  await t.test("a technician cannot deny a vendor", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/deny`, { userId: "T1001", body: { category: "cost" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("rejects an unknown reason category", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/deny`, { userId: "ADMIN", body: { category: "too_slow" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("admin can deny an otherwise fully-onboarded vendor for cost -- no case captures that", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/deny`, {
+      userId: "ADMIN",
+      body: { category: "cost", reason: "Quoted 2x the next vendor for the same scope" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.onboardingStage, "denied");
+    assert.equal(res.body.deniedReasonCategory, "cost");
+    assert.equal(res.body.deniedReason, "Quoted 2x the next vendor for the same scope");
+  });
+
+  await t.test("the denial is audited with its reason label", async () => {
+    const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = res.body.find((e) => e.action === "VENDOR_ONBOARDING_STAGE_CHANGED" && /Cost/.test(e.details));
+    assert.ok(entry, "expected an audit entry naming the Cost reason");
+  });
+
+  await t.test("logging an unrelated case afterward does not silently clear the manual denial", async () => {
+    await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Approved", note: "Renewed COI on file" },
+    });
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "denied");
+  });
+
+  await t.test("a technician cannot reinstate a vendor", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/reinstate`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("reinstating clears the manual denial and recomputes from actual case history", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/reinstate`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.deniedReasonCategory, "");
+    assert.equal(res.body.deniedReason, "");
+    // All three cases are still approved (W-9/Payment from setup, COI re-approved above).
+    assert.equal(res.body.onboardingStage, "onboarded");
+  });
+
+  await t.test("denying and reinstating an unknown vendor 404s", async () => {
+    const denyRes = await server.call("POST", "/api/admin/vendors/999999/deny", { userId: "ADMIN", body: { category: "cost" } });
+    assert.equal(denyRes.status, 404);
+    const reinstateRes = await server.call("POST", "/api/admin/vendors/999999/reinstate", { userId: "ADMIN" });
+    assert.equal(reinstateRes.status, 404);
+  });
+});
