@@ -305,6 +305,7 @@ export async function renderPos(container, { openPoId } = {}) {
       <button class="btn btn-secondary po-bulk-confirm-vendor" type="button">Confirm vendor...</button>
       ${subTab === "needs_organization" ? `<button class="btn btn-secondary po-bulk-activate" type="button">Move to Active POs</button>` : ""}
       <button class="btn btn-secondary po-bulk-flag-reclass" type="button">Flag for reclass</button>
+      <button class="btn btn-secondary po-bulk-unflag-reclass" type="button">Unflag reclass</button>
       <button class="btn btn-link po-bulk-clear" type="button">Clear selection</button>
     `;
     toolbarEl.querySelector(".po-bulk-confirm-vendor").addEventListener("click", () => {
@@ -327,6 +328,14 @@ export async function renderPos(container, { openPoId } = {}) {
       if (result.flaggedCount > 0) bits.push(`${result.flaggedCount} flagged`);
       if (result.skippedCount > 0) bits.push(`${result.skippedCount} already flagged or not found, skipped`);
       window.alert(bits.join(", ") || "Nothing to flag.");
+      await draw();
+    });
+    toolbarEl.querySelector(".po-bulk-unflag-reclass").addEventListener("click", async () => {
+      const result = await api.post("/api/admin/reclasses/unflag-po", { poIds: [...selectedIds] });
+      const bits = [];
+      if (result.unflaggedCount > 0) bits.push(`${result.unflaggedCount} unflagged`);
+      if (result.skippedCount > 0) bits.push(`${result.skippedCount} weren't flagged, skipped`);
+      window.alert(bits.join(", ") || "Nothing to unflag.");
       await draw();
     });
     toolbarEl.querySelector(".po-bulk-clear").addEventListener("click", () => {
@@ -535,7 +544,7 @@ export async function renderPos(container, { openPoId } = {}) {
         ${po.missingFromImport ? `<span class="badge badge-warn">Not seen in last import</span>` : ""}
         ${po.hasOpenReclassFlag ? `<span class="badge badge-submitted">Flagged for reclass</span>` : ""}
         ${po.lifecycleStatus !== "active" ? `<button type="button" class="btn btn-primary po-activate-btn">Move to Active POs</button>` : ""}
-        <button type="button" class="btn btn-secondary po-flag-reclass-btn" ${po.hasOpenReclassFlag ? "disabled" : ""}>${po.hasOpenReclassFlag ? "Already flagged" : "Flag for reclass"}</button>
+        <button type="button" class="btn btn-secondary po-flag-reclass-btn">${po.hasOpenReclassFlag ? "Unflag reclass" : "Flag for reclass"}</button>
       </div>
       <table class="detail-table po-detail-table">
         <tbody>
@@ -600,9 +609,10 @@ export async function renderPos(container, { openPoId } = {}) {
       });
     }
     const flagReclassBtn = container.querySelector(".po-flag-reclass-btn");
-    if (flagReclassBtn && !po.hasOpenReclassFlag) {
+    if (flagReclassBtn) {
       flagReclassBtn.addEventListener("click", async () => {
-        await api.post("/api/admin/reclasses/flag-po", { poIds: [po.id] });
+        const path = po.hasOpenReclassFlag ? "/api/admin/reclasses/unflag-po" : "/api/admin/reclasses/flag-po";
+        await api.post(path, { poIds: [po.id] });
         await draw();
       });
     }

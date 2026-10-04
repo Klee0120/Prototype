@@ -33,6 +33,18 @@ function toIsoDate(value) {
   return d.toISOString().slice(0, 10);
 }
 
+// A lone "-" is the sheet's own placeholder for "blank," not a real job #/
+// WOM #/object code -- confirmed directly after it caused the Linked Toyota
+// PO lookup to match every other PO on file that also happened to have no
+// WOM # (the Budget PO Tracker import stores the exact same placeholder
+// verbatim too, see "WOM Number" in server/routes/pos.js). Trimmed and
+// treated as null here before it can ever drive a lookup.
+function cleanCell(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" || trimmed === "-" ? null : trimmed;
+}
+
 // Merged cells leave gaps between a label and its value -- "next non-null
 // cell to the right in this row" is more robust against that than a fixed
 // column offset (confirmed against the real file: "Region"'s value sits 2
@@ -98,15 +110,15 @@ function parseReclassWorkbook(buffer) {
 
     items.push({
       lineNumber: row[0],
-      fromJobNumber: row[1] != null ? String(row[1]).trim() : null,
-      fromObjectCode: row[2] != null ? String(row[2]).trim() : null,
-      fromSubsidiary: row[3] != null ? String(row[3]).trim() : null,
-      fromWomNumber: row[4] != null ? String(row[4]).trim() : null,
+      fromJobNumber: cleanCell(row[1]),
+      fromObjectCode: cleanCell(row[2]),
+      fromSubsidiary: cleanCell(row[3]),
+      fromWomNumber: cleanCell(row[4]),
       fromAmount: typeof row[5] === "number" ? row[5] : null,
-      toJobNumber: row[7] != null ? String(row[7]).trim() : null,
-      toObjectCode: row[8] != null ? String(row[8]).trim() : null,
-      toSubsidiary: row[9] != null ? String(row[9]).trim() : null,
-      toWomNumber: row[10] != null ? String(row[10]).trim() : null,
+      toJobNumber: cleanCell(row[7]),
+      toObjectCode: cleanCell(row[8]),
+      toSubsidiary: cleanCell(row[9]),
+      toWomNumber: cleanCell(row[10]),
       toAmount: typeof row[11] === "number" ? row[11] : null,
       vendor: row[12] != null ? String(row[12]).trim() : null,
       comments: row[13] != null ? String(row[13]).trim() : null,
@@ -197,6 +209,24 @@ router.post("/flag-po", (req, res) => {
       req.user.id,
       "RECLASS_FLAGGED",
       `${req.user.name} flagged ${result.flaggedCount} PO${result.flaggedCount === 1 ? "" : "s"} for reclass review from the Budget PO Tracker`
+    );
+  }
+  res.json(result);
+});
+
+// The symmetric undo for flag-po above -- dismisses whatever open flag
+// exists for each PO (same "Dismissed" status the Reclasses tab's own
+// Status dropdown sets), so it's gone from "flagged this month" without
+// losing the record of it ever having been flagged.
+router.post("/unflag-po", (req, res) => {
+  const poIds = Array.isArray(req.body?.poIds) ? req.body.poIds : [];
+  if (poIds.length === 0) return res.status(400).json({ error: "poIds is required" });
+  const result = db.unflagPosForReclass(poIds, req.user.id);
+  if (result.unflaggedCount > 0) {
+    db.addAudit(
+      req.user.id,
+      "RECLASS_UNFLAGGED",
+      `${req.user.name} unflagged ${result.unflaggedCount} PO${result.unflaggedCount === 1 ? "" : "s"} for reclass review from the Budget PO Tracker`
     );
   }
   res.json(result);

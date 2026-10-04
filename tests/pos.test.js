@@ -152,6 +152,38 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.equal(dismissedItem.status, "dismissed");
   });
 
+  // The same undo as above, but the one-click version from the Budget PO
+  // Tracker itself -- selecting a flagged PO and unflagging it, the mirror
+  // image of flag-po, instead of going to the Reclasses tab and changing
+  // the status dropdown by hand.
+  await t.test("one-click unflag-po dismisses the open flag without a trip to the Reclasses tab", async () => {
+    const poId = insertPo({ composite: "unflag-1", poNumber: "PO60005", e1WomJobNumber: "100110066004", womNumber: null, lifecycleStatus: "active" });
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    const itemId = flagRes.body.items[0].id;
+
+    const unflagRes = await server.call("POST", "/api/admin/reclasses/unflag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(unflagRes.status, 200);
+    assert.equal(unflagRes.body.unflaggedCount, 1);
+    assert.equal(unflagRes.body.skippedCount, 0);
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, false);
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    const item = itemsRes.body.find((i) => i.id === itemId);
+    assert.ok(item, "the item should still exist, not be deleted");
+    assert.equal(item.status, "dismissed");
+  });
+
+  await t.test("unflag-po on a PO with no open flag is a no-op", async () => {
+    const poId = insertPo({ composite: "unflag-2", poNumber: "PO60006", e1WomJobNumber: "100110066005", womNumber: null, lifecycleStatus: "active" });
+
+    const res = await server.call("POST", "/api/admin/reclasses/unflag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.unflaggedCount, 0);
+    assert.equal(res.body.skippedCount, 1);
+  });
+
   // A reclass getting confirmed posted means whatever it corrected also
   // needs to be reflected in Smartsheet -- a separate manual step this app
   // can't verify, so it tasks the PO's own Admin column (matched to a real

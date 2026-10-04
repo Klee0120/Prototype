@@ -187,3 +187,46 @@ test("Reclasses tab: location/month filtering and the Midwest total", async (t) 
     assert.ok(res.body.every((p) => p.womNumber === "WOM-SHARED-1"));
   });
 });
+
+// A lone "-" is the RECLASS sheet's own placeholder for "blank," not a real
+// job #/WOM #/object code -- confirmed directly after it caused the Linked
+// Toyota PO lookup on a real reclass item to match every other PO on file
+// that also happened to have no real WOM #, since both sides stored the
+// exact same placeholder verbatim. This covers the fix at the one place it
+// actually needs to hold: the real import, not just the helper function.
+test("Reclasses import: a lone '-' normalizes to no job #/WOM # instead of being treated as a real one", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const rows = [
+    // Header row -- only this exact string's presence matters for detecting
+    // where the line items start; every other column is read by position.
+    ["Line #", "Job # (Cost Center or Business Unit)", "Object Code", "Subsidiary", "WOM #", "Amount", null,
+      "Job # (Cost Center or Business Unit)", "Object Code", "Subsidiary", "WOM #", "Amount", "Vendor", "Comments", "Region"],
+    // "From" side uses "-" placeholders for Job #/WOM # (the real-world gap this fixes);
+    // "To" side has real values, to confirm the fix doesn't blank out a genuine one.
+    [1, "-", "6000", "100", "-", 500, null, "1002", "6001", "200", "WOM-9999", 500, "Acme Plumbing", "Test row", "Midwest"],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "RECLASS");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/reclasses/batches/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "reclass.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 201, JSON.stringify(importRes.body));
+
+  const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+  const item = itemsRes.body.find((i) => i.vendor === "Acme Plumbing");
+  assert.ok(item, "expected the imported row to show up");
+  assert.equal(item.fromJobNumber, null, "a lone '-' should not be stored as a real job #");
+  assert.equal(item.fromWomNumber, null, "a lone '-' should not be stored as a real WOM #");
+  assert.equal(item.toJobNumber, "1002", "a real value on the other side should still come through untouched");
+  assert.equal(item.toWomNumber, "WOM-9999");
+});

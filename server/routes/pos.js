@@ -59,6 +59,19 @@ function toIsoDate(value) {
   return d.toISOString().slice(0, 10);
 }
 
+// A lone "-" is the sheet's own placeholder for "blank," not a real WOM #
+// -- confirmed directly after it caused dozens of unrelated POs (every one
+// missing a real WOM #) to match a Reclasses lookup for a reclass item
+// whose own WOM # was also just that same placeholder. Everywhere a PO's
+// wom_number drives a lookup (getPoGlLinksByWom, the WOM-number filter)
+// assumes an exact, meaningful value -- this is what keeps the placeholder
+// out of that field before it ever reaches one.
+function cleanCell(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" || trimmed === "-" ? null : trimmed;
+}
+
 // Vendor/PO numbers come back from the sheet as either a string or a float
 // (Excel stores plain numbers as numbers) -- normalize both to a clean
 // integer-looking string so "5174341" and 5174341.0 match the same vendor.
@@ -116,6 +129,7 @@ function parseWorkbook(buffer) {
       vendorName: row.vendorName == null ? null : String(row.vendorName).trim(),
       status: row.status == null ? null : String(row.status).trim(),
       subsidiary: coalesceSubsidiary(row.subsidiary, row.ppsSubsidiary),
+      womNumber: cleanCell(row.womNumber),
     };
   });
 

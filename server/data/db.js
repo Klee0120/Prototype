@@ -2532,6 +2532,29 @@ function flagPosForReclass(poIds, createdBy) {
   return { flaggedCount, skippedCount, items };
 }
 
+// The symmetric undo for flagPosForReclass above -- the PO Tracker's own
+// "I noticed this needs a reclass" flag and the "Dismissed" status on the
+// Reclasses tab are really the same one-click lightweight flag, so
+// unflagging from either side has to mean the same thing: dismiss it, not
+// delete it, so the attempt (and whoever flagged it, and when) stays in the
+// record rather than vanishing.
+function unflagPosForReclass(poIds, actorId) {
+  let unflaggedCount = 0;
+  let skippedCount = 0;
+  for (const poId of poIds) {
+    const item = db
+      .prepare("SELECT * FROM reclass_items WHERE related_po_id = ? AND status NOT IN ('confirmed_posted', 'dismissed') LIMIT 1")
+      .get(Number(poId));
+    if (!item) {
+      skippedCount++;
+      continue;
+    }
+    updateReclassItem(item.id, { status: "dismissed" });
+    unflaggedCount++;
+  }
+  return { unflaggedCount, skippedCount };
+}
+
 function updateReclassItem(id, fields) {
   const existing = findReclassItem(id);
   if (!existing) return null;
@@ -6878,7 +6901,11 @@ function getVendorGlTotals() {
 }
 
 function getPoGlLinksByWom(womNumber) {
-  if (!womNumber) return [];
+  // "-" is the sheet's own placeholder for "blank," not a real WOM # -- see
+  // the parsing fix in server/routes/pos.js/reclasses.js for the real fix;
+  // this guard is just so a stray "-" (old imported data, say) can never
+  // again fan this lookup out across every PO that also has no real WOM #.
+  if (!womNumber || womNumber === "-") return [];
   const pos = db
     .prepare("SELECT id, po_number AS poNumber, po_amount AS poAmount, status AS poStatus, object_code AS objectCode, subsidiary AS subsidiary FROM pos WHERE wom_number = ?")
     .all(womNumber);
@@ -7211,6 +7238,7 @@ module.exports = {
   findReclassItem,
   addReclassItem,
   flagPosForReclass,
+  unflagPosForReclass,
   updateReclassItem,
   VENDOR_COI_FIELDS,
   listVendorRequests,
