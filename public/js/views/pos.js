@@ -93,7 +93,7 @@ export async function renderPos(container, { openPoId } = {}) {
         <h3 style="margin: 0;">Budget PO Tracker</h3>
         <button type="button" class="btn btn-primary po-import-btn">Import Excel</button>
         <input type="file" class="po-import-file" accept=".xlsx,.xls" hidden />
-        <a class="btn btn-outline" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">+ Request C&amp;W PO ↗</a>
+        <button type="button" class="btn btn-outline po-request-cw-po-btn">+ Request C&amp;W PO ↗</button>
       </div>
       <p class="review-checklist-hint">${escapeHtml(lastImportLine())}${getTerritory() ? ` Showing <strong>${escapeHtml(getTerritory())}</strong> only.` : ""}</p>
       <div class="pill-toggle-group po-subtabs">
@@ -127,6 +127,7 @@ export async function renderPos(container, { openPoId } = {}) {
     container.querySelector(".po-import-btn").addEventListener("click", () => {
       container.querySelector(".po-import-file").click();
     });
+    container.querySelector(".po-request-cw-po-btn").addEventListener("click", openRequestCwPoModal);
     container.querySelector(".po-import-file").addEventListener("change", async (e) => {
       const file = e.target.files[0];
       e.target.value = "";
@@ -342,6 +343,58 @@ export async function renderPos(container, { openPoId } = {}) {
       selectedIds.clear();
       container.querySelectorAll(".po-select-checkbox").forEach((cb) => (cb.checked = false));
       renderBulkToolbar();
+    });
+  }
+
+  // The admin-side "+ Request C&W PO" button -- same tracked-task prompt as
+  // the tech-facing one on Locations & WOM (see techHome.js's
+  // openRequestCwPoModal), so a PO requested from here is just as visible
+  // in Task Manager, whether the admin is routing it to themselves or to
+  // whoever actually owns that territory.
+  async function openRequestCwPoModal() {
+    let admins;
+    try {
+      admins = await api.get("/api/tasks/assignable-admins");
+    } catch (err) {
+      alert(err.message || "Couldn't load the admin list.");
+      return;
+    }
+    const { body, close } = openModal({
+      title: "Request a C&W PO",
+      bodyHtml: `
+        <form class="modal-form request-po-form">
+          <label class="profile-field">
+            <span>Which admin should generate it?</span>
+            <select name="assignedTo" required>
+              <option value="">Select an admin...</option>
+              ${admins.map((a) => `<option value="${escapeHtml(a.id)}" ${a.id === state.user.id ? "selected" : ""}>${escapeHtml(a.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="profile-field">
+            <span>Note (optional)</span>
+            <textarea name="note" rows="3" placeholder="What's this PO for?"></textarea>
+          </label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Continue to the PO form</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".request-po-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post("/api/tasks/request-po", {
+          assignedTo: form.assignedTo.value,
+          note: form.note.value.trim(),
+        });
+        close();
+        window.open(CW_PO_REQUEST_FORM_URL, "_blank", "noopener");
+      } catch (err) {
+        msg.textContent = err.message;
+      }
     });
   }
 
