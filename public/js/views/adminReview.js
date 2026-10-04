@@ -1274,6 +1274,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     { value: "w9", label: "W-9" },
     { value: "ach", label: "ACH / Bank Letter" },
     { value: "vpo_waiver", label: "VPO Waiver" },
+    { value: "blank_invoice", label: "Blank Invoice Template" },
     { value: "vendor_other", label: "Other Vendor Document" },
   ];
 
@@ -1660,7 +1661,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         categories: VENDOR_DOC_CATEGORIES,
         canUpload: true,
         trackExpiration: true,
-        requiredCategories: ["coi", "w9", "ach", "vpo_waiver"],
+        requiredCategories: ["coi", "w9", "ach", "vpo_waiver", "blank_invoice"],
         emptyText: "No documents on file yet.",
       });
     await refreshDocumentsPanel();

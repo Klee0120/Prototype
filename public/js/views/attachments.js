@@ -21,6 +21,7 @@ const CATEGORY_LABELS = {
   quote: "Vendor Quote",
   quote_revision: "Approved Quote Revision",
   invoice: "Invoice Document",
+  blank_invoice: "Blank Invoice Template",
 };
 
 function formatSize(bytes) {
