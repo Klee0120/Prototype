@@ -1038,6 +1038,24 @@ if (!hasColumn("tasks", "referred_to_admin_at")) {
 if (!hasColumn("tasks", "related_po_id")) {
   db.exec("ALTER TABLE tasks ADD COLUMN related_po_id INTEGER");
 }
+// Which step a "po_request" task (a tech asked for a C&W PO, see
+// POST /tasks/request-po) is at -- "requested" (admin hasn't generated the
+// real PO yet) -> "pending_invoice" (PO generated, vendor asked for their
+// invoice, due_at holds the follow-up deadline) -> "review_close" (that
+// deadline passed with no invoice -- admin snoozes via the existing
+// Reschedule feature or closes it as aged out). A separate column rather
+// than encoding it in category, same reasoning as is_exception/
+// is_change_order above: category drives the Type-grouping/color, this
+// drives which action the admin actually sees.
+if (!hasColumn("tasks", "po_stage")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN po_stage TEXT");
+}
+// When the admin actually marked the real PO generated (uploaded the
+// document) -- created_at to po_generated_at is the "how long did it take
+// to generate this PO" KPI figure.
+if (!hasColumn("tasks", "po_generated_at")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN po_generated_at TEXT");
+}
 if (!tableExists("task_reschedules")) {
   db.exec(`
     CREATE TABLE task_reschedules (
@@ -4092,8 +4110,9 @@ function createTask(fields) {
     .prepare(
       `INSERT INTO tasks (source_key, title, description, assigned_to, assigned_role, category, priority, due_at,
        status, related_wom_code, related_vendor_id, related_location_code, related_tech_id, related_po, related_po_id,
-       source, source_record_id, workflow_rule, is_exception, is_change_order, created_by, created_at, assigned_at, last_status_change_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       source, source_record_id, workflow_rule, is_exception, is_change_order, created_by, created_at, assigned_at, last_status_change_at,
+       po_stage)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.sourceKey || null,
@@ -4118,7 +4137,8 @@ function createTask(fields) {
       fields.createdBy || null,
       now,
       assignedTo ? now : null,
-      now
+      now,
+      fields.poStage || null
     );
   const created = findTask(Number(result.lastInsertRowid));
   maybeNotifyTaskAssignee(created);
@@ -4312,6 +4332,25 @@ function assignTask(id, { assignedTo, assignedRole } = {}) {
   // received this task" moment.
   if (nextAssignedTo && nextAssignedTo !== existing.assigned_to) maybeNotifyTaskAssignee(updated);
   return updated;
+}
+
+// The "mark PO generated" step of a po_request task: locks in which vendor
+// it's actually for (the WOM's own vendor_id may have been null, or wrong),
+// starts the vendor-invoice follow-up clock (see refreshAllPoRequestLifecycleTasks),
+// and clears any prior snooze -- a task that was snoozed before this point
+// genuinely has new, unreviewed state now.
+const PO_FOLLOWUP_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+function markTaskPoGenerated(id, { vendorId } = {}) {
+  const existing = findTask(id);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  const dueAt = new Date(Date.now() + PO_FOLLOWUP_WINDOW_MS).toISOString();
+  db.prepare(
+    `UPDATE tasks SET related_vendor_id = ?, po_stage = 'pending_invoice', po_generated_at = ?,
+     due_at = ?, snoozed_until = NULL, last_status_change_at = ? WHERE id = ?`
+  ).run(vendorId || existing.related_vendor_id || null, now, dueAt, now, id);
+  return findTask(id);
 }
 
 // A flat week rather than deriving each recurring task's own exact cadence
@@ -7145,6 +7184,7 @@ module.exports = {
   ONBOARDING_STAGES,
   listVendors,
   findVendor,
+  findVendorByNumber,
   getVendorTerritories,
   createVendor,
   updateVendor,
@@ -7249,6 +7289,7 @@ module.exports = {
   unsnoozeTask,
   listTaskReschedules,
   assignTask,
+  markTaskPoGenerated,
   addTaskComment,
   listTaskComments,
   listTasks,

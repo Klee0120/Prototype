@@ -18,6 +18,7 @@
     "helmet": "^8.3.0",
     "multer": "^2.4.0",
     "nodemailer": "^10.0.10",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-latest/xlsx-latest.tgz"
+    "pdfjs-dist": "^6.4.299",
+    "xlsx": "^0.18.5"
   }
 }

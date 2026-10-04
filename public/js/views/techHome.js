@@ -6,6 +6,7 @@ import { renderSchedule } from "./schedule.js";
 import { renderTaskBoard } from "./tasks.js";
 import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
+import { openModal } from "../modal.js";
 
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
@@ -158,7 +159,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     content.innerHTML = `
       <div class="review-actions">
         <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
-        <a class="btn btn-secondary" href="${CW_PO_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a C&amp;W PO ↗</a>
+        <button type="button" class="btn btn-secondary tech-request-po-btn">Request a C&amp;W PO ↗</button>
       </div>
       <p class="review-checklist-hint">
         The lists below are view only -- for anything else (a location, or changing an existing WOM), ask an admin.
@@ -168,6 +169,8 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
       <h3>WOM Projects (including past/closed)</h3>
       <div class="review-list" id="tech-wom-list"></div>
     `;
+
+    content.querySelector(".tech-request-po-btn").addEventListener("click", openRequestCwPoModal);
 
     const locationList = content.querySelector("#tech-location-list");
     if (locations.length === 0) {
@@ -222,6 +225,59 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
         womList.appendChild(row);
       });
     }
+  }
+
+  // The "Request a C&W PO" button used to just open the Smartsheet form
+  // with nothing tracked on this end -- this asks the one question that
+  // actually matters (which admin should generate it) so there's a real
+  // task to chase, then still opens the same external form right after,
+  // same as before. No WOM to pick -- a PO request doesn't have to tie to
+  // one.
+  async function openRequestCwPoModal() {
+    let admins;
+    try {
+      admins = await api.get("/api/tasks/assignable-admins");
+    } catch (err) {
+      alert(err.message || "Couldn't load the admin list.");
+      return;
+    }
+    const { body, close } = openModal({
+      title: "Request a C&W PO",
+      bodyHtml: `
+        <form class="modal-form request-po-form">
+          <label class="profile-field">
+            <span>Which admin should generate it?</span>
+            <select name="assignedTo" required>
+              <option value="">Select an admin...</option>
+              ${admins.map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="profile-field">
+            <span>Note (optional)</span>
+            <textarea name="note" rows="3" placeholder="What's this PO for?"></textarea>
+          </label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary">Continue to the PO form</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".request-po-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post("/api/tasks/request-po", {
+          assignedTo: form.assignedTo.value,
+          note: form.note.value.trim(),
+        });
+        close();
+        window.open(CW_PO_REQUEST_FORM_URL, "_blank", "noopener");
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
   }
 
   // Total hours worked and posted pricing for a WOM, all-time -- same data

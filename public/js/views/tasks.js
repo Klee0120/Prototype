@@ -1268,6 +1268,7 @@ export async function renderTaskBoard(container) {
       ${isAdmin ? `<p class="review-checklist-hint"><button class="btn btn-link task-assign-toggle" type="button">Assign</button></p>` : ""}
       ${isAdmin ? `<div class="task-assign-host" hidden></div>` : ""}
       <div class="task-pse-actions"></div>
+      <div class="task-po-request-actions"></div>
       <div class="review-actions task-status-actions"></div>
       ${isAdmin ? `<div class="task-attachments"></div>` : ""}
       ${
@@ -1373,6 +1374,9 @@ export async function renderTaskBoard(container) {
     }
 
     const tookOverStatus = wom && (await renderPseActions(host.querySelector(".task-pse-actions"), t, wom));
+    if (isAdmin && t.category === "po_request" && t.poStage === "requested") {
+      renderPoRequestActions(host.querySelector(".task-po-request-actions"), t, () => draw());
+    }
     if (!tookOverStatus) renderStatusActions(host.querySelector(".task-status-actions"), t);
     if (isAdmin) {
       await renderAttachments(host.querySelector(".task-attachments"), {
@@ -1685,6 +1689,110 @@ export async function renderTaskBoard(container) {
           sentAt: new Date(form.sentAt.value).toISOString(),
         });
         localStorage.setItem("laborapp:lastToyotaEmail", form.toyotaEmail.value.trim());
+        close();
+        await onDone();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // The admin's half of a po_request task (see techHome.js's "Request a
+  // C&W PO" flow): they generated the real PO outside the app and are
+  // reporting that back here.
+  function renderPoRequestActions(host, t, onDone) {
+    host.innerHTML = `<div class="review-actions"><button type="button" class="btn btn-primary po-request-generated-btn">Mark PO generated</button></div>`;
+    host.querySelector(".po-request-generated-btn").addEventListener("click", () => openMarkPoGeneratedModal(t, onDone));
+  }
+
+  // Confirms which vendor the generated PO is actually for and starts the
+  // vendor-invoice follow-up clock. Not a guess: once the PO document is
+  // uploaded, the vendor # and email are read straight out of its own text
+  // (every C&W-generated PO places them at the same fixed spot -- see
+  // server/utils/poDocument.js) and pre-fill this form; the admin only
+  // needs to actually decide anything when that extraction comes back
+  // empty or doesn't match a real vendor profile/the email on file.
+  async function openMarkPoGeneratedModal(t, onDone) {
+    const vendors = await api.get("/api/admin/vendors");
+    const sortedVendors = [...vendors].sort((a, b) => a.name.localeCompare(b.name));
+
+    const { body, close } = openModal({
+      title: "Mark PO generated",
+      bodyHtml: `
+        <form class="modal-form po-generated-form">
+          <label class="profile-field">
+            <span>Upload the generated PO</span>
+            <input type="file" name="poFile" accept=".pdf" required />
+          </label>
+          <p class="review-checklist-hint po-extract-status" hidden></p>
+          <label class="profile-field">
+            <span>Vendor</span>
+            <select name="vendorId" required>
+              <option value="">Select a vendor...</option>
+              ${sortedVendors.map((v) => `<option value="${v.id}" ${t.relatedVendorId === v.id ? "selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="profile-field">
+            <span>PO email for this vendor</span>
+            <input type="email" name="poEmail" value="${escapeHtml(t.relatedVendorPoEmail || "")}" required />
+          </label>
+          <label class="profile-field po-email-vendor-field" hidden>
+            <span><input type="checkbox" name="emailVendor" /> Also email the generated PO to this address now</span>
+          </label>
+          <div class="modal-form-actions">
+            <button type="submit" class="btn btn-primary" disabled>Upload the PO first</button>
+          </div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".po-generated-form");
+    const submitBtn = form.querySelector('button[type="submit"]');
+    const extractStatus = form.querySelector(".po-extract-status");
+    const emailVendorField = form.querySelector(".po-email-vendor-field");
+    let uploadedFileId = null;
+
+    form.poFile.addEventListener("change", async () => {
+      const file = form.poFile.files[0];
+      if (!file) return;
+      extractStatus.hidden = false;
+      extractStatus.textContent = "Uploading and reading the PO...";
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Upload the PO first";
+      try {
+        const uploaded = await api.uploadFile("task", String(t.id), "po_document", file);
+        uploadedFileId = uploaded.id;
+        const extracted = await api.get(`/api/files/${uploaded.id}/extract-po-vendor`);
+        if (extracted.matchedVendorId) {
+          form.vendorId.value = extracted.matchedVendorId;
+          form.poEmail.value = extracted.matchedVendorPoEmail || extracted.extractedEmail || form.poEmail.value;
+          extractStatus.textContent = extracted.emailMismatch
+            ? `Matched vendor: ${extracted.matchedVendorName}. The PDF's email (${extracted.extractedEmail}) doesn't match what's on file -- double-check which is right.`
+            : `Matched vendor: ${extracted.matchedVendorName}.`;
+        } else if (extracted.extractedVendorNumber) {
+          extractStatus.textContent = `The PDF names vendor # ${extracted.extractedVendorNumber}, but that doesn't match any vendor profile here -- pick the right one below.`;
+          if (extracted.extractedEmail) form.poEmail.value = extracted.extractedEmail;
+        } else {
+          extractStatus.textContent = "Couldn't read a vendor # off this PDF -- pick the vendor and confirm the email below.";
+        }
+        emailVendorField.hidden = false;
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Mark PO generated";
+      } catch (err) {
+        extractStatus.textContent = `Upload failed: ${err.message}`;
+      }
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!uploadedFileId) return;
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.patch(`/api/tasks/${t.id}/po-generated`, {
+          vendorId: form.vendorId.value,
+          poEmail: form.poEmail.value.trim(),
+          emailVendor: form.emailVendor.checked,
+        });
         close();
         await onDone();
       } catch (err) {

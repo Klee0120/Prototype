@@ -5,6 +5,7 @@ const path = require("path");
 const crypto = require("crypto");
 const db = require("../data/db");
 const { requireAuth } = require("../middleware/auth");
+const { extractPoVendorInfo } = require("../utils/poDocument");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -31,7 +32,7 @@ const CATEGORY_BY_RELATED = {
   // (or the task) being tied to any vendor. Same category vocabulary as
   // `vendor` above, so filing it onto the real vendor record later is a
   // straight re-upload with no re-labeling.
-  task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document"]),
+  task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document", "po_document"]),
   // Budget PO Tracker records -- admin-only, same reasoning as vendor/task
   // compliance documents below.
   po: new Set(["po_doc", "document"]),
@@ -154,6 +155,40 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
 router.get("/task-documents", requireAuth, (req, res) => {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Not authorized" });
   res.json(db.listTaskDocuments());
+});
+
+// Real verification for the "mark PO generated" step (see POST /api/tasks/
+// :id/po-generated) -- reads the vendor # and vendor email straight out of
+// the uploaded PO's own text layer (see server/utils/poDocument.js for why
+// this is reliable without OCR or AI) and matches that vendor # against a
+// real profile the same way PO import already does (db.findVendorByNumber).
+// Admin-only, same as everything else touching a task's own documents.
+router.get("/:id/extract-po-vendor", requireAuth, async (req, res) => {
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Not authorized" });
+  const file = db.getFile(req.params.id);
+  if (!file) return res.status(404).json({ error: "File not found" });
+  if (file.category !== "po_document") return res.status(400).json({ error: "Not a PO document" });
+
+  let extracted;
+  try {
+    extracted = await extractPoVendorInfo(path.join(db.UPLOADS_DIR, file.storedName));
+  } catch (err) {
+    return res.status(422).json({ error: `Couldn't read this PDF: ${err.message}` });
+  }
+  if (!extracted) return res.json({ extractedVendorNumber: null, extractedEmail: null, matchedVendorId: null });
+
+  const match = extracted.vendorNumber ? db.findVendorByNumber(extracted.vendorNumber) : null;
+  const matchedVendor = match ? db.findVendor(match.id) : null;
+  res.json({
+    extractedVendorNumber: extracted.vendorNumber,
+    extractedEmail: extracted.email,
+    matchedVendorId: matchedVendor ? matchedVendor.id : null,
+    matchedVendorName: matchedVendor ? matchedVendor.name : null,
+    matchedVendorPoEmail: matchedVendor ? matchedVendor.poEmail : null,
+    emailMismatch: Boolean(
+      matchedVendor && matchedVendor.poEmail && extracted.email && matchedVendor.poEmail.toLowerCase() !== extracted.email.toLowerCase()
+    ),
+  });
 });
 
 // Re-files an existing upload onto a different record without re-uploading

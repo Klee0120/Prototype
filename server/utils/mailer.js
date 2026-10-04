@@ -25,12 +25,12 @@ function isConfigured() {
   return Boolean(transporter);
 }
 
-async function sendMail({ to, subject, text }) {
+async function sendMail({ to, subject, text, attachments }) {
   if (!transporter) {
     console.warn(`[mailer] SMTP not configured -- would have emailed ${to}: "${subject}"`);
     return { sent: false, reason: "SMTP not configured" };
   }
-  await transporter.sendMail({ from: SMTP_FROM, to, subject, text });
+  await transporter.sendMail({ from: SMTP_FROM, to, subject, text, attachments });
   return { sent: true };
 }
 

@@ -1,5 +1,7 @@
+const path = require("path");
 const express = require("express");
 const db = require("../data/db");
+const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 
 const router = express.Router();
@@ -83,6 +85,7 @@ function presentTask(t) {
     relatedWomDescription: wom ? wom.description : null,
     relatedVendorId: t.related_vendor_id,
     relatedVendorName: vendor ? vendor.name : null,
+    relatedVendorPoEmail: vendor ? vendor.poEmail : null,
     relatedLocationCode: t.related_location_code,
     relatedLocationName: location ? location.name : null,
     relatedTechId: t.related_tech_id,
@@ -95,6 +98,8 @@ function presentTask(t) {
     isException: Boolean(t.is_exception),
     isChangeOrder: Boolean(t.is_change_order),
     referredToAdminAt: t.referred_to_admin_at,
+    poStage: t.po_stage,
+    poGeneratedAt: t.po_generated_at,
     createdBy: t.created_by,
     createdByName: creator ? creator.name : null,
     createdAt: t.created_at,
@@ -239,6 +244,21 @@ function canSeeTask(user, task) {
   return task.assigned_to === user.id || (!task.assigned_to && roles.includes(task.assigned_role));
 }
 
+// A minimal, tech-readable admin picker for the request-po modal below --
+// GET /api/admin/admins is admin-only (the whole /api/admin router requires
+// it), and a tech genuinely needs to pick who a PO request goes to. Scoped
+// to just id/name, nothing else an admin record carries. Must be registered
+// before GET /:id, same as /summary above, or "/assignable-admins" itself
+// would get swallowed as an :id.
+router.get("/assignable-admins", requireAuth, (req, res) => {
+  res.json(
+    db
+      .listAdmins()
+      .filter((a) => a.active)
+      .map((a) => ({ id: a.id, name: a.name }))
+  );
+});
+
 router.get("/:id", requireAuth, (req, res) => {
   const task = db.findTask(Number(req.params.id));
   if (!task) return res.status(404).json({ error: "Task not found" });
@@ -358,6 +378,51 @@ router.post("/", requireAuth, (req, res) => {
   res.status(201).json(presentTask(task));
 });
 
+// The tech-facing "Request a C&W PO" button used to just open the external
+// Smartsheet form with zero app-side record -- this is what gives that
+// request a tracked task instead, so there's somewhere to see it's waiting
+// on an admin and how long it's been. The tech still reaches the Smartsheet
+// form the same way they always did (the frontend opens it right after this
+// call succeeds); this just also creates the task that chases it.
+router.post("/request-po", requireAuth, (req, res) => {
+  const { womCode, assignedTo, note } = req.body || {};
+  if (!assignedTo) return res.status(400).json({ error: "assignedTo is required" });
+
+  // A WOM is optional -- a tech can ask for a C&W PO without tying it to a
+  // specific WOM project at all (e.g. a general supply/service PO). When
+  // one is given it just carries over as useful context (and a vendor
+  // guess for the "mark generated" step below, which always lets the
+  // admin confirm/correct it regardless).
+  const wom = womCode ? db.findWom(womCode) : null;
+  if (womCode && !wom) return res.status(400).json({ error: `Unknown WOM: ${womCode}` });
+
+  const admin = db.listAdmins().find((a) => a.id === assignedTo && a.active);
+  if (!admin) return res.status(400).json({ error: "assignedTo must be a real, active admin account" });
+
+  const task = db.createTask({
+    title: wom ? `Generate C&W PO for ${womCode}` : `Generate C&W PO requested by ${req.user.name}`,
+    description: note || "",
+    assignedTo: admin.id,
+    assignedRole: "admin",
+    category: "po_request",
+    priority: "normal",
+    relatedWomCode: wom ? womCode : null,
+    relatedVendorId: wom ? wom.vendor_id || null : null,
+    relatedLocationCode: wom ? wom.location_code || null : null,
+    relatedTechId: req.user.role === "tech" ? req.user.id : null,
+    source: "po_request",
+    createdBy: req.user.id,
+    poStage: "requested",
+  });
+
+  db.addAudit(
+    req.user.id,
+    "PO_REQUESTED",
+    `${req.user.name} requested a C&W PO${wom ? ` for ${womCode}` : ""}, routed to ${admin.name}`
+  );
+  res.status(201).json(presentTask(task));
+});
+
 // Editing what/why/related -- deliberately separate from /assign (who) and
 // /status (state), which are their own routes with their own audit verbs.
 // An admin can edit anything visible; a non-admin only their own hand-added
@@ -445,6 +510,59 @@ router.patch("/:id/assign", requireAuth, (req, res) => {
     req.user.id,
     "TASK_REASSIGNED",
     `${req.user.name} reassigned task "${task.title}" to ${assignedTo || assignedRole || "unassigned"}`
+  );
+  res.json(presentTask(updated));
+});
+
+// The admin's half of the PO-request flow: they generated the real PO
+// outside the app, uploaded it to this task (see files.js's "po_document"
+// category), and are now confirming who it's actually for -- the WOM's own
+// vendor_id may never have been set, or may be wrong. This is real
+// verification, not a guess: the frontend extracts the vendor ID and PO
+// email straight out of the uploaded PDF's text layer (every C&W-generated
+// PO places them at the same fixed spot) and only asks the admin to
+// confirm/correct when the extracted vendor doesn't match a real profile or
+// the extracted email doesn't match what's on file.
+router.patch("/:id/po-generated", requireAuth, requireAdmin, (req, res) => {
+  const task = db.findTask(Number(req.params.id));
+  if (!task) return res.status(404).json({ error: "Task not found" });
+  if (task.category !== "po_request") return res.status(400).json({ error: "This isn't a PO-request task" });
+  if (task.po_stage !== "requested") return res.status(400).json({ error: "This PO has already been marked generated" });
+
+  const { vendorId, poEmail, emailVendor } = req.body || {};
+  if (!vendorId) return res.status(400).json({ error: "vendorId is required" });
+  const vendor = db.findVendor(vendorId);
+  if (!vendor) return res.status(400).json({ error: `Unknown vendor: ${vendorId}` });
+  if (!poEmail) return res.status(400).json({ error: "poEmail is required" });
+
+  const poDoc = db.listFiles("task", String(task.id)).find((f) => f.category === "po_document");
+  if (!poDoc) return res.status(400).json({ error: "Upload the generated PO document before marking this generated" });
+
+  const updated = db.markTaskPoGenerated(task.id, { vendorId });
+
+  mailer
+    .sendMail({
+      to: poEmail,
+      subject: `Invoice requested -- PO for ${task.related_wom_code || "your recent work"}`,
+      text: `Hi ${vendor.name},\n\nThe PO for this work has been issued. Please submit your invoice referencing this PO so it can be processed.\n\nThanks,\n${req.user.name}`,
+    })
+    .catch((err) => console.error(`[mailer] failed to send invoice-request email for task ${task.id}:`, err.message));
+
+  if (emailVendor) {
+    mailer
+      .sendMail({
+        to: poEmail,
+        subject: `Purchase Order -- ${task.related_wom_code || ""}`.trim(),
+        text: `Hi ${vendor.name},\n\nAttached is the Purchase Order for this work.\n\nThanks,\n${req.user.name}`,
+        attachments: [{ filename: poDoc.originalName, path: path.join(db.UPLOADS_DIR, poDoc.storedName) }],
+      })
+      .catch((err) => console.error(`[mailer] failed to email PO document for task ${task.id}:`, err.message));
+  }
+
+  db.addAudit(
+    req.user.id,
+    "PO_GENERATED",
+    `${req.user.name} marked the C&W PO generated for task "${task.title}" (vendor: ${vendor.name})${emailVendor ? " and emailed the PO to the vendor" : ""}`
   );
   res.json(presentTask(updated));
 });
