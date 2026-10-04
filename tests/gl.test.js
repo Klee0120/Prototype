@@ -307,3 +307,75 @@ test("GL Spend Breakdown: category + territory grouping", async (t) => {
     assert.equal(fullRes.body.categories.find((c) => c.category === "Cell Phone").total, 100);
   });
 });
+
+// A GL line's "Business Unit" is the same JDE job number the COA import
+// already puts on locations.ef_job_number/pps_job_number/wom_job_number --
+// a precise match, unlike the raw "Location Code" column's facility name,
+// which this app can only match tolerantly (see matchLocationCodeByName)
+// and which real production data shows often doesn't match at all. Business
+// Unit is tried first; the name match is only a fallback for a business
+// unit not on file under any of the three job-number columns.
+test("GL location matching: Business Unit job number takes priority over the Location Code name match", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  // A real location whose own name wouldn't match the GL Location Code's
+  // facility name at all, but whose E&F job number does match the GL
+  // line's Business Unit exactly.
+  raw
+    .prepare("INSERT INTO locations (code, name, ef_job_number, territory) VALUES (?, ?, ?, ?)")
+    .run("JOBNUM-LOC", "Totally Different Facility Name", "100110999999", "East");
+
+  await t.test("resolves via Business Unit even when the Location Code's name matches nothing", () => {
+    db.importGlEntries(
+      [
+        {
+          glDate: "2026-09-01",
+          objectAccount: "647200 - Gen B&A~Cell Phone",
+          amount: 123,
+          businessUnit: "100110999999",
+          locationCode: "99999999 - Nothing Like That Name",
+        },
+      ],
+      14,
+      26,
+      "ADMIN",
+      "t-bu-match.xlsx"
+    );
+
+    const line = raw.prepare("SELECT matched_location_code, matched_location_source FROM gl_entries WHERE business_unit = ?").get("100110999999");
+    assert.equal(line.matched_location_code, "JOBNUM-LOC");
+    assert.equal(line.matched_location_source, "business_unit");
+
+    const result = db.getGlSpendBreakdown({ periodNumber: 14, fiscalYear: 26 });
+    const east = result.territories.find((t2) => t2.territory === "East");
+    assert.ok(east, "should resolve to East via the Business Unit match, not fall through to Unassigned");
+    assert.equal(east.total, 123);
+  });
+
+  await t.test("falls back to the name match when Business Unit isn't on file under any job-number column", () => {
+    db.importGlEntries(
+      [
+        {
+          glDate: "2026-09-01",
+          objectAccount: "647200 - Gen B&A~Cell Phone",
+          amount: 50,
+          businessUnit: "100110000000",
+          locationCode: "20001805 - Totally Different Facility Name",
+        },
+      ],
+      15,
+      26,
+      "ADMIN",
+      "t-name-fallback.xlsx"
+    );
+
+    const line = raw.prepare("SELECT matched_location_code, matched_location_source FROM gl_entries WHERE business_unit = ?").get("100110000000");
+    assert.equal(line.matched_location_code, "JOBNUM-LOC");
+    assert.equal(line.matched_location_source, "name");
+  });
+});

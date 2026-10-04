@@ -1348,29 +1348,49 @@ if (!hasColumn("gl_entries", "subsidiary_mismatch")) {
     backfillStmt.run(subsidiaryMismatch, objectCodeMismatch, line.id);
   }
 }
-// The raw "Location Code" column on a GL line (e.g. "20001805 - TOYOTA/HQ DR
-// PLANO, TX") doesn't line up with any existing job-number scheme this app
-// already matches locations by (ef/wom/pps job numbers all come from
-// Toyota's Chart of Accounts export, a different identifier entirely) --
-// but its own name portion matches a real location's name the same tolerant
-// way matchVendorIdByName already does for the PO tracker's vendor column.
-// Backs the Spend Breakdown view's per-territory split (see
-// getGlSpendBreakdown): a line whose location name doesn't match anything
-// on file just reads "Unassigned" there rather than being guessed at.
+// A GL line resolves to a location two ways: precisely, via its own
+// "Business Unit" -- the same 12-digit JDE job number the COA import already
+// backfilled onto locations.ef_job_number/pps_job_number/wom_job_number
+// (see findLocationByJobNumber) -- or, when a business unit isn't on file
+// under any of those three (a site the COA import hasn't captured, or a
+// non-Toyota contract), by tolerantly matching the raw "Location Code"
+// column's own facility name against a real location's name (see
+// matchLocationCodeByName). Backs the Spend Breakdown view's per-territory
+// split (see getGlSpendBreakdown): a line that resolves neither way just
+// reads "Unassigned" there rather than being guessed at.
 if (!hasColumn("gl_entries", "matched_location_code")) {
   db.exec("ALTER TABLE gl_entries ADD COLUMN matched_location_code TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_gl_entries_matched_location_code ON gl_entries(matched_location_code)");
+}
+// Business-Unit-based matching shipped after the name-only version above had
+// already backfilled (and mismatched or left blank) real imported data --
+// gated on its own marker column so it runs its full, more-precise re-match
+// over every existing GL line exactly once, the same one-shot shape as the
+// migration above, rather than only taking effect on the next re-import.
+if (!hasColumn("gl_entries", "matched_location_source")) {
+  db.exec("ALTER TABLE gl_entries ADD COLUMN matched_location_source TEXT");
+  const jobNumberCache = new Map();
+  const resolveByJobNumber = (businessUnit) => {
+    if (!businessUnit) return null;
+    if (!jobNumberCache.has(businessUnit)) {
+      const location = findLocationByJobNumber(businessUnit);
+      jobNumberCache.set(businessUnit, location ? location.code : null);
+    }
+    return jobNumberCache.get(businessUnit);
+  };
   const locationNameCache = new Map();
-  const resolveLocationCode = (raw) => {
+  const resolveByName = (raw) => {
     if (!raw) return null;
     if (!locationNameCache.has(raw)) locationNameCache.set(raw, matchLocationCodeByName(extractGlLocationName(raw)));
     return locationNameCache.get(raw);
   };
-  const glRows = db.prepare("SELECT id, location_code FROM gl_entries WHERE location_code IS NOT NULL").all();
-  const backfillLocStmt = db.prepare("UPDATE gl_entries SET matched_location_code = ? WHERE id = ?");
+  const glRows = db.prepare("SELECT id, business_unit, location_code FROM gl_entries").all();
+  const backfillLocStmt = db.prepare("UPDATE gl_entries SET matched_location_code = ?, matched_location_source = ? WHERE id = ?");
   for (const row of glRows) {
-    const matched = resolveLocationCode(row.location_code);
-    if (matched) backfillLocStmt.run(matched, row.id);
+    const byJobNumber = resolveByJobNumber(row.business_unit);
+    const matched = byJobNumber || resolveByName(row.location_code);
+    const source = byJobNumber ? "business_unit" : matched ? "name" : null;
+    if (matched) backfillLocStmt.run(matched, source, row.id);
   }
 }
 
@@ -6108,6 +6128,21 @@ function findLocationByEfJobNumber(jobNumber) {
   return db.prepare("SELECT * FROM locations WHERE ef_job_number = ?").get(jobNumber);
 }
 
+// A GL line's own "Business Unit" is the same 12-digit JDE job number the
+// COA import already backfilled onto locations -- just under whichever of
+// the three job-number columns that business unit actually belongs to
+// (E&F, PPS, or WOM; confirmed against real GL data that a business unit
+// landing in exactly one of those three is the norm, not an edge case).
+// This is the precise, no-guessing way to resolve a GL line to a location
+// -- see matchLocationCodeByName for the fuzzy fallback used only when a
+// business unit doesn't appear in any of the three columns at all.
+function findLocationByJobNumber(businessUnit) {
+  if (!businessUnit) return null;
+  return db
+    .prepare("SELECT * FROM locations WHERE ef_job_number = ? OR pps_job_number = ? OR wom_job_number = ?")
+    .get(businessUnit, businessUnit, businessUnit);
+}
+
 // Vendor Number in the source sheet lines up with this app's own JDE
 // Vendor # -- the only thing ever allowed to auto-link a vendor (never the
 // vendor name, which is preserved as free text and can collide across
@@ -7007,8 +7042,9 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       (import_id, period_number, fiscal_year, gl_date, document_type, document_number,
        journal_entry_line_number, business_unit, object_account, object_account_code, subsidiary,
        amount, batch_number, supplier_invoice_number, invoice_date, location_code, matched_location_code,
-       name_alpha, remark, purchase_order, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       matched_location_source, name_alpha, remark, purchase_order, matched_po_id, subsidiary_mismatch,
+       object_code_mismatch, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const findPoByNumber = db.prepare("SELECT id, subsidiary, object_code FROM pos WHERE po_number = ? LIMIT 1");
   const poCache = new Map();
@@ -7016,9 +7052,21 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
     if (!poCache.has(poNumber)) poCache.set(poNumber, findPoByNumber.get(poNumber) || null);
     return poCache.get(poNumber);
   };
-  // A handful of distinct facility names repeat across thousands of lines --
-  // cache the by-name match (a full locations scan each time) per unique raw
-  // string instead of re-matching every row.
+  // Business Unit is the precise match (see findLocationByJobNumber) -- tried
+  // first. A handful of distinct business units/facility names repeat across
+  // thousands of lines, so cache each lookup per unique raw value instead of
+  // re-matching every row. Falls back to the tolerant name match only when a
+  // business unit isn't on file under any of the three job-number columns
+  // (e.g. a site the COA import hasn't captured, or a non-Toyota contract).
+  const locationByJobNumberCache = new Map();
+  const lookupLocationByBusinessUnit = (businessUnit) => {
+    if (!businessUnit) return null;
+    if (!locationByJobNumberCache.has(businessUnit)) {
+      const location = findLocationByJobNumber(businessUnit);
+      locationByJobNumberCache.set(businessUnit, location ? location.code : null);
+    }
+    return locationByJobNumberCache.get(businessUnit);
+  };
   const locationCodeCache = new Map();
   const lookupLocationCode = (rawLocationCode) => {
     if (!rawLocationCode) return null;
@@ -7026,6 +7074,12 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       locationCodeCache.set(rawLocationCode, matchLocationCodeByName(extractGlLocationName(rawLocationCode)));
     }
     return locationCodeCache.get(rawLocationCode);
+  };
+  const resolveMatchedLocation = (businessUnit, rawLocationCode) => {
+    const byJobNumber = lookupLocationByBusinessUnit(businessUnit);
+    if (byJobNumber) return { code: byJobNumber, source: "business_unit" };
+    const byName = lookupLocationCode(rawLocationCode);
+    return byName ? { code: byName, source: "name" } : { code: null, source: null };
   };
 
   const importRow = db.prepare(
@@ -7059,6 +7113,7 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       subsidiaryMismatch = poSubsidiaryCode && r.subsidiary && String(r.subsidiary) !== poSubsidiaryCode ? 1 : 0;
       objectCodeMismatch = poObjectCode && objectAccountCode && String(objectAccountCode) !== poObjectCode ? 1 : 0;
     }
+    const matchedLocation = resolveMatchedLocation(r.businessUnit, r.locationCode);
     insert.run(
       importId,
       periodNumber,
@@ -7076,7 +7131,8 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
       r.supplierInvoiceNumber || null,
       r.invoiceDate || null,
       r.locationCode || null,
-      lookupLocationCode(r.locationCode),
+      matchedLocation.code,
+      matchedLocation.source,
       r.nameAlpha || null,
       r.remark || null,
       poNumber,
