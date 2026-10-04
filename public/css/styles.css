@@ -2271,6 +2271,36 @@ h1, h2, h3, h4 {
   border-radius: var(--radius-sm);
 }
 
+/* The one thing a tech must not miss on the "PO requested" confirmation
+   screen: the reference # to copy into the Smartsheet form's Description
+   field. Made deliberately loud (bold, oversized, high-contrast box) since
+   a quiet inline sentence here was easy to skip past on the way to the
+   "Continue" button. */
+.request-po-reference-callout {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 2px solid var(--warn);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  margin: 12px 0;
+}
+.request-po-reference-instruction {
+  font-weight: 700;
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+.request-po-reference-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.request-po-reference-number {
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+}
+
 .task-reschedule-notes {
   margin-bottom: 12px;
 }

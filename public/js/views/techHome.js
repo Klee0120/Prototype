@@ -300,19 +300,33 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
   // to this task later -- there's no automatic link between the two, this
   // is the only thread connecting them.
   function renderRequestPoConfirmation(body, task) {
+    const reference = `PO Request Task #${task.id}`;
     body.innerHTML = `
       <div class="request-po-confirmation">
-        <p class="review-checklist-hint">✓ Task submitted successfully -- PO Request Task #<strong>${task.id}</strong>.</p>
-        <p class="review-checklist-hint">
-          Put "PO Request Task #${task.id}" in the PO request form's Description field, so it can be
-          matched back to this task once the real PO shows up in the Budget PO Tracker.
-        </p>
+        <p class="review-checklist-hint">✓ Task submitted successfully.</p>
+        <div class="request-po-reference-callout">
+          <p class="request-po-reference-instruction">COPY AND PASTE THIS NUMBER INTO THE DESCRIPTION OF THE PO REQUEST FORM:</p>
+          <div class="request-po-reference-row">
+            <span class="request-po-reference-number">${escapeHtml(reference)}</span>
+            <button type="button" class="btn btn-secondary request-po-copy-btn">Copy</button>
+          </div>
+        </div>
         <div class="modal-form-actions">
           <button type="button" class="btn btn-primary request-po-continue-btn">Continue to the PO form ↗</button>
           <button type="button" class="btn btn-secondary request-po-done-btn">Done</button>
         </div>
       </div>
     `;
+    const copyBtn = body.querySelector(".request-po-copy-btn");
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(reference);
+        copyBtn.textContent = "Copied!";
+        setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
+      } catch {
+        window.prompt("Copy this reference:", reference);
+      }
+    });
     body.querySelector(".request-po-continue-btn").addEventListener("click", () => {
       window.open(CW_PO_REQUEST_FORM_URL, "_blank", "noopener");
     });
