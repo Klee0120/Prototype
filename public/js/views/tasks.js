@@ -1730,7 +1730,23 @@ export async function renderTaskBoard(container) {
   // C&W PO" flow): they generated the real PO outside the app and are
   // reporting that back here.
   function renderPoRequestActions(host, t, onDone) {
-    host.innerHTML = `<div class="review-actions"><button type="button" class="btn btn-primary po-request-generated-btn">Mark PO generated</button></div>`;
+    // Auto-matched on import once the real PO shows up in the Budget PO
+    // Tracker with this task's "PO Request Task #<id>" reference in its
+    // Description (see db.linkPoRequestTaskFromImport) -- purely
+    // informational, doesn't skip the Mark PO generated step below, since
+    // that's what actually confirms the vendor and starts the invoice
+    // follow-up clock.
+    const matchedBanner = t.matchedPoId
+      ? `<p class="review-checklist-hint">
+           ✓ Matched to PO${t.matchedPoNumber ? ` #${escapeHtml(t.matchedPoNumber)}` : ` record #${t.matchedPoId}`}${
+             t.matchedPoVendorName ? ` -- ${escapeHtml(t.matchedPoVendorName)}` : ""
+           } in the Budget PO Tracker.
+         </p>`
+      : "";
+    host.innerHTML = `
+      ${matchedBanner}
+      <div class="review-actions"><button type="button" class="btn btn-primary po-request-generated-btn">Mark PO generated</button></div>
+    `;
     host.querySelector(".po-request-generated-btn").addEventListener("click", () => openMarkPoGeneratedModal(t, onDone));
   }
 
@@ -1744,6 +1760,12 @@ export async function renderTaskBoard(container) {
   async function openMarkPoGeneratedModal(t, onDone) {
     const vendors = await api.get("/api/admin/vendors");
     const sortedVendors = [...vendors].sort((a, b) => a.name.localeCompare(b.name));
+    // Prefer a WOM-linked vendor if there is one; otherwise fall back to the
+    // vendor on the PO that import-matching already found (see
+    // db.linkPoRequestTaskFromImport) -- either way, a real PDF upload below
+    // can still override this with whatever it actually extracts.
+    const prefilledVendorId = t.relatedVendorId || t.matchedPoVendorId || null;
+    const prefilledPoEmail = t.relatedVendorPoEmail || t.matchedPoVendorPoEmail || "";
 
     const { body, close } = openModal({
       title: "Mark PO generated",
@@ -1758,12 +1780,12 @@ export async function renderTaskBoard(container) {
             <span>Vendor</span>
             <select name="vendorId" required>
               <option value="">Select a vendor...</option>
-              ${sortedVendors.map((v) => `<option value="${v.id}" ${t.relatedVendorId === v.id ? "selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}
+              ${sortedVendors.map((v) => `<option value="${v.id}" ${prefilledVendorId === v.id ? "selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}
             </select>
           </label>
           <label class="profile-field">
             <span>PO email for this vendor</span>
-            <input type="email" name="poEmail" value="${escapeHtml(t.relatedVendorPoEmail || "")}" required />
+            <input type="email" name="poEmail" value="${escapeHtml(prefilledPoEmail)}" required />
           </label>
           <label class="profile-field po-email-vendor-field" hidden>
             <span><input type="checkbox" name="emailVendor" /> Also email the generated PO to this address now</span>

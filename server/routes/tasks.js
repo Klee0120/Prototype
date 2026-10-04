@@ -66,6 +66,8 @@ function presentTask(t) {
   const wom = t.related_wom_code ? db.findWom(t.related_wom_code) : null;
   const relatedTech = t.related_tech_id ? db.findTechnician(t.related_tech_id) : null;
   const creator = t.created_by ? db.findTechnician(t.created_by) : null;
+  const matchedPo = t.matched_po_id ? db.findPo(t.matched_po_id) : null;
+  const matchedPoVendor = matchedPo && matchedPo.vendorId ? db.findVendor(matchedPo.vendorId) : null;
   const now = Date.now();
   const ageMs = now - new Date(t.created_at).getTime();
 
@@ -100,6 +102,12 @@ function presentTask(t) {
     referredToAdminAt: t.referred_to_admin_at,
     poStage: t.po_stage,
     poGeneratedAt: t.po_generated_at,
+    matchedPoId: t.matched_po_id,
+    matchedPoNumber: matchedPo ? matchedPo.poNumber : null,
+    matchedPoVendorName: matchedPo ? matchedPo.vendorName : null,
+    matchedPoLifecycleStatus: matchedPo ? matchedPo.lifecycleStatus : null,
+    matchedPoVendorId: matchedPo ? matchedPo.vendorId : null,
+    matchedPoVendorPoEmail: matchedPoVendor ? matchedPoVendor.poEmail : null,
     createdBy: t.created_by,
     createdByName: creator ? creator.name : null,
     createdAt: t.created_at,

@@ -1056,6 +1056,18 @@ if (!hasColumn("tasks", "po_stage")) {
 if (!hasColumn("tasks", "po_generated_at")) {
   db.exec("ALTER TABLE tasks ADD COLUMN po_generated_at TEXT");
 }
+// Separate from related_po_id above on purpose: related_po_id's own
+// listTasks join hides a task until the PO it points at is moved to
+// Active, which is the right behavior for a task *about* an existing PO
+// record, but wrong for a po_request task -- it should stay visible the
+// whole time regardless of that PO's own organization state. Set
+// automatically once the real PO shows up in a tracker import (see
+// linkPoRequestTaskFromImport) by matching the "PO Request Task #<id>"
+// reference the tech was told to paste into the Smartsheet form's
+// Description field -- the only thread connecting the two records.
+if (!hasColumn("tasks", "matched_po_id")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN matched_po_id INTEGER");
+}
 if (!tableExists("task_reschedules")) {
   db.exec(`
     CREATE TABLE task_reschedules (
@@ -6074,6 +6086,37 @@ function getLastPoImport() {
   return db.prepare("SELECT * FROM po_imports ORDER BY id DESC LIMIT 1").get() || null;
 }
 
+// "PO Request Task #<id>" -- the exact text the request-po confirmation
+// screen tells a tech/admin to copy into the Smartsheet form's Description
+// field (see techHome.js/pos.js's renderRequestPoConfirmation). Matched
+// case-insensitively since it's hand-typed into an external form.
+const PO_REQUEST_TASK_REF_RE = /PO Request Task #(\d+)/i;
+
+// Closes the loop a manual copy-paste reference opens: once the real PO
+// shows up in a tracker import carrying that reference in its Description,
+// this links the originating po_request task to it automatically, so the
+// admin can see which real PO resulted from a given request without having
+// to search for it by eye. Silently does nothing if the description has no
+// reference, the referenced task doesn't exist, isn't a po_request task, or
+// is already linked to this same PO (an unmatched/wrong-category reference
+// is far more likely to be a tech's typo or a copy of something else than
+// a real attack surface, so this fails quiet rather than erroring the
+// whole import over one bad row).
+function linkPoRequestTaskFromImport(poId, description, importedBy) {
+  if (!description) return;
+  const match = String(description).match(PO_REQUEST_TASK_REF_RE);
+  if (!match) return;
+  const taskId = Number(match[1]);
+  const task = findTask(taskId);
+  if (!task || task.category !== "po_request" || task.matched_po_id === poId) return;
+  db.prepare("UPDATE tasks SET matched_po_id = ? WHERE id = ?").run(poId, taskId);
+  addAudit(
+    importedBy,
+    "PO_REQUEST_TASK_MATCHED",
+    `PO import matched task #${taskId} ("${task.title}") to PO #${poId} via its Description reference`
+  );
+}
+
 // The shared engine behind both the import preview and the real import --
 // identical logic either way, run inside a transaction that's committed for
 // a real import and rolled back for a preview, so "what would happen" can
@@ -6189,6 +6232,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
         maybeAutoActivatePo(existing.id);
         refreshPoWomLinkTask(existing.id);
         refreshGlMismatchFlagsForPo(existing.id);
+        linkPoRequestTaskFromImport(existing.id, row.description, importedBy);
         if (changed) updated++;
         else unchanged++;
       } else {
@@ -6239,6 +6283,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
         touchedIds.add(Number(result.lastInsertRowid));
         maybeAutoActivatePo(Number(result.lastInsertRowid));
         refreshPoWomLinkTask(Number(result.lastInsertRowid));
+        linkPoRequestTaskFromImport(Number(result.lastInsertRowid), row.description, importedBy);
         created++;
       }
     }
