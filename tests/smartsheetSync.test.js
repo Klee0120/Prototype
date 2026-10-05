@@ -719,6 +719,51 @@ test("smartsheet sync: full six-category cost breakdown matches the real tracker
     restore();
   }
 
+  await t.test("Applied-over-Toyota-PO nets out sales tax -- a WOM over its PO only because of tax doesn't show up", async () => {
+    const restoreTax = stubFetchOnce({
+      ok: true,
+      json: async () => ({
+        name: "Midwest PSE Request Tracker",
+        columns: FULL_BREAKDOWN_COLUMNS,
+        rows: [
+          {
+            id: 901,
+            cells: [
+              { columnId: 1, value: "20040146", displayValue: "20040146" },
+              { columnId: 2, value: "Tax-only overage", displayValue: "Tax-only overage" },
+              { columnId: 14, value: 3000, displayValue: "$3,000.00" },
+              { columnId: 17, value: 54138, displayValue: "$54,138.00" },
+            ],
+          },
+        ],
+      }),
+    });
+    try {
+      const syncRes = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+      assert.equal(syncRes.status, 200);
+
+      // $2,000 over the PO, but the $3,000 tax line more than covers that --
+      // net of tax it's actually under, so this should NOT be flagged.
+      await server.call("PATCH", "/api/woms/20040146/pricing", { userId: "ADMIN", body: { appliedPrice: 56138 } });
+      const summary = (await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" })).body;
+      assert.equal(
+        summary.appliedOverToyotaPo.find((w) => w.code === "20040146"),
+        undefined,
+        "a WOM only over its PO because of tax should not be flagged"
+      );
+
+      // Push it far enough over that it's still over even after netting out
+      // the full $3,000 of tax -- a real overage, reported net of tax.
+      await server.call("PATCH", "/api/woms/20040146/pricing", { userId: "ADMIN", body: { appliedPrice: 60000 } });
+      const summary2 = (await server.call("GET", "/api/woms/cost-summary", { userId: "ADMIN" })).body;
+      const flagged2 = summary2.appliedOverToyotaPo.find((w) => w.code === "20040146");
+      assert.ok(flagged2, "expected a genuine (non-tax) overage to still be flagged");
+      assert.equal(flagged2.overage, 60000 - 3000 - 54138);
+    } finally {
+      restoreTax();
+    }
+  });
+
   // The original bug report: "Applied PO $" (no "Contracted Services" in
   // the title) wasn't recognized at all, so Contracted Services Increased
   // stayed stuck at 0 regardless of real data. Re-sync with a higher

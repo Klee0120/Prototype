@@ -3950,15 +3950,23 @@ function getWomCostSummary() {
       totalToyotaPoValue += w.toyota_po_value;
       toyotaPoValueCount++;
     }
-    if (w.applied_price != null && w.toyota_po_value != null && w.applied_price > w.toyota_po_value) {
-      appliedOverToyotaPo.push({
-        code: w.code,
-        description: w.description,
-        locationCode: w.location_code,
-        appliedPrice: w.applied_price,
-        toyotaPoValue: w.toyota_po_value,
-        overage: w.applied_price - w.toyota_po_value,
-      });
+    // Sales tax is its own itemized category (see SIMPLE_OVERCHARGE_CATEGORIES
+    // below) and isn't something Toyota's PO ceiling is meant to absorb, so a
+    // WOM that only clears toyota_po_value because of its tax line isn't a
+    // real overage -- net applied_tax out before comparing/reporting here.
+    if (w.applied_price != null && w.toyota_po_value != null) {
+      const appliedNetOfTax = w.applied_price - (w.applied_tax || 0);
+      const overage = appliedNetOfTax - w.toyota_po_value;
+      if (overage > 0) {
+        appliedOverToyotaPo.push({
+          code: w.code,
+          description: w.description,
+          locationCode: w.location_code,
+          appliedPrice: w.applied_price,
+          toyotaPoValue: w.toyota_po_value,
+          overage,
+        });
+      }
     }
     // Estimated came in higher than applied on the project as a whole --
     // budget that was quoted but never used, not an overcharge. See
