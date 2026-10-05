@@ -1179,7 +1179,11 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
               { columnId: 11, value: "true", displayValue: "true" },
               { columnId: 12, value: "true", displayValue: "true" },
               { columnId: 13, value: "true", displayValue: "true" },
-              { columnId: 14, value: "true", displayValue: "true" },
+              // Batch Posted Confirmed has no column of its own (see
+              // smartsheetSync.js) -- it's derived from Billing Ref # being
+              // filled in, not a 6th checkbox, so that's what completes the
+              // checklist here instead of a dedicated "Billing" column.
+              { columnId: 15, value: "RITM00009007", displayValue: "RITM00009007" },
             ],
           },
         ]),
@@ -1188,7 +1192,7 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
       const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
       const changed = res.body.changedWoms.find((c) => c.code === "20099007");
       assert.ok(changed);
-      assert.ok(changed.fields.includes("Billing checklist completed"), "all 6 checklist items (including the Billing/Batch-posted-confirmed column) must be true");
+      assert.ok(changed.fields.includes("Billing checklist completed"), "all 6 checklist items (including Batch Posted Confirmed, derived from Billing Ref #) must be true");
       assert.ok(
         !changed.fields.some((f) => f.includes("now invoiced")),
         "applyWomSourceEvidence only promotes status from the invoice-number branch -- the checklist alone doesn't trigger that message, even though it does count as invoicing evidence below"

@@ -5416,9 +5416,14 @@ function syncWomsFromSheetRows(rows, columns) {
     const billingRefNumber = (billingRefNumberColumn && row[billingRefNumberColumn] && String(row[billingRefNumberColumn]).trim()) || null;
     // The billing checklist -- 6 checkbox columns, each parsed the same way
     // Work Completed is (true/yes/x/1 -> 1, false/no/0 -> 0, anything else
-    // -> null for "not on this sheet/not set").
-    const billingFields = {};
+    // -> null for "not on this sheet/not set"). "Batch Posted Confirmed" is
+    // the one exception -- it's Krista's own manual confirmation step, not
+    // a column the tracker has, so it's derived from billingRefNumber
+    // (any ref #, including a legacy "Prior to Column" marker on an older
+    // row, counts as confirmed) instead of looked up by its own title.
+    const billingFields = { batchPostedConfirmed: billingRefNumber ? 1 : 0, batchPostedConfirmedRaw: billingRefNumber };
     for (const f of WOM_BILLING_CHECKLIST_FIELDS) {
+      if (f.jsField === "batchPostedConfirmed") continue;
       const colTitle = columns[f.jsField];
       const raw = (colTitle && row[colTitle] != null && String(row[colTitle]).trim()) || null;
       billingFields[f.jsField] = parseWorkCompletedFlag(raw);

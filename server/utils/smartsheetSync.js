@@ -108,7 +108,12 @@ async function runSmartsheetSync({ actorId, actorName }) {
     journalEdit: smartsheet.findColumn(sheet.columns, ["journal", "edit"]),
     aribaConfirm: smartsheet.findColumn(sheet.columns, ["ariba", "confirm"]),
     sentToJason: smartsheet.findColumn(sheet.columns, ["sent", "jason"]),
-    batchPostedConfirmed: smartsheet.findColumn(sheet.columns, ["billing"], ["ref"]),
+    // No column of its own -- "I emailed billing to confirm the batch
+    // posted" is Krista's own manual step, not something the tracker
+    // records. Billing Ref # (above) is the evidence that step happened
+    // (she only has a ref # once billing's confirmed it back to her), so
+    // syncWomsFromSheetRows derives this straight from billingRefNumber
+    // rather than looking for a dedicated sheet column.
     // Dates shown alongside the Billing progress card -- when work actually
     // wrapped and when the batch posted, not just whether they did.
     workCompletedDate: smartsheet.findColumn(sheet.columns, ["work", "completed", "date"]),
@@ -187,7 +192,6 @@ async function runSmartsheetSync({ actorId, actorName }) {
     journalEditColumn: columns.journalEdit,
     aribaConfirmColumn: columns.aribaConfirm,
     sentToJasonColumn: columns.sentToJason,
-    batchPostedConfirmedColumn: columns.batchPostedConfirmed,
     workCompletedDateColumn: columns.workCompletedDate,
     batchDateColumn: columns.batchDate,
   };
