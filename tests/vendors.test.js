@@ -682,3 +682,88 @@ test("vendors: notify vendor of an expired COI/W-9/ACH document", async (t) => {
     assert.equal(res.status, 404);
   });
 });
+
+// The Work & Costs tab's "PO Open vs. GL Applied" rollup -- same
+// never-double-count remaining calculation as Spend Analysis's own
+// "current estimated PO" checkbox, just grouped by vendor instead of
+// category/territory. See db.getVendorPoGlRollup.
+test("vendors: PO-open vs. GL-applied rollup", async (t) => {
+  const { DatabaseSync } = require("node:sqlite");
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Rollup Test Vendor" } });
+  const vendorId = vendorRes.body.id;
+
+  function insertPo({ composite, poNumber, poAmount, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, po_amount, vendor_id, lifecycle_status,
+         first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, poAmount, vendorId, lifecycleStatus || "active", now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await t.test("a vendor with no POs on file gets an all-zero rollup", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/po-gl-rollup`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { poOpenTotal: 0, poOpenCount: 0, glAppliedTotal: 0, glAppliedPoCount: 0 });
+  });
+
+  await t.test("a PO with no GL activity counts entirely as open, nothing applied", async () => {
+    const poId = insertPo({ composite: "roll-1", poNumber: "PO97001", poAmount: 400 });
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/po-gl-rollup`, { userId: "ADMIN" });
+    assert.equal(res.body.poOpenTotal, 400);
+    assert.equal(res.body.poOpenCount, 1);
+    assert.equal(res.body.glAppliedTotal, 0);
+    assert.equal(res.body.glAppliedPoCount, 0);
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+  });
+
+  await t.test("a partially-matched PO splits between open and applied, never double-counted", async () => {
+    const poId = insertPo({ composite: "roll-2", poNumber: "PO97002", poAmount: 1000 });
+    db.importGlEntries([{ glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 350, purchaseOrder: "PO97002" }], 18, 26, "ADMIN", "t-rollup.xlsx");
+    raw.prepare("UPDATE gl_entries SET matched_po_id = ? WHERE purchase_order = 'PO97002'").run(poId);
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/po-gl-rollup`, { userId: "ADMIN" });
+    assert.equal(res.body.poOpenTotal, 650, "1000 - 350 already applied = 650 still open");
+    assert.equal(res.body.glAppliedTotal, 350);
+    assert.equal(res.body.glAppliedPoCount, 1);
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+    raw.prepare("DELETE FROM gl_entries WHERE purchase_order = 'PO97002'").run();
+  });
+
+  await t.test("a needs_organization PO's GL activity still counts as applied, but it contributes no open amount", async () => {
+    const poId = insertPo({ composite: "roll-3", poNumber: "PO97003", poAmount: 500, lifecycleStatus: "needs_organization" });
+    db.importGlEntries([{ glDate: "2026-09-02", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 200, purchaseOrder: "PO97003" }], 18, 26, "ADMIN", "t-rollup2.xlsx");
+    raw.prepare("UPDATE gl_entries SET matched_po_id = ? WHERE purchase_order = 'PO97003'").run(poId);
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/po-gl-rollup`, { userId: "ADMIN" });
+    assert.equal(res.body.poOpenTotal, 0, "a needs_organization PO never contributes to PO Open");
+    assert.equal(res.body.glAppliedTotal, 200, "a real GL posting still counts even if the PO itself isn't Active");
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+    raw.prepare("DELETE FROM gl_entries WHERE purchase_order = 'PO97003'").run();
+  });
+
+  await t.test("a technician can't reach the rollup route", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/po-gl-rollup`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("an unknown vendor 404s", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/999999/po-gl-rollup", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  raw.close();
+});

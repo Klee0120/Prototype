@@ -1985,6 +1985,48 @@ function findVendor(id) {
 // territory comes from its location's own `territory` field. Distinct from
 // the existing "Coverage outside Midwest"/"Midwest sites seen" fields,
 // which are free-text notes entered at onboarding, not computed from data.
+// A vendor's own two numbers side by side on their profile: how much is
+// still open against them on the Budget PO Tracker (every Active PO's
+// amount minus whatever's already matched to it in the GL -- same
+// never-double-count remaining calculation Spend Analysis's own "current
+// estimated PO" checkbox uses, see getPoRemainingAmounts) vs. how much has
+// actually posted to the GL against their POs so far. GL-applied counts
+// every PO ever matched to this vendor regardless of lifecycle_status --
+// a real historical posting doesn't stop being real just because the PO
+// record itself was never fully organized -- while PO-open only makes
+// sense for an Active PO with a real dollar amount on file, the same scope
+// getPoRemainingAmounts already uses.
+function getVendorPoGlRollup(vendorId) {
+  const rows = db
+    .prepare(
+      `SELECT p.po_amount, p.lifecycle_status,
+         COALESCE((SELECT SUM(g.amount) FROM gl_entries g WHERE g.matched_po_id = p.id), 0) AS matchedTotal
+       FROM pos p WHERE p.vendor_id = ?`
+    )
+    .all(vendorId);
+
+  let poOpenTotal = 0;
+  let poOpenCount = 0;
+  let glAppliedTotal = 0;
+  let glAppliedPoCount = 0;
+  for (const r of rows) {
+    if (r.matchedTotal > 0) {
+      glAppliedTotal += r.matchedTotal;
+      glAppliedPoCount++;
+    }
+    if (r.lifecycle_status === "active" && r.po_amount != null) {
+      const remaining = r.po_amount - r.matchedTotal;
+      if (remaining > 0) {
+        poOpenTotal += remaining;
+        poOpenCount++;
+      }
+    }
+  }
+
+  const round = (n) => Math.round(n * 100) / 100;
+  return { poOpenTotal: round(poOpenTotal), poOpenCount, glAppliedTotal: round(glAppliedTotal), glAppliedPoCount };
+}
+
 function getVendorTerritories(vendorId) {
   const rows = db
     .prepare(
@@ -7988,6 +8030,7 @@ module.exports = {
   findVendor,
   findVendorByNumber,
   getVendorTerritories,
+  getVendorPoGlRollup,
   createVendor,
   updateVendor,
   deleteVendor,

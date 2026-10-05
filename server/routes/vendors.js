@@ -202,6 +202,15 @@ router.get("/:id/territories", (req, res) => {
   res.json(db.getVendorTerritories(vendor.id));
 });
 
+// What's still open against this vendor on the Budget PO Tracker vs. what's
+// actually posted to the GL against their POs so far -- see
+// db.getVendorPoGlRollup.
+router.get("/:id/po-gl-rollup", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.getVendorPoGlRollup(vendor.id));
+});
+
 // Onboarding/compliance case log (e.g. a ServiceEdge COI Case, Toyota
 // Onboarding Case, Payment Details Case) -- same request-type +
 // reference-number pattern as a technician's device IT requests, but with

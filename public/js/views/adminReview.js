@@ -1713,14 +1713,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function renderVendorCostsTab(host, v) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
-    let woms, pos;
+    let woms, pos, poGlRollup;
     try {
-      [woms, pos] = await Promise.all([
+      [woms, pos, poGlRollup] = await Promise.all([
         api.get("/api/woms").then((all) => all.filter((w) => w.vendorId === v.id)),
         // Only Active POs ever surface here -- a Needs Organization record
         // is only visible through the POs tab itself until it's moved to
         // Active, same rule as Task Manager.
         api.get(`/api/admin/pos?${new URLSearchParams({ vendorId: v.id, lifecycleStatus: "active" })}`),
+        api.get(`/api/admin/vendors/${v.id}/po-gl-rollup`),
       ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -1731,6 +1732,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="task-tile"><div class="task-tile-count">$${formatMoney(v.totalContractedApplied || 0)}</div><div class="task-tile-label">Contracted Services Applied</div></div>
         <div class="task-tile"><div class="task-tile-count">${v.contractedWomCount || 0}</div><div class="task-tile-label">WOMs With Contracted Spend</div></div>
         <div class="task-tile"><div class="task-tile-count">${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "Never"}</div><div class="task-tile-label">Last Invoiced</div></div>
+      </div>
+      <h4>PO vs. GL Rollup</h4>
+      <p class="review-checklist-hint">
+        PO Open is each Active PO's amount still outstanding (not yet matched to a GL posting); GL Applied is
+        what's actually posted so far against any PO ever tied to this vendor. The two are never double-counted
+        against each other -- see Spend Analysis's own "current estimated PO" checkbox for the same calculation.
+      </p>
+      <div class="task-tiles">
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(poGlRollup.poOpenTotal)}</div><div class="task-tile-label">PO Open (${poGlRollup.poOpenCount} PO${poGlRollup.poOpenCount === 1 ? "" : "s"})</div></div>
+        <div class="task-tile"><div class="task-tile-count">$${formatMoney(poGlRollup.glAppliedTotal)}</div><div class="task-tile-label">Applied on GL (${poGlRollup.glAppliedPoCount} PO${poGlRollup.glAppliedPoCount === 1 ? "" : "s"})</div></div>
       </div>
       <p class="review-checklist-hint">See Financials &rarr; Overview for the full cross-vendor cost breakdown.</p>
       <h4>WOM Projects (${woms.length})</h4>
