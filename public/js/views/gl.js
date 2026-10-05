@@ -107,7 +107,7 @@ export async function renderGlReconciliation(container) {
   await draw();
 
   async function draw() {
-    renderLoadingState(container, loadingLabelFor("GL Reconciliation"));
+    renderLoadingState(container, loadingLabelFor("Reconciliation"));
     try {
       [summary, imports, status] = await Promise.all([
         api.get("/api/admin/gl/reconciliation/summary"),
@@ -125,7 +125,7 @@ export async function renderGlReconciliation(container) {
     const lastImport = imports[0] || null;
     container.innerHTML = `
       <div class="review-actions">
-        <h3 style="margin: 0;">GL Reconciliation</h3>
+        <h3 style="margin: 0;">Reconciliation</h3>
         <button type="button" class="btn btn-primary gl-import-btn">Import GL Report</button>
         <input type="file" class="gl-import-file" accept=".xlsx,.xls" hidden />
       </div>

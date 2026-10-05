@@ -6,7 +6,7 @@ import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 // periods, month names, and the real dates (fiscal month end, WOM close,
 // GL/HFM close) an admin needs to look up without digging through GL
 // Reconciliation. Read-only: this never drives anything itself, it's the
-// same getGlFiscalCalendar data GL Reconciliation/Spend Breakdown/Reclasses
+// same getGlFiscalCalendar data Reconciliation/Spend Analysis/Reclasses
 // already use, just surfaced on its own for quick reference.
 let cachedYears = null;
 let selectedFiscalYear = null;
@@ -58,8 +58,8 @@ export async function renderFiscalCalendar(container) {
   container.innerHTML = `
     <h3 style="margin: 0 0 4px;">Fiscal Calendar</h3>
     <p class="review-checklist-hint">
-      Reference only -- Toyota's own published close calendar, the same dates GL Reconciliation, Spend
-      Breakdown, and Reclasses already use. Published a year at a time, so a future fiscal year not listed
+      Reference only -- Toyota's own published close calendar, the same dates Reconciliation, Spend
+      Analysis, and Reclasses already use. Published a year at a time, so a future fiscal year not listed
       here just hasn't been published yet.
     </p>
     <div class="wom-filter-bar">

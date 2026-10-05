@@ -92,11 +92,11 @@ const TAB_LABELS = {
   overview: "Overview",
   review: "Weekly Review",
   fiscalcalendar: "Fiscal Calendar",
-  costanalysis: "Cost Analysis",
+  costanalysis: "Overview",
   invoicing: "Invoicing",
   reclasses: "Reclasses",
-  glreconciliation: "GL Reconciliation",
-  spendbreakdown: "Spend Breakdown",
+  glreconciliation: "Reconciliation",
+  spendbreakdown: "Spend Analysis",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendor Directory",
@@ -1732,7 +1732,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="task-tile"><div class="task-tile-count">${v.contractedWomCount || 0}</div><div class="task-tile-label">WOMs With Contracted Spend</div></div>
         <div class="task-tile"><div class="task-tile-count">${v.lastInvoicedAt ? new Date(v.lastInvoicedAt).toLocaleDateString() : "Never"}</div><div class="task-tile-label">Last Invoiced</div></div>
       </div>
-      <p class="review-checklist-hint">See Financials &rarr; Cost Analysis for the full cross-vendor cost breakdown.</p>
+      <p class="review-checklist-hint">See Financials &rarr; Overview for the full cross-vendor cost breakdown.</p>
       <h4>WOM Projects (${woms.length})</h4>
       <div class="review-list" id="vendor-cost-wom-list"></div>
       <h4>Budget POs (${pos.length})</h4>

@@ -154,7 +154,7 @@ function resolveDefaultFiscalYear(years) {
 // already respects -- re-rendered automatically when that filter changes
 // (adminReview.js's own onTerritoryChange listener re-runs draw()).
 export async function renderSpendBreakdown(container) {
-  renderLoadingState(container, loadingLabelFor("Spend Breakdown"));
+  renderLoadingState(container, loadingLabelFor("Spend Analysis"));
   const territory = getTerritory();
 
   let years;
@@ -235,7 +235,7 @@ export async function renderSpendBreakdown(container) {
   container.innerHTML = `
     <div class="page-header">
       <div>
-        <h1 class="page-header-title">Spend Breakdown</h1>
+        <h1 class="page-header-title">Spend Analysis</h1>
         <p class="page-header-subtitle">
           ${includePoReferenced ? "Every GL line" : "GL lines with no PO reference"}, by chart-of-accounts category and territory --
           <strong>${fyLabel}</strong>
