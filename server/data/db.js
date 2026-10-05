@@ -6256,9 +6256,18 @@ function listPos(filters = {}) {
   // "Cut with WOM coding but no WOM # listed": the real PO Request Tracking
   // export carries E1 WOM Job # and WOM Number as two separate columns --
   // a PO can have the former (coded as WOM-type work in E1) without the
-  // latter ever being filled in.
+  // latter ever being filled in. WOM coding can also show up through the
+  // E&F or PPS Job # field instead, when it's actually a location's own
+  // WOM job number typed into the wrong column -- same gap either way. See
+  // poMissingWomLink for the JS-side equivalent used by the live task.
   if (filters.womLinkMissing) {
-    clauses.push("(e1_wom_job_number IS NOT NULL AND e1_wom_job_number != '' AND (wom_number IS NULL OR wom_number = ''))");
+    clauses.push(`(
+      (wom_number IS NULL OR wom_number = '') AND (
+        (e1_wom_job_number IS NOT NULL AND e1_wom_job_number != '') OR
+        (ef_job_number IS NOT NULL AND ef_job_number IN (SELECT wom_job_number FROM locations WHERE wom_job_number IS NOT NULL AND wom_job_number != '')) OR
+        (pps_job_number IS NOT NULL AND pps_job_number IN (SELECT wom_job_number FROM locations WHERE wom_job_number IS NOT NULL AND wom_job_number != ''))
+      )
+    )`);
   }
   if (filters.womNumber) {
     clauses.push("wom_number = ?");
@@ -6569,11 +6578,24 @@ function poWomLinkTaskSourceKey(poId) {
 
 // Same real-column gap as listPos' womLinkMissing filter: E1 WOM Job # and
 // WOM Number are separate fields on the PO Request Tracking export, and a
-// PO can carry the former without the latter ever getting filled in.
+// PO can carry the former without the latter ever getting filled in. WOM
+// coding doesn't only show up in E1 WOM Job #, though -- a location's own
+// WOM job number can just as easily get typed into the E&F or PPS Job #
+// field instead (the same wrong-field situation po_job_number_type_mismatch
+// flags), and that's just as much "WOM work with no WOM # on file" as the
+// E1 case is. Returns which field carried the WOM coding, or null if this
+// PO isn't WOM-coded at all (or already has its WOM Number).
 function poMissingWomLink(po) {
-  const hasE1WomCoding = Boolean(po.e1_wom_job_number && String(po.e1_wom_job_number).trim());
-  const hasWomNumber = Boolean(po.wom_number && String(po.wom_number).trim());
-  return hasE1WomCoding && !hasWomNumber;
+  if (po.wom_number && String(po.wom_number).trim()) return null;
+  if (po.e1_wom_job_number && String(po.e1_wom_job_number).trim()) {
+    return { field: "E1 WOM Job #", value: po.e1_wom_job_number };
+  }
+  const ef = po.ef_job_number ? String(po.ef_job_number).trim() : null;
+  const pps = po.pps_job_number ? String(po.pps_job_number).trim() : null;
+  const findByWomJobNumber = db.prepare("SELECT 1 FROM locations WHERE wom_job_number = ?");
+  if (ef && findByWomJobNumber.get(ef)) return { field: "E&F Job #", value: ef };
+  if (pps && findByWomJobNumber.get(pps)) return { field: "PPS Job #", value: pps };
+  return null;
 }
 
 // Mirrors refreshVendorComplianceTask's pattern: a task that tracks a live
@@ -6588,10 +6610,11 @@ function refreshPoWomLinkTask(poId) {
   const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(poId);
   if (!po) return;
   const sourceKey = poWomLinkTaskSourceKey(poId);
-  if (po.lifecycle_status === "active" && poMissingWomLink(po)) {
+  const gap = po.lifecycle_status === "active" ? poMissingWomLink(po) : null;
+  if (gap) {
     upsertTaskBySourceKey(sourceKey, {
       title: `Confirm WOM # for PO ${po.po_number || poId}`,
-      description: `This PO has an E1 WOM Job # (${po.e1_wom_job_number}) but no WOM Number recorded -- confirm which WOM this ties back to and correct it in the next PO Tracker import.`,
+      description: `This PO has a ${gap.field} (${gap.value}) but no WOM Number recorded -- confirm which WOM this ties back to and correct it in the next PO Tracker import.`,
       category: "po_wom_link",
       assignedRole: "financial",
       priority: "normal",

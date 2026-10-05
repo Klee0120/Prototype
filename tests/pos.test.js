@@ -16,15 +16,18 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
   const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
   const now = new Date().toISOString();
 
-  function insertPo({ composite, poNumber, e1WomJobNumber, womNumber, lifecycleStatus }) {
+  function insertPo({ composite, poNumber, e1WomJobNumber, womNumber, efJobNumber, ppsJobNumber, lifecycleStatus }) {
     const result = raw
       .prepare(
-        `INSERT INTO pos (composite_key, po_number, e1_wom_job_number, wom_number, lifecycle_status,
-         first_imported_at, last_seen_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO pos (composite_key, po_number, e1_wom_job_number, wom_number, ef_job_number, pps_job_number,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(composite, poNumber, e1WomJobNumber, womNumber, lifecycleStatus, now, now, now, now);
+      .run(composite, poNumber, e1WomJobNumber || null, womNumber || null, efJobNumber || null, ppsJobNumber || null, lifecycleStatus, now, now, now, now);
     return Number(result.lastInsertRowid);
+  }
+  function insertLocation(code, name, womJobNumber) {
+    raw.prepare(`INSERT INTO locations (code, name, wom_job_number) VALUES (?, ?, ?)`).run(code, name, womJobNumber);
   }
 
   await t.test("listPos womLinkMissing filter finds only active POs with E1 WOM coding and no WOM #", () => {
@@ -76,6 +79,30 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
 
     res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
     assert.ok(!res.body.some((tk) => tk.relatedPoId === gapId && tk.status === "open"), "task should no longer be open once the WOM # is filled in");
+  });
+
+  // WOM coding doesn't only show up in E1 WOM Job # -- a location's own WOM
+  // job number can just as easily get typed into the E&F or PPS Job # field
+  // instead, with no WOM Number recorded either way.
+  await t.test("a location's WOM job number typed into the E&F or PPS Job # field is flagged the same way", async () => {
+    insertLocation("WOMFIELD-A", "WOM Field Test Site A", "100110088000");
+
+    const efGapId = insertPo({ composite: "gap-ef-1", poNumber: "PO50030", efJobNumber: "100110088000", womNumber: null, lifecycleStatus: "active" });
+    const ppsGapId = insertPo({ composite: "gap-pps-1", poNumber: "PO50031", ppsJobNumber: "100110088000", womNumber: null, lifecycleStatus: "active" });
+
+    db.refreshAllPoWomLinkTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const efTask = res.body.find((tk) => tk.relatedPoId === efGapId);
+    const ppsTask = res.body.find((tk) => tk.relatedPoId === ppsGapId);
+    assert.ok(efTask, "expected a WOM-link task for the E&F-field case");
+    assert.match(efTask.description, /E&F Job #/);
+    assert.ok(ppsTask, "expected a WOM-link task for the PPS-field case");
+    assert.match(ppsTask.description, /PPS Job #/);
+
+    const missing = db.listPos({ womLinkMissing: true });
+    assert.ok(missing.some((p) => p.id === efGapId), "listPos filter should also catch the E&F-field case");
+    assert.ok(missing.some((p) => p.id === ppsGapId), "listPos filter should also catch the PPS-field case");
   });
 
   // A lightweight, one-click "needs a reclass eventually" flag -- distinct
