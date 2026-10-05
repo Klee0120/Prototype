@@ -13,6 +13,7 @@ import { renderInvoicing } from "./invoicing.js";
 import { renderGlReconciliation } from "./gl.js";
 import { renderPerformance } from "./performance.js";
 import { renderSpendBreakdown } from "./spendBreakdown.js";
+import { renderFiscalCalendar } from "./fiscalCalendar.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
@@ -72,7 +73,7 @@ const VENDOR_STATUS_BADGE_CLASS = {
 // sub-tabs underneath once it's the active section.
 const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
-  { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review"] },
+  { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review", "fiscalcalendar"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
@@ -90,6 +91,7 @@ const TAB_LABELS = {
   schedule: "Schedule",
   overview: "Overview",
   review: "Weekly Review",
+  fiscalcalendar: "Fiscal Calendar",
   costanalysis: "Cost Analysis",
   invoicing: "Invoicing",
   reclasses: "Reclasses",
@@ -345,6 +347,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "schedule") await renderSchedule(content, { onOpenWom: openWomProfile });
     else if (activeTab === "overview") await drawOverview(content);
     else if (activeTab === "review") await drawReview(content);
+    else if (activeTab === "fiscalcalendar") await renderFiscalCalendar(content);
     else if (activeTab === "locations") await drawLocations(content);
     else if (activeTab === "woms") await drawWoms(content);
     else if (activeTab === "womlookup") await drawWomLookup(content);

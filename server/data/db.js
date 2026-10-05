@@ -7209,10 +7209,22 @@ function getGlFiscalYearCoverage(fiscalYear = 26) {
     periodNumber: period.periodNumber,
     fiscalYear: period.fiscalYear,
     monthName: period.monthName,
+    fiscalMonthEnd: period.fiscalMonthEnd,
+    womCloseDate: period.womCloseDate,
     closedDate: period.hfmCorporateLoad,
     closedYet: period.hfmCorporateLoad <= today,
     imported: importedPeriods.has(`${period.periodNumber}|${period.fiscalYear}`),
   }));
+}
+
+// Which fiscal years the close calendar actually covers -- unlike Spend
+// Breakdown's own fiscal-year dropdown (loadFiscalYears in
+// spendBreakdown.js), which only offers years with a real GL import on
+// file, this backs a plain reference view of the calendar itself: an admin
+// should be able to look up a period's dates whether or not anything's
+// been imported for it yet.
+function getGlFiscalCalendarYears() {
+  return [...new Set(getGlFiscalCalendar().map((p) => p.fiscalYear))].sort((a, b) => b - a);
 }
 
 function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileName) {
@@ -8067,6 +8079,7 @@ module.exports = {
   getNoPoReferenceEntriesPage,
   getGlImportStatus,
   getGlFiscalYearCoverage,
+  getGlFiscalCalendarYears,
   getGlFiscalCalendar,
   resolveFiscalPeriod,
 };

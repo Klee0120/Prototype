@@ -468,4 +468,22 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     assert.ok(res.body.some((p) => p.periodNumber === 9 && p.monthName === "September"));
     assert.equal(res.body.length, 12);
   });
+
+  await t.test("fiscal-calendar route includes fiscal month end and WOM close date for the Timekeeping reference view", async () => {
+    const res = await server.call("GET", "/api/admin/gl/fiscal-calendar?fiscalYear=26", { userId: "ADMIN" });
+    const september = res.body.find((p) => p.periodNumber === 9);
+    assert.equal(september.fiscalMonthEnd, "2026-09-13");
+    assert.equal(september.womCloseDate, "2026-09-21");
+  });
+
+  await t.test("fiscal-calendar-years route lists every fiscal year the close calendar covers", async () => {
+    const res = await server.call("GET", "/api/admin/gl/fiscal-calendar-years", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, [26, 25]);
+  });
+
+  await t.test("a technician can't reach the fiscal-calendar-years route", async () => {
+    const res = await server.call("GET", "/api/admin/gl/fiscal-calendar-years", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
 });

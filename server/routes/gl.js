@@ -190,6 +190,14 @@ router.get("/fiscal-calendar", (req, res) => {
   res.json(db.getGlFiscalYearCoverage(fiscalYear));
 });
 
+// Every fiscal year the close calendar covers, regardless of import history
+// -- backs the Timekeeping reference view (public/js/views/fiscalCalendar.js),
+// which an admin can consult for a period's dates whether or not its GL has
+// been imported yet.
+router.get("/fiscal-calendar-years", (req, res) => {
+  res.json(db.getGlFiscalCalendarYears());
+});
+
 // Cheap aggregate-only counts/totals for the summary tiles -- see
 // db.getGlReconciliationSummary for why this is split out from the
 // paginated lists below rather than computed alongside them.
