@@ -7588,7 +7588,83 @@ function getGlReconciliationSummary() {
 // effect) scope to one imported period -- every period on file is
 // combined by default, which is the real point of this view once several
 // months have been imported.
-function getGlSpendBreakdown({ territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly = true, noWomReferenceOnly = true } = {}) {
+// A PO's own object_code is a bare JDE number (e.g. "22067000"), the same
+// format gl_entries.object_account_code already parses out of a GL line's
+// full "647200 - Gen B&A~Cell Phone" text (see parseObjectAccountCode) --
+// but a PO never carries the human-readable category name itself, only the
+// GL extract does. Resolves a PO's object code to the same category name
+// Spend Analysis already groups GL lines by, by looking up the most recent
+// real GL line that used this exact code. A code that's never shown up on
+// any imported GL yet has nothing to resolve against -- falls through to
+// the same "Unknown / Uncategorized" bucket GL lines with no parseable
+// category already use.
+function resolveCategoryForObjectCode(objectCode) {
+  if (!objectCode) return null;
+  const row = db
+    .prepare("SELECT object_account FROM gl_entries WHERE object_account_code = ? AND object_account LIKE '%~%' ORDER BY id DESC LIMIT 1")
+    .get(objectCode);
+  return row ? parseObjectAccountCategory(row.object_account) : null;
+}
+
+// The "current estimated PO" layer Spend Analysis's own checkbox adds on
+// top of GL actuals: for every Active PO with a dollar amount on file,
+// whatever portion of it hasn't shown up in the GL yet (po_amount minus
+// whatever's already matched to it) -- not the PO's full amount, so a
+// partially-invoiced PO only contributes its real remaining exposure, and
+// a fully-invoiced one (remaining <= 0) contributes nothing at all here,
+// since that dollar is already counted on the GL side. This is a snapshot
+// of today's outstanding commitment, not a period-bound transaction like a
+// GL line -- it deliberately ignores the fiscal year/period filter, since
+// an open PO doesn't belong to one month the way a GL posting does.
+function getPoRemainingAmounts({ territory } = {}) {
+  const rows = db
+    .prepare(
+      `SELECT p.id, p.po_amount, p.object_code, p.location_code, l.territory AS territory,
+         COALESCE((SELECT SUM(g.amount) FROM gl_entries g WHERE g.matched_po_id = p.id), 0) AS matchedTotal
+       FROM pos p LEFT JOIN locations l ON l.code = p.location_code
+       WHERE p.lifecycle_status = 'active' AND p.po_amount IS NOT NULL AND p.po_amount > 0`
+    )
+    .all();
+
+  const byCategory = new Map();
+  const byTerritory = new Map();
+  let totalAmount = 0;
+  let poCount = 0;
+  for (const r of rows) {
+    const remaining = r.po_amount - (r.matchedTotal || 0);
+    if (remaining <= 0) continue;
+    const rowTerritory = r.territory || null;
+    if (territory && rowTerritory !== territory) continue;
+
+    poCount++;
+    totalAmount += remaining;
+
+    const category = resolveCategoryForObjectCode(r.object_code) || "Unknown / Uncategorized";
+    const c = byCategory.get(category) || { category, total: 0, count: 0 };
+    c.total += remaining;
+    c.count += 1;
+    byCategory.set(category, c);
+
+    const territoryKey = rowTerritory || "Unassigned";
+    const t = byTerritory.get(territoryKey) || { territory: territoryKey, total: 0, count: 0 };
+    t.total += remaining;
+    t.count += 1;
+    byTerritory.set(territoryKey, t);
+  }
+
+  return { totalAmount, poCount, byCategory, byTerritory };
+}
+
+function getGlSpendBreakdown({
+  territory,
+  periodNumber,
+  fiscalYear,
+  periodFrom,
+  periodTo,
+  noPoReferenceOnly = true,
+  noWomReferenceOnly = true,
+  includePoRemaining = false,
+} = {}) {
   const { conditions, params } = buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, periodTo });
   if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
   // A line can be coded straight to a WOM project (subledger_gl set, no PO
@@ -7632,11 +7708,34 @@ function getGlSpendBreakdown({ territory, periodNumber, fiscalYear, periodFrom, 
     byTerritory.set(territoryKey, t);
   }
 
+  let poRemainingTotal = 0;
+  let poRemainingCount = 0;
+  if (includePoRemaining) {
+    const poRemaining = getPoRemainingAmounts({ territory });
+    poRemainingTotal = poRemaining.totalAmount;
+    poRemainingCount = poRemaining.poCount;
+    totalAmount += poRemaining.totalAmount;
+    for (const c of poRemaining.byCategory.values()) {
+      const existing = byCategory.get(c.category) || { category: c.category, total: 0, count: 0 };
+      existing.total += c.total;
+      existing.count += c.count;
+      byCategory.set(c.category, existing);
+    }
+    for (const t of poRemaining.byTerritory.values()) {
+      const existing = byTerritory.get(t.territory) || { territory: t.territory, total: 0, count: 0 };
+      existing.total += t.total;
+      existing.count += t.count;
+      byTerritory.set(t.territory, existing);
+    }
+  }
+
   const round = (n) => Math.round(n * 100) / 100;
   return {
     totalAmount: round(totalAmount),
     entryCount,
     unassignedLocationCount,
+    poRemainingTotal: round(poRemainingTotal),
+    poRemainingCount,
     categories: [...byCategory.values()].map((c) => ({ ...c, total: round(c.total) })).sort((a, b) => b.total - a.total),
     territories: [...byTerritory.values()].map((t) => ({ ...t, total: round(t.total) })).sort((a, b) => b.total - a.total),
   };

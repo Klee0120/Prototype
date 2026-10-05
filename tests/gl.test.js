@@ -487,3 +487,139 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     assert.equal(res.status, 403);
   });
 });
+
+// Spend Analysis's "Include current estimated PO" checkbox: an Active PO's
+// own amount minus whatever's already matched to it in the GL, layered on
+// top of GL actuals -- never the same dollar counted twice. See
+// db.getPoRemainingAmounts/resolveCategoryForObjectCode.
+test("GL Spend Breakdown: including the PO Tracker's remaining (not-yet-posted) PO amounts", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  raw.prepare(`INSERT OR IGNORE INTO locations (code, name, territory) VALUES ('PORMT-A', 'PO Remaining Test Site A', 'Midwest')`).run();
+
+  function insertPo({ composite, poNumber, poAmount, objectCode, locationCode, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, po_amount, object_code, location_code, lifecycle_status,
+         first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, poAmount, objectCode || null, locationCode, lifecycleStatus || "active", now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  // A real GL line with this object code, so resolveCategoryForObjectCode
+  // has a category name to resolve "647200" to. Period 15/FY26 and the
+  // "Midwest"-territory scoping below are both deliberate: this file's
+  // other test blocks leave their own POs/GL entries behind in this same
+  // shared DB (no cross-test cleanup), so an unused period plus a
+  // territory filter keeps this block's counts from picking any of that up.
+  db.importGlEntries(
+    [{ glDate: "2026-09-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, businessUnit: "PORMT-NOPE" }],
+    15,
+    26,
+    "ADMIN",
+    "t-po-remaining-seed.xlsx"
+  );
+
+  await t.test("a PO with no GL activity contributes its full amount", () => {
+    const poId = insertPo({ composite: "pr-1", poNumber: "PO95001", poAmount: 500, objectCode: "647200", locationCode: "PORMT-A" });
+
+    const breakdown = db.getGlSpendBreakdown({ periodNumber: 15, fiscalYear: 26, territory: "Midwest", includePoRemaining: true });
+    const cellPhone = breakdown.categories.find((c) => c.category === "Cell Phone");
+    assert.ok(cellPhone, "expected the PO's object code to resolve to the Cell Phone category via the seeded GL line");
+    assert.ok(cellPhone.total >= 500, "the PO's full $500 should be included since nothing's posted against it yet");
+
+    const midwest = breakdown.territories.find((t2) => t2.territory === "Midwest");
+    assert.ok(midwest.total >= 500);
+    assert.equal(breakdown.poRemainingCount, 1);
+    assert.equal(breakdown.poRemainingTotal, 500);
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+  });
+
+  await t.test("a partially-invoiced PO only contributes its remaining exposure, never the full amount twice", () => {
+    const poId = insertPo({ composite: "pr-2", poNumber: "PO95002", poAmount: 1000, objectCode: "647200", locationCode: "PORMT-A" });
+    db.importGlEntries(
+      [{ glDate: "2026-09-02", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 300, businessUnit: "PORMT-NOPE", purchaseOrder: "PO95002" }],
+      15,
+      26,
+      "ADMIN",
+      "t-po-remaining-seed2.xlsx"
+    );
+    raw.prepare("UPDATE gl_entries SET matched_po_id = ? WHERE purchase_order = 'PO95002'").run(poId);
+
+    const breakdown = db.getGlSpendBreakdown({ periodNumber: 15, fiscalYear: 26, territory: "Midwest", includePoRemaining: true });
+    assert.equal(breakdown.poRemainingTotal, 700, "1000 - 300 already matched = 700 remaining");
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+    raw.prepare("DELETE FROM gl_entries WHERE purchase_order = 'PO95002'").run();
+  });
+
+  await t.test("a fully-invoiced PO (remaining <= 0) contributes nothing", () => {
+    const poId = insertPo({ composite: "pr-3", poNumber: "PO95003", poAmount: 200, objectCode: "647200", locationCode: "PORMT-A" });
+    db.importGlEntries(
+      [{ glDate: "2026-09-03", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 250, businessUnit: "PORMT-NOPE", purchaseOrder: "PO95003" }],
+      15,
+      26,
+      "ADMIN",
+      "t-po-remaining-seed3.xlsx"
+    );
+    raw.prepare("UPDATE gl_entries SET matched_po_id = ? WHERE purchase_order = 'PO95003'").run(poId);
+
+    const breakdown = db.getGlSpendBreakdown({ periodNumber: 15, fiscalYear: 26, territory: "Midwest", includePoRemaining: true });
+    assert.equal(breakdown.poRemainingCount, 0, "fully (over-)invoiced PO should not appear");
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+    raw.prepare("DELETE FROM gl_entries WHERE purchase_order = 'PO95003'").run();
+  });
+
+  await t.test("a needs_organization PO is never included, even with a dollar amount on file", () => {
+    const poId = insertPo({ composite: "pr-4", poNumber: "PO95004", poAmount: 999, objectCode: "647200", locationCode: "PORMT-A", lifecycleStatus: "needs_organization" });
+
+    const breakdown = db.getGlSpendBreakdown({ periodNumber: 15, fiscalYear: 26, territory: "Midwest", includePoRemaining: true });
+    assert.equal(breakdown.poRemainingCount, 0);
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+  });
+
+  await t.test("defaults to excluding PO Tracker amounts when includePoRemaining isn't set", () => {
+    insertPo({ composite: "pr-5", poNumber: "PO95005", poAmount: 500, objectCode: "647200", locationCode: "PORMT-A" });
+
+    const breakdown = db.getGlSpendBreakdown({ periodNumber: 15, fiscalYear: 26, territory: "Midwest" });
+    assert.equal(breakdown.poRemainingTotal, 0);
+    assert.equal(breakdown.poRemainingCount, 0);
+
+    raw.prepare("DELETE FROM pos WHERE po_number = 'PO95005'").run();
+  });
+
+  await t.test("an object code with no matching GL history falls into Unknown / Uncategorized", () => {
+    const poId = insertPo({ composite: "pr-6", poNumber: "PO95006", poAmount: 150, objectCode: "999999999", locationCode: "PORMT-A" });
+
+    const breakdown = db.getGlSpendBreakdown({ periodNumber: 15, fiscalYear: 26, territory: "Midwest", includePoRemaining: true });
+    const unknown = breakdown.categories.find((c) => c.category === "Unknown / Uncategorized");
+    assert.ok(unknown.total >= 150);
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+  });
+
+  await t.test("the spend-breakdown route passes includePoRemaining through from the query string", async () => {
+    const poId = insertPo({ composite: "pr-7", poNumber: "PO95007", poAmount: 650, objectCode: "647200", locationCode: "PORMT-A" });
+
+    const off = await server.call("GET", "/api/admin/gl/spend-breakdown?periodNumber=15&fiscalYear=26&territory=Midwest", { userId: "ADMIN" });
+    assert.equal(off.body.poRemainingCount, 0);
+
+    const on = await server.call("GET", "/api/admin/gl/spend-breakdown?periodNumber=15&fiscalYear=26&territory=Midwest&includePoRemaining=true", { userId: "ADMIN" });
+    assert.equal(on.body.poRemainingCount, 1);
+    assert.equal(on.body.poRemainingTotal, 650);
+
+    raw.prepare("DELETE FROM pos WHERE id = ?").run(poId);
+  });
+
+  raw.close();
+});

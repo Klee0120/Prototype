@@ -110,6 +110,13 @@ function renderDonut(slices, totalForChart) {
 // widen either scope independently, for comparison.
 let includePoReferenced = false;
 let includeWomReferenced = false;
+// Layers the Budget PO Tracker's own outstanding commitment on top of GL
+// actuals -- an Active PO's amount minus whatever's already matched to it
+// in the GL, so a partially-invoiced PO only contributes its real
+// remaining exposure (never the same dollar counted twice). A point-in-time
+// snapshot of today's open commitment, not tied to the fiscal year/period
+// filter the way a GL line is -- see db.getPoRemainingAmounts.
+let includePoRemaining = false;
 // null until resolved against the fiscal years actually on file (see
 // resolveDefaultFiscalYear) -- today's calendar year if it has data,
 // otherwise whatever's most recent, so last year's numbers don't silently
@@ -212,6 +219,7 @@ export async function renderSpendBreakdown(container) {
     }
     if (includePoReferenced) params.set("noPoReferenceOnly", "false");
     if (includeWomReferenced) params.set("noWomReferenceOnly", "false");
+    if (includePoRemaining) params.set("includePoRemaining", "true");
     data = await api.get(`/api/admin/gl/spend-breakdown?${params}`);
   } catch (err) {
     container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -251,6 +259,13 @@ export async function renderSpendBreakdown(container) {
                  breaks down the PO-matched and PO-number-not-found buckets.`
           }
           Click a row below to see the actual GL lines behind it.
+          ${
+            includePoRemaining && data.poRemainingCount > 0
+              ? `Totals below include ${formatMoney(data.poRemainingTotal)} of outstanding commitment across ${data.poRemainingCount} open
+                 PO${data.poRemainingCount === 1 ? "" : "s"} not yet reflected in the GL -- drilling into a row still only shows the GL
+                 lines matched so far, not the open PO itself.`
+              : ""
+          }
         </p>
         <div class="spend-filters-row">
           <label class="spend-fy-select-label">
@@ -286,6 +301,10 @@ export async function renderSpendBreakdown(container) {
           <label class="spend-po-toggle">
             <input type="checkbox" class="spend-include-wom-toggle" ${includeWomReferenced ? "checked" : ""} />
             Include GL lines that do have a WOM reference too
+          </label>
+          <label class="spend-po-toggle">
+            <input type="checkbox" class="spend-include-po-remaining-toggle" ${includePoRemaining ? "checked" : ""} />
+            Include current estimated PO (PO Tracker amount not yet on GL)
           </label>
         </div>
       </div>
@@ -361,6 +380,10 @@ export async function renderSpendBreakdown(container) {
   });
   container.querySelector(".spend-include-wom-toggle")?.addEventListener("change", (e) => {
     includeWomReferenced = e.target.checked;
+    renderSpendBreakdown(container);
+  });
+  container.querySelector(".spend-include-po-remaining-toggle")?.addEventListener("change", (e) => {
+    includePoRemaining = e.target.checked;
     renderSpendBreakdown(container);
   });
   container.querySelector(".spend-fy-select")?.addEventListener("change", (e) => {
