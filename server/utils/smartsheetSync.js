@@ -67,7 +67,13 @@ async function runSmartsheetSync({ actorId, actorName }) {
     // Value" in the tracker) -- distinct from the estimate/applied
     // figures above, which are this app's own numbers, not Toyota's.
     toyotaPoValue: smartsheet.findColumn(sheet.columns, ["toy", "value"]),
-    vendor: smartsheet.findColumn(sheet.columns, ["vendor"]),
+    // "vendor" alone isn't specific enough -- the real tracker also has
+    // "Vendor Invoice #" sitting earlier in column order than the actual
+    // name/phone column, and findColumn returns the first match. "name"
+    // narrows it to the one column that's actually "Vendor(s) Name/#/Phone"
+    // without also matching "Vendor Invoice #"/"Vendor Onboard Issue"/
+    // "Vendor INV Attached".
+    vendor: smartsheet.findColumn(sheet.columns, ["vendor", "name"]),
     // Verbatim sheet fields surfaced on the WOM profile's Overview tab so
     // the tracker's own account of completion/invoicing is visible instead
     // of only ever landing inside the opaque smartsheet_raw_data blob --
