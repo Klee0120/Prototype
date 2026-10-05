@@ -22,6 +22,16 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA foreign_keys = ON;");
+// Default pragmas (DELETE journal mode, synchronous=FULL) fsync on every
+// single INSERT/UPDATE that isn't wrapped in an explicit transaction -- a
+// sequence of several individually-committed writes (e.g.
+// ensureRecurringTasks' half-dozen upserts, run on nearly every task-list
+// load) pays that fsync cost once per statement. WAL defers the full fsync
+// to periodic checkpoints instead of every commit, and synchronous=NORMAL
+// (safe specifically paired with WAL -- SQLite's own documented combo) only
+// fsyncs at those checkpoints rather than every transaction.
+db.exec("PRAGMA journal_mode = WAL;");
+db.exec("PRAGMA synchronous = NORMAL;");
 
 // Schema v1 (flat wom_code per allocation row, single weekly UKG total, no
 // locations) predates locations/WOM budgets/E&F split rows. Rather than
