@@ -5830,11 +5830,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     content.innerHTML = `
       <div class="page-header">
         <div>
-          <h1 class="page-header-title">Financials</h1>
-          <p class="page-header-subtitle">Project cost analysis</p>
+          <h1 class="page-header-title">WOM Projects: Estimate vs. Applied</h1>
+          <p class="page-header-subtitle">Every WOM's original cost estimate against what's actually been reported applied against it</p>
           <p class="overview-hint">
             Project-reported amounts &middot; all WOMs on file, excluding cancelled. Compares against this
-            app's own estimate, not a confirmed GL actual.
+            app's own estimate, not a confirmed GL actual -- see Reconciliation for that.
           </p>
         </div>
         <div class="page-header-actions">
