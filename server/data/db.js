@@ -4236,7 +4236,11 @@ const TASK_NOTIFICATION_REASONS = [
   {
     key: "notify_task_po_discrepancy",
     label: "A PO discrepancy",
-    applies: (t) => t.source === "po_coding_drift" || t.source === "po_vendor_unregistered",
+    applies: (t) =>
+      t.source === "po_coding_drift" ||
+      t.source === "po_vendor_unregistered" ||
+      t.source === "po_job_number_type_mismatch" ||
+      t.source === "po_wom_location_mismatch",
   },
 ];
 
@@ -6443,6 +6447,8 @@ function runPoImport(rows, importedBy, { dryRun }) {
         );
         maybeAutoActivatePo(existing.id);
         refreshPoWomLinkTask(existing.id);
+        refreshPoJobNumberTypeMismatchTask(existing.id);
+        refreshPoWomLocationMismatchTask(existing.id);
         refreshGlMismatchFlagsForPo(existing.id);
         linkPoRequestTaskFromImport(existing.id, row.description, importedBy);
         if (changed) updated++;
@@ -6495,6 +6501,8 @@ function runPoImport(rows, importedBy, { dryRun }) {
         touchedIds.add(Number(result.lastInsertRowid));
         maybeAutoActivatePo(Number(result.lastInsertRowid));
         refreshPoWomLinkTask(Number(result.lastInsertRowid));
+        refreshPoJobNumberTypeMismatchTask(Number(result.lastInsertRowid));
+        refreshPoWomLocationMismatchTask(Number(result.lastInsertRowid));
         linkPoRequestTaskFromImport(Number(result.lastInsertRowid), row.description, importedBy);
         created++;
       }
@@ -6891,6 +6899,143 @@ function refreshPoCodingDriftTask(poId) {
 function refreshAllPoCodingDriftTasks() {
   const rows = db.prepare("SELECT DISTINCT matched_po_id AS id FROM gl_entries WHERE matched_po_id IS NOT NULL").all();
   for (const row of rows) refreshPoCodingDriftTask(row.id);
+}
+
+function poJobNumberTypeMismatchTaskSourceKey(poId) {
+  return `PO-${poId}-JOB-NUMBER-TYPE-MISMATCH`;
+}
+
+// A location carries three DIFFERENT JDE job numbers (E&F Contract Job
+// Number, PPS Contract Job Number, E1 WOM Job Number -- see the comments on
+// the locations table above) for three different accounting purposes. The
+// Budget PO Tracker's "E&F Job #" and "PPS Job #" columns are supposed to
+// each carry the matching type for that PO's own location -- this flags the
+// real, checkable data-entry error of one column holding a job number that
+// does belong to a real location, just under the WRONG type (e.g. a
+// location's PPS number typed into the E&F Job # column). A number that
+// doesn't belong to any location at all under any type isn't this check's
+// job -- that's a plain unmatched-location gap, not a wrong-type one.
+function poJobNumberTypeMismatch(po) {
+  const ef = po.ef_job_number ? String(po.ef_job_number).trim() : null;
+  const pps = po.pps_job_number ? String(po.pps_job_number).trim() : null;
+  if (ef) {
+    const wrongType = db
+      .prepare(
+        `SELECT code, name FROM locations
+         WHERE (pps_job_number = ? OR wom_job_number = ?) AND (ef_job_number IS NULL OR ef_job_number != ?)`
+      )
+      .get(ef, ef, ef);
+    if (wrongType) return { field: "E&F Job #", value: ef, location: wrongType };
+  }
+  if (pps) {
+    const wrongType = db
+      .prepare(
+        `SELECT code, name FROM locations
+         WHERE (ef_job_number = ? OR wom_job_number = ?) AND (pps_job_number IS NULL OR pps_job_number != ?)`
+      )
+      .get(pps, pps, pps);
+    if (wrongType) return { field: "PPS Job #", value: pps, location: wrongType };
+  }
+  return null;
+}
+
+// Only checked once a PO is Active, same reasoning as refreshPoWomLinkTask
+// -- a still-needs_organization record already has its own catch-all task.
+function refreshPoJobNumberTypeMismatchTask(poId) {
+  const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(poId);
+  if (!po) return;
+  const sourceKey = poJobNumberTypeMismatchTaskSourceKey(poId);
+  const mismatch = po.lifecycle_status === "active" ? poJobNumberTypeMismatch(po) : null;
+  if (!mismatch) {
+    completeTaskBySourceKey(sourceKey);
+    return;
+  }
+  const matchedAdmin = matchAdminByName(po.admin_name);
+  upsertTaskBySourceKey(
+    sourceKey,
+    {
+      title: `Fix ${mismatch.field} on PO ${po.po_number || poId}`,
+      description:
+        `This PO's ${mismatch.field} (${mismatch.value}) is actually ${mismatch.location.name}'s job number for a different type -- correct the coding on the Smartsheet tracker.` +
+        (po.admin_name && !matchedAdmin
+          ? ` The Budget PO Tracker lists "${po.admin_name}" as this PO's admin, but that name doesn't match any admin account -- route this manually.`
+          : ""),
+      category: "po_job_number_type_mismatch",
+      assignedTo: matchedAdmin ? matchedAdmin.id : null,
+      assignedRole: matchedAdmin ? "admin" : null,
+      relatedPoId: poId,
+      priority: "normal",
+      source: "po_job_number_type_mismatch",
+      sourceRecordId: String(poId),
+      workflowRule: "po_job_number_type_mismatch",
+      dueAt: new Date(Date.now() + PO_DISCREPANCY_SLA_MS).toISOString(),
+    },
+    { preserveDueAtOnUpdate: true }
+  );
+}
+
+function refreshAllPoJobNumberTypeMismatchTasks() {
+  for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'active'").all()) {
+    refreshPoJobNumberTypeMismatchTask(row.id);
+  }
+}
+
+function poWomLocationMismatchTaskSourceKey(poId) {
+  return `PO-${poId}-WOM-LOCATION-MISMATCH`;
+}
+
+// A PO's own WOM Number should belong to the same location the PO itself is
+// coded to -- the WOM's location_code (its own Smartsheet-synced project
+// location, not anything this app guesses) is the source of truth to check
+// against. A mismatch here means either the PO's location or its WOM # is
+// wrong in the tracker; only meaningful once the PO actually has both a
+// resolved location and a WOM # on file.
+function poWomLocationMismatch(po) {
+  if (!po.wom_number || !po.location_code) return null;
+  const wom = db.prepare("SELECT code, location_code FROM woms WHERE code = ?").get(po.wom_number);
+  if (!wom || !wom.location_code || wom.location_code === po.location_code) return null;
+  return wom;
+}
+
+// Only checked once a PO is Active, same reasoning as the job-number-type
+// check above.
+function refreshPoWomLocationMismatchTask(poId) {
+  const po = db.prepare("SELECT * FROM pos WHERE id = ?").get(poId);
+  if (!po) return;
+  const sourceKey = poWomLocationMismatchTaskSourceKey(poId);
+  const mismatch = po.lifecycle_status === "active" ? poWomLocationMismatch(po) : null;
+  if (!mismatch) {
+    completeTaskBySourceKey(sourceKey);
+    return;
+  }
+  const matchedAdmin = matchAdminByName(po.admin_name);
+  upsertTaskBySourceKey(
+    sourceKey,
+    {
+      title: `Confirm WOM # ${po.wom_number} on PO ${po.po_number || poId}`,
+      description:
+        `This PO is coded to location ${po.location_code}, but WOM ${po.wom_number} is synced to a different location (${mismatch.location_code}) -- confirm which is right and correct it in the next PO Tracker import.` +
+        (po.admin_name && !matchedAdmin
+          ? ` The Budget PO Tracker lists "${po.admin_name}" as this PO's admin, but that name doesn't match any admin account -- route this manually.`
+          : ""),
+      category: "po_wom_location_mismatch",
+      assignedTo: matchedAdmin ? matchedAdmin.id : null,
+      assignedRole: matchedAdmin ? "admin" : null,
+      relatedPoId: poId,
+      priority: "normal",
+      source: "po_wom_location_mismatch",
+      sourceRecordId: String(poId),
+      workflowRule: "po_wom_location_mismatch",
+      dueAt: new Date(Date.now() + PO_DISCREPANCY_SLA_MS).toISOString(),
+    },
+    { preserveDueAtOnUpdate: true }
+  );
+}
+
+function refreshAllPoWomLocationMismatchTasks() {
+  for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'active'").all()) {
+    refreshPoWomLocationMismatchTask(row.id);
+  }
 }
 
 // ---- GL import / PO reconciliation ----
@@ -7880,6 +8025,8 @@ module.exports = {
   listUnregisteredPoVendors,
   refreshAllUnregisteredVendorTasks,
   refreshAllPoCodingDriftTasks,
+  refreshAllPoJobNumberTypeMismatchTasks,
+  refreshAllPoWomLocationMismatchTasks,
   refreshAllWomInvoicingTasks,
   importGlEntries,
   refreshGlMismatchFlagsForPo,

@@ -132,6 +132,8 @@ function catchUpTasks() {
   db.refreshAllVendorComplianceTasks();
   db.refreshAllPoWomLinkTasks();
   db.refreshAllPoCodingDriftTasks();
+  db.refreshAllPoJobNumberTypeMismatchTasks();
+  db.refreshAllPoWomLocationMismatchTasks();
   db.refreshAllUnregisteredVendorTasks();
   db.refreshAllWomInvoicingTasks();
 }

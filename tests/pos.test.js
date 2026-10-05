@@ -726,3 +726,195 @@ test("PO Tracker: a PO's territory comes from its admin, falling back to its own
 
   raw.close();
 });
+
+// A location carries three different JDE job numbers (E&F, PPS, E1 WOM) --
+// the Budget PO Tracker's "E&F Job #" and "PPS Job #" columns should each
+// carry the matching type. See server/data/db.js's
+// poJobNumberTypeMismatch/refreshPoJobNumberTypeMismatchTask.
+test("Task Manager: PO job-number type mismatch (PPS number in the E&F field, or vice versa)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertLocation({ code, name, efJobNumber, ppsJobNumber }) {
+    raw
+      .prepare(`INSERT INTO locations (code, name, ef_job_number, pps_job_number) VALUES (?, ?, ?, ?)`)
+      .run(code, name, efJobNumber || null, ppsJobNumber || null);
+  }
+
+  function insertPo({ composite, poNumber, efJobNumber, ppsJobNumber, adminName, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, ef_job_number, pps_job_number, admin_name,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, efJobNumber || null, ppsJobNumber || null, adminName || null, lifecycleStatus || "active", now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  insertLocation({ code: "JNT-A", name: "Job Number Test Site A", efJobNumber: "100110070001", ppsJobNumber: "100110070002" });
+
+  await t.test("a location's PPS number typed into the PO's E&F Job # field is flagged", async () => {
+    const poId = insertPo({ composite: "jnt-1", poNumber: "PO90001", efJobNumber: "100110070002", adminName: "Krista Lee" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a job-number-type-mismatch task");
+    assert.match(task.title, /PO90001/);
+    assert.match(task.description, /E&F Job #/);
+    assert.match(task.description, /Job Number Test Site A/);
+    assert.equal(task.assignedTo, "ADMIN");
+  });
+
+  await t.test("a location's E&F number typed into the PO's PPS Job # field is flagged", async () => {
+    const poId = insertPo({ composite: "jnt-2", poNumber: "PO90002", ppsJobNumber: "100110070001", adminName: "Krista Lee" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a job-number-type-mismatch task");
+    assert.match(task.description, /PPS Job #/);
+  });
+
+  await t.test("the correct job number in the correct field gets no task", async () => {
+    const poId = insertPo({ composite: "jnt-3", poNumber: "PO90003", efJobNumber: "100110070001" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("a job number that doesn't belong to any location at all is not this check's job", async () => {
+    const poId = insertPo({ composite: "jnt-4", poNumber: "PO90004", efJobNumber: "999999999999" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId), "an unmatched-anywhere number is a different gap, not a wrong-type one");
+  });
+
+  await t.test("a needs_organization PO with the same wrong-type number gets no task yet", async () => {
+    const poId = insertPo({ composite: "jnt-5", poNumber: "PO90005", efJobNumber: "100110070002", lifecycleStatus: "needs_organization" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("correcting the field auto-completes the task on the next refresh", async () => {
+    const poId = insertPo({ composite: "jnt-6", poNumber: "PO90006", efJobNumber: "100110070002" });
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"));
+
+    raw.prepare("UPDATE pos SET ef_job_number = ? WHERE id = ?").run("100110070001", poId);
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"), "task should auto-complete once the field is corrected");
+  });
+
+  raw.close();
+});
+
+// A PO's WOM # should belong to the same location the PO itself is coded
+// to -- the WOM's own Smartsheet-synced location_code is the source of
+// truth. See server/data/db.js's
+// poWomLocationMismatch/refreshPoWomLocationMismatchTask.
+test("Task Manager: PO coded to one location but referencing a WOM synced to a different one", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertLocation(code, name) {
+    raw.prepare(`INSERT INTO locations (code, name) VALUES (?, ?)`).run(code, name);
+  }
+  function insertWom(code, locationCode) {
+    raw.prepare(`INSERT INTO woms (code, description, status, location_code) VALUES (?, 'Test WOM', 'open', ?)`).run(code, locationCode);
+  }
+  function insertPo({ composite, poNumber, womNumber, locationCode, adminName, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, wom_number, location_code, admin_name,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, womNumber || null, locationCode || null, adminName || null, lifecycleStatus || "active", now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  insertLocation("WLT-B", "WOM Location Test Site B");
+  insertLocation("WLT-C", "WOM Location Test Site C");
+  insertWom("WOM-7001", "WLT-C");
+
+  await t.test("a PO coded to a different location than its WOM's synced location is flagged", async () => {
+    const poId = insertPo({ composite: "wlt-1", poNumber: "PO91001", womNumber: "WOM-7001", locationCode: "WLT-B", adminName: "Krista Lee" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a WOM-location-mismatch task");
+    assert.match(task.title, /WOM-7001/);
+    assert.match(task.title, /PO91001/);
+    assert.match(task.description, /WLT-B/);
+    assert.match(task.description, /WLT-C/);
+    assert.equal(task.assignedTo, "ADMIN");
+  });
+
+  await t.test("a PO coded to the same location its WOM is synced to gets no task", async () => {
+    const poId = insertPo({ composite: "wlt-2", poNumber: "PO91002", womNumber: "WOM-7001", locationCode: "WLT-C" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("a WOM # that doesn't match any real WOM record gets no task", async () => {
+    const poId = insertPo({ composite: "wlt-3", poNumber: "PO91003", womNumber: "WOM-NOTREAL", locationCode: "WLT-B" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("a needs_organization PO with the same mismatch gets no task yet", async () => {
+    const poId = insertPo({ composite: "wlt-4", poNumber: "PO91004", womNumber: "WOM-7001", locationCode: "WLT-B", lifecycleStatus: "needs_organization" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("correcting the PO's location auto-completes the task on the next refresh", async () => {
+    const poId = insertPo({ composite: "wlt-5", poNumber: "PO91005", womNumber: "WOM-7001", locationCode: "WLT-B" });
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"));
+
+    raw.prepare("UPDATE pos SET location_code = ? WHERE id = ?").run("WLT-C", poId);
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"), "task should auto-complete once the location matches the WOM's synced location");
+  });
+
+  raw.close();
+});
