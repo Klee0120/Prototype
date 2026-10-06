@@ -428,7 +428,7 @@ export async function renderSpendBreakdown(container) {
 
 function formatGlDetailRow(item) {
   return `
-    <tr>
+    <tr class="cellphone-row-clickable" data-gl-id="${item.id}" title="Click to view the full GL line">
       <td>${escapeHtml(item.glDate || "—")}</td>
       <td>${escapeHtml(item.objectAccount || "—")}</td>
       <td>${escapeHtml(item.vendorOrDescription || "—")}</td>
@@ -437,6 +437,45 @@ function formatGlDetailRow(item) {
       <td class="${item.amount < 0 ? "cost-amount-danger" : ""}">${formatMoney(item.amount)}</td>
     </tr>
   `;
+}
+
+// The summary row only shows the handful of fields worth a quick scan --
+// clicking it pops up every other field the actual GL export line carries
+// (document #, business unit, batch #, PO, the full un-truncated remark,
+// etc.), same shape/purpose as Meals' own full-GL-line popup.
+function openGlLineModal(it) {
+  const g = it.glLine || {};
+  const row = (label, value) => `
+    <div class="gl-line-detail-row">
+      <span class="gl-line-detail-label">${escapeHtml(label)}</span>
+      <span class="gl-line-detail-value">${value != null && value !== "" ? escapeHtml(String(value)) : "—"}</span>
+    </div>
+  `;
+  openModal({
+    title: "Full GL line",
+    bodyHtml: `
+      <div class="gl-line-detail">
+        ${row("Vendor / description", it.vendorOrDescription)}
+        ${row("Remark (full)", g.remark)}
+        ${row("Name alpha", g.nameAlpha)}
+        ${row("GL date", it.glDate)}
+        ${row("Amount", it.amount != null ? formatMoney(it.amount) : null)}
+        ${row("Territory", it.territory)}
+        ${row("Location code", it.locationCode)}
+        ${row("Object account", g.objectAccount)}
+        ${row("Object account code", g.objectAccountCode)}
+        ${row("Document type", g.documentType)}
+        ${row("Document number", g.documentNumber)}
+        ${row("Journal entry line #", g.journalEntryLineNumber)}
+        ${row("Business unit", g.businessUnit)}
+        ${row("Subsidiary", g.subsidiary)}
+        ${row("Batch number", g.batchNumber)}
+        ${row("Supplier invoice number", g.supplierInvoiceNumber)}
+        ${row("Invoice date", g.invoiceDate ? String(g.invoiceDate).slice(0, 10) : null)}
+        ${row("Purchase order", g.purchaseOrder)}
+      </div>
+    `,
+  });
 }
 
 // A category or territory row's own GL lines -- "which phones did we pay
@@ -494,6 +533,16 @@ async function openSpendDetailModal({ category, territory, territoryGlobal, fisc
           : ""
       }
     `;
+
+    if (pageData.items.length) {
+      const byId = new Map(pageData.items.map((it) => [String(it.id), it]));
+      body.querySelectorAll("[data-gl-id]").forEach((row) => {
+        row.addEventListener("click", () => {
+          const it = byId.get(row.dataset.glId);
+          if (it) openGlLineModal(it);
+        });
+      });
+    }
 
     body.querySelector(".spend-detail-prev")?.addEventListener("click", () => {
       page--;

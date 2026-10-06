@@ -7599,9 +7599,11 @@ function classifyPoStatusBucket(status) {
 }
 
 const GL_PAGE_SIZE_DEFAULT = 100;
-const GL_ENTRY_COLUMNS = `period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
+const GL_ENTRY_COLUMNS = `id, period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate,
             document_type AS documentType, document_number AS documentNumber,
-            object_account AS objectAccount, subsidiary, amount, location_code AS locationCode,
+            journal_entry_line_number AS journalEntryLineNumber, business_unit AS businessUnit,
+            object_account AS objectAccount, object_account_code AS objectAccountCode, subsidiary,
+            amount, location_code AS locationCode, batch_number AS batchNumber, invoice_date AS invoiceDate,
             purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber`;
 
 // Shared by getGlSpendBreakdown/getGlSpendDetailPage: periodNumber+fiscalYear
@@ -7894,6 +7896,7 @@ function getGlSpendDetailPage({
   const p = Math.max(1, Number(page) || 1);
   const ps = Math.max(1, Number(pageSize) || GL_PAGE_SIZE_DEFAULT);
   const items = matching.slice((p - 1) * ps, p * ps).map((r) => ({
+    id: r.id,
     periodNumber: r.periodNumber,
     fiscalYear: r.fiscalYear,
     glDate: r.glDate,
@@ -7907,6 +7910,26 @@ function getGlSpendDetailPage({
     purchaseOrder: r.purchaseOrder,
     supplierInvoiceNumber: r.supplierInvoiceNumber,
     vendorOrDescription: r.nameAlpha || r.remark || null,
+    // Full underlying GL line, for the "view full GL line" detail popup --
+    // same shape/purpose as Meals/Cell Phones' own glLine (see
+    // getMealsCharges), just assembled here from the richer column set this
+    // query already selects.
+    glLine: {
+      objectAccount: r.objectAccount,
+      objectAccountCode: r.objectAccountCode,
+      documentType: r.documentType,
+      documentNumber: r.documentNumber,
+      journalEntryLineNumber: r.journalEntryLineNumber,
+      businessUnit: r.businessUnit,
+      subsidiary: r.subsidiary,
+      batchNumber: r.batchNumber,
+      supplierInvoiceNumber: r.supplierInvoiceNumber,
+      invoiceDate: r.invoiceDate,
+      purchaseOrder: r.purchaseOrder,
+      locationCode: r.locationCode,
+      remark: r.remark,
+      nameAlpha: r.nameAlpha,
+    },
   }));
 
   return { items, total: matching.length, page: p, pageSize: ps };

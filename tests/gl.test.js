@@ -448,6 +448,12 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     const page2 = db.getGlSpendDetailPage({ category: "Cell Phone", ...PERIOD, pageSize: 1, page: 2 });
     assert.equal(page2.items[0].vendorOrDescription, "VERIZON");
 
+    // Each item carries its own id + full underlying GL record (glLine), same
+    // "full GL line" shape as Meals/Cell Phones, for the drill-down modal's
+    // row-click popup.
+    assert.ok(page1.items[0].id, "each item should carry the gl_entries row id");
+    assert.equal(page1.items[0].glLine.objectAccount, "647200 - Gen B&A~Cell Phone");
+
     const res = await server.call(
       "GET",
       `/api/admin/gl/spend-breakdown/detail?${new URLSearchParams({ category: "Cell Phone", periodNumber: String(PERIOD.periodNumber), fiscalYear: String(PERIOD.fiscalYear) })}`,
