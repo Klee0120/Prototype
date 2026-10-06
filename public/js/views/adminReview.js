@@ -390,7 +390,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     else if (activeTab === "costanalysis") await drawCostAnalysis(content);
     else if (activeTab === "invoicing") {
-      await renderInvoicing(content, { onOpenWom: (code) => openWomProfile(code, "documents", "invoicing") });
+      await renderInvoicing(content, { onOpenWom: (code) => openWomProfile(code, "overview", "invoicing") });
     }
     else if (activeTab === "reclasses") {
       const openItemId = reclassItemToOpen;
@@ -5197,6 +5197,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         columns: [
           { label: "Estimated", get: (w) => w.estimatedPrice },
           { label: "Reported applied", get: (w) => w.appliedPrice },
+          { label: "Toy Value", get: (w) => w.toyotaPoValue },
           { label: "Remaining estimate", get: (w) => w.overage, tone: "ok" },
         ],
       },

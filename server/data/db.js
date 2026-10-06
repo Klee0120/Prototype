@@ -4062,6 +4062,7 @@ function getWomCostSummary() {
         locationCode: w.location_code,
         estimatedPrice: w.estimated_price,
         appliedPrice: w.applied_price,
+        toyotaPoValue: w.toyota_po_value,
         overage: w.estimated_price - w.applied_price,
       });
     }
