@@ -222,10 +222,6 @@ router.get("/reconciliation/unmatched", (req, res) => {
   res.json(db.getUnmatchedEntriesPage({ page: req.query.page, pageSize: req.query.pageSize }));
 });
 
-router.get("/reconciliation/no-po-reference", (req, res) => {
-  res.json(db.getNoPoReferenceEntriesPage({ page: req.query.page, pageSize: req.query.pageSize }));
-});
-
 // Every imported GL line grouped by its own chart-of-accounts category
 // (phone, health insurance, software license, etc. -- see
 // db.getGlSpendBreakdown) and by territory -- the Spend Breakdown view's
@@ -258,7 +254,8 @@ router.get("/spend-breakdown", (req, res) => {
 // optional category/territory to pick the slice and page/pageSize to
 // paginate it.
 router.get("/spend-breakdown/detail", (req, res) => {
-  const { category, territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, page, pageSize } = req.query || {};
+  const { category, territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, search, page, pageSize } =
+    req.query || {};
   res.json(
     db.getGlSpendDetailPage({
       category: category || null,
@@ -269,6 +266,7 @@ router.get("/spend-breakdown/detail", (req, res) => {
       periodTo: periodTo ? Number(periodTo) : null,
       noPoReferenceOnly: noPoReferenceOnly == null ? true : noPoReferenceOnly !== "false",
       noWomReferenceOnly: noWomReferenceOnly == null ? true : noWomReferenceOnly !== "false",
+      search: search || null,
       page,
       pageSize,
     })

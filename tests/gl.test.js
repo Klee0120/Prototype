@@ -143,7 +143,7 @@ test("GL Reconciliation: precomputed mismatch flags + server-side pagination", a
     assert.equal(summaryRes.body.reconciledCount, page1.body.total, "the summary's count and the paginated list's total should agree");
   });
 
-  await t.test("GET /reconciliation/unmatched and /no-po-reference paginate correctly", async () => {
+  await t.test("GET /reconciliation/unmatched paginates correctly", async () => {
     db.importGlEntries(
       [
         { glDate: "2026-10-01", businessUnit: "BU", objectAccount: "605200", subsidiary: "100", amount: 10, purchaseOrder: "PONOTFOUND1" },
@@ -158,9 +158,6 @@ test("GL Reconciliation: precomputed mismatch flags + server-side pagination", a
     const unmatchedRes = await server.call("GET", "/api/admin/gl/reconciliation/unmatched?page=1&pageSize=50", { userId: "ADMIN" });
     assert.ok(unmatchedRes.body.items.some((e) => e.purchaseOrder === "PONOTFOUND1"));
     assert.equal(unmatchedRes.body.page, 1);
-
-    const noPoRefRes = await server.call("GET", "/api/admin/gl/reconciliation/no-po-reference?page=1&pageSize=50", { userId: "ADMIN" });
-    assert.ok(noPoRefRes.body.items.some((e) => e.amount === 20));
   });
 
   await t.test("refreshGlMismatchFlagsForPo updates already-matched lines when the PO's own coding is corrected later", () => {
@@ -461,6 +458,48 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     );
     assert.equal(res.status, 200);
     assert.equal(res.body.total, 2);
+  });
+
+  // Searching for a specific PO # or WOM # (subledger) should find that
+  // line regardless of the no-PO/no-WOM-reference defaults -- those exist
+  // to hide the common case, not the one line someone's looking for.
+  await t.test("getGlSpendDetailPage's search param finds a line by PO # or WOM # (subledger), ignoring the reference-exclusion defaults", async () => {
+    const PERIOD = { periodNumber: 18, fiscalYear: 26 };
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "605300 - I-Electric~Sub NonRecur Lab", amount: 500, nameAlpha: "No ref line" },
+        { glDate: "2026-10-02", objectAccount: "605300 - I-Electric~Sub NonRecur Lab", amount: 600, nameAlpha: "PO line", purchaseOrder: "PO88123" },
+        { glDate: "2026-10-03", objectAccount: "605300 - I-Electric~Sub NonRecur Lab", amount: 700, nameAlpha: "WOM line", subledgerGl: "W-55512" },
+      ],
+      PERIOD.periodNumber,
+      PERIOD.fiscalYear,
+      "ADMIN",
+      "t-search.xlsx"
+    );
+
+    const defaultScope = db.getGlSpendDetailPage({ ...PERIOD, pageSize: 50 });
+    assert.ok(
+      defaultScope.items.every((it) => it.vendorOrDescription !== "PO line" && it.vendorOrDescription !== "WOM line"),
+      "the default no-PO/no-WOM scope should still exclude both referenced lines"
+    );
+
+    const poSearch = db.getGlSpendDetailPage({ ...PERIOD, search: "88123" });
+    assert.equal(poSearch.total, 1);
+    assert.equal(poSearch.items[0].vendorOrDescription, "PO line");
+
+    const womSearch = db.getGlSpendDetailPage({ ...PERIOD, search: "55512" });
+    assert.equal(womSearch.total, 1);
+    assert.equal(womSearch.items[0].vendorOrDescription, "WOM line");
+    assert.equal(womSearch.items[0].glLine.subledgerGl, "W-55512");
+
+    const res = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown/detail?${new URLSearchParams({ periodNumber: String(PERIOD.periodNumber), fiscalYear: String(PERIOD.fiscalYear), search: "88123" })}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.total, 1);
+    assert.equal(res.body.items[0].vendorOrDescription, "PO line");
   });
 
   await t.test("a technician can't reach the Spend Breakdown detail route", async () => {

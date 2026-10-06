@@ -5197,6 +5197,19 @@ button.vendor-preferred-star:hover {
   gap: 18px;
   margin-top: 10px;
 }
+.spend-search-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.spend-search-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  min-width: 180px;
+}
 .spend-fy-select-label {
   display: flex;
   flex-direction: column;

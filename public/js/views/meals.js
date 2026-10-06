@@ -197,6 +197,7 @@ function openGlLineModal(it) {
         ${row("Supplier invoice number", g.supplierInvoiceNumber)}
         ${row("Invoice date", g.invoiceDate ? String(g.invoiceDate).slice(0, 10) : null)}
         ${row("Purchase order", g.purchaseOrder)}
+        ${row("Subledger (WOM)", g.subledgerGl)}
       </div>
     `,
   });

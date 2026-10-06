@@ -306,6 +306,10 @@ export async function renderSpendBreakdown(container) {
             <input type="checkbox" class="spend-include-po-remaining-toggle" ${includePoRemaining ? "checked" : ""} />
             Include current estimated PO (PO Tracker amount not yet on GL)
           </label>
+          <form class="spend-search-form">
+            <input type="search" class="spend-search-input" placeholder="Search PO # or WOM #" />
+            <button type="submit" class="btn btn-secondary">Search</button>
+          </form>
         </div>
       </div>
     </div>
@@ -399,6 +403,19 @@ export async function renderSpendBreakdown(container) {
     periodTo = Number(e.target.value);
     renderSpendBreakdown(container);
   });
+  container.querySelector(".spend-search-form")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const query = container.querySelector(".spend-search-input").value.trim();
+    if (!query) return;
+    openSpendDetailModal({
+      search: query,
+      territoryGlobal: territory,
+      fiscalYear: allYearsSelected ? null : selectedFiscalYear,
+      periodFrom: allYearsSelected || !hasCalendar ? null : periodFrom,
+      periodTo: allYearsSelected || !hasCalendar ? null : periodTo,
+      fyLabel,
+    });
+  });
 
   const openRowDetail = (row) => {
     const category = row.dataset.category || null;
@@ -473,6 +490,7 @@ function openGlLineModal(it) {
         ${row("Supplier invoice number", g.supplierInvoiceNumber)}
         ${row("Invoice date", g.invoiceDate ? String(g.invoiceDate).slice(0, 10) : null)}
         ${row("Purchase order", g.purchaseOrder)}
+        ${row("Subledger (WOM)", g.subledgerGl)}
       </div>
     `,
   });
@@ -481,8 +499,8 @@ function openGlLineModal(it) {
 // A category or territory row's own GL lines -- "which phones did we pay
 // for, and when" instead of just a total. Same filters as the row it was
 // clicked from, so the modal's own total always lines up with the row.
-async function openSpendDetailModal({ category, territory, territoryGlobal, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, fyLabel }) {
-  const title = category ? `${displayCategoryName(category)} -- GL lines` : `${territory} -- GL lines`;
+async function openSpendDetailModal({ category, territory, territoryGlobal, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, search, fyLabel }) {
+  const title = search ? `Search "${search}" -- GL lines` : category ? `${displayCategoryName(category)} -- GL lines` : `${territory} -- GL lines`;
   const { body } = openModal({ title, bodyHtml: `<div class="spend-detail-modal-body">Loading…</div>`, size: "large" });
 
   let page = 1;
@@ -496,8 +514,15 @@ async function openSpendDetailModal({ category, territory, territoryGlobal, fisc
     if (fiscalYear != null) params.set("fiscalYear", String(fiscalYear));
     if (periodFrom != null) params.set("periodFrom", String(periodFrom));
     if (periodTo != null) params.set("periodTo", String(periodTo));
-    params.set("noPoReferenceOnly", String(noPoReferenceOnly));
-    params.set("noWomReferenceOnly", String(noWomReferenceOnly));
+    if (search) {
+      // Searching for a specific PO # or WOM # overrides the no-reference
+      // defaults server-side (see db.getGlSpendDetailPage) -- not sent here
+      // at all, so there's nothing to accidentally contradict.
+      params.set("search", search);
+    } else {
+      params.set("noPoReferenceOnly", String(noPoReferenceOnly));
+      params.set("noWomReferenceOnly", String(noWomReferenceOnly));
+    }
     params.set("page", String(page));
     params.set("pageSize", String(DETAIL_PAGE_SIZE));
 

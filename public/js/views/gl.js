@@ -101,7 +101,6 @@ export async function renderGlReconciliation(container) {
   const GL_PAGE_SIZE = 100;
   let reconciledPage = 1;
   let unmatchedPage = 1;
-  let noPoReferencePage = 1;
   let reconciledItems = []; // current page only, for the detail-modal click lookup
 
   await draw();
@@ -157,7 +156,6 @@ export async function renderGlReconciliation(container) {
         <div class="task-tile"><div class="task-tile-count">${summary.subsidiaryMismatchCount}</div><div class="task-tile-label">Subsidiary mismatches</div></div>
         <div class="task-tile"><div class="task-tile-count">${summary.objectCodeMismatchCount}</div><div class="task-tile-label">Object code mismatches</div></div>
         <div class="task-tile"><div class="task-tile-count">${summary.unmatchedCount}</div><div class="task-tile-label">GL lines, PO # not found</div></div>
-        <div class="task-tile"><div class="task-tile-count">${summary.noPoReferenceCount}</div><div class="task-tile-label">GL lines, no PO reference</div></div>
       </div>
 
       <h3>PO reconciliation</h3>
@@ -208,20 +206,6 @@ export async function renderGlReconciliation(container) {
       `
           : ""
       }
-
-      ${
-        summary.noPoReferenceCount > 0
-          ? `
-      <h3>GL lines with no PO reference</h3>
-      <p class="review-checklist-hint">
-        These GL lines never named a Purchase Order # at all -- payroll, journal entries, accruals, and similar
-        entries legitimately have no PO. Not an exception by itself; listed here for visibility, not as a
-        to-do.
-      </p>
-      <div class="gl-no-po-ref-wrap"></div>
-      `
-          : ""
-      }
     `;
 
     container.querySelector(".gl-import-btn").addEventListener("click", () => {
@@ -257,7 +241,6 @@ export async function renderGlReconciliation(container) {
 
     renderReconciledTable();
     if (summary.unmatchedCount > 0) renderUnmatchedTable();
-    if (summary.noPoReferenceCount > 0) renderNoPoReferenceTable();
   }
 
   async function renderReconciledTable() {
@@ -390,61 +373,6 @@ export async function renderGlReconciliation(container) {
     const nextBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-next");
     if (prevBtn) prevBtn.addEventListener("click", () => { unmatchedPage--; renderUnmatchedTable(); });
     if (nextBtn) nextBtn.addEventListener("click", () => { unmatchedPage++; renderUnmatchedTable(); });
-  }
-
-  // Same shape as renderUnmatchedTable, but "PO # (per GL)" would always
-  // read "—" here (that's the whole point of this list) -- Document Type is
-  // shown in its place instead, since that's what actually distinguishes a
-  // payroll/journal/accrual line from a real invoice.
-  async function renderNoPoReferenceTable() {
-    const wrap = container.querySelector(".gl-no-po-ref-wrap");
-    wrap.innerHTML = `<p class="empty-note">Loading…</p>`;
-    let pageData;
-    try {
-      pageData = await api.get(
-        `/api/admin/gl/reconciliation/no-po-reference?${new URLSearchParams({ page: String(noPoReferencePage), pageSize: String(GL_PAGE_SIZE) })}`
-      );
-    } catch (err) {
-      wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
-      return;
-    }
-    wrap.innerHTML = `
-      <table class="detail-table gl-table">
-        <thead>
-          <tr>
-            <th>GL Period</th>
-            <th>GL Date</th>
-            <th>Document Type</th>
-            <th>Object Account</th>
-            <th>Subsidiary</th>
-            <th>Amount</th>
-            <th>Invoice #</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${pageData.items
-            .map(
-              (e) => `
-            <tr>
-              <td>P${escapeHtml(String(e.periodNumber))}/FY${escapeHtml(String(e.fiscalYear))}</td>
-              <td>${escapeHtml(e.glDate || "—")}</td>
-              <td>${escapeHtml(e.documentType || "—")}</td>
-              <td>${escapeHtml(e.objectAccount || "—")}</td>
-              <td>${escapeHtml(e.subsidiary || "—")}</td>
-              <td>${formatMoney(e.amount)}</td>
-              <td>${escapeHtml(e.supplierInvoiceNumber || "—")}</td>
-            </tr>
-          `
-            )
-            .join("")}
-        </tbody>
-      </table>
-      ${renderPager("gl-no-po-ref-pager", pageData)}
-    `;
-    const prevBtn = wrap.querySelector(".gl-no-po-ref-pager .gl-pager-prev");
-    const nextBtn = wrap.querySelector(".gl-no-po-ref-pager .gl-pager-next");
-    if (prevBtn) prevBtn.addEventListener("click", () => { noPoReferencePage--; renderNoPoReferenceTable(); });
-    if (nextBtn) nextBtn.addEventListener("click", () => { noPoReferencePage++; renderNoPoReferenceTable(); });
   }
 
   function openPoDetailModal(r) {

@@ -7652,7 +7652,8 @@ const GL_ENTRY_COLUMNS = `id, period_number AS periodNumber, fiscal_year AS fisc
             journal_entry_line_number AS journalEntryLineNumber, business_unit AS businessUnit,
             object_account AS objectAccount, object_account_code AS objectAccountCode, subsidiary,
             amount, location_code AS locationCode, batch_number AS batchNumber, invoice_date AS invoiceDate,
-            purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber`;
+            purchase_order AS purchaseOrder, supplier_invoice_number AS supplierInvoiceNumber,
+            subledger_gl AS subledgerGl`;
 
 // Shared by getGlSpendBreakdown/getGlSpendDetailPage: periodNumber+fiscalYear
 // pins one exact month; fiscalYear alone (optionally narrowed by
@@ -7912,12 +7913,24 @@ function getGlSpendDetailPage({
   periodTo,
   noPoReferenceOnly = true,
   noWomReferenceOnly = true,
+  search,
   page = 1,
   pageSize = GL_PAGE_SIZE_DEFAULT,
 } = {}) {
   const { conditions, params } = buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, periodTo });
-  if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
-  if (noWomReferenceOnly) conditions.push("g.subledger_gl IS NULL");
+  // Searching for a specific PO # or WOM # (subledger_gl) means wanting
+  // that referenced line regardless of the no-PO/no-WOM-reference defaults
+  // below -- those exist to hide the common case (payroll, accruals, etc.)
+  // from the main breakdown, not to hide the one line someone's
+  // specifically looking for. A partial match (LIKE) since neither field
+  // is normalized to one exact format across the GL export.
+  if (search) {
+    conditions.push("(g.purchase_order LIKE ? OR g.subledger_gl LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`);
+  } else {
+    if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
+    if (noWomReferenceOnly) conditions.push("g.subledger_gl IS NULL");
+  }
 
   const rows = db
     .prepare(
@@ -7977,6 +7990,7 @@ function getGlSpendDetailPage({
       locationCode: r.locationCode,
       remark: r.remark,
       nameAlpha: r.nameAlpha,
+      subledgerGl: r.subledgerGl,
     },
   }));
 
@@ -8225,7 +8239,7 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
               g.journal_entry_line_number AS journalEntryLineNumber, g.business_unit AS businessUnit,
               g.object_account_code AS objectAccountCode, g.subsidiary, g.batch_number AS batchNumber,
               g.supplier_invoice_number AS supplierInvoiceNumber, g.invoice_date AS invoiceDate,
-              g.purchase_order AS purchaseOrder
+              g.purchase_order AS purchaseOrder, g.subledger_gl AS subledgerGl
        FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
        WHERE ${conditions.join(" AND ")}
        ORDER BY g.fiscal_year, g.period_number, g.remark`
@@ -8271,6 +8285,7 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
         purchaseOrder: r.purchaseOrder,
         locationCode: r.locationCode,
         remark: r.remark,
+        subledgerGl: r.subledgerGl,
       },
     });
   }
@@ -8439,19 +8454,6 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
   const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL").get();
   const items = db
     .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL ORDER BY ABS(amount) DESC LIMIT ? OFFSET ?`)
-    .all(ps, (p - 1) * ps);
-  return { items, total: countRow.cnt, page: p, pageSize: ps };
-}
-
-// A GL line with no PO # at all -- payroll, journal entries, accruals, and
-// similar legitimately never have one. Kept separate from the unmatched
-// list above so this never reads as the same kind of gap.
-function getNoPoReferenceEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } = {}) {
-  const p = Math.max(1, Number(page) || 1);
-  const ps = Math.max(1, Number(pageSize) || GL_PAGE_SIZE_DEFAULT);
-  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM gl_entries WHERE purchase_order IS NULL").get();
-  const items = db
-    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NULL ORDER BY ABS(amount) DESC LIMIT ? OFFSET ?`)
     .all(ps, (p - 1) * ps);
   return { items, total: countRow.cnt, page: p, pageSize: ps };
 }
@@ -8676,7 +8678,6 @@ module.exports = {
   listKnownCellPhoneNumbers,
   getReconciledPage,
   getUnmatchedEntriesPage,
-  getNoPoReferenceEntriesPage,
   getGlImportStatus,
   getGlFiscalYearCoverage,
   getGlFiscalCalendarYears,
