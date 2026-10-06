@@ -2185,21 +2185,28 @@ function createVendor(fields) {
     .run(...values);
   const newVendorId = Number(result.lastInsertRowid);
 
-  // A new vendor profile with a JDE # that already shows up, unmatched, on
-  // some PO record (the exact "flagged in Vendors" case -- see
-  // listUnregisteredPoVendors) should link up immediately, not wait for a
-  // future PO re-import -- same "Vendor Number column match only" rule as
-  // import-time matching, just triggered from the other direction. Reuses
-  // confirmPoVendor so this also benefits from its own auto-activate check.
-  if (fields.jdeVendorNumber) {
-    const trimmed = String(fields.jdeVendorNumber).trim();
-    if (trimmed) {
-      const unmatchedPos = db.prepare("SELECT id FROM pos WHERE vendor_id IS NULL AND vendor_number = ?").all(trimmed);
-      for (const po of unmatchedPos) confirmPoVendor(po.id, newVendorId);
-    }
-  }
+  linkUnmatchedPosForVendor(newVendorId, fields.jdeVendorNumber);
 
   return findVendor(newVendorId);
+}
+
+// A vendor profile with a JDE # that already shows up, unmatched, on some
+// PO record (the exact "flagged in Vendors" case -- see
+// listUnregisteredPoVendors) should link up immediately, not wait for a
+// future PO re-import -- same "Vendor Number column match only" rule as
+// import-time matching, just triggered from the other direction. Reuses
+// confirmPoVendor so this also benefits from its own auto-activate check.
+// Only ever touches a PO with no vendor_id yet, so it's safe to call on
+// every save, not just the first one -- covers both a brand new vendor
+// AND an existing one whose JDE # gets added/corrected later, which used
+// to leave already-imported POs stuck on "Needs Matching" forever since
+// only vendor creation ever ran this check.
+function linkUnmatchedPosForVendor(vendorId, jdeVendorNumber) {
+  if (!jdeVendorNumber) return;
+  const trimmed = String(jdeVendorNumber).trim();
+  if (!trimmed) return;
+  const unmatchedPos = db.prepare("SELECT id FROM pos WHERE vendor_id IS NULL AND vendor_number = ?").all(trimmed);
+  for (const po of unmatchedPos) confirmPoVendor(po.id, vendorId);
 }
 
 function updateVendor(id, fields) {
@@ -2250,6 +2257,7 @@ function updateVendor(id, fields) {
     new Date().toISOString(),
     Number(id)
   );
+  linkUnmatchedPosForVendor(Number(id), fields.jdeVendorNumber);
   return findVendor(id);
 }
 

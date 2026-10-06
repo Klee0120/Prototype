@@ -469,6 +469,32 @@ test("Task Manager: unregistered PO vendor -> create vendor profile task", async
     );
   });
 
+  // The retroactive match only used to run on vendor creation -- a vendor
+  // that already existed (no JDE # yet, or the wrong one) and later got its
+  // JDE # added/corrected through a plain edit left already-imported POs
+  // stuck on "Needs Matching" forever, with nothing to re-check them short
+  // of a future re-import happening to touch that exact row again.
+  await t.test("adding a JDE # to an EXISTING vendor profile (not creating a new one) also retroactively matches", async () => {
+    insertPo({ composite: "unreg-5", poNumber: "PO70030", vendorNumber: "V9004", vendorName: "Delta Plumbing", adminName: "Krista Lee", amount: 400 });
+
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Delta Plumbing" } });
+    assert.equal(vendorRes.body.jdeVendorNumber, null, "vendor created without a JDE # yet, same as a pre-existing profile");
+
+    let po = await server.call("GET", `/api/admin/pos?search=Delta`, { userId: "ADMIN" });
+    assert.equal(po.body.find((p) => p.vendorNumber === "V9004").vendorLinkStatus, "needs_matching");
+
+    const editRes = await server.call("PATCH", `/api/admin/vendors/${vendorRes.body.id}`, {
+      userId: "ADMIN",
+      body: { name: "Delta Plumbing", jdeVendorNumber: "V9004" },
+    });
+    assert.equal(editRes.status, 200);
+
+    po = await server.call("GET", `/api/admin/pos?search=Delta`, { userId: "ADMIN" });
+    const matched = po.body.find((p) => p.vendorNumber === "V9004");
+    assert.equal(matched.vendorLinkStatus, "matched", "editing the vendor's JDE # should retroactively link the already-imported PO");
+    assert.equal(matched.vendorId, vendorRes.body.id);
+  });
+
   raw.close();
 });
 
