@@ -1630,25 +1630,29 @@ function renameAdmin(id, name) {
   return findTechnician(id);
 }
 
-// An admin's own record-keeping details (home location, UKG ID, hire date)
-// -- real columns a technician row already has, but an admin account never
-// had a way to set them, since none of this feeds any admin-side logic the
-// way it does for a technician's allocations/scheduling. Scoped to exactly
-// these three columns (unlike setTechnicianBasicInfo, which overwrites
-// every basic-info field at once) since an admin account has never set
-// email/phone/position/terminationDate/standardDailyHours and this
-// shouldn't be the thing that silently blanks them out if that ever
-// changes.
-function setAdminBasicInfo(id, { ukgId, hireDate, homeLocationCode, email } = {}) {
+// An admin's own record-keeping details (home location, UKG ID, hire date,
+// email, phone, iPad #) -- real columns a technician row already has, but
+// an admin account never had a way to set them, since none of this feeds
+// any admin-side logic the way it does for a technician's own
+// allocations/scheduling. Only touches a field when it's actually passed
+// (unlike setTechnicianBasicInfo, which overwrites every basic-info field
+// at once) since an admin account has never set most of these and this
+// shouldn't be the thing that silently blanks one out if that ever
+// changes. No device auto-sync for the iPad # here the way
+// syncIpadDevice does for a technician -- admin accounts have no Devices
+// tab for that device to actually show up on.
+function setAdminBasicInfo(id, { ukgId, hireDate, homeLocationCode, email, phone, ipad } = {}) {
   const existing = findTechnician(id);
   if (!existing) return null;
   db.prepare(
-    "UPDATE technicians SET ukg_id = ?, hire_date = ?, home_location_code = ?, email = ? WHERE id = ? AND role = 'admin'"
+    "UPDATE technicians SET ukg_id = ?, hire_date = ?, home_location_code = ?, email = ?, phone = ?, ipad = ? WHERE id = ? AND role = 'admin'"
   ).run(
     ukgId !== undefined ? ukgId || null : existing.ukg_id,
     hireDate !== undefined ? hireDate || null : existing.hire_date,
     homeLocationCode !== undefined ? homeLocationCode || null : existing.home_location_code,
     email !== undefined ? email || null : existing.email,
+    phone !== undefined ? phone || null : existing.phone,
+    ipad !== undefined ? ipad || null : existing.ipad,
     id
   );
   return findTechnician(id);

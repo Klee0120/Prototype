@@ -738,6 +738,8 @@ function presentAdmin(a) {
     ukgId: a.ukg_id,
     hireDate: a.hire_date,
     email: a.email || "",
+    phone: a.phone || "",
+    ipad: a.ipad || "",
   };
 }
 
@@ -817,13 +819,13 @@ router.patch("/admins/:id/basic-info", (req, res) => {
   const admin = db.findTechnician(req.params.id);
   if (!admin || admin.role !== "admin") return res.status(404).json({ error: "Admin account not found" });
 
-  const { ukgId, hireDate, homeLocationCode, email } = req.body || {};
+  const { ukgId, hireDate, homeLocationCode, email, phone, ipad } = req.body || {};
   if (hireDate && !DATE_RE.test(hireDate)) return res.status(400).json({ error: "hireDate must be YYYY-MM-DD" });
   if (homeLocationCode && !db.findLocation(homeLocationCode)) {
     return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });
   }
 
-  const updated = db.setAdminBasicInfo(admin.id, { ukgId, hireDate, homeLocationCode, email });
+  const updated = db.setAdminBasicInfo(admin.id, { ukgId, hireDate, homeLocationCode, email, phone, ipad });
   db.addAudit(req.user.id, "ADMIN_BASIC_INFO_UPDATED", `${req.user.name} updated ${admin.name}'s basic info`);
   res.json(presentAdmin(updated));
 });

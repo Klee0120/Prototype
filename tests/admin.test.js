@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const db = require("../server/data/db");
 
 async function submitFullWeek(server, techId, week, locationCode) {
   const detail = await server.call("GET", `/api/technicians/${techId}/weeks/${week}`, { userId: techId });
@@ -808,16 +809,18 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(admin2.homeLocationCode, "GEORGETOWN", "it should show up in the admins list too, not just the PATCH response");
   });
 
-  await t.test("admin can set an admin account's email, and a later partial update doesn't wipe it", async () => {
+  await t.test("admin can set an admin account's email/phone/iPad #, and a later partial update doesn't wipe them", async () => {
     const withEmail = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
       userId: "ADMIN",
-      body: { email: "jordan.smith-rivera@example.com" },
+      body: { email: "jordan.smith-rivera@example.com", phone: "614-555-7000", ipad: "614-555-7001" },
     });
     assert.equal(withEmail.status, 200);
     assert.equal(withEmail.body.email, "jordan.smith-rivera@example.com");
+    assert.equal(withEmail.body.phone, "614-555-7000");
+    assert.equal(withEmail.body.ipad, "614-555-7001");
 
-    // Only touching ukgId this time -- email (and the other fields set
-    // above) must survive untouched, not get wiped back to blank.
+    // Only touching ukgId this time -- email/phone/ipad (and the other
+    // fields set above) must survive untouched, not get wiped back to blank.
     const partial = await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", {
       userId: "ADMIN",
       body: { ukgId: "6145800" },
@@ -825,7 +828,18 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(partial.status, 200);
     assert.equal(partial.body.ukgId, "6145800");
     assert.equal(partial.body.email, "jordan.smith-rivera@example.com");
+    assert.equal(partial.body.phone, "614-555-7000");
+    assert.equal(partial.body.ipad, "614-555-7001");
     assert.equal(partial.body.homeLocationCode, "GEORGETOWN", "earlier fields should also survive a partial update");
+  });
+
+  // Admin accounts have no Devices tab the way a technician profile does --
+  // the iPad # here is a plain record-keeping field, not wired into
+  // db.syncIpadDevice/tech_devices the way a technician's is.
+  await t.test("setting an admin's iPad # never creates a tech_devices row for them", async () => {
+    const before = db.listDevices("ADMIN2").length;
+    await server.call("PATCH", "/api/admin/admins/ADMIN2/basic-info", { userId: "ADMIN", body: { ipad: "614-555-7002" } });
+    assert.equal(db.listDevices("ADMIN2").length, before);
   });
 
   await t.test("setting an admin's basic info rejects an unknown location", async () => {

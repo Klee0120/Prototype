@@ -207,6 +207,8 @@ export function renderTechniciansTab(content, openTo) {
                             <input name="ukgId" placeholder="UKG ID" value="${escapeHtml(a.ukgId || "")}" />
                             <input name="hireDate" type="text" inputmode="numeric" placeholder="Hire date MM/DD/YYYY" maxlength="10" value="${escapeHtml(usFromIso(a.hireDate))}" />
                             <input name="email" type="email" placeholder="Email (for task notifications)" value="${escapeHtml(a.email || "")}" />
+                            <input name="phone" placeholder="Phone" value="${escapeHtml(a.phone || "")}" />
+                            <input name="ipad" placeholder="iPad #" value="${escapeHtml(a.ipad || "")}" />
                           </div>
                           <button type="submit" class="btn btn-link">Save</button>
                           <button type="button" class="btn btn-link admin-rename-cancel" data-id="${escapeHtml(a.id)}">Cancel</button>
@@ -341,6 +343,8 @@ export function renderTechniciansTab(content, openTo) {
               ukgId: form.ukgId.value.trim(),
               hireDate: hireDateValue ? isoFromUs(hireDateValue) : null,
               email: form.email.value.trim(),
+              phone: form.phone.value.trim(),
+              ipad: form.ipad.value.trim(),
             }),
           ]);
           // Renaming yourself should show up in the header immediately,
@@ -448,6 +452,9 @@ export function renderTechniciansTab(content, openTo) {
             <input name="pin" placeholder="PIN" required inputmode="numeric" />
             <select name="homeLocationCode"><option value="">No location</option>${locationOptions}</select>
             <input name="ukgId" placeholder="UKG ID" />
+            <input name="email" placeholder="Email" type="email" />
+            <input name="phone" placeholder="Phone" />
+            <input name="ipad" placeholder="iPad #" />
             <label class="add-tech-date-field">Hire date<input name="hireDate" type="text" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" /></label>
           </div>
           ${
@@ -481,6 +488,9 @@ export function renderTechniciansTab(content, openTo) {
           homeLocationCode: form.homeLocationCode.value || null,
           ukgId: form.ukgId.value.trim(),
           hireDate: isoFromUs(form.hireDate.value),
+          email: form.email.value.trim(),
+          phone: form.phone.value.trim(),
+          ipad: form.ipad.value.trim(),
         });
         if (makeRfm) {
           await api.patch(`/api/admin/admins/${encodeURIComponent(admin.id)}/pse-reviewer`, { isPseReviewer: true });
