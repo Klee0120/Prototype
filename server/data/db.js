@@ -7535,7 +7535,19 @@ function parseObjectAccountCategory(raw) {
 // costs" toggle -- nothing else reads this list, and matching is by the
 // same category name parseObjectAccountCategory resolves everywhere else,
 // so a line excluded here is still counted normally with the toggle off.
+// Not every burden line carries one of these categories, though --
+// isBurdenDescription (below) catches the rest by their Vendor/Description
+// text instead.
 const BURDEN_CATEGORIES = new Set(["H&W Insurance", "FICA/Medi", "Gen Liability"]);
+
+// Some burden-coded GL lines post straight from payroll under a generic or
+// unrelated chart-of-accounts category -- the real signal is only in the
+// line's own Vendor/Description text ("Actual Burden Journal Entries",
+// "Estimated Burden Journal Entries," etc., per Krista). Checked alongside
+// BURDEN_CATEGORIES everywhere a line is tested for "Exclude burden costs."
+function isBurdenDescription(vendorOrDescription) {
+  return Boolean(vendorOrDescription) && /burden journal entries/i.test(vendorOrDescription);
+}
 
 // Krista's real C&W Services Monthly Closing Schedule (CW-Services-CY2026,
 // the actual uploaded file) -- period number lines up exactly with the
@@ -8145,7 +8157,8 @@ function getGlSpendBreakdown({
 
   const rows = db
     .prepare(
-      `SELECT g.object_account, g.amount, g.matched_location_code, l.name AS locationName, l.territory AS territory
+      `SELECT g.object_account, g.amount, g.matched_location_code, g.name_alpha AS nameAlpha, g.remark,
+              l.name AS locationName, l.territory AS territory
        FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
        ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`
     )
@@ -8162,7 +8175,7 @@ function getGlSpendBreakdown({
     if (territory && rowTerritory !== territory) continue;
 
     const category = parseObjectAccountCategory(r.object_account) || "Unknown / Uncategorized";
-    if (excludeBurden && BURDEN_CATEGORIES.has(category)) continue;
+    if (excludeBurden && (BURDEN_CATEGORIES.has(category) || isBurdenDescription(r.nameAlpha || r.remark))) continue;
 
     const amount = r.amount || 0;
 
@@ -8297,7 +8310,7 @@ function getGlSpendDetailPage({
 
   const matching = rows.filter((r) => {
     const rowCategory = parseObjectAccountCategory(r.objectAccount) || "Unknown / Uncategorized";
-    if (excludeBurden && BURDEN_CATEGORIES.has(rowCategory)) return false;
+    if (excludeBurden && (BURDEN_CATEGORIES.has(rowCategory) || isBurdenDescription(r.nameAlpha || r.remark))) return false;
     if (category != null && rowCategory !== category) return false;
     if (territory != null) {
       const rowTerritory = r.territory || "Unassigned";

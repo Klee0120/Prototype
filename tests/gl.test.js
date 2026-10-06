@@ -325,6 +325,48 @@ test("GL Spend Breakdown: category + territory grouping", async (t) => {
     );
   });
 
+  await t.test("excludeBurden also catches a burden line by its Vendor/Description text, even under an unrelated category", async () => {
+    const BURDEN_DESC_PERIOD = { periodNumber: 3, fiscalYear: 27 };
+    db.importGlEntries(
+      [
+        // "Material Use" isn't a burden category on its own -- only the
+        // Vendor/Description text marks this one as burden.
+        {
+          glDate: "2026-03-01",
+          objectAccount: "605400 - Gen FM~Material Use",
+          amount: 900,
+          nameAlpha: "Actual Burden Journal Entries",
+        },
+        { glDate: "2026-03-01", objectAccount: "605400 - Gen FM~Material Use", amount: 100, nameAlpha: "Regular Vendor Invoice" },
+      ],
+      BURDEN_DESC_PERIOD.periodNumber,
+      BURDEN_DESC_PERIOD.fiscalYear,
+      "ADMIN",
+      "t-spend-burden-desc.xlsx"
+    );
+
+    const withBurden = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?periodNumber=${BURDEN_DESC_PERIOD.periodNumber}&fiscalYear=${BURDEN_DESC_PERIOD.fiscalYear}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(withBurden.body.totalAmount, 900 + 100);
+
+    const excluded = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?excludeBurden=true&periodNumber=${BURDEN_DESC_PERIOD.periodNumber}&fiscalYear=${BURDEN_DESC_PERIOD.fiscalYear}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(excluded.body.totalAmount, 100, "the 900 Actual Burden Journal Entries line should be dropped, the regular 100 kept");
+
+    const detail = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown/detail?excludeBurden=true&periodNumber=${BURDEN_DESC_PERIOD.periodNumber}&fiscalYear=${BURDEN_DESC_PERIOD.fiscalYear}&pageSize=50`,
+      { userId: "ADMIN" }
+    );
+    assert.ok(detail.body.items.every((it) => it.vendorOrDescription !== "Actual Burden Journal Entries"));
+  });
+
   await t.test("a technician can't reach the Spend Breakdown route", async () => {
     const res = await server.call("GET", "/api/admin/gl/spend-breakdown", { userId: "T1001" });
     assert.equal(res.status, 403);
