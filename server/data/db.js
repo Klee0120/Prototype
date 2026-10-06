@@ -7924,6 +7924,26 @@ function normalizePhoneDigits(raw) {
   return digits.slice(-10);
 }
 
+// Rows whose Location Code never matched anything in the Locations table --
+// these can't resolve to a territory, so picking a specific territory in
+// the filter silently excludes them (same as if they genuinely belonged to
+// a different territory) rather than surfacing anywhere as "data that
+// needs attention." Grouped by the raw location text so it's obvious which
+// site is missing from the Locations tab.
+function summarizeUnmatchedLocations(items) {
+  const byLocation = new Map();
+  for (const it of items) {
+    if (it.locationMatched) continue;
+    const key = it.locationLabel || "(no location code)";
+    const l = byLocation.get(key) || { locationLabel: key, total: 0, count: 0 };
+    l.total += it.amount || 0;
+    l.count += 1;
+    byLocation.set(key, l);
+  }
+  const round = (n) => Math.round(n * 100) / 100;
+  return [...byLocation.values()].map((l) => ({ ...l, total: round(l.total) })).sort((a, b) => b.total - a.total);
+}
+
 // Who a Cell Phone GL line's number belongs to -- every technician's own
 // phone (technicians.phone) plus every phone-type device assigned to them
 // (tech_devices.device_type = 'phone', so someone carrying more than one
@@ -7995,12 +8015,15 @@ function getCellPhoneCharges({ territory, fiscalYear } = {}) {
       phoneNumberRaw: r.remark,
       vendor: r.nameAlpha,
       amount: r.amount,
-      // matched_location_code rarely resolves on these lines (the raw GL
-      // export's own "Location Code" text -- e.g. "20000438 - TOYOTA MS
-      // TLS- NEWARK" -- already reads fine on its own, so that's the
-      // fallback here rather than leaving the row blank whenever the match
-      // comes back empty).
+      // When matched_location_code doesn't resolve (the site isn't
+      // registered in Locations yet), the raw GL export's own "Location
+      // Code" text -- e.g. "20000438 - TOYOTA MS TLS- NEWARK" -- already
+      // reads fine on its own, so that's the fallback here rather than
+      // leaving the row blank. Those rows also can't resolve a territory,
+      // so picking a specific territory silently excludes them -- see
+      // unmatchedLocations below for which sites that's actually hitting.
       locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
+      locationMatched: Boolean(r.matchedLocationCode),
       territory: rowTerritory,
       // Matched against every technician's own phone # plus every
       // phone-type device on their profile (see buildTechPhoneRoster) --
@@ -8038,6 +8061,7 @@ function getCellPhoneCharges({ territory, fiscalYear } = {}) {
         assignedToName: p.assignedToName,
       }))
       .sort((a, b) => b.total - a.total),
+    unmatchedLocations: summarizeUnmatchedLocations(items),
   };
 }
 
@@ -8098,6 +8122,7 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
       description: (r.remark && r.remark.trim()) || r.nameAlpha || null,
       amount: r.amount,
       locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
+      locationMatched: Boolean(r.matchedLocationCode),
       territory: rowTerritory,
     });
   }
@@ -8128,6 +8153,7 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
     byDescription: [...byDescription.values()]
       .map((d) => ({ category: d.category, description: d.description, total: round(d.total), count: d.count, monthCount: d.months.size, locationLabel: d.locationLabel }))
       .sort((a, b) => b.total - a.total),
+    unmatchedLocations: summarizeUnmatchedLocations(items),
   };
 }
 

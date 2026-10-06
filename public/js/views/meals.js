@@ -108,6 +108,7 @@ export async function renderMeals(container) {
       person's expense report, so matching text usually means the same person/trip) -- not every line has a name on it,
       some are bulk corrections.
     </p>
+    ${renderUnmatchedLocations(data.unmatchedLocations)}
     <div id="meals-body"></div>
   `;
 
@@ -216,5 +217,39 @@ function renderByDescription(byDescription) {
           .join("")}
       </tbody>
     </table>
+  `;
+}
+
+// Sites whose Location Code never matched anything in the app's own
+// Locations tab -- they can't resolve to a territory, so the global
+// territory filter (top right) silently drops them the same way it would
+// drop a genuinely different territory's data, rather than showing an
+// error. Listed here so a Midwest-only view is actually trustworthy --
+// anything below needs adding to Locations (with its territory set)
+// before it'll show up under a territory filter at all.
+function renderUnmatchedLocations(unmatchedLocations) {
+  if (!unmatchedLocations || unmatchedLocations.length === 0) return "";
+  return `
+    <div class="wom-info-box cellphone-unmatched-box">
+      <strong>${unmatchedLocations.length} location${unmatchedLocations.length === 1 ? "" : "s"} not on the Locations tab</strong>
+      -- these can't resolve a territory, so picking one in the filter above (top right) excludes them entirely rather
+      than showing them as "Unassigned." Add them to Locations with the right territory to fix that.
+      <table class="detail-table cellphone-table">
+        <thead><tr><th>Location (from the GL export)</th><th>GL lines</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${unmatchedLocations
+            .map(
+              (l) => `
+            <tr>
+              <td>${escapeHtml(l.locationLabel)}</td>
+              <td>${l.count}</td>
+              <td>${formatMoney(l.total)}</td>
+            </tr>
+          `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
   `;
 }
