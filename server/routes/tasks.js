@@ -126,6 +126,16 @@ function presentTask(t) {
 // read rather than by any background scheduler -- see ensureRecurringTasks
 // and syncPseStageTask in server/data/db.js. Calling this here means the
 // board is always caught up whenever anyone opens it.
+//
+// This does a full rescan across tasks/pos/vendors/woms/gl_entries every
+// time it runs -- real work, not free. A time-based throttle here would be
+// wrong: it'd just as happily skip a deliberate re-check seconds after a
+// real change (an admin fixes a vendor's compliance gap, then reloads the
+// board) as it would the one case we actually want to collapse. That one
+// case -- the Priorities page firing GET /summary and GET / in parallel on
+// every load, each separately calling this -- is handled explicitly below
+// instead, by having the paired summary request opt out of a second run of
+// the exact same rescan its sibling request just did (see /summary).
 function catchUpTasks() {
   db.ensureRecurringTasks();
   db.refreshAllOpenWomLifecycles();
@@ -223,7 +233,11 @@ router.get("/", requireAuth, (req, res) => {
 });
 
 router.get("/summary", requireAuth, (req, res) => {
-  catchUpTasks();
+  // The Priorities page always fetches this alongside GET / (Promise.all),
+  // whose handler just ran the exact same rescan -- skip doing it twice for
+  // one page load. Callers that fetch this on its own (e.g. the admin
+  // review dashboard tile) don't pass the flag, so they still get caught up.
+  if (req.query.pairedWithList !== "1") catchUpTasks();
   const roles = rolesForViewer(req.user);
   // These 4 tiles are a personal at-a-glance ("what's on my plate"), not a
   // team-wide count -- same forViewer scope (assigned to me by name, plus

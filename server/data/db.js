@@ -601,6 +601,33 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gl_entries_business_unit ON gl_entries(business_unit);
   CREATE INDEX IF NOT EXISTS idx_gl_entries_period ON gl_entries(period_number, fiscal_year);
   CREATE INDEX IF NOT EXISTS idx_pos_wom_number ON pos(wom_number);
+
+  -- catchUpTasks() (server/routes/tasks.js) re-scans these every time it
+  -- runs -- SELECT id FROM pos WHERE lifecycle_status = 'active' alone runs
+  -- three separate times per pass (refreshAllPoWomLinkTasks,
+  -- refreshAllPoJobNumberTypeMismatchTasks, refreshAllPoWomLocationMismatchTasks),
+  -- each a full table scan without this.
+  CREATE INDEX IF NOT EXISTS idx_pos_lifecycle_status ON pos(lifecycle_status);
+  CREATE INDEX IF NOT EXISTS idx_pos_vendor_id ON pos(vendor_id);
+  CREATE INDEX IF NOT EXISTS idx_pos_vendor_number ON pos(vendor_number);
+  CREATE INDEX IF NOT EXISTS idx_vendors_jde_vendor_number ON vendors(jde_vendor_number);
+  -- files(related_type, related_id) backs every document-attachment lookup
+  -- in the app (technician, vendor, WOM, task, labor_report records all
+  -- share this one table) -- queried on nearly every profile/detail page.
+  CREATE INDEX IF NOT EXISTS idx_files_related ON files(related_type, related_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+  CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category);
+  CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to);
+  CREATE INDEX IF NOT EXISTS idx_tasks_related_vendor_id ON tasks(related_vendor_id);
+  -- Matches refreshAllOpenWomLifecycles' own WHERE clause exactly (see
+  -- server/data/db.js) -- run on every catchUpTasks() pass.
+  CREATE INDEX IF NOT EXISTS idx_tasks_workflow_rule_status ON tasks(workflow_rule, status);
+  -- allocations backs the weekly timekeeping grid (per tech, per week) and
+  -- every WOM's remainingHours computation (womWithRemaining, SUM(hours)
+  -- WHERE wom_code = ?) -- the fastest-growing table in the app (every
+  -- tech, every work day, every WOM split), unindexed before this.
+  CREATE INDEX IF NOT EXISTS idx_allocations_wom_code ON allocations(wom_code);
+  CREATE INDEX IF NOT EXISTS idx_allocations_tech_week ON allocations(tech_id, week_monday);
 `);
 
 // A sync's actual per-WOM changes (code/description/which fields differed),
@@ -889,6 +916,10 @@ if (!hasColumn("woms", "estimated_labor")) {
   db.exec("ALTER TABLE woms ADD COLUMN applied_contracted REAL");
   db.exec("ALTER TABLE woms ADD COLUMN vendor_id INTEGER");
 }
+// Backs getVendorContractedSummary/getVendorTerritories (WHERE vendor_id = ?,
+// run per vendor on every Vendor Directory load) -- has to live after the
+// ALTER TABLE above since vendor_id doesn't exist in woms' original schema.
+db.exec("CREATE INDEX IF NOT EXISTS idx_woms_vendor_id ON woms(vendor_id)");
 // The actual dollar amount on the real Toyota-approved PO ("TOY Value" in
 // the tracker) -- a distinct figure from estimated_price (what the PSE
 // asked for) and applied_price (what actually got posted). Cost Analysis
@@ -1072,6 +1103,10 @@ if (!hasColumn("tasks", "referred_to_admin_at")) {
 if (!hasColumn("tasks", "related_po_id")) {
   db.exec("ALTER TABLE tasks ADD COLUMN related_po_id INTEGER");
 }
+// Backs the listTasks join mentioned above (WHERE tasks.related_po_id = pos.id,
+// run on every task list/summary) -- has to live after the ALTER TABLE since
+// related_po_id doesn't exist in tasks' original schema.
+db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_related_po_id ON tasks(related_po_id)");
 // Which step a "po_request" task (a tech asked for a C&W PO, see
 // POST /tasks/request-po) is at -- "requested" (admin hasn't generated the
 // real PO yet) -> "pending_invoice" (PO generated, vendor asked for their
@@ -3898,8 +3933,13 @@ function refreshVendorComplianceTask(vendorId) {
   }
 }
 
+// Only needs each vendor's id to hand off to refreshVendorComplianceTask
+// (which does its own findVendor lookup) -- listVendors() computes every
+// vendor's full presented row (territories, open-task count, expired-doc
+// categories, contracted summary, several queries each) just to throw all
+// of it away except the id, on every single catchUpTasks() pass.
 function refreshAllVendorComplianceTasks() {
-  for (const v of listVendors()) refreshVendorComplianceTask(v.id);
+  for (const row of db.prepare("SELECT id FROM vendors").all()) refreshVendorComplianceTask(row.id);
 }
 
 // Every compliance follow-up task ever generated for this vendor (open and

@@ -451,7 +451,10 @@ export async function renderTaskBoard(container) {
     if (!views.includes(view)) view = "my";
     selectedTaskIds.clear();
 
-    const [summary, tasks] = await Promise.all([api.get("/api/tasks/summary"), api.get(`/api/tasks?${queryString()}`)]);
+    const [summary, tasks] = await Promise.all([
+      api.get("/api/tasks/summary?pairedWithList=1"),
+      api.get(`/api/tasks?${queryString()}`),
+    ]);
     lastTasks = tasks;
 
     // Any filter already set (e.g. left on from earlier this session) means
