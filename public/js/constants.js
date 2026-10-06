@@ -8,4 +8,4 @@ export const CW_PO_REQUEST_FORM_URL = "https://app.smartsheet.com/b/form/3794301
 
 // Must match db.TERRITORIES on the server -- a location's territory,
 // shown wherever locations are added/edited and filtered by.
-export const TERRITORIES = ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION"];
+export const TERRITORIES = ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION", "General Mgt & Admin"];

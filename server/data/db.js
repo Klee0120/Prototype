@@ -748,7 +748,11 @@ if (!hasColumn("locations", "region")) {
 // rather than needing its own territory column that could drift out of
 // sync with where it's actually located. Everything predates territories,
 // so every existing location backfills to Midwest.
-const TERRITORIES = ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION"];
+// "General Mgt & Admin" is Toyota's own Chart of Accounts section for
+// corporate/overhead job numbers that aren't a real field site in any
+// geographic territory -- its own bucket rather than guessing a geography
+// for them (see parseCoaWorkbook's SECTION_TERRITORY_PATTERNS).
+const TERRITORIES = ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION", "General Mgt & Admin"];
 if (!hasColumn("locations", "territory")) {
   db.exec("ALTER TABLE locations ADD COLUMN territory TEXT NOT NULL DEFAULT 'Midwest'");
 }

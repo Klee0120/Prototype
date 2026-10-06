@@ -272,7 +272,7 @@ test("locations: E&F job number and region tracking", async (t) => {
   await t.test("any logged-in user can list the available territories", async () => {
     const res = await server.call("GET", "/api/locations/territories", { userId: "T1001" });
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION"]);
+    assert.deepEqual(res.body, ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGION", "General Mgt & Admin"]);
   });
 
   await t.test("a technician cannot create a location", async () => {
@@ -669,7 +669,7 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.equal(create.status, 201);
 
     const buffer = coaWorkbook([
-      [null, null, null, null, "GENERAL MGT & ADMIN", null, null, null],
+      [null, null, null, null, "TEMA REGION", null, null, null],
       ["09004", 100110099031, 100110099032, 100110099033, "Overhead Line Item", "Region 9", "Nowhere", "ZZ"],
     ]);
     const res = await server.upload("/api/locations/import-coa", {
@@ -682,6 +682,34 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.equal(res.status, 200, JSON.stringify(res.body));
     const after = await server.call("GET", "/api/locations", { userId: "ADMIN" });
     assert.equal(after.body.find((l) => l.code === "LOC-OVERHEAD").territory, "East", "unrecognized section must not overwrite an existing territory");
+  });
+
+  // "GENERAL MGT & ADMIN" is Toyota's own section for corporate/overhead job
+  // numbers that aren't a real field site -- its own recognized territory,
+  // not left to inherit whatever geographic section happened to precede it
+  // in the file (the bug that originally mistagged one as Midwest).
+  await t.test("a row under the GENERAL MGT & ADMIN section gets that territory, not whatever section preceded it", async () => {
+    const buffer = coaWorkbook([
+      [null, null, null, null, "MIDWEST REGION (Contract)", null, null, null],
+      ["09005", 100110099041, 100110099042, 100110099043, "Some Midwest Site", "Region 1", "Nowhere", "OH"],
+      [null, null, null, null, "GENERAL MGT & ADMIN", null, null, null],
+      ["09006", 100110000653, null, null, "General Mgt", "Region 9", "Nowhere", "ZZ"],
+    ]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.createdCount, 2);
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const midwestSite = list.body.find((l) => l.name === "Some Midwest Site");
+    const generalMgt = list.body.find((l) => l.name === "General Mgt");
+    assert.equal(midwestSite.territory, "Midwest");
+    assert.equal(generalMgt.territory, "General Mgt & Admin", "must not inherit Midwest from the section above it");
   });
 });
 
