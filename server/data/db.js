@@ -1260,6 +1260,14 @@ if (!hasColumn("vendors", "denied_reason_category")) {
 if (!hasColumn("vendors", "preferred")) {
   db.exec("ALTER TABLE vendors ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0");
 }
+// Who added this vendor profile -- the fallback for routing its compliance
+// checklist/task to someone before it has any real PO/WOM activity to
+// derive a territory from (see getVendorTerritories). A vendor created
+// before this column existed has no creator on file and just falls
+// through to the broader, unscoped view until it gets a real match.
+if (!hasColumn("vendors", "created_by")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN created_by TEXT");
+}
 // Case-log entries need their own updated_at too -- the real signal for
 // "has anyone touched this vendor in the last 7 days" is the most recent
 // touch to *either* the vendor record or one of its case-log entries, not
@@ -2024,10 +2032,12 @@ function presentVendorRow(v) {
     deniedReason: v.denied_reason || "",
     deniedReasonCategory: v.denied_reason_category || "",
     preferred: Boolean(v.preferred),
+    createdBy: v.created_by || null,
     createdAt: v.created_at,
     updatedAt: v.updated_at,
     openTaskCount: countOpenVendorTasks(v.id),
     expiredComplianceCategories: listExpiredVendorComplianceCategories(v.id),
+    territories: getVendorTerritories(v.id),
     ...getVendorContractedSummary(v.id),
   };
 }
@@ -2133,6 +2143,7 @@ function createVendor(fields) {
     "w9_invoice_date",
     "onboarding_stage",
     "denied_reason",
+    "created_by",
     "created_at",
     "updated_at",
   ];
@@ -2165,6 +2176,7 @@ function createVendor(fields) {
     // the Onboarding tab immediately, without an extra step.
     ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : "in_progress",
     fields.deniedReason || "",
+    fields.createdBy || null,
     now,
     now,
   ];
@@ -3820,6 +3832,30 @@ function vendorComplianceReasons(v, vendorId) {
   return reasons;
 }
 
+// Routes a vendor-related task/checklist entry toward an admin actually
+// responsible for it, same spirit as the PO tasks' matchAdminByName: the
+// first active admin whose own derived territory (home location's
+// territory, see getAdminTerritory) matches one of the vendor's real
+// PO/WOM territories (getVendorTerritories) -- falling back to whoever
+// created the vendor profile if it has no derivable territory yet (brand
+// new, nothing matched to it), falling back further to null (the generic
+// financial-role queue) if neither resolves.
+function findAdminForVendor(vendorId, createdBy) {
+  const territories = getVendorTerritories(vendorId);
+  if (territories.length > 0) {
+    const admins = listAdmins().filter((a) => a.active);
+    for (const t of territories) {
+      const match = admins.find((a) => getAdminTerritory(a) === t);
+      if (match) return match;
+    }
+  }
+  if (createdBy) {
+    const creator = findTechnician(createdBy);
+    if (creator && creator.role === "admin") return creator;
+  }
+  return null;
+}
+
 // Mirrors refreshWomLifecycleTask's own pattern: a task that tracks a live
 // condition rather than a one-off to-do. It reopens (default
 // reopenIfClosed) if someone marks it complete while the vendor is still
@@ -3836,11 +3872,13 @@ function refreshVendorComplianceTask(vendorId) {
   const reasons = vendorComplianceReasons(v, vendorId);
   const sourceKey = vendorComplianceTaskSourceKey(vendorId);
   if (reasons.length > 0) {
+    const admin = findAdminForVendor(vendorId, v.createdBy);
     upsertTaskBySourceKey(sourceKey, {
       title: `Follow up with ${v.name} on compliance`,
       description: `Needs attention: ${reasons.join("; ")}.`,
       category: "vendor_compliance",
-      assignedRole: "financial",
+      assignedTo: admin ? admin.id : null,
+      assignedRole: admin ? "admin" : "financial",
       priority: "normal",
       relatedVendorId: vendorId,
       source: "vendor_compliance",

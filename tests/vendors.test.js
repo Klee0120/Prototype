@@ -448,8 +448,12 @@ test("vendors: compliance follow-up task is generated/closed automatically", asy
   const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Arbon Equipment" } });
   const vendorId = create.body.id;
 
+  // This vendor was created by ADMIN with no PO/WOM matched to it yet, so
+  // findAdminForVendor (db.js) routes its compliance task to ADMIN directly
+  // (assignedRole: "admin") rather than the old untargeted "financial"
+  // role bucket -- hence role=admin here, not role=financial.
   async function findComplianceTask() {
-    const tasks = await server.call("GET", "/api/tasks?view=team&role=financial&category=vendor_compliance", { userId: "ADMIN" });
+    const tasks = await server.call("GET", "/api/tasks?view=team&role=admin&category=vendor_compliance", { userId: "ADMIN" });
     return tasks.body.find((t2) => t2.relatedVendorId === vendorId);
   }
 
@@ -533,6 +537,72 @@ test("vendors: compliance follow-up task is generated/closed automatically", asy
   await t.test("compliance tasks for an unknown vendor 404", async () => {
     const res = await server.call("GET", "/api/admin/vendors/999999/compliance-tasks", { userId: "ADMIN" });
     assert.equal(res.status, 404);
+  });
+});
+
+test("vendors: territory-derived compliance routing (findAdminForVendor)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const db = require("../server/data/db");
+  const { DatabaseSync } = require("node:sqlite");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+
+  db.createLocation("EASTLOC", "East Test Site", null, "East", null, "East", null);
+  await server.call("POST", "/api/admin/admins", {
+    userId: "ADMIN",
+    body: { id: "ADMIN-EAST", name: "East Admin", pin: "5555", homeLocationCode: "EASTLOC" },
+  });
+
+  function insertMatchedPo(vendorId, region) {
+    const now = new Date().toISOString();
+    raw
+      .prepare(
+        `INSERT INTO pos (composite_key, vendor_id, region, po_amount, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 1000, 'active', ?, ?, ?, ?)`
+      )
+      .run(`TEST-PO-${vendorId}-${region}`, vendorId, region, now, now, now, now);
+  }
+
+  await t.test("a vendor matched to a PO in a territory routes its compliance task to that territory's admin", async () => {
+    const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "East Fixtures Co" } });
+    const vendorId = create.body.id;
+    insertMatchedPo(vendorId, "East");
+
+    const tasks = await server.call("GET", "/api/tasks?view=team&role=admin&category=vendor_compliance", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.relatedVendorId === vendorId);
+    assert.ok(task, "expected a compliance task routed to an admin");
+    assert.equal(task.assignedTo, "ADMIN-EAST", "expected it routed to the admin whose home territory matches the vendor's own");
+  });
+
+  await t.test("the vendor's own territories (derived) show up in the API response", async () => {
+    const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Midwest Fixtures Co" } });
+    const vendorId = create.body.id;
+    insertMatchedPo(vendorId, "Midwest");
+
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.deepEqual(vendor.territories, ["Midwest"]);
+  });
+
+  await t.test("a vendor matched in two territories returns both", async () => {
+    const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Multi-Territory Co" } });
+    const vendorId = create.body.id;
+    insertMatchedPo(vendorId, "Midwest");
+    insertMatchedPo(vendorId, "East");
+
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.deepEqual(vendor.territories, ["East", "Midwest"]);
+  });
+
+  await t.test("a freshly created vendor with no PO/WOM match yet has no derived territory and is attributed to its creator", async () => {
+    const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Brand New Co" } });
+    const vendorId = create.body.id;
+
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.deepEqual(vendor.territories, []);
+    assert.equal(vendor.createdBy, "ADMIN");
   });
 });
 

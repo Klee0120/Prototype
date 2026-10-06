@@ -50,7 +50,7 @@ router.post("/", (req, res) => {
   const error = validateVendorBody(req.body);
   if (error) return res.status(400).json({ error });
 
-  const vendor = db.createVendor({ ...req.body, name: String(req.body.name).trim() });
+  const vendor = db.createVendor({ ...req.body, name: String(req.body.name).trim(), createdBy: req.user.id });
   db.addAudit(req.user.id, "VENDOR_CREATED", `${req.user.name} added vendor ${vendor.name}`);
   res.status(201).json(vendor);
 });

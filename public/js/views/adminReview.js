@@ -665,6 +665,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // documents -- those stay on the vendor's own Documents tab -- so anyone
   // with admin access can see exactly where a vendor stands without
   // touching anything private.
+  // A vendor's compliance checklist entry is scoped to whoever actually
+  // deals with that vendor -- its own real territories (derived from PO/WOM
+  // activity, v.territories) when it has any, or whoever created its
+  // profile when it doesn't yet (brand new, nothing matched to it). Left
+  // unfiltered on "All territories" so RFM/cross-territory review still
+  // sees everything -- this is deliberately scoped lower than Financials'
+  // own Midwest-only gate, since any admin can reach the Vendors tab.
+  function vendorInTerritoryScope(v) {
+    const activeTerritory = getTerritory();
+    if (!activeTerritory) return true;
+    if (v.territories && v.territories.includes(activeTerritory)) return true;
+    if ((!v.territories || v.territories.length === 0) && v.createdBy === (state.user && state.user.id)) return true;
+    return false;
+  }
+
   async function drawVendorOnboarding(content) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
     const vendors = vendorsCache;
@@ -677,7 +692,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       .sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
     const denied = vendors.filter((v) => v.onboardingStage === "denied").sort((a, b) => a.name.localeCompare(b.name));
     const complianceNeeded = vendors
-      .filter((v) => v.onboardingStage === "onboarded" && (v.formsStatus === "outdated" || !v.formChecksComplete || v.w9InvoiceStale))
+      .filter(
+        (v) =>
+          v.onboardingStage === "onboarded" &&
+          (v.formsStatus === "outdated" || !v.formChecksComplete || v.w9InvoiceStale) &&
+          vendorInTerritoryScope(v)
+      )
       .sort((a, b) => a.name.localeCompare(b.name));
 
     content.innerHTML = `
