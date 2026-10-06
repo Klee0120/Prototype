@@ -268,6 +268,15 @@ export async function renderSpendBreakdown(container) {
       : "";
   const fyLabel = allYearsSelected ? "All fiscal years" : `FY20${selectedFiscalYear}${monthRangeLabel}`;
 
+  const selectedLocationLabel = selectedLocation
+    ? data.locations.find((l) => (l.locationCode || "Unassigned") === selectedLocation)?.locationName || selectedLocation
+    : "All locations";
+  const glScopeHint = includePoReferenced
+    ? "Every GL transaction type included."
+    : `Scoped to GL lines with no PO reference -- payroll burden, journal entries, Concur, Pcard, fleet accruals -- which is
+       where things like health insurance and cell phone charges actually post. GL Reconciliation already breaks down the
+       PO-matched and PO-number-not-found buckets.`;
+
   container.innerHTML = `
     <div class="page-header">
       <div>
@@ -276,62 +285,87 @@ export async function renderSpendBreakdown(container) {
           ${includePoReferenced ? "Every GL line" : "GL lines with no PO reference"}, by chart-of-accounts category and territory --
           <strong>${fyLabel}</strong>
         </p>
-        <p class="overview-hint">
-          ${data.entryCount.toLocaleString()} GL line${data.entryCount === 1 ? "" : "s"} on file${territory ? ` for <strong>${escapeHtml(territory)}</strong>` : ""}${
-            selectedLocation
-              ? ` at <strong>${escapeHtml(data.locations.find((l) => (l.locationCode || "Unassigned") === selectedLocation)?.locationName || selectedLocation)}</strong>`
-              : ""
-          },
-          totaling ${formatMoney(data.totalAmount)}.
-          ${
-            includePoReferenced
-              ? "Every transaction type, including PO-referenced lines."
-              : `Scoped to GL lines with no PO reference -- payroll burden, journal entries, Concur, Pcard, fleet accruals --
-                 which is where things like health insurance and cell phone charges actually post. GL Reconciliation already
-                 breaks down the PO-matched and PO-number-not-found buckets.`
-          }
-          Click a row below to see the actual GL lines behind it.
-          ${
-            includePoRemaining && data.poRemainingCount > 0
-              ? `Totals below include ${formatMoney(data.poRemainingTotal)} of outstanding commitment across ${data.poRemainingCount} open
-                 PO${data.poRemainingCount === 1 ? "" : "s"} not yet reflected in the GL -- drilling into a row still only shows the GL
-                 lines matched so far, not the open PO itself.`
-              : ""
-          }
-        </p>
-        <div class="spend-controls">
-          <div class="spend-filters-row">
-            <label class="spend-fy-select-label">
-              Fiscal year
-              <select class="spend-fy-select">
-                ${years.map((y) => `<option value="${y}" ${!allYearsSelected && y === selectedFiscalYear ? "selected" : ""}>FY20${y}</option>`).join("")}
-                <option value="all" ${allYearsSelected ? "selected" : ""}>All fiscal years</option>
-              </select>
-            </label>
-            ${
-              !allYearsSelected && hasCalendar
-                ? `
-            <label class="spend-fy-select-label">
-              From month
-              <select class="spend-period-from-select">
-                ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodFrom === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
-              </select>
-            </label>
-            <label class="spend-fy-select-label">
-              To month
-              <select class="spend-period-to-select">
-                ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodTo === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
-              </select>
-            </label>`
-                : !allYearsSelected
-                  ? `<p class="spend-no-calendar-note">Month breakdown isn't available for FY20${selectedFiscalYear} yet.</p>`
-                  : ""
-            }
-            <form class="spend-search-form">
-              <input type="search" class="spend-search-input" placeholder="Search PO # or WOM #" />
-              <button type="submit" class="btn btn-secondary">Search</button>
-            </form>
+      </div>
+    </div>
+    ${
+      data.unassignedLocationCount > 0
+        ? `<p class="review-checklist-hint spend-unassigned-note">
+             ${data.unassignedLocationCount.toLocaleString()} line${data.unassignedLocationCount === 1 ? "" : "s"} couldn't be matched to a
+             location and fall under "Unassigned" in the territory and location breakdowns below -- check those
+             business units/facility names against Locations if that count looks high.
+           </p>`
+        : ""
+    }
+    ${
+      includePoRemaining && data.poRemainingCount > 0
+        ? `<p class="review-checklist-hint">
+             Totals below include ${formatMoney(data.poRemainingTotal)} of outstanding commitment across ${data.poRemainingCount} open
+             PO${data.poRemainingCount === 1 ? "" : "s"} not yet reflected in the GL -- drilling into a row still only shows the GL
+             lines matched so far, not the open PO itself.
+           </p>`
+        : ""
+    }
+    <div class="spend-top-row">
+      <div class="spend-card spend-chart-card">
+        <h2 class="spend-card-heading">Spend by category</h2>
+        <div class="spend-donut-wrap">
+          ${renderDonut(slices, totalForChart)}
+          <div class="spend-donut-legend">
+            ${slices
+              .map(
+                (s) => `
+              <div class="spend-legend-row">
+                <span class="spend-legend-swatch" style="background:${s.color}"></span>
+                <span class="spend-legend-label">${escapeHtml(s.label)}</span>
+                <span class="spend-legend-value">${formatMoney(s.total)}</span>
+              </div>`
+              )
+              .join("")}
           </div>
+        </div>
+      </div>
+      <div class="spend-card spend-stats-card">
+        <div class="spend-stat-bar">
+          <div class="spend-stat"><span class="spend-stat-label">Territory</span><span class="spend-stat-value">${escapeHtml(territory || "All territories")}</span></div>
+          <div class="spend-stat"><span class="spend-stat-label">Location</span><span class="spend-stat-value">${escapeHtml(selectedLocationLabel)}</span></div>
+          <div class="spend-stat"><span class="spend-stat-label">Total spend</span><span class="spend-stat-value">${formatMoney(data.totalAmount)}</span></div>
+          <div class="spend-stat"><span class="spend-stat-label">GL lines</span><span class="spend-stat-value">${data.entryCount.toLocaleString()}</span></div>
+        </div>
+        <div class="spend-filters-row">
+          <label class="spend-fy-select-label">
+            Fiscal year
+            <select class="spend-fy-select">
+              ${years.map((y) => `<option value="${y}" ${!allYearsSelected && y === selectedFiscalYear ? "selected" : ""}>FY20${y}</option>`).join("")}
+              <option value="all" ${allYearsSelected ? "selected" : ""}>All fiscal years</option>
+            </select>
+          </label>
+          ${
+            !allYearsSelected && hasCalendar
+              ? `
+          <label class="spend-fy-select-label">
+            From month
+            <select class="spend-period-from-select">
+              ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodFrom === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="spend-fy-select-label">
+            To month
+            <select class="spend-period-to-select">
+              ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodTo === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
+            </select>
+          </label>`
+              : !allYearsSelected
+                ? `<p class="spend-no-calendar-note">Month breakdown isn't available for FY20${selectedFiscalYear} yet.</p>`
+                : ""
+          }
+          <form class="spend-search-form">
+            <input type="search" class="spend-search-input" placeholder="Search PO or WOM #" />
+            <button type="submit" class="btn btn-primary">Apply filters</button>
+          </form>
+        </div>
+        <div class="spend-scope-section">
+          <h3 class="spend-card-heading">GL line scope</h3>
+          <p class="review-checklist-hint">${glScopeHint}</p>
           <div class="spend-toggle-group">
             <label class="spend-po-toggle">
               <input type="checkbox" class="spend-include-po-toggle" ${includePoReferenced ? "checked" : ""} />
@@ -353,85 +387,63 @@ export async function renderSpendBreakdown(container) {
         </div>
       </div>
     </div>
-    ${
-      data.unassignedLocationCount > 0
-        ? `<p class="review-checklist-hint spend-unassigned-note">
-             ${data.unassignedLocationCount.toLocaleString()} line${data.unassignedLocationCount === 1 ? "" : "s"} couldn't be matched to a
-             location and fall under "Unassigned" in the territory and location breakdowns below -- check those
-             business units/facility names against Locations if that count looks high.
-           </p>`
-        : ""
-    }
-    <div class="spend-breakdown-layout">
-      <div class="spend-donut-wrap">
-        ${renderDonut(slices, totalForChart)}
-        <div class="spend-donut-legend">
-          ${slices
-            .map(
-              (s) => `
-            <div class="spend-legend-row">
-              <span class="spend-legend-swatch" style="background:${s.color}"></span>
-              <span class="spend-legend-label">${escapeHtml(s.label)}</span>
-              <span class="spend-legend-value">${formatMoney(s.total)}</span>
-            </div>`
-            )
-            .join("")}
-        </div>
-      </div>
-      <div class="spend-territory-wrap">
-        <h3 class="spend-section-heading">By Territory</h3>
-        <table class="detail-table spend-territory-table spend-clickable-table">
-          <thead><tr><th>Territory</th><th>Total</th><th>Lines</th></tr></thead>
-          <tbody>
-            ${data.territories
-              .map(
-                (t) => `
-              <tr class="spend-drill-row" data-territory="${escapeHtml(t.territory)}" tabindex="0">
-                <td>${escapeHtml(t.territory)}</td>
-                <td>${formatMoney(t.total)}</td>
-                <td>${t.count.toLocaleString()}</td>
-              </tr>`
-              )
-              .join("")}
-          </tbody>
-        </table>
-        <h3 class="spend-section-heading">By Location</h3>
-        <p class="review-checklist-hint">Click a location to scope the chart and tables above to it -- click it again (or "All locations") to clear.</p>
-        <div class="spend-location-chips">
-          <button type="button" class="spend-location-chip ${!selectedLocation ? "active" : ""}" data-location-key="">All locations</button>
-          ${data.locations
-            .map((l) => {
-              const key = l.locationCode || "Unassigned";
-              const label = l.locationCode ? l.locationName || l.locationCode : "Unassigned";
-              return `
-            <button type="button" class="spend-location-chip ${selectedLocation === key ? "active" : ""}" data-location-key="${escapeHtml(key)}">
-              <span class="spend-location-chip-name">${escapeHtml(label)}</span>
-              <span class="spend-location-chip-meta">${formatMoney(l.total)} &middot; ${l.count.toLocaleString()}</span>
-            </button>`;
-            })
-            .join("")}
-        </div>
-      </div>
-    </div>
-    <h3 class="spend-section-heading">Every Category</h3>
-    <p class="review-checklist-hint">Includes negative-net categories (credits/reversals), which the chart above can't wedge. Click a row to see its GL lines.</p>
-    <table class="detail-table spend-category-table spend-clickable-table">
-      <thead><tr><th>Category</th><th>Total</th><th>Lines</th><th></th></tr></thead>
-      <tbody>
-        ${data.categories
-          .map((c) => {
-            const barPct = Math.min(100, (Math.abs(c.total) / maxCategoryTotal) * 100);
+    <div class="spend-card">
+      <h2 class="spend-card-heading">By location</h2>
+      <p class="review-checklist-hint">Select a location to filter spend. Click it again (or "All locations") to clear.</p>
+      <div class="spend-location-chips">
+        <button type="button" class="spend-location-chip ${!selectedLocation ? "active" : ""}" data-location-key="">All locations</button>
+        ${data.locations
+          .map((l) => {
+            const key = l.locationCode || "Unassigned";
+            const label = l.locationCode ? l.locationName || l.locationCode : "Unassigned";
             return `
-          <tr class="spend-drill-row" data-category="${escapeHtml(c.category)}" tabindex="0">
-            <td>${escapeHtml(displayCategoryName(c.category))}</td>
-            <td class="${c.total < 0 ? "cost-amount-danger" : ""}">${formatMoney(c.total)}</td>
-            <td>${c.count.toLocaleString()}</td>
-            <td class="spend-bar-cell"><span class="spend-bar" style="width:${barPct}%"></span></td>
-          </tr>`;
+          <button type="button" class="spend-location-chip ${selectedLocation === key ? "active" : ""}" data-location-key="${escapeHtml(key)}">
+            <span class="spend-location-chip-name">${escapeHtml(label)}</span>
+            <span class="spend-location-chip-meta">${formatMoney(l.total)} &middot; ${l.count.toLocaleString()}</span>
+          </button>`;
           })
           .join("")}
-      </tbody>
-    </table>
+      </div>
+    </div>
+    <div class="spend-card">
+      <h2 class="spend-card-heading">By territory</h2>
+      <table class="detail-table spend-territory-table spend-clickable-table">
+        <thead><tr><th>Territory</th><th>Total</th><th>Lines</th></tr></thead>
+        <tbody>
+          ${data.territories
+            .map(
+              (t) => `
+            <tr class="spend-drill-row" data-territory="${escapeHtml(t.territory)}" tabindex="0">
+              <td>${escapeHtml(t.territory)}</td>
+              <td>${formatMoney(t.total)}</td>
+              <td>${t.count.toLocaleString()}</td>
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+    <div class="spend-card">
+      <h2 class="spend-card-heading">Every category</h2>
+      <p class="review-checklist-hint">Includes negative-net categories (credits/reversals), which the chart above can't wedge. Click a row to see its GL lines.</p>
+      <table class="detail-table spend-category-table spend-clickable-table">
+        <thead><tr><th>Category</th><th>Total</th><th>Lines</th><th></th></tr></thead>
+        <tbody>
+          ${data.categories
+            .map((c) => {
+              const barPct = Math.min(100, (Math.abs(c.total) / maxCategoryTotal) * 100);
+              return `
+            <tr class="spend-drill-row" data-category="${escapeHtml(c.category)}" tabindex="0">
+              <td>${escapeHtml(displayCategoryName(c.category))}</td>
+              <td class="${c.total < 0 ? "cost-amount-danger" : ""}">${formatMoney(c.total)}</td>
+              <td>${c.count.toLocaleString()}</td>
+              <td class="spend-bar-cell"><span class="spend-bar" style="width:${barPct}%"></span></td>
+            </tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>
+    </div>
   `;
 
   container.querySelector(".spend-include-po-toggle")?.addEventListener("change", (e) => {
@@ -463,10 +475,17 @@ export async function renderSpendBreakdown(container) {
     periodTo = Number(e.target.value);
     renderSpendBreakdown(container);
   });
+  // "Apply filters" -- a PO/WOM # in the search box opens the matching-line
+  // modal (this is the same submit action the old dedicated Search button
+  // used); left empty, it just re-confirms the fiscal year/month/scope
+  // controls above, which already apply themselves as each one changes.
   container.querySelector(".spend-search-form")?.addEventListener("submit", (e) => {
     e.preventDefault();
     const query = container.querySelector(".spend-search-input").value.trim();
-    if (!query) return;
+    if (!query) {
+      renderSpendBreakdown(container);
+      return;
+    }
     openSpendDetailModal({
       search: query,
       territoryGlobal: territory,
