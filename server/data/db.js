@@ -7898,6 +7898,239 @@ function getGlSpendDetailPage({
   return { items, total: matching.length, page: p, pageSize: ps };
 }
 
+// GL_ENTRY_COLUMNS doesn't carry name_alpha/remark (getGlSpendDetailPage
+// above selects those itself), and remark is the one place Krista's actual
+// cell phone # lives for a Cell Phone GL line (confirmed against her real
+// GL export: "Name - Remark Explanation" is a bare 10-digit number on every
+// Cell Phone row, while name_alpha is always just the carrier/aggregator --
+// "CALERO SOFTWARE LLC" -- same on every row, so it's useless for telling
+// phones apart). A 10-digit remark is formatted for readability; anything
+// else (an older/short code, a blank line) is passed through as-is rather
+// than silently dropped.
+function formatPhoneNumber(raw) {
+  if (!raw) return null;
+  const digits = String(raw).trim().replace(/\D/g, "");
+  if (digits.length === 10) return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return String(raw).trim();
+}
+
+// Last-10-digits comparison key -- tolerates a leading "1" country code,
+// dashes/parens/spaces, whichever side (GL remark vs. roster) happens to
+// have them.
+function normalizePhoneDigits(raw) {
+  if (!raw) return null;
+  const digits = String(raw).replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  return digits.slice(-10);
+}
+
+// Who a Cell Phone GL line's number belongs to -- every technician's own
+// phone (technicians.phone) plus every phone-type device assigned to them
+// (tech_devices.device_type = 'phone', so someone carrying more than one
+// line is still matched on each). Built fresh per call, not cached -- this
+// backs an admin report, not a hot path, and device assignments change.
+function buildTechPhoneRoster() {
+  const roster = new Map(); // last-10-digits -> { id, name }
+  for (const t of db.prepare("SELECT id, name, phone FROM technicians").all()) {
+    const digits = normalizePhoneDigits(t.phone);
+    if (digits) roster.set(digits, { id: t.id, name: t.name });
+  }
+  const phoneDevices = db
+    .prepare(
+      `SELECT d.device_name AS deviceName, t.id AS techId, t.name AS techName
+       FROM tech_devices d JOIN technicians t ON t.id = d.tech_id
+       WHERE d.device_type = 'phone'`
+    )
+    .all();
+  for (const d of phoneDevices) {
+    const digits = normalizePhoneDigits(d.deviceName);
+    if (digits) roster.set(digits, { id: d.techId, name: d.techName });
+  }
+  return roster;
+}
+
+// Cell Phone is one Spend Breakdown category (see parseObjectAccountCategory)
+// pulled out into its own purpose-built report: which number was charged,
+// how much, and in which month -- not just a flat GL-line list like the
+// generic drill-down modal gives every other category. No PO/WOM
+// filtering here (unlike getGlSpendDetailPage's defaults) -- a phone line
+// is never coded to either, so there's nothing to exclude.
+function getCellPhoneCharges({ territory, fiscalYear } = {}) {
+  const conditions = ["g.object_account LIKE '%~Cell Phone'"];
+  const params = [];
+  if (fiscalYear != null) {
+    conditions.push("g.fiscal_year = ?");
+    params.push(Number(fiscalYear));
+  }
+  const rows = db
+    .prepare(
+      `SELECT g.period_number AS periodNumber, g.fiscal_year AS fiscalYear, g.gl_date AS glDate,
+              g.amount, g.remark, g.name_alpha AS nameAlpha,
+              g.matched_location_code AS matchedLocationCode, g.location_code AS locationCode,
+              l.name AS locationName, l.territory AS territory
+       FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY g.fiscal_year, g.period_number, g.remark`
+    )
+    .all(...params);
+
+  const calendar = getGlFiscalCalendar();
+  const monthFor = (periodNumber, fy) => {
+    const p = calendar.find((c) => c.periodNumber === periodNumber && c.fiscalYear === fy);
+    return p ? p.monthName : null;
+  };
+  const roster = buildTechPhoneRoster();
+
+  const items = [];
+  for (const r of rows) {
+    const rowTerritory = r.territory || "Unassigned";
+    if (territory && rowTerritory !== territory) continue;
+    const match = roster.get(normalizePhoneDigits(r.remark));
+    items.push({
+      periodNumber: r.periodNumber,
+      fiscalYear: r.fiscalYear,
+      month: monthFor(r.periodNumber, r.fiscalYear),
+      glDate: r.glDate,
+      phoneNumber: formatPhoneNumber(r.remark),
+      phoneNumberRaw: r.remark,
+      vendor: r.nameAlpha,
+      amount: r.amount,
+      // matched_location_code rarely resolves on these lines (the raw GL
+      // export's own "Location Code" text -- e.g. "20000438 - TOYOTA MS
+      // TLS- NEWARK" -- already reads fine on its own, so that's the
+      // fallback here rather than leaving the row blank whenever the match
+      // comes back empty).
+      locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
+      territory: rowTerritory,
+      // Matched against every technician's own phone # plus every
+      // phone-type device on their profile (see buildTechPhoneRoster) --
+      // null means this number isn't on file for anyone yet, not that the
+      // match failed.
+      assignedToId: match ? match.id : null,
+      assignedToName: match ? match.name : null,
+    });
+  }
+
+  const byPhone = new Map();
+  for (const it of items) {
+    const key = it.phoneNumber || "Unknown #";
+    const p =
+      byPhone.get(key) ||
+      { phoneNumber: key, total: 0, count: 0, months: new Set(), locationLabel: it.locationLabel, assignedToName: it.assignedToName };
+    p.total += it.amount || 0;
+    p.count += 1;
+    p.months.add(it.month);
+    byPhone.set(key, p);
+  }
+
+  const round = (n) => Math.round(n * 100) / 100;
+  return {
+    items,
+    totalAmount: round(items.reduce((sum, it) => sum + (it.amount || 0), 0)),
+    count: items.length,
+    byPhone: [...byPhone.values()]
+      .map((p) => ({
+        phoneNumber: p.phoneNumber,
+        total: round(p.total),
+        count: p.count,
+        monthCount: p.months.size,
+        locationLabel: p.locationLabel,
+        assignedToName: p.assignedToName,
+      }))
+      .sort((a, b) => b.total - a.total),
+  };
+}
+
+// Meals has no clean per-line identifier the way Cell Phone's remark field
+// is a bare phone #. Checked against Krista's real GL export: remark is
+// free text Concur writes per expense line -- sometimes a name ("Plano Aug
+// McDonald Charles", "Monica's expenses August 2026"), sometimes a bulk
+// correction with no name at all ("Aug26 FP/ADM Concur Entry USD", a single
+// lump debit/credit pair with nothing to tie to a person). Reference 2 --
+// which does carry a clean "LASTNAME FIRSTNAME" value on some other GL
+// categories -- is unpopulated on every single Meals row in the file this
+// was built against, so it's not a usable fallback here (unlike remark for
+// Cell Phone, there's nothing to reliably parse). Remark is therefore kept
+// verbatim as "description" rather than algorithmically split into a name
+// -- forcing that would silently fabricate names on the rows that don't
+// have one. Grouping by the exact same remark text (byDescription) still
+// clusters one person's repeated Concur lines together in practice, since
+// Concur reuses one remark string across every line of the same report.
+// Two Object Account categories exist ("Meals Empl", "Meals & Ent") with
+// very different shapes -- Meals & Ent includes large negative correction
+// batches unrelated to any one person -- so both the per-line items and
+// the summary carry category, not just a combined "Meals" total.
+function getMealsCharges({ territory, fiscalYear } = {}) {
+  const conditions = ["g.object_account LIKE '%~Meals%'"];
+  const params = [];
+  if (fiscalYear != null) {
+    conditions.push("g.fiscal_year = ?");
+    params.push(Number(fiscalYear));
+  }
+  const rows = db
+    .prepare(
+      `SELECT g.period_number AS periodNumber, g.fiscal_year AS fiscalYear, g.gl_date AS glDate,
+              g.object_account AS objectAccount, g.amount, g.remark, g.name_alpha AS nameAlpha,
+              g.matched_location_code AS matchedLocationCode, g.location_code AS locationCode,
+              l.name AS locationName, l.territory AS territory
+       FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY g.fiscal_year, g.period_number, g.remark`
+    )
+    .all(...params);
+
+  const calendar = getGlFiscalCalendar();
+  const monthFor = (periodNumber, fy) => {
+    const p = calendar.find((c) => c.periodNumber === periodNumber && c.fiscalYear === fy);
+    return p ? p.monthName : null;
+  };
+
+  const items = [];
+  for (const r of rows) {
+    const rowTerritory = r.territory || "Unassigned";
+    if (territory && rowTerritory !== territory) continue;
+    items.push({
+      periodNumber: r.periodNumber,
+      fiscalYear: r.fiscalYear,
+      month: monthFor(r.periodNumber, r.fiscalYear),
+      glDate: r.glDate,
+      category: parseObjectAccountCategory(r.objectAccount) || "Meals",
+      description: (r.remark && r.remark.trim()) || r.nameAlpha || null,
+      amount: r.amount,
+      locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
+      territory: rowTerritory,
+    });
+  }
+
+  const byDescription = new Map();
+  const byCategory = new Map();
+  for (const it of items) {
+    const key = `${it.category}::${it.description || "(no description)"}`;
+    const d =
+      byDescription.get(key) || { category: it.category, description: it.description || "(no description)", total: 0, count: 0, months: new Set(), locationLabel: it.locationLabel };
+    d.total += it.amount || 0;
+    d.count += 1;
+    d.months.add(it.month);
+    byDescription.set(key, d);
+
+    const c = byCategory.get(it.category) || { category: it.category, total: 0, count: 0 };
+    c.total += it.amount || 0;
+    c.count += 1;
+    byCategory.set(it.category, c);
+  }
+
+  const round = (n) => Math.round(n * 100) / 100;
+  return {
+    items,
+    totalAmount: round(items.reduce((sum, it) => sum + (it.amount || 0), 0)),
+    count: items.length,
+    byCategory: [...byCategory.values()].map((c) => ({ ...c, total: round(c.total) })).sort((a, b) => b.total - a.total),
+    byDescription: [...byDescription.values()]
+      .map((d) => ({ category: d.category, description: d.description, total: round(d.total), count: d.count, monthCount: d.months.size, locationLabel: d.locationLabel }))
+      .sort((a, b) => b.total - a.total),
+  };
+}
+
 function buildReconciledFilterClauses(filters) {
   const whereClauses = [];
   const havingClauses = [];
@@ -8263,6 +8496,8 @@ module.exports = {
   getGlReconciliationSummary,
   getGlSpendBreakdown,
   getGlSpendDetailPage,
+  getCellPhoneCharges,
+  getMealsCharges,
   getReconciledPage,
   getUnmatchedEntriesPage,
   getNoPoReferenceEntriesPage,

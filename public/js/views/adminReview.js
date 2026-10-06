@@ -13,6 +13,8 @@ import { renderInvoicing } from "./invoicing.js";
 import { renderGlReconciliation } from "./gl.js";
 import { renderPerformance } from "./performance.js";
 import { renderSpendBreakdown } from "./spendBreakdown.js";
+import { renderCellPhones } from "./cellPhones.js";
+import { renderMeals } from "./meals.js";
 import { renderFiscalCalendar } from "./fiscalCalendar.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
@@ -79,7 +81,7 @@ const NAV_SECTIONS = [
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup", "schedule"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
-  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "spendbreakdown", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "spendbreakdown", "cellphones", "meals", "laborreports"] },
   { key: "performance", label: "Performance", tabs: ["performance"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
 ];
@@ -97,6 +99,8 @@ const TAB_LABELS = {
   reclasses: "Reclasses",
   glreconciliation: "Reconciliation",
   spendbreakdown: "Spend Analysis",
+  cellphones: "Cell Phones",
+  meals: "Meals",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendor Directory",
@@ -375,6 +379,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     else if (activeTab === "glreconciliation") await renderGlReconciliation(content);
     else if (activeTab === "spendbreakdown") await renderSpendBreakdown(content);
+    else if (activeTab === "cellphones") await renderCellPhones(content);
+    else if (activeTab === "meals") await renderMeals(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else if (activeTab === "performance") await renderPerformance(content);
     else await drawAudit(content);

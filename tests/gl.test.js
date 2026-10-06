@@ -462,6 +462,134 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     assert.equal(res.status, 403);
   });
 
+  await t.test("getCellPhoneCharges groups by phone #, formats it, and supports a territory filter", async () => {
+    // A synthetic fiscal year nothing else in this file touches -- unlike
+    // getGlSpendDetailPage, getCellPhoneCharges has no period-level filter
+    // (it's meant to summarize a whole fiscal year of phone bills at once),
+    // so the exact counts/totals below need a year no other test's Cell
+    // Phone rows land in.
+    const FY = 44;
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 39.24, nameAlpha: "CALERO SOFTWARE LLC", remark: "2059944582", locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen FM~Cell Phone", amount: 38.39, nameAlpha: "CALERO SOFTWARE LLC", remark: "2059944582", locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 20.66, nameAlpha: "CALERO SOFTWARE LLC", remark: "2146294637", locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 10, nameAlpha: "CALERO SOFTWARE LLC", remark: "3107497524", locationCode: "99999999 - Nowhere Facility" },
+        { glDate: "2026-10-01", objectAccount: "602210 - Gen B&A~H&W Insurance", amount: 999, locationCode: "20001805 - TLS Princeton" },
+      ],
+      9,
+      FY,
+      "ADMIN",
+      "t-cellphones.xlsx"
+    );
+
+    const data = db.getCellPhoneCharges({ fiscalYear: FY });
+    assert.equal(data.count, 4, "only Cell Phone lines, not the H&W Insurance one");
+    assert.equal(data.totalAmount, Math.round((39.24 + 38.39 + 20.66 + 10) * 100) / 100);
+
+    const first = data.items.find((i) => i.phoneNumberRaw === "2059944582");
+    assert.equal(first.phoneNumber, "(205) 994-4582", "a 10-digit remark is formatted for readability");
+    assert.equal(first.month, null, "FY44 has no seeded fiscal calendar -- no month name to resolve");
+
+    const grouped = data.byPhone.find((p) => p.phoneNumber === "(205) 994-4582");
+    assert.ok(grouped, "expected the two lines for this number to be grouped together");
+    assert.equal(grouped.count, 2);
+    assert.equal(grouped.total, Math.round((39.24 + 38.39) * 100) / 100);
+
+    const midwestOnly = db.getCellPhoneCharges({ fiscalYear: FY, territory: "Midwest" });
+    assert.equal(midwestOnly.count, 3, "excludes the Nowhere Facility line, which doesn't resolve to a territory");
+
+    const res = await server.call("GET", `/api/admin/gl/cell-phones?fiscalYear=${FY}`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.count, 4);
+  });
+
+  await t.test("getCellPhoneCharges resolves the real fiscal calendar's month name for a seeded year", () => {
+    const data = db.getCellPhoneCharges({ fiscalYear: 26 });
+    const sept = data.items.find((i) => i.periodNumber === 9 && i.fiscalYear === 26);
+    assert.ok(sept, "expected at least one Cell Phone line from the period-9/FY26 fixture earlier in this file");
+    assert.equal(sept.month, "September");
+  });
+
+  await t.test("a technician can't reach the Cell Phones route", async () => {
+    const res = await server.call("GET", "/api/admin/gl/cell-phones", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("getCellPhoneCharges matches a GL line's number against the roster (tech's own phone, or a phone-type device)", async () => {
+    const FY = 45;
+    // T1001 (Alex Rivera) already has phone "609-555-0142" seeded. T1002
+    // (Jordan Lee) gets a second number via a phone-type device, covering
+    // someone carrying more than one line.
+    db.addDevice("T1002", "phone", "614-555-9931", "", "");
+
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, remark: "6095550142" }, // matches T1001's own phone
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 41, remark: "6145559931" }, // matches T1002's device
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 42, remark: "5555550000" }, // nobody's number
+      ],
+      1,
+      FY,
+      "ADMIN",
+      "t-cellphone-roster.xlsx"
+    );
+
+    const data = db.getCellPhoneCharges({ fiscalYear: FY });
+    const ownPhone = data.items.find((i) => i.phoneNumberRaw === "6095550142");
+    assert.equal(ownPhone.assignedToId, "T1001");
+    assert.equal(ownPhone.assignedToName, "Alex Rivera");
+
+    const devicePhone = data.items.find((i) => i.phoneNumberRaw === "6145559931");
+    assert.equal(devicePhone.assignedToId, "T1002");
+    assert.equal(devicePhone.assignedToName, "Jordan Lee");
+
+    const unmatched = data.items.find((i) => i.phoneNumberRaw === "5555550000");
+    assert.equal(unmatched.assignedToId, null);
+    assert.equal(unmatched.assignedToName, null);
+
+    const grouped = data.byPhone.find((p) => p.phoneNumber === "(609) 555-0142");
+    assert.equal(grouped.assignedToName, "Alex Rivera");
+  });
+
+  await t.test("getMealsCharges keeps the two Meals categories separate and groups by the raw description, never fabricating a name", async () => {
+    const FY = 46;
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "616620 - Events~Meals Empl", amount: 11.04, remark: "Plano Aug McDonald Charles", locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-10-02", objectAccount: "616620 - Events~Meals Empl", amount: 31.08, remark: "Plano Aug McDonald Charles", locationCode: "20001805 - TLS Princeton" },
+        { glDate: "2026-10-01", objectAccount: "616600 - Gen FM~Meals & Ent", amount: -1904.88, remark: "Aug26 FP/ADM Concur Entry USD", nameAlpha: "Aug26 FP/ADM Concur Entry USD" },
+      ],
+      1,
+      FY,
+      "ADMIN",
+      "t-meals.xlsx"
+    );
+
+    const data = db.getMealsCharges({ fiscalYear: FY });
+    assert.equal(data.count, 3);
+    assert.equal(data.totalAmount, Math.round((11.04 + 31.08 - 1904.88) * 100) / 100);
+
+    const empl = data.byCategory.find((c) => c.category === "Meals Empl");
+    const ent = data.byCategory.find((c) => c.category === "Meals & Ent");
+    assert.equal(empl.total, Math.round((11.04 + 31.08) * 100) / 100);
+    assert.equal(ent.total, -1904.88, "the two categories stay separate, not combined into one Meals total");
+
+    const grouped = data.byDescription.find((d) => d.description === "Plano Aug McDonald Charles");
+    assert.ok(grouped, "two lines with the same Concur remark text should group together");
+    assert.equal(grouped.count, 2);
+    assert.equal(grouped.category, "Meals Empl");
+
+    const res = await server.call("GET", `/api/admin/gl/meals?fiscalYear=${FY}`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.count, 3);
+  });
+
+  await t.test("a technician can't reach the Meals route", async () => {
+    const res = await server.call("GET", "/api/admin/gl/meals", { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
   await t.test("fiscal-calendar route returns that fiscal year's own period/month list", async () => {
     const res = await server.call("GET", "/api/admin/gl/fiscal-calendar?fiscalYear=26", { userId: "ADMIN" });
     assert.equal(res.status, 200);

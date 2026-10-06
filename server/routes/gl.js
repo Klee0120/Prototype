@@ -275,4 +275,32 @@ router.get("/spend-breakdown/detail", (req, res) => {
   );
 });
 
+// Cell Phone is a Spend Breakdown category (see db.parseObjectAccountCategory)
+// pulled into its own report -- which number, how much, and which month
+// (see db.getCellPhoneCharges). territory optional, matches the global
+// topbar territory filter's values; fiscalYear optional, scopes to one
+// fiscal year (every imported period in it).
+router.get("/cell-phones", (req, res) => {
+  const { territory, fiscalYear } = req.query || {};
+  res.json(
+    db.getCellPhoneCharges({
+      territory: territory || null,
+      fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+    })
+  );
+});
+
+// Same shape of report as /cell-phones, for the Meals Empl/Meals & Ent
+// categories (see db.getMealsCharges for why this surfaces a verbatim
+// "description" rather than a parsed-out name).
+router.get("/meals", (req, res) => {
+  const { territory, fiscalYear } = req.query || {};
+  res.json(
+    db.getMealsCharges({
+      territory: territory || null,
+      fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+    })
+  );
+});
+
 module.exports = router;

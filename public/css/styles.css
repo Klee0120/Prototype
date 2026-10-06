@@ -5221,6 +5221,28 @@ button.vendor-preferred-star:hover {
   margin-top: 4px;
 }
 
+.cellphone-groupby-toggle {
+  margin: 0;
+}
+.cellphone-month-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 18px 0 6px;
+}
+.cellphone-month-total {
+  font-size: 13px;
+  font-weight: normal;
+  color: var(--muted);
+}
+.cellphone-table {
+  margin-bottom: 4px;
+}
+.cellphone-unassigned {
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* The sidebar's mobile shape: pinned off-canvas by default and slid in as
    an overlay drawer (never squeezed into a horizontal strip, which just
    traded a readable vertical nav for a cramped, scroll-to-find-your-tab
