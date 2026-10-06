@@ -16,6 +16,230 @@ function formatMoney(n) {
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Static reference content for the "What's a WOM? & how it flows" view --
+// transcribed from the GMP vs. Non-GMP Quick Reference sheet and the PSE
+// Process Flow diagram. Display only, nothing here calls the API; update
+// these two blocks by hand if either source document changes.
+const WOM_GMP_ITEMS = [
+  "< $7,500 repair on an E&F/PPS asset",
+  "All annual and sub-annual PM's (even if over $7,500)",
+  "Diesel for generator and fire pump",
+  "Repairs from utility connection to device disconnect (under $7,500)",
+  "Drywall repairs and painting from normal use (scuffs, touch ups, minor patching)",
+  "Kitchen hoods",
+  "Walk-in freezer/fridge",
+  "Like-for-like replacement of an asset under $7,500",
+];
+const WOM_NON_GMP_ITEMS = [
+  { text: "> $7,500 repair on an E&F/PPS asset", team: "E&F and PPS" },
+  { text: "Act of Nature (lightning, wind, flood, etc.)", team: "E&F" },
+  { text: "Rolling stock damage", team: "Operations" },
+  { text: "New install", team: "E&F, PPS, and Operations" },
+  { text: "Kitchen equipment (stoves, fryers, etc.)", team: "PPS and Operations" },
+  { text: "PM with an interval longer than 1 year", team: "E&F" },
+  { text: "Furniture moves", team: "PPS and Operations" },
+  { text: "Drywall repairs/painting for color changes (rolling stock damage)", team: "Operations" },
+  { text: "Process-related equipment", team: "Operations" },
+  { text: "Facility-related changes (reracks, office moves, etc.)", team: "Operations" },
+  { text: "Customer requests not related to maintenance", team: "E&F, PPS, and Operations" },
+  { text: "Requested projects and project support by technicians", team: "E&F, PPS, and Operations" },
+  { text: "Decommissioning equipment / removing decommissioned equipment", team: "E&F" },
+  { text: "Data cable testing/install", team: "E&F, PPS, and Operations" },
+  { text: "Law/regulation changes", team: "E&F, PPS, and Operations" },
+  { text: "Portable eyewash stations", team: "Operations" },
+  { text: "Filters on storm water outlets", team: "E&F" },
+  { text: "Any new business or scope added to the contract (1st year)", team: "E&F, PPS, and Operations" },
+  { text: "> $7,500 asset replacement or upgrade", team: "E&F, PPS, and Operations" },
+];
+
+const WOM_GUIDE_ROLE_META = {
+  tech: { label: "Tech", cls: "role-tech" },
+  manager: { label: "C&W Manager", cls: "role-manager" },
+  admin: { label: "Admin", cls: "role-admin" },
+  vendor: { label: "Vendor", cls: "role-vendor" },
+  toyota: { label: "Toyota Manager", cls: "role-toyota" },
+  billing: { label: "AP/Billing", cls: "role-billing" },
+};
+
+const WOM_FLOW_PHASES = [
+  {
+    title: "1. Identification & PSE prep",
+    steps: [
+      { role: "tech", text: "Maintenance issue discovered -- create a Maximo work order." },
+      {
+        decision: "Is this emergency work?",
+        branches: [
+          {
+            label: "No -- standard path",
+            steps: [
+              { role: "tech", text: "Identify the work as Non-GMP (see the GMP vs. Non-GMP guide above)." },
+              { role: "tech", text: "Quote with the vendor." },
+              { role: "tech", text: "Add a line to the PSE Tracker Smartsheet and attach the quote." },
+              { role: "manager", text: "Generate the PSE and attach it to the tracker." },
+              { role: "manager", text: "Send the PSE to the Toyota Manager for approval." },
+            ],
+          },
+          {
+            label: "Yes -- emergency path",
+            steps: [
+              { role: "tech", text: "Identify the work as Non-GMP." },
+              { role: "admin", text: "Create the WOM and issue the PO -- must be tied to a PO before invoice processing." },
+              { role: "tech", text: "Proceed with the emergency work." },
+              { role: "vendor", text: "Submit an invoice for the completed emergency work." },
+              { role: "manager", text: "Submit the PSE to the Toyota Manager for approval." },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: "2. Approval & setup",
+    steps: [
+      {
+        decision: "Was Toyota approval received?",
+        branches: [
+          {
+            label: "Denied",
+            steps: [],
+            outcome: "Cancel the WOM if one was created. Proceed as GMP by requesting the PO on the Operations Tracking Smartsheet.",
+          },
+          {
+            label: "Received",
+            steps: [
+              { role: "toyota", text: "Approve and send the Toyota PO to C&W." },
+              { role: "manager", text: "Add the Toyota PO PDF to the tracker line; request the WOM/PO be ordered." },
+              { role: "admin", text: "Create the WOM and issue the PO, with WOM coding and the WOM # included." },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    title: "3. Work execution & posting",
+    steps: [
+      { role: "tech", text: "Coordinate the vendor for the work." },
+      { role: "vendor", text: "Complete the work and submit the invoice to AP." },
+      { role: "tech", text: "Detail the work as completed to RFM/Admin, per site process." },
+      { role: "admin", text: "Apply timekeeping allocations the Monday following completed work." },
+      { role: "billing", text: "Labor and vendor expenses post to the WOM." },
+      { role: "admin", text: "Monitor WOM charges." },
+      {
+        decision: "Does the vendor invoice exceed the estimated PO amount?",
+        branches: [
+          {
+            label: "Yes -- change order",
+            steps: [],
+            outcome: "Request Toyota approval for the PO increase/change order. Once approved, return to charge confirmation and review.",
+          },
+          { label: "No", steps: [], outcome: "Continue to charge review below." },
+        ],
+      },
+    ],
+  },
+  {
+    title: "4. Review, billing & closeout",
+    steps: [
+      { role: "admin", text: "Confirm and review until all labor and vendor charges are posted." },
+      {
+        decision: "Are all WOM charges complete and sufficient?",
+        branches: [
+          {
+            label: "No -- review with RFM",
+            steps: [],
+            outcome: "Review with the RFM to confirm what labor/vendor charges are still required. Keep monitoring until everything required is posted.",
+          },
+          {
+            label: "Yes",
+            steps: [{ role: "admin", text: "Finish the WOM review and post Status 95 in JDE for RFM approval." }],
+          },
+        ],
+      },
+      { role: "manager", text: "Approve the WOM for bill and send it back to Admin for invoicing." },
+      { role: "admin", text: "Generate the WOM/batch in JDE, then use Ariba to bill the Toyota PO." },
+      { role: null, text: "Process complete -- the WOM is billed/closed, and documentation is listed on the PSE Tracker line." },
+    ],
+  },
+];
+
+function renderWomGuideRoleBadge(role) {
+  const meta = WOM_GUIDE_ROLE_META[role];
+  return meta ? `<span class="wom-guide-role-badge ${meta.cls}">${meta.label}</span>` : "";
+}
+
+function renderWomGuideStep(step) {
+  if (step.decision) {
+    return `
+      <li class="wom-guide-decision">
+        <div class="wom-guide-decision-q">${escapeHtml(step.decision)}</div>
+        <div class="wom-guide-branches">
+          ${step.branches
+            .map(
+              (b) => `
+            <div class="wom-guide-branch">
+              <div class="wom-guide-branch-label">${escapeHtml(b.label)}</div>
+              ${b.steps.length ? `<ol class="wom-guide-steps">${b.steps.map(renderWomGuideStep).join("")}</ol>` : ""}
+              ${b.outcome ? `<p class="wom-guide-outcome">${escapeHtml(b.outcome)}</p>` : ""}
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+      </li>
+    `;
+  }
+  return `<li class="wom-guide-step">${renderWomGuideRoleBadge(step.role)}<span>${escapeHtml(step.text)}</span></li>`;
+}
+
+function renderWomGuide() {
+  return `
+    <div class="wom-guide">
+      <section class="wom-guide-section">
+        <h3>What's a WOM vs. E&amp;F?</h3>
+        <p class="wom-guide-intro">
+          <strong>E&amp;F</strong> ("GMP") is routine work already covered under the standing contract -- no PSE, no WOM,
+          no Toyota approval needed. Just do the work and code your time to E&amp;F.
+          <strong>A WOM</strong> ("Non-GMP") is its own project with its own budget that Toyota has to approve first --
+          it needs a quote, a PSE, and goes through the approval flow below (except emergency work, which still gets a
+          WOM but skips straight to the work).
+        </p>
+        <div class="wom-guide-gmp-grid">
+          <div class="wom-guide-gmp-col wom-guide-gmp-col-gmp">
+            <h4>Code to E&amp;F (GMP) -- no WOM needed</h4>
+            <ul>${WOM_GMP_ITEMS.map((i) => `<li>${escapeHtml(i)}</li>`).join("")}</ul>
+          </div>
+          <div class="wom-guide-gmp-col wom-guide-gmp-col-nongmp">
+            <h4>Needs a WOM (Non-GMP)</h4>
+            <ul>${WOM_NON_GMP_ITEMS.map((i) => `<li>${escapeHtml(i.text)} <span class="wom-guide-team">${escapeHtml(i.team)}</span></li>`).join("")}</ul>
+          </div>
+        </div>
+      </section>
+      <section class="wom-guide-section">
+        <h3>How a WOM project flows</h3>
+        ${WOM_FLOW_PHASES.map(
+          (phase) => `
+          <div class="wom-guide-phase">
+            <h4>${escapeHtml(phase.title)}</h4>
+            <ol class="wom-guide-steps">${phase.steps.map(renderWomGuideStep).join("")}</ol>
+          </div>
+        `
+        ).join("")}
+        <div class="wom-guide-reminders">
+          <div class="wom-info-box">
+            <strong>Labor coding:</strong> all C&amp;W labor must be coded in UKG/Kronos to the correct WOM # and allocated
+            on the technician's weekly timesheet.
+          </div>
+          <div class="wom-info-box">
+            <strong>Vendor invoices:</strong> forward to ap.amer@cwservices.com &middot; payment status requests to
+            apsupport.amer@cwservices.com.
+          </div>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 /**
  * Technician's own view: their weekly allocation, plus read-only tabs for
  * Locations & WOM (so they can see what's out there and what they've worked
@@ -25,6 +249,12 @@ function formatMoney(n) {
  */
 export async function renderTechHome(container, navHost, topbarHost, subtabHost) {
   let activeTab = "week";
+  // Which view the Locations & WOM tab is showing -- the real project/
+  // location lists, or the static WOM-vs-E&F / project-flow reference
+  // (see renderWomGuide). Kept here, not inside drawLocationsAndWoms
+  // itself, so it survives a re-draw of that tab (e.g. after the toggle
+  // click re-renders it).
+  let womGuideOpen = false;
   const TECH_TABS = [
     ["mywork", "My Work"],
     ["week", "My Week"],
@@ -161,6 +391,28 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
         <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
         <button type="button" class="btn btn-secondary tech-request-po-btn">Request a C&amp;W PO ↗</button>
       </div>
+      <div class="tabs wom-guide-toggle">
+        <button type="button" class="tab ${womGuideOpen ? "" : "active"}" data-view="projects">Projects</button>
+        <button type="button" class="tab ${womGuideOpen ? "active" : ""}" data-view="guide">What's a WOM? &amp; how it flows</button>
+      </div>
+      <div id="tech-wom-view"></div>
+    `;
+
+    content.querySelector(".tech-request-po-btn").addEventListener("click", openRequestCwPoModal);
+    content.querySelectorAll(".wom-guide-toggle [data-view]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        womGuideOpen = btn.dataset.view === "guide";
+        drawLocationsAndWoms(content);
+      });
+    });
+
+    const view = content.querySelector("#tech-wom-view");
+    if (womGuideOpen) {
+      view.innerHTML = renderWomGuide();
+      return;
+    }
+
+    view.innerHTML = `
       <p class="review-checklist-hint">
         The lists below are view only -- for anything else (a location, or changing an existing WOM), ask an admin.
       </p>
@@ -169,8 +421,6 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
       <h3>WOM Projects (including past/closed)</h3>
       <div class="review-list" id="tech-wom-list"></div>
     `;
-
-    content.querySelector(".tech-request-po-btn").addEventListener("click", openRequestCwPoModal);
 
     const locationList = content.querySelector("#tech-location-list");
     if (locations.length === 0) {
