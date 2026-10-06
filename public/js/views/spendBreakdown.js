@@ -124,6 +124,13 @@ let includePoRemaining = false;
 // this pulls those categories out of the chart/tables/totals so what's
 // left reads as what a territory can actually control.
 let excludeBurden = false;
+// Narrows the chart/totals/category+territory tables down to one location
+// within the current territory -- set by clicking a location button in the
+// By Location bar (see renderLocationChips), cleared by clicking it again
+// or switching the topbar's territory filter (a location from the old
+// territory wouldn't make sense carried into a different one).
+let selectedLocation = null;
+let lastTerritoryForLocationFilter = undefined;
 // Checking all four scope toggles one after another used to re-fetch and
 // re-render on every single click -- check a box, wait for the load, check
 // the next, wait again. Debouncing collapses a quick run of clicks into one
@@ -180,6 +187,8 @@ function resolveDefaultFiscalYear(years) {
 export async function renderSpendBreakdown(container) {
   renderLoadingState(container, loadingLabelFor("Spend Analysis"));
   const territory = getTerritory();
+  if (territory !== lastTerritoryForLocationFilter) selectedLocation = null;
+  lastTerritoryForLocationFilter = territory;
 
   let years;
   try {
@@ -238,6 +247,7 @@ export async function renderSpendBreakdown(container) {
     if (includeWomReferenced) params.set("noWomReferenceOnly", "false");
     if (includePoRemaining) params.set("includePoRemaining", "true");
     if (excludeBurden) params.set("excludeBurden", "true");
+    if (selectedLocation) params.set("location", selectedLocation);
     data = await api.get(`/api/admin/gl/spend-breakdown?${params}`);
   } catch (err) {
     container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -267,7 +277,11 @@ export async function renderSpendBreakdown(container) {
           <strong>${fyLabel}</strong>
         </p>
         <p class="overview-hint">
-          ${data.entryCount.toLocaleString()} GL line${data.entryCount === 1 ? "" : "s"} on file${territory ? ` for <strong>${escapeHtml(territory)}</strong>` : ""},
+          ${data.entryCount.toLocaleString()} GL line${data.entryCount === 1 ? "" : "s"} on file${territory ? ` for <strong>${escapeHtml(territory)}</strong>` : ""}${
+            selectedLocation
+              ? ` at <strong>${escapeHtml(data.locations.find((l) => (l.locationCode || "Unassigned") === selectedLocation)?.locationName || selectedLocation)}</strong>`
+              : ""
+          },
           totaling ${formatMoney(data.totalAmount)}.
           ${
             includePoReferenced
@@ -285,53 +299,57 @@ export async function renderSpendBreakdown(container) {
               : ""
           }
         </p>
-        <div class="spend-filters-row">
-          <label class="spend-fy-select-label">
-            Fiscal year
-            <select class="spend-fy-select">
-              ${years.map((y) => `<option value="${y}" ${!allYearsSelected && y === selectedFiscalYear ? "selected" : ""}>FY20${y}</option>`).join("")}
-              <option value="all" ${allYearsSelected ? "selected" : ""}>All fiscal years</option>
-            </select>
-          </label>
-          ${
-            !allYearsSelected && hasCalendar
-              ? `
-          <label class="spend-fy-select-label">
-            From month
-            <select class="spend-period-from-select">
-              ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodFrom === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
-            </select>
-          </label>
-          <label class="spend-fy-select-label">
-            To month
-            <select class="spend-period-to-select">
-              ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodTo === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
-            </select>
-          </label>`
-              : !allYearsSelected
-                ? `<p class="spend-no-calendar-note">Month breakdown isn't available for FY20${selectedFiscalYear} yet.</p>`
-                : ""
-          }
-          <label class="spend-po-toggle">
-            <input type="checkbox" class="spend-include-po-toggle" ${includePoReferenced ? "checked" : ""} />
-            Include GL lines that do have a PO reference too
-          </label>
-          <label class="spend-po-toggle">
-            <input type="checkbox" class="spend-include-wom-toggle" ${includeWomReferenced ? "checked" : ""} />
-            Include GL lines that do have a WOM reference too
-          </label>
-          <label class="spend-po-toggle">
-            <input type="checkbox" class="spend-include-po-remaining-toggle" ${includePoRemaining ? "checked" : ""} />
-            Include current estimated PO (PO Tracker amount not yet on GL)
-          </label>
-          <label class="spend-po-toggle">
-            <input type="checkbox" class="spend-exclude-burden-toggle" ${excludeBurden ? "checked" : ""} />
-            Exclude burden costs (H&amp;W Insurance, FICA/Medi, Gen Liability -- fixed, not RFM-controllable)
-          </label>
-          <form class="spend-search-form">
-            <input type="search" class="spend-search-input" placeholder="Search PO # or WOM #" />
-            <button type="submit" class="btn btn-secondary">Search</button>
-          </form>
+        <div class="spend-controls">
+          <div class="spend-filters-row">
+            <label class="spend-fy-select-label">
+              Fiscal year
+              <select class="spend-fy-select">
+                ${years.map((y) => `<option value="${y}" ${!allYearsSelected && y === selectedFiscalYear ? "selected" : ""}>FY20${y}</option>`).join("")}
+                <option value="all" ${allYearsSelected ? "selected" : ""}>All fiscal years</option>
+              </select>
+            </label>
+            ${
+              !allYearsSelected && hasCalendar
+                ? `
+            <label class="spend-fy-select-label">
+              From month
+              <select class="spend-period-from-select">
+                ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodFrom === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
+              </select>
+            </label>
+            <label class="spend-fy-select-label">
+              To month
+              <select class="spend-period-to-select">
+                ${calendar.map((p) => `<option value="${p.periodNumber}" ${periodTo === p.periodNumber ? "selected" : ""}>${escapeHtml(p.monthName)}</option>`).join("")}
+              </select>
+            </label>`
+                : !allYearsSelected
+                  ? `<p class="spend-no-calendar-note">Month breakdown isn't available for FY20${selectedFiscalYear} yet.</p>`
+                  : ""
+            }
+            <form class="spend-search-form">
+              <input type="search" class="spend-search-input" placeholder="Search PO # or WOM #" />
+              <button type="submit" class="btn btn-secondary">Search</button>
+            </form>
+          </div>
+          <div class="spend-toggle-group">
+            <label class="spend-po-toggle">
+              <input type="checkbox" class="spend-include-po-toggle" ${includePoReferenced ? "checked" : ""} />
+              Include GL lines that do have a PO reference too
+            </label>
+            <label class="spend-po-toggle">
+              <input type="checkbox" class="spend-include-wom-toggle" ${includeWomReferenced ? "checked" : ""} />
+              Include GL lines that do have a WOM reference too
+            </label>
+            <label class="spend-po-toggle">
+              <input type="checkbox" class="spend-include-po-remaining-toggle" ${includePoRemaining ? "checked" : ""} />
+              Include current estimated PO (PO Tracker amount not yet on GL)
+            </label>
+            <label class="spend-po-toggle">
+              <input type="checkbox" class="spend-exclude-burden-toggle" ${excludeBurden ? "checked" : ""} />
+              Exclude burden costs (H&amp;W Insurance, FICA/Medi, Gen Liability -- fixed, not RFM-controllable)
+            </label>
+          </div>
         </div>
       </div>
     </div>
@@ -378,22 +396,21 @@ export async function renderSpendBreakdown(container) {
           </tbody>
         </table>
         <h3 class="spend-section-heading">By Location</h3>
-        <table class="detail-table spend-location-table spend-clickable-table">
-          <thead><tr><th>Location</th><th>Total</th><th>Lines</th></tr></thead>
-          <tbody>
-            ${data.locations
-              .map((l) => {
-                const label = l.locationCode ? `${l.locationName ? `${l.locationName} ` : ""}(${l.locationCode})` : "Unassigned";
-                return `
-              <tr class="spend-drill-row" data-location="${escapeHtml(l.locationCode || "Unassigned")}" tabindex="0">
-                <td>${escapeHtml(label)}</td>
-                <td>${formatMoney(l.total)}</td>
-                <td>${l.count.toLocaleString()}</td>
-              </tr>`;
-              })
-              .join("")}
-          </tbody>
-        </table>
+        <p class="review-checklist-hint">Click a location to scope the chart and tables above to it -- click it again (or "All locations") to clear.</p>
+        <div class="spend-location-chips">
+          <button type="button" class="spend-location-chip ${!selectedLocation ? "active" : ""}" data-location-key="">All locations</button>
+          ${data.locations
+            .map((l) => {
+              const key = l.locationCode || "Unassigned";
+              const label = l.locationCode ? l.locationName || l.locationCode : "Unassigned";
+              return `
+            <button type="button" class="spend-location-chip ${selectedLocation === key ? "active" : ""}" data-location-key="${escapeHtml(key)}">
+              <span class="spend-location-chip-name">${escapeHtml(label)}</span>
+              <span class="spend-location-chip-meta">${formatMoney(l.total)} &middot; ${l.count.toLocaleString()}</span>
+            </button>`;
+            })
+            .join("")}
+        </div>
       </div>
     </div>
     <h3 class="spend-section-heading">Every Category</h3>
@@ -464,11 +481,15 @@ export async function renderSpendBreakdown(container) {
   const openRowDetail = (row) => {
     const category = row.dataset.category || null;
     const territoryFilter = row.dataset.territory || null;
-    const locationFilter = row.dataset.location || null;
     openSpendDetailModal({
       category,
       territory: territoryFilter,
-      location: locationFilter,
+      // The By Location chips filter the whole page (see the
+      // spend-location-chip click handler below) rather than drilling into
+      // a GL-line modal, but a location filter is still passed through to
+      // this modal when one's active, so a category/territory drill-down
+      // stays scoped to it too instead of showing every location's lines.
+      location: selectedLocation,
       territoryGlobal: territory,
       fiscalYear: allYearsSelected ? null : selectedFiscalYear,
       periodFrom: allYearsSelected || !hasCalendar ? null : periodFrom,
@@ -486,6 +507,16 @@ export async function renderSpendBreakdown(container) {
         e.preventDefault();
         openRowDetail(row);
       }
+    });
+  });
+
+  container.querySelectorAll(".spend-location-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const key = chip.dataset.locationKey || null;
+      // Clicking the already-active location (or "All locations") clears
+      // the filter -- a toggle, not a one-way drill-down.
+      selectedLocation = key && key === selectedLocation ? null : key;
+      renderSpendBreakdown(container);
     });
   });
 }

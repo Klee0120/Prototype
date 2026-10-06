@@ -8052,7 +8052,7 @@ function getGlReconciliationSummary() {
 // of today's outstanding commitment, not a period-bound transaction like a
 // GL line -- it deliberately ignores the fiscal year/period filter, since
 // an open PO doesn't belong to one month the way a GL posting does.
-function getPoRemainingAmounts({ territory, excludeBurden = false } = {}) {
+function getPoRemainingAmounts({ territory, location, excludeBurden = false } = {}) {
   const rows = db
     .prepare(
       `SELECT p.id, p.po_amount, p.object_code, p.location_code, l.name AS locationName, l.territory AS territory,
@@ -8093,6 +8093,18 @@ function getPoRemainingAmounts({ territory, excludeBurden = false } = {}) {
     const category = (r.object_code ? categoryByCode.get(r.object_code) : null) || "Unknown / Uncategorized";
     if (excludeBurden && BURDEN_CATEGORIES.has(category)) continue;
 
+    // byLocation reflects every location in the territory-filtered scope
+    // regardless of `location` below -- it's the location button bar's own
+    // data source, which has to keep offering every location to switch to,
+    // not collapse down to just whichever one happens to be selected.
+    const locationKey = r.location_code || "Unassigned";
+    const loc = byLocation.get(locationKey) || { locationCode: r.location_code || null, locationName: r.locationName || null, total: 0, count: 0 };
+    loc.total += remaining;
+    loc.count += 1;
+    byLocation.set(locationKey, loc);
+
+    if (location && locationKey !== location) continue;
+
     poCount++;
     totalAmount += remaining;
 
@@ -8106,12 +8118,6 @@ function getPoRemainingAmounts({ territory, excludeBurden = false } = {}) {
     t.total += remaining;
     t.count += 1;
     byTerritory.set(territoryKey, t);
-
-    const locationKey = r.location_code || "Unassigned";
-    const loc = byLocation.get(locationKey) || { locationCode: r.location_code || null, locationName: r.locationName || null, total: 0, count: 0 };
-    loc.total += remaining;
-    loc.count += 1;
-    byLocation.set(locationKey, loc);
   }
 
   return { totalAmount, poCount, byCategory, byTerritory, byLocation };
@@ -8119,6 +8125,7 @@ function getPoRemainingAmounts({ territory, excludeBurden = false } = {}) {
 
 function getGlSpendBreakdown({
   territory,
+  location,
   periodNumber,
   fiscalYear,
   periodFrom,
@@ -8157,22 +8164,12 @@ function getGlSpendBreakdown({
     const category = parseObjectAccountCategory(r.object_account) || "Unknown / Uncategorized";
     if (excludeBurden && BURDEN_CATEGORIES.has(category)) continue;
 
-    entryCount++;
     const amount = r.amount || 0;
-    totalAmount += amount;
 
-    const c = byCategory.get(category) || { category, total: 0, count: 0 };
-    c.total += amount;
-    c.count += 1;
-    byCategory.set(category, c);
-
-    const territoryKey = rowTerritory || "Unassigned";
-    if (!rowTerritory) unassignedLocationCount++;
-    const t = byTerritory.get(territoryKey) || { territory: territoryKey, total: 0, count: 0 };
-    t.total += amount;
-    t.count += 1;
-    byTerritory.set(territoryKey, t);
-
+    // byLocation reflects every location in the territory-filtered scope
+    // regardless of `location` below -- it's the location button bar's own
+    // data source, which has to keep offering every location to switch to,
+    // not collapse down to just whichever one happens to be selected.
     const locationKey = r.matched_location_code || "Unassigned";
     const loc = byLocation.get(locationKey) || {
       locationCode: r.matched_location_code || null,
@@ -8183,12 +8180,29 @@ function getGlSpendBreakdown({
     loc.total += amount;
     loc.count += 1;
     byLocation.set(locationKey, loc);
+    if (!r.matched_location_code) unassignedLocationCount++;
+
+    if (location && locationKey !== location) continue;
+
+    entryCount++;
+    totalAmount += amount;
+
+    const c = byCategory.get(category) || { category, total: 0, count: 0 };
+    c.total += amount;
+    c.count += 1;
+    byCategory.set(category, c);
+
+    const territoryKey = rowTerritory || "Unassigned";
+    const t = byTerritory.get(territoryKey) || { territory: territoryKey, total: 0, count: 0 };
+    t.total += amount;
+    t.count += 1;
+    byTerritory.set(territoryKey, t);
   }
 
   let poRemainingTotal = 0;
   let poRemainingCount = 0;
   if (includePoRemaining) {
-    const poRemaining = getPoRemainingAmounts({ territory, excludeBurden });
+    const poRemaining = getPoRemainingAmounts({ territory, location, excludeBurden });
     poRemainingTotal = poRemaining.totalAmount;
     poRemainingCount = poRemaining.poCount;
     totalAmount += poRemaining.totalAmount;

@@ -233,11 +233,12 @@ router.get("/reconciliation/unmatched", (req, res) => {
 // reference and no WOM reference (see db.getGlSpendBreakdown); pass
 // noPoReferenceOnly=false and/or noWomReferenceOnly=false to widen either.
 router.get("/spend-breakdown", (req, res) => {
-  const { territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, includePoRemaining, excludeBurden } =
+  const { territory, location, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, includePoRemaining, excludeBurden } =
     req.query || {};
   res.json(
     db.getGlSpendBreakdown({
       territory: territory || null,
+      location: location || null,
       periodNumber: periodNumber ? Number(periodNumber) : null,
       fiscalYear: fiscalYear ? Number(fiscalYear) : null,
       periodFrom: periodFrom ? Number(periodFrom) : null,

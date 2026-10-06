@@ -276,6 +276,30 @@ test("GL Spend Breakdown: category + territory grouping", async (t) => {
     assert.ok(detail.body.items.every((it) => it.locationCode.includes("TLS Princeton")));
   });
 
+  await t.test("spend-breakdown's own location param scopes the chart/category totals, but the location list itself stays complete", async () => {
+    const res = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?location=PRINCETON&periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.body.totalAmount, 100 + 50 + 200 + 75, "the Nowhere Facility's 10 should be excluded from the scoped total");
+    assert.equal(res.body.entryCount, 4);
+    const insurance = res.body.categories.find((c) => c.category === "H&W Insurance");
+    assert.equal(insurance.total, 200, "category totals scope to the selected location too");
+    assert.equal(
+      res.body.categories.find((c) => c.category === "Cell Phone").total,
+      150,
+      "Cell Phone scoped to Princeton only (100 + 50), not the Nowhere Facility's 10"
+    );
+
+    // The location LIST itself is unaffected by its own filter -- it still
+    // offers every location (including Nowhere Facility/Unassigned) so the
+    // location button bar can switch to a different one, not just clear.
+    assert.equal(res.body.locations.length, 2);
+    assert.ok(res.body.locations.find((l) => l.locationCode === null));
+  });
+
   await t.test("excludeBurden drops H&W Insurance/FICA/Medi/Gen Liability from totals, categories, and the detail drill-down", async () => {
     const res = await server.call(
       "GET",

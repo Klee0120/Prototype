@@ -5181,11 +5181,16 @@ button.vendor-preferred-star:hover {
 .spend-unassigned-note {
   color: var(--warn, #b8590a);
 }
+.spend-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
 .spend-po-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 8px;
   font-size: 13px;
   color: var(--ink, #1a1a1a);
   cursor: pointer;
@@ -5195,13 +5200,21 @@ button.vendor-preferred-star:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 18px;
-  margin-top: 10px;
+}
+.spend-toggle-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface-alt, #f7f8fa);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 620px;
 }
 .spend-search-form {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
 }
 .spend-search-input {
   padding: 6px 10px;
@@ -5241,6 +5254,42 @@ button.vendor-preferred-star:hover {
 }
 .spend-clickable-table tbody tr:hover {
   background: var(--row-hover, #f2f2ee);
+}
+.spend-location-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.spend-location-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+}
+.spend-location-chip:hover {
+  border-color: var(--accent);
+}
+.spend-location-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.spend-location-chip-name {
+  font-weight: 600;
+}
+.spend-location-chip-meta {
+  font-size: 11px;
+  opacity: 0.75;
 }
 .spend-detail-table {
   margin-top: 8px;
