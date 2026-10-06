@@ -5250,6 +5250,31 @@ button.vendor-preferred-star:hover {
   color: var(--muted);
   font-style: italic;
 }
+.cellphone-row-clickable {
+  cursor: pointer;
+}
+.cellphone-row-clickable:hover {
+  background: var(--neutral-bg);
+}
+.gl-line-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.gl-line-detail-row:last-child {
+  border-bottom: none;
+}
+.gl-line-detail-label {
+  color: var(--muted);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+.gl-line-detail-value {
+  text-align: right;
+  word-break: break-word;
+}
 
 /* The sidebar's mobile shape: pinned off-canvas by default and slid in as
    an overlay drawer (never squeezed into a horizontal strip, which just

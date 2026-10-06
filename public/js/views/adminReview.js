@@ -117,6 +117,21 @@ function sectionForTab(tab) {
   return NAV_SECTIONS.find((s) => s.tabs.includes(tab)) || NAV_SECTIONS[0];
 }
 
+// Financials is limited to Midwest admins (by their own home location's
+// territory, snapshotted into state.user at login -- see
+// db.getAdminTerritory) plus whoever holds the RFM/reviewer role, mirroring
+// the server-side requireFinancialsAccess gate on the same routes. An admin
+// with no home location set yet (territory null) is let through, same as
+// server-side, rather than hidden for every admin the moment this ships.
+function canSeeFinancials() {
+  const territory = state.user && state.user.territory;
+  return territory == null || territory === "Midwest" || Boolean(state.user && state.user.isPseReviewer);
+}
+
+function visibleNavSections() {
+  return canSeeFinancials() ? NAV_SECTIONS : NAV_SECTIONS.filter((s) => s.key !== "financials");
+}
+
 const WOM_STATUS_BADGE_CLASS = { open: "approved", requested: "submitted", invoiced: "submitted", cancelled: "rejected", closed: "rejected" };
 
 // What to say under an auto-trigger lifecycle step that's still open --
@@ -302,9 +317,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function draw() {
     const myGeneration = ++drawGeneration;
+    // Defensive only -- nothing in this file currently navigates straight to
+    // a Financials tab, but if that ever changes, a Midwest/RFM check that
+    // only hid the sidebar button would still leave the tab reachable.
+    if (!canSeeFinancials() && sectionForTab(activeTab).key === "financials") {
+      activeTab = "review";
+    }
+    const sections = visibleNavSections();
     const currentSection = sectionForTab(activeTab);
 
-    navHost.innerHTML = NAV_SECTIONS.map(
+    navHost.innerHTML = sections.map(
       (s) => `
         <button class="sidebar-nav-item ${currentSection.key === s.key ? "active" : ""}" data-section="${s.key}">
           <span>${s.label}</span>${s.key === "priorities" && priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}

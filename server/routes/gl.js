@@ -5,10 +5,10 @@ const path = require("path");
 const crypto = require("crypto");
 const XLSX = require("xlsx");
 const db = require("../data/db");
-const { requireAuth, requireAdmin } = require("../middleware/auth");
+const { requireAuth, requireAdmin, requireFinancialsAccess } = require("../middleware/auth");
 
 const router = express.Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, requireAdmin, requireFinancialsAccess);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 

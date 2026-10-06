@@ -3040,6 +3040,20 @@ function findLocation(code) {
   return db.prepare("SELECT * FROM locations WHERE code = ?").get(code);
 }
 
+// An admin's own "territory," for gating Financials -- there's no
+// dedicated column for it; it's whatever territory their own home
+// location (already shown in the Admin Accounts table's "Territory"
+// column, see technicianProfile.js) is tagged with. null means no home
+// location is set (or it's not registered), which callers should treat as
+// "don't know, allow" rather than a hard block -- otherwise every admin
+// locks themselves out the moment this check ships, before anyone's had a
+// chance to actually assign home locations.
+function getAdminTerritory(admin) {
+  if (!admin || !admin.home_location_code) return null;
+  const loc = findLocation(admin.home_location_code);
+  return loc ? loc.territory : null;
+}
+
 function createLocation(code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber) {
   db.prepare(
     "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory, pps_job_number) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -8093,10 +8107,15 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
   }
   const rows = db
     .prepare(
-      `SELECT g.period_number AS periodNumber, g.fiscal_year AS fiscalYear, g.gl_date AS glDate,
+      `SELECT g.id, g.period_number AS periodNumber, g.fiscal_year AS fiscalYear, g.gl_date AS glDate,
               g.object_account AS objectAccount, g.amount, g.remark, g.name_alpha AS nameAlpha,
               g.matched_location_code AS matchedLocationCode, g.location_code AS locationCode,
-              l.name AS locationName, l.territory AS territory
+              l.name AS locationName, l.territory AS territory,
+              g.document_type AS documentType, g.document_number AS documentNumber,
+              g.journal_entry_line_number AS journalEntryLineNumber, g.business_unit AS businessUnit,
+              g.object_account_code AS objectAccountCode, g.subsidiary, g.batch_number AS batchNumber,
+              g.supplier_invoice_number AS supplierInvoiceNumber, g.invoice_date AS invoiceDate,
+              g.purchase_order AS purchaseOrder
        FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
        WHERE ${conditions.join(" AND ")}
        ORDER BY g.fiscal_year, g.period_number, g.remark`
@@ -8114,6 +8133,7 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
     const rowTerritory = r.territory || "Unassigned";
     if (territory && rowTerritory !== territory) continue;
     items.push({
+      id: r.id,
       periodNumber: r.periodNumber,
       fiscalYear: r.fiscalYear,
       month: monthFor(r.periodNumber, r.fiscalYear),
@@ -8124,6 +8144,24 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
       locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
       locationMatched: Boolean(r.matchedLocationCode),
       territory: rowTerritory,
+      // Full underlying GL line, for the "view full GL line" detail popup --
+      // the summary table above only shows the handful of fields that matter
+      // for a quick scan.
+      glLine: {
+        objectAccount: r.objectAccount,
+        objectAccountCode: r.objectAccountCode,
+        documentType: r.documentType,
+        documentNumber: r.documentNumber,
+        journalEntryLineNumber: r.journalEntryLineNumber,
+        businessUnit: r.businessUnit,
+        subsidiary: r.subsidiary,
+        batchNumber: r.batchNumber,
+        supplierInvoiceNumber: r.supplierInvoiceNumber,
+        invoiceDate: r.invoiceDate,
+        purchaseOrder: r.purchaseOrder,
+        locationCode: r.locationCode,
+        remark: r.remark,
+      },
     });
   }
 
@@ -8389,6 +8427,7 @@ module.exports = {
   getAllocationHistory,
   listLocations,
   findLocation,
+  getAdminTerritory,
   createLocation,
   runLocationCoaImport,
   deleteLocation,

@@ -55,6 +55,8 @@ router.post("/login", (req, res) => {
     name: user.name,
     role: user.role,
     homeLocationCode: user.home_location_code,
+    territory: db.getAdminTerritory(user),
+    isPseReviewer: user.id === db.getPseReviewerId(),
   });
 });
 

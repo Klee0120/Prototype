@@ -1,6 +1,6 @@
 const express = require("express");
 const db = require("../data/db");
-const { requireAuth, requireAdmin } = require("../middleware/auth");
+const { requireAuth, requireAdmin, requireFinancialsAccess } = require("../middleware/auth");
 const smartsheet = require("../utils/smartsheet");
 
 const router = express.Router();
@@ -419,7 +419,7 @@ router.post("/:code/lifecycle/:stepKey", requireAuth, requireAdmin, (req, res) =
 
 // Financials-wide estimated-vs-applied summary -- every non-cancelled WOM,
 // not just the ones currently mid-checklist.
-router.get("/cost-summary", requireAuth, requireAdmin, (req, res) => {
+router.get("/cost-summary", requireAuth, requireAdmin, requireFinancialsAccess, (req, res) => {
   res.json(db.getWomCostSummary());
 });
 
@@ -429,7 +429,7 @@ router.get("/cost-summary", requireAuth, requireAdmin, (req, res) => {
 // applyWomSourceEvidence in db.js); the one thing sync can never do is
 // attach the actual invoice file, so that's the one requirement this route
 // calls out explicitly per WOM rather than leaving it implicit.
-router.get("/invoicing-queue", requireAuth, requireAdmin, (req, res) => {
+router.get("/invoicing-queue", requireAuth, requireAdmin, requireFinancialsAccess, (req, res) => {
   const woms = db.listWomsNeedingInvoicing();
   res.json(
     woms.map((w) => {

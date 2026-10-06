@@ -556,7 +556,15 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     const FY = 46;
     db.importGlEntries(
       [
-        { glDate: "2026-10-01", objectAccount: "616620 - Events~Meals Empl", amount: 11.04, remark: "Plano Aug McDonald Charles", locationCode: "20001805 - TLS Princeton" },
+        {
+          glDate: "2026-10-01",
+          objectAccount: "616620 - Events~Meals Empl",
+          amount: 11.04,
+          remark: "Plano Aug McDonald Charles",
+          locationCode: "20001805 - TLS Princeton",
+          documentNumber: "DOC-1001",
+          supplierInvoiceNumber: "INV-555",
+        },
         { glDate: "2026-10-02", objectAccount: "616620 - Events~Meals Empl", amount: 31.08, remark: "Plano Aug McDonald Charles", locationCode: "20001805 - TLS Princeton" },
         { glDate: "2026-10-01", objectAccount: "616600 - Gen FM~Meals & Ent", amount: -1904.88, remark: "Aug26 FP/ADM Concur Entry USD", nameAlpha: "Aug26 FP/ADM Concur Entry USD" },
       ],
@@ -569,6 +577,15 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     const data = db.getMealsCharges({ fiscalYear: FY });
     assert.equal(data.count, 3);
     assert.equal(data.totalAmount, Math.round((11.04 + 31.08 - 1904.88) * 100) / 100);
+
+    // Each line carries its own full underlying GL record (glLine) -- not
+    // just the handful of summary fields -- so the UI can show "the full GL
+    // line" for a row on click without a second round trip.
+    const firstLine = data.items.find((it) => it.glLine && it.glLine.documentNumber === "DOC-1001");
+    assert.ok(firstLine, "a GL line's extra fields (document #, etc.) should be present on glLine");
+    assert.equal(firstLine.glLine.supplierInvoiceNumber, "INV-555");
+    assert.equal(firstLine.glLine.remark, "Plano Aug McDonald Charles");
+    assert.ok(firstLine.id, "each item carries the gl_entries row id");
 
     const empl = data.byCategory.find((c) => c.category === "Meals Empl");
     const ent = data.byCategory.find((c) => c.category === "Meals & Ent");
@@ -750,4 +767,78 @@ test("GL Spend Breakdown: including the PO Tracker's remaining (not-yet-posted) 
   });
 
   raw.close();
+});
+
+// Financials (GL routes, Reclasses, and the WOM cost-summary/invoicing-queue
+// routes) is limited to Midwest admins -- by their own home location's
+// territory, see db.getAdminTerritory -- plus whoever holds the RFM/
+// reviewer role, regardless of territory (server/middleware/auth.js's
+// requireFinancialsAccess). An admin with no home location set yet
+// (territory null) is let through rather than blocked, so this doesn't lock
+// out every admin seeded before the gate shipped.
+test("Financials access gate: Midwest admins and the RFM reviewer only", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw.prepare("INSERT INTO locations (code, name, territory) VALUES ('FG-EAST', 'Far East Branch', 'East')").run();
+
+  async function loginToken(id, pin) {
+    const res = await fetch(`${server.baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, pin }),
+    });
+    const json = await res.json();
+    assert.equal(res.status, 200, `login should succeed for ${id}`);
+    return json;
+  }
+
+  await t.test("an admin with no home location set (territory null) is let through", async () => {
+    db.createAdmin({ id: "FINADM1", name: "No Home Location Admin", pin: "4444" });
+    const { token } = await loginToken("FINADM1", "4444");
+    const res = await server.call("GET", "/api/admin/gl/meals", { token });
+    assert.equal(res.status, 200);
+  });
+
+  await t.test("a Midwest-territory admin is let through", async () => {
+    raw.prepare("INSERT OR IGNORE INTO locations (code, name, territory) VALUES ('PORMT-A', 'PO Remaining Test Site A', 'Midwest')").run();
+    db.createAdmin({ id: "FINADM2", name: "Midwest Admin", pin: "4445", homeLocationCode: "PORMT-A" });
+    const { token } = await loginToken("FINADM2", "4445");
+    const res = await server.call("GET", "/api/admin/gl/meals", { token });
+    assert.equal(res.status, 200);
+  });
+
+  await t.test("a non-Midwest-territory admin who isn't the RFM reviewer is blocked", async () => {
+    db.createAdmin({ id: "FINADM3", name: "East Admin", pin: "4446", homeLocationCode: "FG-EAST" });
+    const { token } = await loginToken("FINADM3", "4446");
+    const res = await server.call("GET", "/api/admin/gl/meals", { token });
+    assert.equal(res.status, 403);
+
+    const reclassRes = await server.call("GET", "/api/admin/reclasses/summary", { token });
+    assert.equal(reclassRes.status, 403);
+
+    const costSummaryRes = await server.call("GET", "/api/woms/cost-summary", { token });
+    assert.equal(costSummaryRes.status, 403);
+  });
+
+  await t.test("a non-Midwest-territory admin who IS the RFM reviewer is still let through", async () => {
+    const { token, id } = await loginToken("FINADM3", "4446");
+    db.setPseReviewer(id);
+    const res = await server.call("GET", "/api/admin/gl/meals", { token });
+    assert.equal(res.status, 200);
+  });
+
+  await t.test("login response carries territory and isPseReviewer", async () => {
+    const midwest = await loginToken("FINADM2", "4445");
+    assert.equal(midwest.territory, "Midwest");
+    assert.equal(midwest.isPseReviewer, false);
+
+    const reviewer = await loginToken("FINADM3", "4446");
+    assert.equal(reviewer.territory, "East");
+    assert.equal(reviewer.isPseReviewer, true);
+  });
 });

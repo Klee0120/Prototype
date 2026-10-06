@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { escapeHtml } from "../app.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 import { getTerritory } from "../globalFilters.js";
+import { openModal } from "../modal.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -151,7 +152,54 @@ function drawBody(container) {
     body.innerHTML = filtered.length
       ? renderByMonth(filtered)
       : `<p class="empty-note">No name / description matches "${escapeHtml(searchQuery)}".</p>`;
+    if (filtered.length) {
+      const byId = new Map(filtered.map((it) => [String(it.id), it]));
+      body.querySelectorAll("[data-gl-id]").forEach((row) => {
+        row.addEventListener("click", () => {
+          const it = byId.get(row.dataset.glId);
+          if (it) openGlLineModal(it);
+        });
+      });
+    }
   }
+}
+
+// The summary table only shows the handful of fields worth a quick scan --
+// clicking a row pops up every other field the actual GL export line
+// carries (document #, business unit, batch #, PO, the full un-truncated
+// remark, etc.), so nothing on the original line is ever hidden from view.
+function openGlLineModal(it) {
+  const g = it.glLine || {};
+  const row = (label, value) => `
+    <div class="gl-line-detail-row">
+      <span class="gl-line-detail-label">${escapeHtml(label)}</span>
+      <span class="gl-line-detail-value">${value != null && value !== "" ? escapeHtml(String(value)) : "—"}</span>
+    </div>
+  `;
+  openModal({
+    title: "Full GL line",
+    bodyHtml: `
+      <div class="gl-line-detail">
+        ${row("Category", it.category)}
+        ${row("Remark (full)", g.remark)}
+        ${row("GL date", it.glDate ? String(it.glDate).slice(0, 10) : null)}
+        ${row("Amount", it.amount != null ? formatMoney(it.amount) : null)}
+        ${row("Location", it.locationLabel)}
+        ${row("Location code (raw)", g.locationCode)}
+        ${row("Object account", g.objectAccount)}
+        ${row("Object account code", g.objectAccountCode)}
+        ${row("Document type", g.documentType)}
+        ${row("Document number", g.documentNumber)}
+        ${row("Journal entry line #", g.journalEntryLineNumber)}
+        ${row("Business unit", g.businessUnit)}
+        ${row("Subsidiary", g.subsidiary)}
+        ${row("Batch number", g.batchNumber)}
+        ${row("Supplier invoice number", g.supplierInvoiceNumber)}
+        ${row("Invoice date", g.invoiceDate ? String(g.invoiceDate).slice(0, 10) : null)}
+        ${row("Purchase order", g.purchaseOrder)}
+      </div>
+    `,
+  });
 }
 
 function renderByMonth(items) {
@@ -179,7 +227,7 @@ function renderByMonth(items) {
             ${g.items
               .map(
                 (it) => `
-              <tr>
+              <tr class="cellphone-row-clickable" data-gl-id="${it.id}" title="Click to view the full GL line">
                 <td>${escapeHtml(it.category)}</td>
                 <td>${it.description ? escapeHtml(it.description) : "—"}</td>
                 <td>${it.glDate ? escapeHtml(String(it.glDate).slice(0, 10)) : "—"}</td>
