@@ -3054,10 +3054,15 @@ function getAdminTerritory(admin) {
   return loc ? loc.territory : null;
 }
 
+// territory has no safe default -- silently falling back to "Midwest" here
+// is exactly what mistagged a corporate/overhead code (no real territory of
+// its own) as Midwest in the past. Every caller must say which territory a
+// new location actually belongs to.
 function createLocation(code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber) {
+  if (!territory) throw new Error("Territory is required to create a location");
   db.prepare(
     "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory, pps_job_number) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest", ppsJobNumber || null);
+  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory, ppsJobNumber || null);
   return findLocation(code);
 }
 
@@ -6818,7 +6823,8 @@ function tagLocationForPo(poId, { locationCode, newLocation } = {}) {
     if (!newLocation.code || !String(newLocation.code).trim()) throw new Error("A new location needs a code");
     if (!newLocation.name || !String(newLocation.name).trim()) throw new Error("A new location needs a name");
     if (findLocation(newLocation.code)) throw new Error(`Location ${newLocation.code} already exists`);
-    createLocation(newLocation.code.trim(), newLocation.name.trim(), po.ef_job_number, null, null, newLocation.territory || "Midwest");
+    if (!newLocation.territory) throw new Error("A new location needs a territory");
+    createLocation(newLocation.code.trim(), newLocation.name.trim(), po.ef_job_number, null, null, newLocation.territory);
   } else if (locationCode) {
     const location = findLocation(locationCode);
     if (!location) throw new Error("Location not found");

@@ -543,7 +543,10 @@ export async function renderPos(container, { openPoId } = {}) {
             <div class="add-tech-grid">
               <input name="code" placeholder="Location code" required />
               <input name="name" placeholder="Location name" required />
-              <select name="territory">${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}</select>
+              <select name="territory" required>
+                <option value="" disabled selected>Select territory…</option>
+                ${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}
+              </select>
             </div>
             <div class="modal-form-actions">
               <button type="submit" class="btn btn-primary">Create &amp; tag</button>

@@ -157,9 +157,10 @@ router.post("/", requireAuth, requireAdmin, (req, res) => {
   const { code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = req.body || {};
   if (!code || !name) return res.status(400).json({ error: "code and name are required" });
   if (db.findLocation(code)) return res.status(409).json({ error: "Location code already exists" });
-  if (territory && !db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
+  if (!territory) return res.status(400).json({ error: "Territory is required" });
+  if (!db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory || null, ppsJobNumber || null);
+  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory, ppsJobNumber || null);
   db.addAudit(req.user.id, "LOCATION_CREATED", `${req.user.name} created location ${code}: ${name}`);
   res.status(201).json({ ok: true });
 });

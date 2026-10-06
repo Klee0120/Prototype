@@ -607,7 +607,7 @@ test("PO Tracker: tag a location with a PO's E&F job # (replaces the old region 
   await t.test("tagging an existing location with a matched vendor and real PO # auto-activates it", async () => {
     const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Tag Test Vendor" } });
     const poId = insertPo({ composite: "tag-2", poNumber: "91010", efJobNumber: "900000002", vendorId: vendorRes.body.id });
-    await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TAGTEST2", name: "Tag Test Site 2" } });
+    await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TAGTEST2", name: "Tag Test Site 2", territory: "Midwest" } });
 
     const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST2" } });
     assert.equal(tagRes.body.lifecycleStatus, "active", "PO #, location, and vendor all now matched -- should auto-activate");
@@ -630,6 +630,19 @@ test("PO Tracker: tag a location with a PO's E&F job # (replaces the old region 
     assert.equal(created.efJobNumber, "900000003");
   });
 
+  await t.test("creating a new location inline with no territory is rejected", async () => {
+    const poId = insertPo({ composite: "tag-3b", poNumber: "PO91025", efJobNumber: "900000004" });
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, {
+      userId: "ADMIN",
+      body: { newLocation: { code: "TAGTEST3B", name: "No Territory Site" } },
+    });
+    assert.equal(tagRes.status, 400);
+    assert.match(tagRes.body.error, /territory/i);
+
+    const locRes = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.ok(!locRes.body.some((l) => l.code === "TAGTEST3B"), "nothing should have been created");
+  });
+
   await t.test("a PO with no E&F job # on file can't be tagged", async () => {
     const poId = insertPo({ composite: "tag-4", poNumber: "PO91030", efJobNumber: null });
     const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST1" } });
@@ -640,7 +653,7 @@ test("PO Tracker: tag a location with a PO's E&F job # (replaces the old region 
   await t.test("tagging a location that's already tied to a different job # is rejected", async () => {
     await server.call("POST", "/api/locations", {
       userId: "ADMIN",
-      body: { code: "TAGTEST5", name: "Already Tagged Site", efJobNumber: "900000005" },
+      body: { code: "TAGTEST5", name: "Already Tagged Site", efJobNumber: "900000005", territory: "Midwest" },
     });
     const poId = insertPo({ composite: "tag-5", poNumber: "PO91040", efJobNumber: "900000099" });
     const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST5" } });

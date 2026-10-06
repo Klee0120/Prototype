@@ -292,6 +292,7 @@ test("locations: E&F job number and region tracking", async (t) => {
         efJobNumber: "100110042963",
         womJobNumber: "100110007530",
         region: "Southeast",
+        territory: "Midwest",
       },
     });
     assert.equal(create.status, 201);
@@ -313,6 +314,23 @@ test("locations: E&F job number and region tracking", async (t) => {
 
     const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
     assert.equal(list.body.find((l) => l.code === "LOC-EAST").territory, "East");
+  });
+
+  // Silently defaulting a location with no territory given to "Midwest" is
+  // exactly what mistagged a corporate/overhead code as a real Midwest site
+  // in the past -- creating one now requires saying which territory it
+  // actually belongs to, same "don't guess" rule as everywhere else
+  // territory gets set.
+  await t.test("creating a location with no territory is rejected", async () => {
+    const res = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "LOC-NOTERR", name: "No Territory Given" },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /territory/i);
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.ok(!list.body.some((l) => l.code === "LOC-NOTERR"), "nothing should have been created");
   });
 
   await t.test("creating a location with an unknown territory is rejected", async () => {

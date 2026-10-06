@@ -4013,7 +4013,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             <input name="womJobNumber" placeholder="WOM Job Number" />
             <input name="ppsJobNumber" placeholder="PPS Contract Job Number" />
             <input name="region" placeholder="Region (e.g. Southeast)" />
-            <select name="territory">${renderTerritorySelect("Midwest")}</select>
+            <select name="territory" required>
+              <option value="" disabled selected>Select territory…</option>
+              ${TERRITORIES.map((t) => `<option value="${t}">${t}</option>`).join("")}
+            </select>
           </div>
           <div class="modal-form-actions">
             <button type="submit" class="btn btn-primary">Add location</button>
