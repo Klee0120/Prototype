@@ -873,6 +873,50 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(res.status, 404, "T1001 is a technician, not an admin account, even though it's the same underlying table");
   });
 
+  // Admin accounts need the same multi-phone/multi-iPad + IT-request
+  // tracking a technician's Devices tab already has (tech_devices/
+  // device_requests has no role constraint of its own) -- the device
+  // routes in server/routes/admin.js were relaxed from role === "tech" to
+  // just "exists" to allow this.
+  await t.test("an admin account can have multiple phone and iPad devices, each with its own IT request tracking", async () => {
+    const empty = await server.call("GET", "/api/admin/technicians/ADMIN2/devices", { userId: "ADMIN" });
+    assert.deepEqual(empty.body, []);
+
+    const phone1 = await server.call("POST", "/api/admin/technicians/ADMIN2/devices", {
+      userId: "ADMIN",
+      body: { deviceType: "phone", deviceName: "614-555-5001" },
+    });
+    assert.equal(phone1.status, 201);
+    const phone2 = await server.call("POST", "/api/admin/technicians/ADMIN2/devices", {
+      userId: "ADMIN",
+      body: { deviceType: "phone", deviceName: "614-555-5002" },
+    });
+    assert.equal(phone2.status, 201);
+    const ipad1 = await server.call("POST", "/api/admin/technicians/ADMIN2/devices", {
+      userId: "ADMIN",
+      body: { deviceType: "ipad", deviceName: "614-555-5003" },
+    });
+    assert.equal(ipad1.status, 201);
+    assert.equal(ipad1.body.length, 3, "all three devices should be on file for this admin");
+
+    const deviceId = ipad1.body.find((d) => d.deviceType === "ipad").id;
+    const request = await server.call("POST", `/api/admin/technicians/ADMIN2/devices/${deviceId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Cancellation", referenceNumber: "CAL-9001" },
+    });
+    assert.equal(request.status, 201);
+    assert.equal(request.body[0].requestType, "Cancellation");
+    assert.equal(request.body[0].referenceNumber, "CAL-9001");
+  });
+
+  await t.test("a technician cannot manage an admin account's devices", async () => {
+    const res = await server.call("POST", "/api/admin/technicians/ADMIN2/devices", {
+      userId: "T1001",
+      body: { deviceType: "phone", deviceName: "614-555-6000" },
+    });
+    assert.equal(res.status, 403);
+  });
+
   await t.test("admin can reset an admin account's PIN, and it's logged to the audit trail", async () => {
     const res = await server.call("POST", "/api/admin/admins/ADMIN2/reset-pin", { userId: "ADMIN", body: {} });
     assert.equal(res.status, 200);

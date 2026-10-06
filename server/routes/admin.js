@@ -243,15 +243,23 @@ router.patch("/technicians/:id/onboarding/:taskKey", (req, res) => {
   res.json(progress);
 });
 
+// These six device/request routes are intentionally not scoped to role ===
+// "tech" -- tech_devices/device_requests has no role constraint of its own,
+// and an admin/RFM account needs the exact same multi-phone/multi-iPad +
+// IT-request tracking a technician's Devices tab already has. The Admin
+// Accounts UI doesn't call these yet -- this is just the backend half,
+// ready for that panel. Every other technician-only route in this file
+// (onboarding, remarks, etc.) stays scoped to role === "tech" -- only
+// these are shared.
 router.get("/technicians/:id/devices", (req, res) => {
   const tech = db.findTechnician(req.params.id);
-  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
   res.json(db.listDevices(tech.id));
 });
 
 router.post("/technicians/:id/devices", (req, res) => {
   const tech = db.findTechnician(req.params.id);
-  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
 
   const { deviceType, deviceName, notes, plan } = req.body || {};
   if (!db.DEVICE_TYPES.includes(deviceType)) {
@@ -266,7 +274,7 @@ router.post("/technicians/:id/devices", (req, res) => {
 
 router.delete("/technicians/:id/devices/:deviceId", (req, res) => {
   const tech = db.findTechnician(req.params.id);
-  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
 
   const devices = db.removeDevice(tech.id, Number(req.params.deviceId));
   db.addAudit(req.user.id, "DEVICE_REMOVED", `${req.user.name} removed a device from ${tech.name}`);
@@ -275,7 +283,7 @@ router.delete("/technicians/:id/devices/:deviceId", (req, res) => {
 
 router.patch("/technicians/:id/devices/:deviceId", (req, res) => {
   const tech = db.findTechnician(req.params.id);
-  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
   const device = db.findDevice(tech.id, Number(req.params.deviceId));
   if (!device) return res.status(404).json({ error: "Device not found" });
 
@@ -287,7 +295,7 @@ router.patch("/technicians/:id/devices/:deviceId", (req, res) => {
 // etc.) with a reference number to follow up on until it's marked done.
 router.post("/technicians/:id/devices/:deviceId/requests", (req, res) => {
   const tech = db.findTechnician(req.params.id);
-  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
   const device = db.findDevice(tech.id, Number(req.params.deviceId));
   if (!device) return res.status(404).json({ error: "Device not found" });
 
@@ -305,7 +313,7 @@ router.post("/technicians/:id/devices/:deviceId/requests", (req, res) => {
 
 router.patch("/technicians/:id/devices/:deviceId/requests/:requestId", (req, res) => {
   const tech = db.findTechnician(req.params.id);
-  if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
   const device = db.findDevice(tech.id, Number(req.params.deviceId));
   if (!device) return res.status(404).json({ error: "Device not found" });
 
