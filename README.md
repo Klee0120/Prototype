@@ -1767,6 +1767,51 @@ Demo logins:
   - Technician forms/certifications — admin-managed, attached to a
     technician's record (admin's Technicians tab)
 - Mobile-friendly responsive layout
+- **Full GL line detail now includes Subledger (WOM) coding**, in both the
+  Meals report's and Spend Analysis's "click a line to see everything"
+  modal — previously the modal showed the Purchase Order field but silently
+  dropped the WOM-coding field next to it
+- **Spend Analysis: search by PO # or WOM #.** A search box overrides the
+  normal no-PO/no-WOM exclusion (which exists to hide the common case --
+  payroll, accruals, etc. -- from the default view) so the one specific
+  line someone's looking for isn't hidden by it. Matches against the
+  Purchase Order field or the Subledger (WOM) field
+- **Reconciliation dropped its "GL lines with no PO reference" section** --
+  it duplicated what Spend Analysis already shows and wasn't actionable
+  the way the unmatched-PO section (still there) is
+- **Cost Analysis's Estimated/Applied summary table gets a Toy Value
+  column** (Toyota PO value, synced from Smartsheet), next to Remaining
+  estimate
+- **Invoicing tab is split into two views.** WOMs genuinely missing a real
+  invoice #/batch # (nobody's invoiced Toyota yet) stay the primary,
+  always-visible list; WOMs that already have both but are only missing the
+  invoice document collapse into a secondary, collapsed-by-default list,
+  since that's a lower-urgency "someone needs to attach a file" gap rather
+  than an unbilled one. Clicking a row now opens the WOM profile's Overview
+  tab (where the billing checklist actually lives) instead of its Documents
+  tab
+- **Admin/RFM accounts can have multiple phone numbers and multiple iPad
+  #s**, with the same per-device IT-request tracking (cancel/transfer/etc.,
+  with a reference number) technicians' Devices tab already had -- backend
+  only so far, the Admin Accounts panel doesn't expose it yet
+- **Vendor Compliance checklist (Vendors &rarr; Onboarding &rarr;
+  Compliance Needed) is territory-scoped**, not shown identically to every
+  admin. A vendor's territory is derived from its own real Budget PO/WOM
+  activity (never a manually-set field), and a vendor can legitimately
+  belong to more than one. Filtering the topbar to a specific territory
+  narrows the list to vendors with real activity there, or -- for a
+  brand-new vendor with nothing matched to it yet -- to whoever created its
+  profile, until a real match gives it one. "All territories" (the default
+  for everyone) still shows the full list. The main Vendor Directory and
+  the territory dropdown itself stay unrestricted -- vendors are shared
+  company-wide, only the follow-up checklist narrows
+- **Fix: editing an existing vendor's JDE # never retroactively matched
+  already-imported POs.** The "link up this vendor's unmatched POs" check
+  only used to run when a vendor profile was first created -- adding or
+  correcting a JDE # on a vendor that already existed left matching Budget
+  PO Tracker rows stuck on "Needs Matching" forever, with nothing to
+  re-check them short of a future re-import touching that exact row again.
+  Now runs on every vendor save
 
 ## Data model
 
