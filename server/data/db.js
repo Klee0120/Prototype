@@ -7992,10 +7992,13 @@ function summarizeUnmatchedLocations(items) {
 }
 
 // Who a Cell Phone GL line's number belongs to -- every technician's own
-// phone (technicians.phone) plus every phone-type device assigned to them
-// (tech_devices.device_type = 'phone', so someone carrying more than one
-// line is still matched on each). Built fresh per call, not cached -- this
-// backs an admin report, not a hot path, and device assignments change.
+// phone (technicians.phone) plus every phone- or ipad-type device assigned
+// to them (tech_devices.device_type IN ('phone', 'ipad'), so someone
+// carrying more than one line -- or a cellular iPad with its own line on
+// the plan -- is still matched on each). A laptop's asset tag/serial never
+// false-matches here since normalizePhoneDigits requires 10+ digits. Built
+// fresh per call, not cached -- this backs an admin report, not a hot
+// path, and device assignments change.
 function buildTechPhoneRoster() {
   const roster = new Map(); // last-10-digits -> { id, name }
   for (const t of db.prepare("SELECT id, name, phone FROM technicians").all()) {
@@ -8006,7 +8009,7 @@ function buildTechPhoneRoster() {
     .prepare(
       `SELECT d.device_name AS deviceName, t.id AS techId, t.name AS techName
        FROM tech_devices d JOIN technicians t ON t.id = d.tech_id
-       WHERE d.device_type = 'phone'`
+       WHERE d.device_type IN ('phone', 'ipad')`
     )
     .all();
   for (const d of phoneDevices) {

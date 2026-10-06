@@ -93,8 +93,8 @@ export async function renderCellPhones(container) {
       </div>
     </div>
     <p class="review-checklist-hint">
-      "Assigned to" matches each number against every technician's phone # (Basic Info) and any phone-type device on
-      their profile -- add a tech's number there to pick up the match here.
+      "Assigned to" matches each number against every technician's phone # (Basic Info) and any phone- or iPad-type
+      device on their profile -- add a tech's number there to pick up the match here.
     </p>
     ${renderUnmatchedLocations(data.unmatchedLocations)}
     <div id="cellphone-body"></div>

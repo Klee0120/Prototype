@@ -522,17 +522,20 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     assert.equal(res.status, 403);
   });
 
-  await t.test("getCellPhoneCharges matches a GL line's number against the roster (tech's own phone, or a phone-type device)", async () => {
+  await t.test("getCellPhoneCharges matches a GL line's number against the roster (tech's own phone, a phone-type device, or a cellular iPad's own line)", async () => {
     const FY = 45;
     // T1001 (Alex Rivera) already has phone "609-555-0142" seeded. T1002
     // (Jordan Lee) gets a second number via a phone-type device, covering
-    // someone carrying more than one line.
+    // someone carrying more than one line. T1003 gets a cellular iPad with
+    // its own line on the plan -- its own GL bill line, same as a phone.
     db.addDevice("T1002", "phone", "614-555-9931", "", "");
+    db.addDevice("T1003", "ipad", "312-555-7720", "", "");
 
     db.importGlEntries(
       [
         { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, remark: "6095550142" }, // matches T1001's own phone
         { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 41, remark: "6145559931" }, // matches T1002's device
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 43, remark: "3125557720" }, // matches T1003's iPad
         { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 42, remark: "5555550000" }, // nobody's number
       ],
       1,
@@ -549,6 +552,10 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     const devicePhone = data.items.find((i) => i.phoneNumberRaw === "6145559931");
     assert.equal(devicePhone.assignedToId, "T1002");
     assert.equal(devicePhone.assignedToName, "Jordan Lee");
+
+    const ipadLine = data.items.find((i) => i.phoneNumberRaw === "3125557720");
+    assert.equal(ipadLine.assignedToId, "T1003");
+    assert.equal(ipadLine.assignedToName, "Sam Patel");
 
     const unmatched = data.items.find((i) => i.phoneNumberRaw === "5555550000");
     assert.equal(unmatched.assignedToId, null);
