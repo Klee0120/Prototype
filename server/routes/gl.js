@@ -233,7 +233,8 @@ router.get("/reconciliation/unmatched", (req, res) => {
 // reference and no WOM reference (see db.getGlSpendBreakdown); pass
 // noPoReferenceOnly=false and/or noWomReferenceOnly=false to widen either.
 router.get("/spend-breakdown", (req, res) => {
-  const { territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, includePoRemaining } = req.query || {};
+  const { territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, includePoRemaining, excludeBurden } =
+    req.query || {};
   res.json(
     db.getGlSpendBreakdown({
       territory: territory || null,
@@ -244,28 +245,44 @@ router.get("/spend-breakdown", (req, res) => {
       noPoReferenceOnly: noPoReferenceOnly == null ? true : noPoReferenceOnly !== "false",
       noWomReferenceOnly: noWomReferenceOnly == null ? true : noWomReferenceOnly !== "false",
       includePoRemaining: includePoRemaining === "true",
+      excludeBurden: excludeBurden === "true",
     })
   );
 });
 
-// The actual GL lines behind one Spend Breakdown row -- a category or a
-// territory, clicked to see what's really in it (see
+// The actual GL lines behind one Spend Breakdown row -- a category, a
+// territory, or a location, clicked to see what's really in it (see
 // db.getGlSpendDetailPage). Same filters as /spend-breakdown, plus
-// optional category/territory to pick the slice and page/pageSize to
-// paginate it.
+// optional category/territory/location to pick the slice and page/pageSize
+// to paginate it.
 router.get("/spend-breakdown/detail", (req, res) => {
-  const { category, territory, periodNumber, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, search, page, pageSize } =
-    req.query || {};
+  const {
+    category,
+    territory,
+    location,
+    periodNumber,
+    fiscalYear,
+    periodFrom,
+    periodTo,
+    noPoReferenceOnly,
+    noWomReferenceOnly,
+    excludeBurden,
+    search,
+    page,
+    pageSize,
+  } = req.query || {};
   res.json(
     db.getGlSpendDetailPage({
       category: category || null,
       territory: territory || null,
+      location: location || null,
       periodNumber: periodNumber ? Number(periodNumber) : null,
       fiscalYear: fiscalYear ? Number(fiscalYear) : null,
       periodFrom: periodFrom ? Number(periodFrom) : null,
       periodTo: periodTo ? Number(periodTo) : null,
       noPoReferenceOnly: noPoReferenceOnly == null ? true : noPoReferenceOnly !== "false",
       noWomReferenceOnly: noWomReferenceOnly == null ? true : noWomReferenceOnly !== "false",
+      excludeBurden: excludeBurden === "true",
       search: search || null,
       page,
       pageSize,

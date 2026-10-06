@@ -117,7 +117,14 @@ let includeWomReferenced = false;
 // snapshot of today's open commitment, not tied to the fiscal year/period
 // filter the way a GL line is -- see db.getPoRemainingAmounts.
 let includePoRemaining = false;
-// Checking all three scope toggles one after another used to re-fetch and
+// "Burden" (per Krista): the fixed, effectively unchangeable-by-the-RFM
+// costs -- insurance plans and payroll tax set at the company level, not
+// something a territory's own spending decisions move (H&W Insurance,
+// FICA/Medi, Gen Liability -- see db.js's BURDEN_CATEGORIES). Checking
+// this pulls those categories out of the chart/tables/totals so what's
+// left reads as what a territory can actually control.
+let excludeBurden = false;
+// Checking all four scope toggles one after another used to re-fetch and
 // re-render on every single click -- check a box, wait for the load, check
 // the next, wait again. Debouncing collapses a quick run of clicks into one
 // reload after the last change settles, same pattern as the search-input
@@ -230,6 +237,7 @@ export async function renderSpendBreakdown(container) {
     if (includePoReferenced) params.set("noPoReferenceOnly", "false");
     if (includeWomReferenced) params.set("noWomReferenceOnly", "false");
     if (includePoRemaining) params.set("includePoRemaining", "true");
+    if (excludeBurden) params.set("excludeBurden", "true");
     data = await api.get(`/api/admin/gl/spend-breakdown?${params}`);
   } catch (err) {
     container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -316,6 +324,10 @@ export async function renderSpendBreakdown(container) {
             <input type="checkbox" class="spend-include-po-remaining-toggle" ${includePoRemaining ? "checked" : ""} />
             Include current estimated PO (PO Tracker amount not yet on GL)
           </label>
+          <label class="spend-po-toggle">
+            <input type="checkbox" class="spend-exclude-burden-toggle" ${excludeBurden ? "checked" : ""} />
+            Exclude burden costs (H&amp;W Insurance, FICA/Medi, Gen Liability -- fixed, not RFM-controllable)
+          </label>
           <form class="spend-search-form">
             <input type="search" class="spend-search-input" placeholder="Search PO # or WOM #" />
             <button type="submit" class="btn btn-secondary">Search</button>
@@ -327,8 +339,8 @@ export async function renderSpendBreakdown(container) {
       data.unassignedLocationCount > 0
         ? `<p class="review-checklist-hint spend-unassigned-note">
              ${data.unassignedLocationCount.toLocaleString()} line${data.unassignedLocationCount === 1 ? "" : "s"} couldn't be matched to a
-             location and fall under "Unassigned" in the territory breakdown below -- check those business units/facility
-             names against Locations if that count looks high.
+             location and fall under "Unassigned" in the territory and location breakdowns below -- check those
+             business units/facility names against Locations if that count looks high.
            </p>`
         : ""
     }
@@ -362,6 +374,23 @@ export async function renderSpendBreakdown(container) {
                 <td>${t.count.toLocaleString()}</td>
               </tr>`
               )
+              .join("")}
+          </tbody>
+        </table>
+        <h3 class="spend-section-heading">By Location</h3>
+        <table class="detail-table spend-location-table spend-clickable-table">
+          <thead><tr><th>Location</th><th>Total</th><th>Lines</th></tr></thead>
+          <tbody>
+            ${data.locations
+              .map((l) => {
+                const label = l.locationCode ? `${l.locationName ? `${l.locationName} ` : ""}(${l.locationCode})` : "Unassigned";
+                return `
+              <tr class="spend-drill-row" data-location="${escapeHtml(l.locationCode || "Unassigned")}" tabindex="0">
+                <td>${escapeHtml(label)}</td>
+                <td>${formatMoney(l.total)}</td>
+                <td>${l.count.toLocaleString()}</td>
+              </tr>`;
+              })
               .join("")}
           </tbody>
         </table>
@@ -400,6 +429,10 @@ export async function renderSpendBreakdown(container) {
     includePoRemaining = e.target.checked;
     debouncedRerenderSpendBreakdown(container);
   });
+  container.querySelector(".spend-exclude-burden-toggle")?.addEventListener("change", (e) => {
+    excludeBurden = e.target.checked;
+    debouncedRerenderSpendBreakdown(container);
+  });
   container.querySelector(".spend-fy-select")?.addEventListener("change", (e) => {
     const v = e.target.value;
     selectedFiscalYear = v === "all" ? "all" : Number(v);
@@ -423,6 +456,7 @@ export async function renderSpendBreakdown(container) {
       fiscalYear: allYearsSelected ? null : selectedFiscalYear,
       periodFrom: allYearsSelected || !hasCalendar ? null : periodFrom,
       periodTo: allYearsSelected || !hasCalendar ? null : periodTo,
+      excludeBurden,
       fyLabel,
     });
   });
@@ -430,15 +464,18 @@ export async function renderSpendBreakdown(container) {
   const openRowDetail = (row) => {
     const category = row.dataset.category || null;
     const territoryFilter = row.dataset.territory || null;
+    const locationFilter = row.dataset.location || null;
     openSpendDetailModal({
       category,
       territory: territoryFilter,
+      location: locationFilter,
       territoryGlobal: territory,
       fiscalYear: allYearsSelected ? null : selectedFiscalYear,
       periodFrom: allYearsSelected || !hasCalendar ? null : periodFrom,
       periodTo: allYearsSelected || !hasCalendar ? null : periodTo,
       noPoReferenceOnly: !includePoReferenced,
       noWomReferenceOnly: !includeWomReferenced,
+      excludeBurden,
       fyLabel,
     });
   };
@@ -509,8 +546,27 @@ function openGlLineModal(it) {
 // A category or territory row's own GL lines -- "which phones did we pay
 // for, and when" instead of just a total. Same filters as the row it was
 // clicked from, so the modal's own total always lines up with the row.
-async function openSpendDetailModal({ category, territory, territoryGlobal, fiscalYear, periodFrom, periodTo, noPoReferenceOnly, noWomReferenceOnly, search, fyLabel }) {
-  const title = search ? `Search "${search}" -- GL lines` : category ? `${displayCategoryName(category)} -- GL lines` : `${territory} -- GL lines`;
+async function openSpendDetailModal({
+  category,
+  territory,
+  location,
+  territoryGlobal,
+  fiscalYear,
+  periodFrom,
+  periodTo,
+  noPoReferenceOnly,
+  noWomReferenceOnly,
+  excludeBurden,
+  search,
+  fyLabel,
+}) {
+  const title = search
+    ? `Search "${search}" -- GL lines`
+    : category
+      ? `${displayCategoryName(category)} -- GL lines`
+      : location
+        ? `${location === "Unassigned" ? "Unassigned location" : location} -- GL lines`
+        : `${territory} -- GL lines`;
   const { body } = openModal({ title, bodyHtml: `<div class="spend-detail-modal-body">Loading…</div>`, size: "large" });
 
   let page = 1;
@@ -521,9 +577,11 @@ async function openSpendDetailModal({ category, territory, territoryGlobal, fisc
     const params = new URLSearchParams();
     if (category) params.set("category", category);
     if (effectiveTerritory) params.set("territory", effectiveTerritory);
+    if (location) params.set("location", location);
     if (fiscalYear != null) params.set("fiscalYear", String(fiscalYear));
     if (periodFrom != null) params.set("periodFrom", String(periodFrom));
     if (periodTo != null) params.set("periodTo", String(periodTo));
+    if (excludeBurden) params.set("excludeBurden", "true");
     if (search) {
       // Searching for a specific PO # or WOM # overrides the no-reference
       // defaults server-side (see db.getGlSpendDetailPage) -- not sent here

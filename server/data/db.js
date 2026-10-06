@@ -7527,6 +7527,16 @@ function parseObjectAccountCategory(raw) {
   return match ? match[1].trim() : null;
 }
 
+// "Burden" categories (per Krista): the fixed, effectively unchangeable-
+// by-the-RFM costs -- insurance plans and payroll tax set at the company
+// level, not something a territory's own spending decisions move. Distinct
+// from Labor/Temp Help/Material Use/Uniform Lease, which an RFM actually
+// controls day to day. Scoped to Spend Analysis's own "Exclude burden
+// costs" toggle -- nothing else reads this list, and matching is by the
+// same category name parseObjectAccountCategory resolves everywhere else,
+// so a line excluded here is still counted normally with the toggle off.
+const BURDEN_CATEGORIES = new Set(["H&W Insurance", "FICA/Medi", "Gen Liability"]);
+
 // Krista's real C&W Services Monthly Closing Schedule (CW-Services-CY2026,
 // the actual uploaded file) -- period number lines up exactly with the
 // calendar month (period 7 = July), confirmed directly against that
@@ -8042,10 +8052,10 @@ function getGlReconciliationSummary() {
 // of today's outstanding commitment, not a period-bound transaction like a
 // GL line -- it deliberately ignores the fiscal year/period filter, since
 // an open PO doesn't belong to one month the way a GL posting does.
-function getPoRemainingAmounts({ territory } = {}) {
+function getPoRemainingAmounts({ territory, excludeBurden = false } = {}) {
   const rows = db
     .prepare(
-      `SELECT p.id, p.po_amount, p.object_code, p.location_code, l.territory AS territory,
+      `SELECT p.id, p.po_amount, p.object_code, p.location_code, l.name AS locationName, l.territory AS territory,
          COALESCE((SELECT SUM(g.amount) FROM gl_entries g WHERE g.matched_po_id = p.id), 0) AS matchedTotal
        FROM pos p LEFT JOIN locations l ON l.code = p.location_code
        WHERE p.lifecycle_status = 'active' AND p.po_amount IS NOT NULL AND p.po_amount > 0`
@@ -8071,6 +8081,7 @@ function getPoRemainingAmounts({ territory } = {}) {
 
   const byCategory = new Map();
   const byTerritory = new Map();
+  const byLocation = new Map();
   let totalAmount = 0;
   let poCount = 0;
   for (const r of rows) {
@@ -8079,10 +8090,12 @@ function getPoRemainingAmounts({ territory } = {}) {
     const rowTerritory = r.territory || null;
     if (territory && rowTerritory !== territory) continue;
 
+    const category = (r.object_code ? categoryByCode.get(r.object_code) : null) || "Unknown / Uncategorized";
+    if (excludeBurden && BURDEN_CATEGORIES.has(category)) continue;
+
     poCount++;
     totalAmount += remaining;
 
-    const category = (r.object_code ? categoryByCode.get(r.object_code) : null) || "Unknown / Uncategorized";
     const c = byCategory.get(category) || { category, total: 0, count: 0 };
     c.total += remaining;
     c.count += 1;
@@ -8093,9 +8106,15 @@ function getPoRemainingAmounts({ territory } = {}) {
     t.total += remaining;
     t.count += 1;
     byTerritory.set(territoryKey, t);
+
+    const locationKey = r.location_code || "Unassigned";
+    const loc = byLocation.get(locationKey) || { locationCode: r.location_code || null, locationName: r.locationName || null, total: 0, count: 0 };
+    loc.total += remaining;
+    loc.count += 1;
+    byLocation.set(locationKey, loc);
   }
 
-  return { totalAmount, poCount, byCategory, byTerritory };
+  return { totalAmount, poCount, byCategory, byTerritory, byLocation };
 }
 
 function getGlSpendBreakdown({
@@ -8107,6 +8126,7 @@ function getGlSpendBreakdown({
   noPoReferenceOnly = true,
   noWomReferenceOnly = true,
   includePoRemaining = false,
+  excludeBurden = false,
 } = {}) {
   const { conditions, params } = buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, periodTo });
   if (noPoReferenceOnly) conditions.push("g.purchase_order IS NULL");
@@ -8118,7 +8138,7 @@ function getGlSpendBreakdown({
 
   const rows = db
     .prepare(
-      `SELECT g.object_account, g.amount, g.matched_location_code, l.territory AS territory
+      `SELECT g.object_account, g.amount, g.matched_location_code, l.name AS locationName, l.territory AS territory
        FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
        ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`
     )
@@ -8126,6 +8146,7 @@ function getGlSpendBreakdown({
 
   const byCategory = new Map();
   const byTerritory = new Map();
+  const byLocation = new Map();
   let totalAmount = 0;
   let entryCount = 0;
   let unassignedLocationCount = 0;
@@ -8133,11 +8154,13 @@ function getGlSpendBreakdown({
     const rowTerritory = r.territory || null;
     if (territory && rowTerritory !== territory) continue;
 
+    const category = parseObjectAccountCategory(r.object_account) || "Unknown / Uncategorized";
+    if (excludeBurden && BURDEN_CATEGORIES.has(category)) continue;
+
     entryCount++;
     const amount = r.amount || 0;
     totalAmount += amount;
 
-    const category = parseObjectAccountCategory(r.object_account) || "Unknown / Uncategorized";
     const c = byCategory.get(category) || { category, total: 0, count: 0 };
     c.total += amount;
     c.count += 1;
@@ -8149,12 +8172,23 @@ function getGlSpendBreakdown({
     t.total += amount;
     t.count += 1;
     byTerritory.set(territoryKey, t);
+
+    const locationKey = r.matched_location_code || "Unassigned";
+    const loc = byLocation.get(locationKey) || {
+      locationCode: r.matched_location_code || null,
+      locationName: r.locationName || null,
+      total: 0,
+      count: 0,
+    };
+    loc.total += amount;
+    loc.count += 1;
+    byLocation.set(locationKey, loc);
   }
 
   let poRemainingTotal = 0;
   let poRemainingCount = 0;
   if (includePoRemaining) {
-    const poRemaining = getPoRemainingAmounts({ territory });
+    const poRemaining = getPoRemainingAmounts({ territory, excludeBurden });
     poRemainingTotal = poRemaining.totalAmount;
     poRemainingCount = poRemaining.poCount;
     totalAmount += poRemaining.totalAmount;
@@ -8170,6 +8204,14 @@ function getGlSpendBreakdown({
       existing.count += t.count;
       byTerritory.set(t.territory, existing);
     }
+    for (const loc of poRemaining.byLocation.values()) {
+      const key = loc.locationCode || "Unassigned";
+      const existing = byLocation.get(key) || { locationCode: loc.locationCode, locationName: loc.locationName, total: 0, count: 0 };
+      existing.total += loc.total;
+      existing.count += loc.count;
+      if (!existing.locationName && loc.locationName) existing.locationName = loc.locationName;
+      byLocation.set(key, existing);
+    }
   }
 
   const round = (n) => Math.round(n * 100) / 100;
@@ -8181,6 +8223,12 @@ function getGlSpendBreakdown({
     poRemainingCount,
     categories: [...byCategory.values()].map((c) => ({ ...c, total: round(c.total) })).sort((a, b) => b.total - a.total),
     territories: [...byTerritory.values()].map((t) => ({ ...t, total: round(t.total) })).sort((a, b) => b.total - a.total),
+    // "Unassigned" (no matched location) sorts last regardless of its
+    // total -- it's not a real place to drill into the way an actual
+    // location is, so it shouldn't compete for the top of the list.
+    locations: [...byLocation.values()]
+      .map((l) => ({ ...l, total: round(l.total) }))
+      .sort((a, b) => (a.locationCode == null ? 1 : b.locationCode == null ? -1 : b.total - a.total)),
   };
 }
 
@@ -8196,12 +8244,14 @@ function getGlSpendBreakdown({
 function getGlSpendDetailPage({
   category,
   territory,
+  location,
   periodNumber,
   fiscalYear,
   periodFrom,
   periodTo,
   noPoReferenceOnly = true,
   noWomReferenceOnly = true,
+  excludeBurden = false,
   search,
   page = 1,
   pageSize = GL_PAGE_SIZE_DEFAULT,
@@ -8232,13 +8282,16 @@ function getGlSpendDetailPage({
     .all(...params);
 
   const matching = rows.filter((r) => {
-    if (category != null) {
-      const rowCategory = parseObjectAccountCategory(r.objectAccount) || "Unknown / Uncategorized";
-      if (rowCategory !== category) return false;
-    }
+    const rowCategory = parseObjectAccountCategory(r.objectAccount) || "Unknown / Uncategorized";
+    if (excludeBurden && BURDEN_CATEGORIES.has(rowCategory)) return false;
+    if (category != null && rowCategory !== category) return false;
     if (territory != null) {
       const rowTerritory = r.territory || "Unassigned";
       if (rowTerritory !== territory) return false;
+    }
+    if (location != null) {
+      const rowLocation = r.matchedLocationCode || "Unassigned";
+      if (rowLocation !== location) return false;
     }
     return true;
   });

@@ -249,6 +249,58 @@ test("GL Spend Breakdown: category + territory grouping", async (t) => {
     assert.equal(res.body.totalAmount, 100 + 50 + 200 + 75);
   });
 
+  await t.test("groups by location too, with Unassigned for no match -- a location drill-down scopes to just that location's lines", async () => {
+    const res = await server.call("GET", `/api/admin/gl/spend-breakdown?periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}`, {
+      userId: "ADMIN",
+    });
+    const princeton = res.body.locations.find((l) => l.locationCode === "PRINCETON");
+    assert.ok(princeton, "TLS Princeton's own location code should show up as a location row");
+    assert.equal(princeton.locationName, "TLS Princeton");
+    assert.equal(princeton.total, 100 + 50 + 200 + 75);
+
+    const unassigned = res.body.locations.find((l) => l.locationCode === null);
+    assert.ok(unassigned, "the unmatched 'Nowhere Facility' location should fall under Unassigned");
+    assert.equal(unassigned.total, 10);
+
+    const detail = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown/detail?location=PRINCETON&periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}&pageSize=50`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.total, 4, "all 4 Princeton lines, not the Nowhere Facility one");
+    // item.locationCode is the raw GL Location Code text (location_code),
+    // not the resolved code the `location` filter itself matches against
+    // (matched_location_code) -- same distinction getGlSpendBreakdown's own
+    // territory grouping already relies on.
+    assert.ok(detail.body.items.every((it) => it.locationCode.includes("TLS Princeton")));
+  });
+
+  await t.test("excludeBurden drops H&W Insurance/FICA/Medi/Gen Liability from totals, categories, and the detail drill-down", async () => {
+    const res = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown?excludeBurden=true&periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}`,
+      { userId: "ADMIN" }
+    );
+    assert.equal(res.status, 200);
+    assert.equal(
+      res.body.categories.find((c) => c.category === "H&W Insurance"),
+      undefined,
+      "the burden category should be dropped entirely, not just zeroed out"
+    );
+    assert.equal(res.body.totalAmount, 100 + 50 + 75 + 10, "the 200 of H&W Insurance should no longer be counted");
+
+    const detail = await server.call(
+      "GET",
+      `/api/admin/gl/spend-breakdown/detail?excludeBurden=true&periodNumber=${SPEND_PERIOD.periodNumber}&fiscalYear=${SPEND_PERIOD.fiscalYear}&pageSize=50`,
+      { userId: "ADMIN" }
+    );
+    assert.ok(
+      detail.body.items.every((it) => it.objectAccount !== "602210 - Gen B&A~H&W Insurance"),
+      "the H&W Insurance line shouldn't appear in the drill-down either"
+    );
+  });
+
   await t.test("a technician can't reach the Spend Breakdown route", async () => {
     const res = await server.call("GET", "/api/admin/gl/spend-breakdown", { userId: "T1001" });
     assert.equal(res.status, 403);
