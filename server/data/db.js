@@ -33,6 +33,29 @@ db.exec("PRAGMA foreign_keys = ON;");
 db.exec("PRAGMA journal_mode = WAL;");
 db.exec("PRAGMA synchronous = NORMAL;");
 
+// node:sqlite's db.prepare(sql) has no built-in statement cache -- unlike a
+// typical ORM, it re-parses and re-plans the SQL text from scratch on every
+// single call. Nearly every query in this file is written as
+// db.prepare("...").get/all/run(...) inline inside a function, so a
+// function sitting in a per-row loop (there are several below -- vendor and
+// PO list rows each resolve a handful of lookups per row) re-prepares the
+// same handful of statements once per row instead of once ever. A prepared
+// statement only encodes the SQL text, not bound parameters (those are
+// supplied fresh on every get/all/run call), so caching by SQL text and
+// reusing the same Statement object across calls is exactly what prepared
+// statements are for -- this doesn't change behavior anywhere, only how
+// often the same SQL gets compiled.
+const _rawPrepare = db.prepare.bind(db);
+const _stmtCache = new Map();
+db.prepare = function cachedPrepare(sql) {
+  let stmt = _stmtCache.get(sql);
+  if (!stmt) {
+    stmt = _rawPrepare(sql);
+    _stmtCache.set(sql, stmt);
+  }
+  return stmt;
+};
+
 // Schema v1 (flat wom_code per allocation row, single weekly UKG total, no
 // locations) predates locations/WOM budgets/E&F split rows. Rather than
 // hand-migrate mock rows that were never real technician data, detect the
@@ -600,6 +623,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_gl_entries_purchase_order ON gl_entries(purchase_order);
   CREATE INDEX IF NOT EXISTS idx_gl_entries_business_unit ON gl_entries(business_unit);
   CREATE INDEX IF NOT EXISTS idx_gl_entries_period ON gl_entries(period_number, fiscal_year);
+  -- Backs getPoRemainingAmounts' bulk object-code-to-category lookup
+  -- (Spend Analysis's "current estimated PO" checkbox) -- without it, that
+  -- lookup is a full scan of gl_entries for every distinct PO object code.
+  CREATE INDEX IF NOT EXISTS idx_gl_entries_object_account_code ON gl_entries(object_account_code);
   CREATE INDEX IF NOT EXISTS idx_pos_wom_number ON pos(wom_number);
 
   -- catchUpTasks() (server/routes/tasks.js) re-scans these every time it
@@ -2021,7 +2048,13 @@ function countOpenVendorTasks(vendorId) {
   return total;
 }
 
-function presentVendorRow(v) {
+// The fields derivable straight from a vendor row, with no further queries
+// -- shared by the single-record path (presentVendorRow, below) and the
+// bulk list path (listVendors), which attaches the four query-backed extras
+// (openTaskCount, expiredComplianceCategories, territories, contracted
+// summary) itself from lookups computed once for the whole list rather
+// than once per vendor.
+function presentVendorRowBase(v) {
   const coiLimits = {};
   for (const [key, col] of VENDOR_COI_FIELDS) coiLimits[key] = v[col] || "";
 
@@ -2070,6 +2103,12 @@ function presentVendorRow(v) {
     createdBy: v.created_by || null,
     createdAt: v.created_at,
     updatedAt: v.updated_at,
+  };
+}
+
+function presentVendorRow(v) {
+  return {
+    ...presentVendorRowBase(v),
     openTaskCount: countOpenVendorTasks(v.id),
     expiredComplianceCategories: listExpiredVendorComplianceCategories(v.id),
     territories: getVendorTerritories(v.id),
@@ -2079,8 +2118,93 @@ function presentVendorRow(v) {
 
 const ONBOARDING_STAGES = ["not_started", "in_progress", "denied", "onboarded"];
 
+// Same output as vendors.map(presentVendorRow), but each of the four
+// query-backed extras is fetched ONCE for every vendor at once (a handful
+// of GROUP BY queries) instead of once per vendor -- presentVendorRow's
+// four lookups otherwise turn a 200-vendor Directory load into 800+
+// separate queries. Single-vendor lookups (findVendor) stay on the plain
+// per-id path above; there's only one row there, so there's no N+1 to fix.
 function listVendors() {
-  return db.prepare("SELECT * FROM vendors ORDER BY name").all().map(presentVendorRow);
+  const vendors = db.prepare("SELECT * FROM vendors ORDER BY name").all();
+  if (vendors.length === 0) return [];
+
+  const openTaskCounts = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT related_vendor_id AS vendorId, COUNT(*) AS n FROM tasks
+       WHERE related_vendor_id IS NOT NULL AND status IN ('open', 'in_progress', 'waiting')
+       GROUP BY related_vendor_id`
+    )
+    .all()) {
+    openTaskCounts.set(r.vendorId, r.n);
+  }
+
+  const expiredCategories = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT related_id AS vendorId, category FROM files
+       WHERE related_type = 'vendor' AND category IN ('coi', 'w9', 'ach')
+       AND expires_at IS NOT NULL AND expires_at <= ?`
+    )
+    .all(new Date().toISOString().slice(0, 10))) {
+    const id = Number(r.vendorId);
+    if (!expiredCategories.has(id)) expiredCategories.set(id, []);
+    expiredCategories.get(id).push(r.category);
+  }
+
+  const territories = new Map();
+  const addTerritory = (vendorId, territory) => {
+    if (!territories.has(vendorId)) territories.set(vendorId, new Set());
+    territories.get(vendorId).add(territory);
+  };
+  for (const r of db
+    .prepare("SELECT vendor_id AS vendorId, region AS territory FROM pos WHERE vendor_id IS NOT NULL AND region IS NOT NULL AND region != ''")
+    .all()) {
+    addTerritory(r.vendorId, r.territory);
+  }
+  for (const r of db
+    .prepare(
+      `SELECT w.vendor_id AS vendorId, l.territory AS territory FROM woms w JOIN locations l ON l.code = w.location_code
+       WHERE w.vendor_id IS NOT NULL AND l.territory IS NOT NULL AND l.territory != ''`
+    )
+    .all()) {
+    addTerritory(r.vendorId, r.territory);
+  }
+
+  const contractedSpend = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT vendor_id AS vendorId, COALESCE(SUM(applied_contracted), 0) AS total, COUNT(*) AS womCount FROM woms
+       WHERE vendor_id IS NOT NULL AND applied_contracted IS NOT NULL AND status != 'cancelled'
+       GROUP BY vendor_id`
+    )
+    .all()) {
+    contractedSpend.set(r.vendorId, { total: r.total, womCount: r.womCount });
+  }
+
+  const lastInvoiced = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT w.vendor_id AS vendorId, MAX(wls.completed_at) AS lastInvoicedAt FROM wom_lifecycle_steps wls
+       JOIN woms w ON w.code = wls.wom_code WHERE w.vendor_id IS NOT NULL AND wls.step_key = 'invoiced'
+       GROUP BY w.vendor_id`
+    )
+    .all()) {
+    lastInvoiced.set(r.vendorId, r.lastInvoicedAt);
+  }
+
+  return vendors.map((v) => {
+    const spend = contractedSpend.get(v.id) || { total: 0, womCount: 0 };
+    return {
+      ...presentVendorRowBase(v),
+      openTaskCount: openTaskCounts.get(v.id) || 0,
+      expiredComplianceCategories: expiredCategories.get(v.id) || [],
+      territories: Array.from(territories.get(v.id) || []).sort(),
+      totalContractedApplied: spend.total,
+      contractedWomCount: spend.womCount,
+      lastInvoicedAt: lastInvoiced.get(v.id) || null,
+    };
+  });
 }
 
 function findVendor(id) {
@@ -3307,8 +3431,24 @@ function womWithRemaining(wom) {
   return { ...wom, usedHours: total, remainingHours: round2(wom.budget_hours - total) };
 }
 
+// Same output as rows.map(womWithRemaining), but the per-WOM "hours used"
+// sum is computed ONCE for every WOM at once (a single GROUP BY) instead of
+// once per WOM -- womWithRemaining's own query otherwise runs a separate
+// SUM over `allocations` (one of this app's largest tables) for every row
+// on every WOM Projects page load. findWom (a single record) stays on the
+// plain per-code path; there's nothing to batch for one WOM.
 function listWoms() {
-  return db.prepare("SELECT * FROM woms ORDER BY rowid").all().map(womWithRemaining);
+  const woms = db.prepare("SELECT * FROM woms ORDER BY rowid").all();
+  if (woms.length === 0) return [];
+  const usedHours = new Map();
+  for (const r of db.prepare("SELECT wom_code AS womCode, COALESCE(SUM(hours), 0) AS total FROM allocations GROUP BY wom_code").all()) {
+    usedHours.set(r.womCode, r.total);
+  }
+  return woms.map((wom) => {
+    if (wom.budget_hours == null) return { ...wom, usedHours: null, remainingHours: null };
+    const total = usedHours.get(wom.code) || 0;
+    return { ...wom, usedHours: total, remainingHours: round2(wom.budget_hours - total) };
+  });
 }
 
 function findWom(code) {
@@ -6408,7 +6548,11 @@ function findVendorByNumber(vendorNumber) {
   return db.prepare("SELECT id FROM vendors WHERE jde_vendor_number = ?").get(trimmed);
 }
 
-function presentPoRow(p) {
+// The fields derivable straight from a PO row, with no further queries --
+// shared by the single-record path (presentPoRow) and the bulk list path
+// (presentPoRows, used by listPos), which resolves locationName/territory/
+// vendorLinkedName/adminMatched from lookups built once for the whole list.
+function presentPoRowBase(p) {
   return {
     id: p.id,
     lineNumber: p.line_number,
@@ -6419,8 +6563,6 @@ function presentPoRow(p) {
     efJobNumberRaw: p.ef_job_number_raw,
     efJobNumber: p.ef_job_number,
     locationCode: p.location_code,
-    locationName: p.location_code ? (findLocation(p.location_code) || {}).name || null : null,
-    territory: poTerritory(p),
     region: p.region,
     regionConfirmed: Boolean(p.region_confirmed),
     poAmount: p.po_amount,
@@ -6429,7 +6571,6 @@ function presentPoRow(p) {
     vendorName: p.vendor_name,
     vendorNumber: p.vendor_number,
     vendorId: p.vendor_id,
-    vendorLinkedName: p.vendor_id ? (findVendor(p.vendor_id) || {}).name || null : null,
     vendorLinkConfirmed: Boolean(p.vendor_link_confirmed),
     vendorLinkStatus: p.vendor_id ? "matched" : "needs_matching",
     ppsJobNumber: p.pps_job_number,
@@ -6440,7 +6581,6 @@ function presentPoRow(p) {
     objectCode: p.object_code,
     subsidiary: p.subsidiary,
     adminName: p.admin_name,
-    adminMatched: Boolean(activeAdminMatch(p.admin_name)),
     urgent: Boolean(p.urgent),
     urgentNotes: p.urgent_notes,
     lifecycleStatus: p.lifecycle_status,
@@ -6450,6 +6590,61 @@ function presentPoRow(p) {
     createdAt: p.created_at,
     updatedAt: p.updated_at,
   };
+}
+
+function presentPoRow(p) {
+  return {
+    ...presentPoRowBase(p),
+    locationName: p.location_code ? (findLocation(p.location_code) || {}).name || null : null,
+    territory: poTerritory(p),
+    vendorLinkedName: p.vendor_id ? (findVendor(p.vendor_id) || {}).name || null : null,
+    adminMatched: Boolean(activeAdminMatch(p.admin_name)),
+  };
+}
+
+// Same output as rows.map(presentPoRow), but locations/vendor names/active
+// admins are each fetched ONCE for the whole list rather than once per PO.
+// presentPoRow's vendorLinkedName lookup is the worst offender -- findVendor
+// runs a vendor's entire presented row (territories, compliance, contracted
+// summary: 5+ queries) just to read its name, so a few hundred PO rows with
+// a matched vendor turned into well over a thousand queries for one Budget
+// PO Tracker load. findPo (a single row) stays on the plain per-id path
+// above; there's nothing to batch for one record.
+function presentPoRows(rows) {
+  if (rows.length === 0) return [];
+
+  const locationsByCode = new Map(db.prepare("SELECT * FROM locations").all().map((l) => [l.code, l]));
+  const vendorNamesById = new Map(db.prepare("SELECT id, name FROM vendors").all().map((v) => [v.id, v.name]));
+  const activeAdminsByName = new Map(
+    listAdmins()
+      .filter((a) => a.employment_status === "active")
+      .map((a) => [String(a.name || "").trim().toLowerCase(), a])
+  );
+  const resolveAdmin = (name) => {
+    if (!name) return null;
+    const target = String(name).trim().toLowerCase();
+    return target ? activeAdminsByName.get(target) || null : null;
+  };
+  const resolveTerritory = (p) => {
+    const admin = resolveAdmin(p.admin_name);
+    if (admin && admin.home_location_code) {
+      const loc = locationsByCode.get(admin.home_location_code);
+      if (loc && loc.territory) return loc.territory;
+    }
+    if (p.location_code) {
+      const loc = locationsByCode.get(p.location_code);
+      if (loc && loc.territory) return loc.territory;
+    }
+    return null;
+  };
+
+  return rows.map((p) => ({
+    ...presentPoRowBase(p),
+    locationName: p.location_code ? (locationsByCode.get(p.location_code) || {}).name || null : null,
+    territory: resolveTerritory(p),
+    vendorLinkedName: p.vendor_id ? vendorNamesById.get(p.vendor_id) || null : null,
+    adminMatched: Boolean(resolveAdmin(p.admin_name)),
+  }));
 }
 
 function listPos(filters = {}) {
@@ -6516,11 +6711,8 @@ function listPos(filters = {}) {
     params.push(like, like, like, like);
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const rows = db
-    .prepare(`SELECT * FROM pos ${where} ORDER BY date_requested DESC, id DESC`)
-    .all(...params)
-    .map(presentPoRow);
-  return attachOpenReclassFlags(rows);
+  const rawRows = db.prepare(`SELECT * FROM pos ${where} ORDER BY date_requested DESC, id DESC`).all(...params);
+  return attachOpenReclassFlags(presentPoRows(rawRows));
 }
 
 // Which of these POs already has an open (not yet confirmed-posted or
@@ -7833,19 +8025,12 @@ function getGlReconciliationSummary() {
 // format gl_entries.object_account_code already parses out of a GL line's
 // full "647200 - Gen B&A~Cell Phone" text (see parseObjectAccountCode) --
 // but a PO never carries the human-readable category name itself, only the
-// GL extract does. Resolves a PO's object code to the same category name
-// Spend Analysis already groups GL lines by, by looking up the most recent
-// real GL line that used this exact code. A code that's never shown up on
-// any imported GL yet has nothing to resolve against -- falls through to
-// the same "Unknown / Uncategorized" bucket GL lines with no parseable
-// category already use.
-function resolveCategoryForObjectCode(objectCode) {
-  if (!objectCode) return null;
-  const row = db
-    .prepare("SELECT object_account FROM gl_entries WHERE object_account_code = ? AND object_account LIKE '%~%' ORDER BY id DESC LIMIT 1")
-    .get(objectCode);
-  return row ? parseObjectAccountCategory(row.object_account) : null;
-}
+// GL extract does. getPoRemainingAmounts (below) resolves each PO's object
+// code to the same category name Spend Analysis already groups GL lines
+// by, from the most recent real GL line that used that exact code. A code
+// that's never shown up on any imported GL yet has nothing to resolve
+// against -- falls through to the same "Unknown / Uncategorized" bucket GL
+// lines with no parseable category already use.
 
 // The "current estimated PO" layer Spend Analysis's own checkbox adds on
 // top of GL actuals: for every Active PO with a dollar amount on file,
@@ -7867,6 +8052,23 @@ function getPoRemainingAmounts({ territory } = {}) {
     )
     .all();
 
+  // Resolve each DISTINCT PO object_code's category once instead of once
+  // per PO row below -- several POs typically share the same handful of
+  // codes, so this call count is bounded by how many distinct codes are in
+  // play, not how many active POs there are. Each lookup is still its own
+  // indexed, LIMIT-1 query (idx_gl_entries_object_account_code, added
+  // alongside this) rather than one unbounded query across every code at
+  // once, which would pull back every GL row for every common code just to
+  // keep its single most recent match.
+  const neededCodes = [...new Set(rows.map((r) => r.object_code).filter(Boolean))];
+  const categoryByCode = new Map();
+  for (const code of neededCodes) {
+    const row = db
+      .prepare("SELECT object_account FROM gl_entries WHERE object_account_code = ? AND object_account LIKE '%~%' ORDER BY id DESC LIMIT 1")
+      .get(code);
+    categoryByCode.set(code, row ? parseObjectAccountCategory(row.object_account) : null);
+  }
+
   const byCategory = new Map();
   const byTerritory = new Map();
   let totalAmount = 0;
@@ -7880,7 +8082,7 @@ function getPoRemainingAmounts({ territory } = {}) {
     poCount++;
     totalAmount += remaining;
 
-    const category = resolveCategoryForObjectCode(r.object_code) || "Unknown / Uncategorized";
+    const category = (r.object_code ? categoryByCode.get(r.object_code) : null) || "Unknown / Uncategorized";
     const c = byCategory.get(category) || { category, total: 0, count: 0 };
     c.total += remaining;
     c.count += 1;
