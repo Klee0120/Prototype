@@ -135,11 +135,13 @@ let lastTerritoryForLocationFilter = undefined;
 // re-render on every single click -- check a box, wait for the load, check
 // the next, wait again. Debouncing collapses a quick run of clicks into one
 // reload after the last change settles, same pattern as the search-input
-// debounce elsewhere in this app (e.g. pos.js's debounceRefetch).
+// debounce elsewhere in this app (e.g. pos.js's debounceRefetch). 3 seconds
+// (per Krista, deliberately long) so there's real room to check several
+// boxes in a row before it reloads, not just room for one quick double-click.
 let spendToggleDebounceTimer = null;
 function debouncedRerenderSpendBreakdown(container) {
   clearTimeout(spendToggleDebounceTimer);
-  spendToggleDebounceTimer = setTimeout(() => renderSpendBreakdown(container), 350);
+  spendToggleDebounceTimer = setTimeout(() => renderSpendBreakdown(container), 3000);
 }
 // null until resolved against the fiscal years actually on file (see
 // resolveDefaultFiscalYear) -- today's calendar year if it has data,
@@ -406,24 +408,6 @@ export async function renderSpendBreakdown(container) {
       </div>
     </div>
     <div class="spend-card">
-      <h2 class="spend-card-heading">By territory</h2>
-      <table class="detail-table spend-territory-table spend-clickable-table">
-        <thead><tr><th>Territory</th><th>Total</th><th>Lines</th></tr></thead>
-        <tbody>
-          ${data.territories
-            .map(
-              (t) => `
-            <tr class="spend-drill-row" data-territory="${escapeHtml(t.territory)}" tabindex="0">
-              <td>${escapeHtml(t.territory)}</td>
-              <td>${formatMoney(t.total)}</td>
-              <td>${t.count.toLocaleString()}</td>
-            </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
-    </div>
-    <div class="spend-card">
       <h2 class="spend-card-heading">Every category</h2>
       <p class="review-checklist-hint">Includes negative-net categories (credits/reversals), which the chart above can't wedge. Click a row to see its GL lines.</p>
       <table class="detail-table spend-category-table spend-clickable-table">
@@ -497,17 +481,16 @@ export async function renderSpendBreakdown(container) {
     });
   });
 
+  // Category rows are the only clickable drill-down left (By Territory was
+  // dropped as redundant with the stat bar/topbar filter, and By Location
+  // filters the whole page itself rather than opening this modal -- see the
+  // spend-location-chip click handler below).
   const openRowDetail = (row) => {
     const category = row.dataset.category || null;
-    const territoryFilter = row.dataset.territory || null;
     openSpendDetailModal({
       category,
-      territory: territoryFilter,
-      // The By Location chips filter the whole page (see the
-      // spend-location-chip click handler below) rather than drilling into
-      // a GL-line modal, but a location filter is still passed through to
-      // this modal when one's active, so a category/territory drill-down
-      // stays scoped to it too instead of showing every location's lines.
+      // Both still passed through so a category drill-down stays scoped to
+      // whatever territory/location the page itself is currently showing.
       location: selectedLocation,
       territoryGlobal: territory,
       fiscalYear: allYearsSelected ? null : selectedFiscalYear,
