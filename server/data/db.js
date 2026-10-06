@@ -8034,25 +8034,28 @@ function summarizeUnmatchedLocations(items) {
 // to them (tech_devices.device_type IN ('phone', 'ipad'), so someone
 // carrying more than one line -- or a cellular iPad with its own line on
 // the plan -- is still matched on each). A laptop's asset tag/serial never
-// false-matches here since normalizePhoneDigits requires 10+ digits. Built
-// fresh per call, not cached -- this backs an admin report, not a hot
-// path, and device assignments change.
+// false-matches here since normalizePhoneDigits requires 10+ digits.
+// Carries employmentStatus too so getCellPhoneCharges can flag a line
+// still billing a terminated employee's old number -- the company paying
+// for a line nobody's using anymore. Built fresh per call, not cached --
+// this backs an admin report, not a hot path, and device assignments
+// change.
 function buildTechPhoneRoster() {
-  const roster = new Map(); // last-10-digits -> { id, name }
-  for (const t of db.prepare("SELECT id, name, phone FROM technicians").all()) {
+  const roster = new Map(); // last-10-digits -> { id, name, employmentStatus }
+  for (const t of db.prepare("SELECT id, name, phone, employment_status AS employmentStatus FROM technicians").all()) {
     const digits = normalizePhoneDigits(t.phone);
-    if (digits) roster.set(digits, { id: t.id, name: t.name });
+    if (digits) roster.set(digits, { id: t.id, name: t.name, employmentStatus: t.employmentStatus });
   }
   const phoneDevices = db
     .prepare(
-      `SELECT d.device_name AS deviceName, t.id AS techId, t.name AS techName
+      `SELECT d.device_name AS deviceName, t.id AS techId, t.name AS techName, t.employment_status AS employmentStatus
        FROM tech_devices d JOIN technicians t ON t.id = d.tech_id
        WHERE d.device_type IN ('phone', 'ipad')`
     )
     .all();
   for (const d of phoneDevices) {
     const digits = normalizePhoneDigits(d.deviceName);
-    if (digits) roster.set(digits, { id: d.techId, name: d.techName });
+    if (digits) roster.set(digits, { id: d.techId, name: d.techName, employmentStatus: d.employmentStatus });
   }
   return roster;
 }
@@ -8134,6 +8137,10 @@ function getCellPhoneCharges({ territory, fiscalYear } = {}) {
       // match failed.
       assignedToId: match ? match.id : null,
       assignedToName: match ? match.name : null,
+      // The company is still being billed for this line even though
+      // whoever it's assigned to has left -- a real wasted-spend flag,
+      // not just a data-quality one (see assignedToId/Name above).
+      assignedToTerminated: match ? match.employmentStatus === "terminated" : false,
     });
   }
 
@@ -8142,7 +8149,15 @@ function getCellPhoneCharges({ territory, fiscalYear } = {}) {
     const key = it.phoneNumber || "Unknown #";
     const p =
       byPhone.get(key) ||
-      { phoneNumber: key, total: 0, count: 0, months: new Set(), locationLabel: it.locationLabel, assignedToName: it.assignedToName };
+      {
+        phoneNumber: key,
+        total: 0,
+        count: 0,
+        months: new Set(),
+        locationLabel: it.locationLabel,
+        assignedToName: it.assignedToName,
+        assignedToTerminated: it.assignedToTerminated,
+      };
     p.total += it.amount || 0;
     p.count += 1;
     p.months.add(it.month);
@@ -8162,8 +8177,14 @@ function getCellPhoneCharges({ territory, fiscalYear } = {}) {
         monthCount: p.months.size,
         locationLabel: p.locationLabel,
         assignedToName: p.assignedToName,
+        assignedToTerminated: p.assignedToTerminated,
       }))
       .sort((a, b) => b.total - a.total),
+    // Lines billed for someone who's since left -- surfaced up top as its
+    // own count/total, not just a per-row badge, since this is money that
+    // could likely be cancelled outright.
+    terminatedCount: items.filter((it) => it.assignedToTerminated).length,
+    terminatedTotal: round(items.filter((it) => it.assignedToTerminated).reduce((sum, it) => sum + (it.amount || 0), 0)),
     unmatchedLocations: summarizeUnmatchedLocations(items),
   };
 }

@@ -565,6 +565,43 @@ test("GL Spend Breakdown: WOM-reference scoping, fiscal-month range, and GL-line
     assert.equal(grouped.assignedToName, "Alex Rivera");
   });
 
+  // Still being billed for a line assigned to someone no longer employed --
+  // flagged both per-line (assignedToTerminated) and as its own
+  // count/total, since that's money that's likely worth cancelling.
+  await t.test("getCellPhoneCharges flags a line still assigned to a terminated employee", async () => {
+    const FY = 49;
+    db.createTechnician({ id: "GLTERM1", name: "Gone Fromhere", pin: "4444", phone: "216-555-3030" });
+    db.setEmploymentStatus("GLTERM1", "terminated");
+
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 25, remark: "2165553030" }, // terminated tech's old line
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, remark: "6095550142" }, // T1001, still active
+      ],
+      1,
+      FY,
+      "ADMIN",
+      "t-cellphone-terminated.xlsx"
+    );
+
+    const data = db.getCellPhoneCharges({ fiscalYear: FY });
+    const terminatedLine = data.items.find((i) => i.phoneNumberRaw === "2165553030");
+    assert.equal(terminatedLine.assignedToId, "GLTERM1");
+    assert.equal(terminatedLine.assignedToTerminated, true);
+
+    const activeLine = data.items.find((i) => i.phoneNumberRaw === "6095550142");
+    assert.equal(activeLine.assignedToTerminated, false);
+
+    assert.equal(data.terminatedCount, 1);
+    assert.equal(data.terminatedTotal, 25);
+
+    const grouped = data.byPhone.find((p) => p.phoneNumber === "(216) 555-3030");
+    assert.equal(grouped.assignedToTerminated, true);
+
+    const res = await server.call("GET", `/api/admin/gl/cell-phones?fiscalYear=${FY}`, { userId: "ADMIN" });
+    assert.equal(res.body.terminatedCount, 1);
+  });
+
   await t.test("getMealsCharges keeps the two Meals categories separate and groups by the raw description, never fabricating a name", async () => {
     const FY = 46;
     db.importGlEntries(

@@ -2385,6 +2385,13 @@ h1, h2, h3, h4 {
   border-radius: var(--radius);
   padding: 16px;
 }
+.wom-stat-card-danger {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+.wom-stat-card-danger .wom-stat-value {
+  color: var(--danger);
+}
 
 .wom-stat-icon {
   width: 44px;

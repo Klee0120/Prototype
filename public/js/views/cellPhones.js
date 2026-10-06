@@ -91,10 +91,15 @@ export async function renderCellPhones(container) {
         <span class="wom-stat-icon">&#128100;</span>
         <div><div class="wom-stat-label">Matched to roster</div><div class="wom-stat-value">${data.byPhone.filter((p) => p.assignedToName).length} / ${data.byPhone.length}</div></div>
       </div>
+      <div class="wom-stat-card ${data.terminatedCount > 0 ? "wom-stat-card-danger" : ""}">
+        <span class="wom-stat-icon">&#9888;&#65039;</span>
+        <div><div class="wom-stat-label">Billing a terminated employee</div><div class="wom-stat-value">${data.terminatedCount} line${data.terminatedCount === 1 ? "" : "s"}${data.terminatedCount > 0 ? ` &middot; ${formatMoney(data.terminatedTotal)}` : ""}</div></div>
+      </div>
     </div>
     <p class="review-checklist-hint">
       "Assigned to" matches each number against every technician's phone # (Basic Info) and any phone- or iPad-type
-      device on their profile -- add a tech's number there to pick up the match here.
+      device on their profile -- add a tech's number there to pick up the match here. A number still assigned to
+      someone whose Employment Status is Terminated is flagged below -- that's a line likely worth cancelling.
     </p>
     ${renderUnmatchedLocations(data.unmatchedLocations)}
     <div id="cellphone-body"></div>
@@ -146,7 +151,11 @@ function renderByMonth(items) {
                 (it) => `
               <tr>
                 <td>${escapeHtml(it.phoneNumber || "—")}</td>
-                <td>${it.assignedToName ? escapeHtml(it.assignedToName) : '<span class="cellphone-unassigned">Not on roster</span>'}</td>
+                <td>${
+                  it.assignedToName
+                    ? `${escapeHtml(it.assignedToName)}${it.assignedToTerminated ? ' <span class="badge badge-rejected">Terminated</span>' : ""}`
+                    : '<span class="cellphone-unassigned">Not on roster</span>'
+                }</td>
                 <td>${it.glDate ? escapeHtml(String(it.glDate).slice(0, 10)) : "—"}</td>
                 <td>${it.locationLabel ? escapeHtml(it.locationLabel) : "—"}</td>
                 <td>${formatMoney(it.amount)}</td>
@@ -171,7 +180,11 @@ function renderByPhone(byPhone) {
             (p) => `
           <tr>
             <td>${escapeHtml(p.phoneNumber)}</td>
-            <td>${p.assignedToName ? escapeHtml(p.assignedToName) : '<span class="cellphone-unassigned">Not on roster</span>'}</td>
+            <td>${
+              p.assignedToName
+                ? `${escapeHtml(p.assignedToName)}${p.assignedToTerminated ? ' <span class="badge badge-rejected">Terminated</span>' : ""}`
+                : '<span class="cellphone-unassigned">Not on roster</span>'
+            }</td>
             <td>${p.locationLabel ? escapeHtml(p.locationLabel) : "—"}</td>
             <td>${p.monthCount}</td>
             <td>${p.count}</td>
