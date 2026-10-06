@@ -117,6 +117,16 @@ let includeWomReferenced = false;
 // snapshot of today's open commitment, not tied to the fiscal year/period
 // filter the way a GL line is -- see db.getPoRemainingAmounts.
 let includePoRemaining = false;
+// Checking all three scope toggles one after another used to re-fetch and
+// re-render on every single click -- check a box, wait for the load, check
+// the next, wait again. Debouncing collapses a quick run of clicks into one
+// reload after the last change settles, same pattern as the search-input
+// debounce elsewhere in this app (e.g. pos.js's debounceRefetch).
+let spendToggleDebounceTimer = null;
+function debouncedRerenderSpendBreakdown(container) {
+  clearTimeout(spendToggleDebounceTimer);
+  spendToggleDebounceTimer = setTimeout(() => renderSpendBreakdown(container), 350);
+}
 // null until resolved against the fiscal years actually on file (see
 // resolveDefaultFiscalYear) -- today's calendar year if it has data,
 // otherwise whatever's most recent, so last year's numbers don't silently
@@ -380,15 +390,15 @@ export async function renderSpendBreakdown(container) {
 
   container.querySelector(".spend-include-po-toggle")?.addEventListener("change", (e) => {
     includePoReferenced = e.target.checked;
-    renderSpendBreakdown(container);
+    debouncedRerenderSpendBreakdown(container);
   });
   container.querySelector(".spend-include-wom-toggle")?.addEventListener("change", (e) => {
     includeWomReferenced = e.target.checked;
-    renderSpendBreakdown(container);
+    debouncedRerenderSpendBreakdown(container);
   });
   container.querySelector(".spend-include-po-remaining-toggle")?.addEventListener("change", (e) => {
     includePoRemaining = e.target.checked;
-    renderSpendBreakdown(container);
+    debouncedRerenderSpendBreakdown(container);
   });
   container.querySelector(".spend-fy-select")?.addEventListener("change", (e) => {
     const v = e.target.value;
