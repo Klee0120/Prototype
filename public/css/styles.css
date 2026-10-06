@@ -5203,6 +5203,14 @@ button.vendor-preferred-star:hover {
   font-weight: normal;
   padding: 4px 6px;
 }
+.spend-fy-select-label input[type="text"] {
+  font-size: 13px;
+  font-weight: normal;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 200px;
+}
 .spend-no-calendar-note {
   font-size: 12px;
   color: var(--text-secondary, #666);

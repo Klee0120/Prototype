@@ -11,6 +11,12 @@ function formatMoney(n) {
 let selectedFiscalYear = null;
 let groupBy = "month"; // "month" | "description"
 let cachedFiscalYears = null;
+let searchQuery = "";
+let lastData = null; // last-fetched payload, re-filtered/re-rendered locally on search so typing never refetches or loses input focus
+
+function matchesSearch(text, query) {
+  return !query || (text || "").toLowerCase().includes(query);
+}
 
 async function loadFiscalYears() {
   if (cachedFiscalYears) return cachedFiscalYears;
@@ -60,6 +66,7 @@ export async function renderMeals(container) {
     container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
     return;
   }
+  lastData = data;
 
   const yearOptions = [`<option value="all" ${allYearsSelected ? "selected" : ""}>All fiscal years</option>`]
     .concat(years.map((y) => `<option value="${y}" ${!allYearsSelected && selectedFiscalYear === y ? "selected" : ""}>FY${y}</option>`))
@@ -75,6 +82,10 @@ export async function renderMeals(container) {
         <button type="button" class="tab ${groupBy === "month" ? "active" : ""}" data-group="month">By month</button>
         <button type="button" class="tab ${groupBy === "description" ? "active" : ""}" data-group="description">By name / description</button>
       </div>
+      <label class="spend-fy-select-label">
+        Search name / description
+        <input type="text" class="meals-search-input" placeholder="Type a name..." value="${escapeHtml(searchQuery)}" />
+      </label>
     </div>
     <div class="wom-stat-cards">
       <div class="wom-stat-card">
@@ -107,16 +118,39 @@ export async function renderMeals(container) {
   container.querySelectorAll(".cellphone-groupby-toggle [data-group]").forEach((btn) => {
     btn.addEventListener("click", () => {
       groupBy = btn.dataset.group;
-      renderMeals(container);
+      drawBody(container);
     });
   });
+  container.querySelector(".meals-search-input").addEventListener("input", (e) => {
+    searchQuery = e.target.value.trim().toLowerCase();
+    drawBody(container);
+  });
 
+  drawBody(container);
+}
+
+// Filters/re-renders just the results table from the already-fetched
+// payload -- typing in the search box (or flipping the By month/By
+// description toggle) never refetches or rebuilds the filter row, so the
+// search input never loses focus or its cursor position mid-type.
+function drawBody(container) {
   const body = container.querySelector("#meals-body");
-  if (data.count === 0) {
+  const data = lastData;
+  if (!data || data.count === 0) {
     body.innerHTML = `<p class="empty-note">No Meals GL lines for this scope.</p>`;
     return;
   }
-  body.innerHTML = groupBy === "description" ? renderByDescription(data.byDescription) : renderByMonth(data.items);
+  if (groupBy === "description") {
+    const filtered = data.byDescription.filter((d) => matchesSearch(d.description, searchQuery) || matchesSearch(d.locationLabel, searchQuery));
+    body.innerHTML = filtered.length
+      ? renderByDescription(filtered)
+      : `<p class="empty-note">No name / description matches "${escapeHtml(searchQuery)}".</p>`;
+  } else {
+    const filtered = data.items.filter((it) => matchesSearch(it.description, searchQuery) || matchesSearch(it.locationLabel, searchQuery));
+    body.innerHTML = filtered.length
+      ? renderByMonth(filtered)
+      : `<p class="empty-note">No name / description matches "${escapeHtml(searchQuery)}".</p>`;
+  }
 }
 
 function renderByMonth(items) {
