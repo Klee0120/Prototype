@@ -27,6 +27,7 @@ function presentTechnician(t) {
     homeLocationCode: t.home_location_code,
     email: t.email,
     phone: t.phone,
+    ipad: t.ipad,
     ukgId: t.ukg_id,
     position: t.position,
     hireDate: t.hire_date,
@@ -116,6 +117,17 @@ router.post("/technicians/bulk", (req, res) => {
   res.status(created.length > 0 ? 201 : 400).json({ created, errors });
 });
 
+// Numbers already on a Cell Phone GL bill (see db.listKnownCellPhoneNumbers)
+// -- offered as suggestions on the Devices tab's Phone/iPad # field instead
+// of typing one blind, since these are lines the company already pays for.
+// A plain collection-level route, not territory/Financials-gated -- every
+// admin manages devices regardless of their own territory. Registered
+// before the "/technicians/:id" routes below so it isn't swallowed by that
+// wildcard.
+router.get("/technicians/known-phone-numbers", (req, res) => {
+  res.json(db.listKnownCellPhoneNumbers());
+});
+
 // For a technician created by mistake -- a test entry, real data typed into
 // the wrong row -- rather than leaving it under some employment status
 // forever. Blocked with a 409 if they have allocated hours on record unless
@@ -187,7 +199,7 @@ router.patch("/technicians/:id/basic-info", (req, res) => {
   const tech = db.findTechnician(req.params.id);
   if (!tech || tech.role !== "tech") return res.status(404).json({ error: "Technician not found" });
 
-  const { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours } = req.body || {};
+  const { email, phone, ipad, ukgId, position, hireDate, terminationDate, standardDailyHours } = req.body || {};
   if (hireDate && !DATE_RE.test(hireDate)) return res.status(400).json({ error: "hireDate must be YYYY-MM-DD" });
   if (terminationDate && !DATE_RE.test(terminationDate)) {
     return res.status(400).json({ error: "terminationDate must be YYYY-MM-DD" });
@@ -197,7 +209,7 @@ router.patch("/technicians/:id/basic-info", (req, res) => {
     if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: "standardDailyHours must be a non-negative number" });
   }
 
-  db.setTechnicianBasicInfo(tech.id, { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours });
+  db.setTechnicianBasicInfo(tech.id, { email, phone, ipad, ukgId, position, hireDate, terminationDate, standardDailyHours });
   db.addAudit(req.user.id, "TECH_BASIC_INFO_UPDATED", `${req.user.name} updated ${tech.name}'s basic info`);
   res.json(presentTechnician(db.findTechnician(tech.id)));
 });

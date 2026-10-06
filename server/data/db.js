@@ -617,6 +617,14 @@ for (const col of ["email", "phone", "ukg_id", "position", "hire_date", "termina
     db.exec(`ALTER TABLE technicians ADD COLUMN ${col} TEXT`);
   }
 }
+// The tech's primary iPad # on Basic Info -- same role `phone` already
+// plays, except there was never anywhere to put it. Saving it here also
+// auto-registers (or updates) a matching ipad-type device on the Devices
+// tab -- see syncIpadDevice -- instead of leaving that as a second, manual
+// step for a number already on file.
+if (!hasColumn("technicians", "ipad")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN ipad TEXT");
+}
 if (!hasColumn("technicians", "standard_daily_hours")) {
   db.exec("ALTER TABLE technicians ADD COLUMN standard_daily_hours REAL");
 }
@@ -1646,14 +1654,15 @@ function setAdminBasicInfo(id, { ukgId, hireDate, homeLocationCode, email } = {}
   return findTechnician(id);
 }
 
-function setTechnicianBasicInfo(techId, { email, phone, ukgId, position, hireDate, terminationDate, standardDailyHours }) {
+function setTechnicianBasicInfo(techId, { email, phone, ipad, ukgId, position, hireDate, terminationDate, standardDailyHours }) {
   db.prepare(
     `UPDATE technicians
-     SET email = ?, phone = ?, ukg_id = ?, position = ?, hire_date = ?, termination_date = ?, standard_daily_hours = ?
+     SET email = ?, phone = ?, ipad = ?, ukg_id = ?, position = ?, hire_date = ?, termination_date = ?, standard_daily_hours = ?
      WHERE id = ?`
   ).run(
     email || null,
     phone || null,
+    ipad || null,
     ukgId || null,
     position || null,
     hireDate || null,
@@ -1661,7 +1670,32 @@ function setTechnicianBasicInfo(techId, { email, phone, ukgId, position, hireDat
     standardDailyHours === "" || standardDailyHours == null ? null : Number(standardDailyHours),
     techId
   );
+  syncIpadDevice(techId, ipad);
   return findTechnician(techId);
+}
+
+// Keeps this tech's primary ipad-type device (Devices tab) in sync with
+// whatever iPad # is on file in Basic Info, so it shows up there -- ready
+// for an IT request (upgrade, replacement, whatever) -- without a second,
+// separate "Assign device" step for a number the company already owns and
+// has on record. There's meant to be just the one primary line here, same
+// role as `phone`; the oldest existing ipad-type device is treated as that
+// primary one. A genuinely second iPad for someone still gets added by
+// hand via the regular Devices tab form. Clearing the Basic Info field
+// never deletes the device or its request history -- only a value actually
+// being set does anything here.
+function syncIpadDevice(techId, ipad) {
+  if (!ipad) return;
+  const existing = db.prepare("SELECT id FROM tech_devices WHERE tech_id = ? AND device_type = 'ipad' ORDER BY id ASC LIMIT 1").get(techId);
+  if (existing) {
+    db.prepare("UPDATE tech_devices SET device_name = ? WHERE id = ?").run(ipad, existing.id);
+  } else {
+    db.prepare("INSERT INTO tech_devices (tech_id, device_type, device_name, notes, plan, assigned_at) VALUES (?, 'ipad', ?, '', '', ?)").run(
+      techId,
+      ipad,
+      new Date().toISOString()
+    );
+  }
 }
 
 // A technician's own choice of how they hear "your hours are ready to
@@ -8019,6 +8053,21 @@ function buildTechPhoneRoster() {
   return roster;
 }
 
+// Every distinct number that's ever shown up on a Cell Phone GL bill,
+// formatted for display -- offered as suggestions when assigning a Phone
+// or iPad device, since these are numbers the company is already paying
+// for (Calero), not ones to type blind. Not scoped to a fiscal year or
+// territory -- this is a reference list for the Devices tab, not a report.
+function listKnownCellPhoneNumbers() {
+  const rows = db.prepare("SELECT DISTINCT remark FROM gl_entries WHERE object_account LIKE '%~Cell Phone%' AND remark IS NOT NULL").all();
+  const byDigits = new Map();
+  for (const r of rows) {
+    const digits = normalizePhoneDigits(r.remark);
+    if (digits && !byDigits.has(digits)) byDigits.set(digits, formatPhoneNumber(r.remark));
+  }
+  return [...byDigits.values()].sort();
+}
+
 // Cell Phone is one Spend Breakdown category (see parseObjectAccountCategory)
 // pulled out into its own purpose-built report: which number was charged,
 // how much, and in which month -- not just a flat GL-line list like the
@@ -8599,6 +8648,7 @@ module.exports = {
   getGlSpendDetailPage,
   getCellPhoneCharges,
   getMealsCharges,
+  listKnownCellPhoneNumbers,
   getReconciledPage,
   getUnmatchedEntriesPage,
   getNoPoReferenceEntriesPage,

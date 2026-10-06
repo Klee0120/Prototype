@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const db = require("../server/data/db");
 
 test("roster: technician profile (basic info, onboarding, devices, history)", async (t) => {
   const server = await startServer();
@@ -39,6 +40,32 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.body.hireDate, "2026-01-12");
     assert.equal(res.body.terminationDate, null);
     assert.equal(res.body.standardDailyHours, 8);
+  });
+
+  // Saving an iPad # on Basic Info is meant to be the one place that sets
+  // it up -- no separate "Assign device" step for a number already on file
+  // -- so it should show up on the Devices tab as its own ipad-type device
+  // immediately, and stay in sync if it's edited again.
+  await t.test("saving an iPad # on Basic Info auto-registers (and keeps in sync) an ipad-type device", async () => {
+    await server.call("PATCH", "/api/admin/technicians/T1002/basic-info", {
+      userId: "ADMIN",
+      body: { ipad: "312-555-9000" },
+    });
+    const devices1 = await server.call("GET", "/api/admin/technicians/T1002/devices", { userId: "ADMIN" });
+    const ipadDevices1 = devices1.body.filter((d) => d.deviceType === "ipad");
+    assert.equal(ipadDevices1.length, 1, "exactly one ipad-type device should be auto-created");
+    assert.equal(ipadDevices1[0].deviceName, "312-555-9000");
+
+    // Editing it again on Basic Info updates the same device, not a second one.
+    await server.call("PATCH", "/api/admin/technicians/T1002/basic-info", {
+      userId: "ADMIN",
+      body: { ipad: "312-555-9999" },
+    });
+    const devices2 = await server.call("GET", "/api/admin/technicians/T1002/devices", { userId: "ADMIN" });
+    const ipadDevices2 = devices2.body.filter((d) => d.deviceType === "ipad");
+    assert.equal(ipadDevices2.length, 1, "still just the one ipad device, updated in place");
+    assert.equal(ipadDevices2[0].id, ipadDevices1[0].id);
+    assert.equal(ipadDevices2[0].deviceName, "312-555-9999");
   });
 
   await t.test("a technician can set their own notification preference once they have an email on file", async () => {
@@ -242,6 +269,30 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     const removed = await server.call("DELETE", `/api/admin/technicians/T1001/devices/${deviceId}`, { userId: "ADMIN" });
     assert.equal(removed.status, 200);
     assert.deepEqual(removed.body, []);
+  });
+
+  await t.test("known phone numbers are read from the Cell Phone GL lines, for the Devices tab's suggestions", async () => {
+    db.importGlEntries(
+      [
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, remark: "7735550199" },
+        { glDate: "2026-10-01", objectAccount: "647200 - Gen B&A~Cell Phone", amount: 40, remark: "7735550199" }, // same number again -- dedup check
+        { glDate: "2026-10-01", objectAccount: "602210 - Gen B&A~H&W Insurance", amount: 999, remark: "7735559999" }, // not a Cell Phone line
+      ],
+      1,
+      47, // a synthetic fiscal year this file's other tests don't touch
+      "ADMIN",
+      "t-known-numbers.xlsx"
+    );
+    const res = await server.call("GET", "/api/admin/technicians/known-phone-numbers", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes("(773) 555-0199"));
+    assert.equal(res.body.filter((n) => n === "(773) 555-0199").length, 1, "the same number twice should only list once");
+    assert.ok(!res.body.includes("(773) 555-9999"), "a non-Cell-Phone GL line's number shouldn't be included");
+  });
+
+  await t.test("a technician can't reach the known-phone-numbers route", async () => {
+    const res = await server.call("GET", "/api/admin/technicians/known-phone-numbers", { userId: "T1001" });
+    assert.equal(res.status, 403);
   });
 
   await t.test("an iPad device can be assigned with an optional plan", async () => {

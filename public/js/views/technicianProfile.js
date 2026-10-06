@@ -676,6 +676,7 @@ export function renderTechniciansTab(content, openTo) {
         <label class="profile-field"><span>Name</span><input value="${escapeHtml(tech.name)}" disabled /></label>
         <label class="profile-field"><span>Email</span><input name="email" value="${escapeHtml(tech.email || "")}" /></label>
         <label class="profile-field"><span>Phone</span><input name="phone" value="${escapeHtml(tech.phone || "")}" /></label>
+        <label class="profile-field"><span>iPad #</span><input name="ipad" value="${escapeHtml(tech.ipad || "")}" /></label>
         <label class="profile-field"><span>UKG ID</span><input name="ukgId" value="${escapeHtml(tech.ukgId || "")}" /></label>
         <label class="profile-field"><span>Position</span><input name="position" value="${escapeHtml(tech.position || "")}" /></label>
         <label class="profile-field">
@@ -726,6 +727,7 @@ export function renderTechniciansTab(content, openTo) {
         await api.patch(`/api/admin/technicians/${tech.id}/basic-info`, {
           email: form.email.value.trim(),
           phone: form.phone.value.trim(),
+          ipad: form.ipad.value.trim(),
           ukgId: form.ukgId.value.trim(),
           position: form.position.value.trim(),
           hireDate: isoFromUs(form.hireDate.value),
@@ -737,8 +739,11 @@ export function renderTechniciansTab(content, openTo) {
         original.standardDailyHours = form.standardDailyHours.value;
         // Keep the in-memory tech record current so switching to Devices in
         // this same visit prefills a Phone device from the number just saved,
-        // not a stale one from before this edit.
+        // not a stale one from before this edit. An iPad # here also
+        // auto-registers (or updates) its own device server-side -- see
+        // db.syncIpadDevice -- so Devices will already show it.
         tech.phone = form.phone.value.trim();
+        tech.ipad = form.ipad.value.trim();
         tech.email = form.email.value.trim();
         if (form.homeLocationCode.value !== original.homeLocationCode) {
           await api.patch(`/api/admin/technicians/${tech.id}/home-location`, { locationCode: form.homeLocationCode.value || null });
@@ -864,8 +869,18 @@ export function renderTechniciansTab(content, openTo) {
 
   const requestEditing = new Set(); // request ids currently showing the edit form
 
+  // Numbers already on a Cell Phone GL bill -- offered as suggestions on
+  // the Phone/iPad # field so assigning one is picking from what the
+  // company already pays for (Calero), not typing it blind. Fetched once
+  // per page session, not per technician.
+  let cachedKnownPhoneNumbers = null;
+  async function loadKnownPhoneNumbers() {
+    if (!cachedKnownPhoneNumbers) cachedKnownPhoneNumbers = await api.get("/api/admin/technicians/known-phone-numbers");
+    return cachedKnownPhoneNumbers;
+  }
+
   async function drawDevices(tabContent, tech) {
-    const devices = await api.get(`/api/admin/technicians/${tech.id}/devices`);
+    const [devices, knownNumbers] = await Promise.all([api.get(`/api/admin/technicians/${tech.id}/devices`), loadKnownPhoneNumbers()]);
     tabContent.innerHTML = `
       <p class="device-error" hidden></p>
       <div class="device-list">
@@ -881,7 +896,10 @@ export function renderTechniciansTab(content, openTo) {
           <option value="ipad">iPad</option>
           <option value="laptop">Laptop</option>
         </select>
-        <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" value="${escapeHtml(tech.phone || "")}" required />
+        <input name="deviceName" placeholder="${DEVICE_IDENTIFIER_PLACEHOLDER.phone}" value="${escapeHtml(tech.phone || "")}" list="known-phone-numbers" required />
+        <datalist id="known-phone-numbers">
+          ${knownNumbers.map((n) => `<option value="${escapeHtml(n)}"></option>`).join("")}
+        </datalist>
         <input name="notes" placeholder="Notes (optional)" />
         <button type="submit" class="btn btn-secondary">Assign device</button>
       </form>
@@ -947,11 +965,15 @@ export function renderTechniciansTab(content, openTo) {
     tabContent.querySelector('select[name="deviceType"]').addEventListener("change", (e) => {
       const nameInput = tabContent.querySelector('input[name="deviceName"]');
       nameInput.placeholder = DEVICE_IDENTIFIER_PLACEHOLDER[e.target.value];
-      // Phone # on Basic Info is this technician's one real number -- no
-      // reason to type it again for a Phone-type device. Switching away
-      // clears it since a phone number isn't a sensible default for a
-      // laptop/iPad's asset tag.
-      nameInput.value = e.target.value === "phone" ? tech.phone || "" : "";
+      // Phone/iPad # on Basic Info is this technician's one real number for
+      // that device type -- no reason to type it again. Switching to Laptop
+      // clears it (an asset tag isn't a phone number) and drops the
+      // GL-billed-number suggestions, which would just be noise there.
+      if (e.target.value === "phone") nameInput.value = tech.phone || "";
+      else if (e.target.value === "ipad") nameInput.value = tech.ipad || "";
+      else nameInput.value = "";
+      if (e.target.value === "laptop") nameInput.removeAttribute("list");
+      else nameInput.setAttribute("list", "known-phone-numbers");
     });
 
     tabContent.querySelectorAll(".device-upgrade-save").forEach((btn) => {
