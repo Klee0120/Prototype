@@ -964,6 +964,18 @@ if (!hasColumn("woms", "source_work_completed_date")) {
   db.exec("ALTER TABLE woms ADD COLUMN source_work_completed_date TEXT");
   db.exec("ALTER TABLE woms ADD COLUMN source_batch_date TEXT");
 }
+// The tracker's own per-WOM reclass note -- "Reclass Amount Requested"
+// lines up with this app's own "Applied over Toyota PO" overage figures,
+// so this is the remediation record for that list. "Reclass to" is loose
+// free text on the real sheet (mostly "GMP" -- Krista's shorthand for
+// "sent to the location's default E&F coding, not kept on this WOM" -- or
+// a bare WOM #), so it's kept verbatim and classified for display rather
+// than forced into a strict enum; see reclassToSummary below.
+if (!hasColumn("woms", "source_reclass_amount_requested")) {
+  db.exec("ALTER TABLE woms ADD COLUMN source_reclass_amount_requested REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN source_reclass_submitted INTEGER");
+  db.exec("ALTER TABLE woms ADD COLUMN source_reclass_to_raw TEXT");
+}
 // One-time cleanup for tasks left behind by the old 9-stage PSE state
 // machine this app used before the WOM lifecycle checklist replaced it
 // ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
@@ -5267,6 +5279,9 @@ const WOM_SOURCE_FIELDS = [
   { dbColumn: "source_batch_posted_confirmed", jsField: "batchPostedConfirmed", diffLabel: null },
   { dbColumn: "source_work_completed_date", jsField: "workCompletedDate", diffLabel: "work completed date" },
   { dbColumn: "source_batch_date", jsField: "batchDate", diffLabel: "batch date" },
+  { dbColumn: "source_reclass_amount_requested", jsField: "reclassAmountRequested", diffLabel: "reclass amount requested" },
+  { dbColumn: "source_reclass_submitted", jsField: "reclassSubmitted", diffLabel: null },
+  { dbColumn: "source_reclass_to_raw", jsField: "reclassToRaw", diffLabel: null },
 ];
 
 // The 6 billing-checklist sub-steps, specifically -- a subset of
@@ -5366,6 +5381,7 @@ function syncWomsFromSheetRows(rows, columns) {
   const { invoiceNumber: invoiceNumberColumn, batchNumber: batchNumberColumn } = columns;
   const { billingRefNumber: billingRefNumberColumn } = columns;
   const { workCompletedDate: workCompletedDateColumn, batchDate: batchDateColumn } = columns;
+  const { reclassAmountRequested: reclassAmountRequestedColumn, reclassSubmitted: reclassSubmittedColumn, reclassToRaw: reclassToColumn } = columns;
   // The Smartsheet column title for each breakdown category, resolved once
   // up front -- looked up by row below, not re-resolved every row.
   const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
@@ -5433,6 +5449,11 @@ function syncWomsFromSheetRows(rows, columns) {
     const batchNumber = (batchNumberColumn && row[batchNumberColumn] && String(row[batchNumberColumn]).trim()) || null;
     const workCompletedDate = (workCompletedDateColumn && row[workCompletedDateColumn] && String(row[workCompletedDateColumn]).trim()) || null;
     const batchDate = (batchDateColumn && row[batchDateColumn] && String(row[batchDateColumn]).trim()) || null;
+    const reclassAmountRequested = reclassAmountRequestedColumn ? parseDollarAmount(row[reclassAmountRequestedColumn]) : null;
+    const reclassSubmittedRaw =
+      (reclassSubmittedColumn && row[reclassSubmittedColumn] != null && String(row[reclassSubmittedColumn]).trim()) || null;
+    const reclassSubmitted = parseWorkCompletedFlag(reclassSubmittedRaw);
+    const reclassToRaw = (reclassToColumn && row[reclassToColumn] != null && String(row[reclassToColumn]).trim()) || null;
     const sourceFields = {
       sourceStatusRaw,
       sourceWorkCompletedRaw,
@@ -5442,6 +5463,9 @@ function syncWomsFromSheetRows(rows, columns) {
       billingRefNumber,
       workCompletedDate,
       batchDate,
+      reclassAmountRequested,
+      reclassSubmitted,
+      reclassToRaw,
       ...billingFields,
     };
     const sourceParams = WOM_SOURCE_FIELDS.map((f) => sourceFields[f.jsField]);

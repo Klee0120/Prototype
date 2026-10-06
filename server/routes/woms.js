@@ -25,6 +25,31 @@ function computeWomStatusConflict(w) {
   return Boolean(db.sourceImpliesInvoiced(w) && !appAlreadyDone);
 }
 
+// "Reclass to" on the real tracker is loose free text, not a clean enum --
+// confirmed against the actual sheet (16 of 228 rows populated): 10 say
+// "GMP" (Krista's shorthand for "sent to the location's default E&F
+// coding, not kept on this WOM"), 3 are bare WOM #s, 1 says "WOM", and 2
+// are one-off notes ("Add WOM Reclass - Done April", "NEW WOM"). Classified
+// for display, never forced into a stricter shape than the data supports.
+function summarizeReclassTarget(raw) {
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed || trimmed === "-") return null;
+  if (/^gmp$/i.test(trimmed)) {
+    return { type: "ef_default", label: "Sent to default E&F coding (not kept on this WOM)" };
+  }
+  const normalized = trimmed.replace(/\.0$/, "");
+  if (/^\d{6,}$/.test(normalized)) {
+    const target = db.findWom(normalized);
+    return {
+      type: "wom",
+      womCode: normalized,
+      label: target ? `Reclassed to WOM #${normalized}` : `Reclassed to WOM #${normalized} (not found in this app)`,
+    };
+  }
+  return { type: "note", label: trimmed };
+}
+
 function presentWom(w) {
   let smartsheetData = null;
   if (w.smartsheet_raw_data) {
@@ -115,6 +140,16 @@ function presentWom(w) {
     // when the batch posted, shown alongside Billing progress.
     workCompletedDate: w.source_work_completed_date,
     batchDate: w.source_batch_date,
+    // The tracker's reclass note -- see db.js's migration comment for why
+    // only these 3 columns are pulled (the rest are essentially unused on
+    // the real sheet). reclassAmountRequested routinely lines up with this
+    // WOM's own "applied over Toyota PO" overage, so it's effectively the
+    // remediation record for that. reclassTarget classifies the free-text
+    // "Reclass to" cell for display -- see summarizeReclassTarget below.
+    reclassAmountRequested: w.source_reclass_amount_requested,
+    reclassSubmitted: w.source_reclass_submitted,
+    reclassToRaw: w.source_reclass_to_raw,
+    reclassTarget: summarizeReclassTarget(w.source_reclass_to_raw),
     // Work completion and billing are two different facts the tracker
     // reports separately -- never collapsed into one combined status. Work
     // Completed says the job itself is done; the billing checklist (plus a

@@ -4805,6 +4805,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
               <div><dt>Batch date</dt><dd>${w.batchDate ? escapeHtml(w.batchDate) : "Not recorded"}</dd></div>
               <div><dt>Work completed date</dt><dd>${w.workCompletedDate ? escapeHtml(w.workCompletedDate) : "Not recorded"}</dd></div>
               <div><dt>Billing reference</dt><dd>${w.billingRefNumber ? escapeHtml(w.billingRefNumber) : "Not recorded"}</dd></div>
+              <div><dt>Reclass requested</dt><dd>${w.reclassAmountRequested != null ? `$${formatMoney(w.reclassAmountRequested)}` : "Not recorded"}</dd></div>
+              <div><dt>Reclass submitted</dt><dd>${w.reclassSubmitted === 1 ? "Yes" : w.reclassSubmitted === 0 ? "No" : "Not reported"}</dd></div>
+              <div><dt>Reclass target</dt><dd>${w.reclassTarget ? escapeHtml(w.reclassTarget.label) : "Not recorded"}</dd></div>
             </dl>
             <div class="wom-checklist">${billingChecklistRows}</div>
             <p class="review-checklist-hint">&#8505;&#65039; Historical checklist data may be incomplete.</p>

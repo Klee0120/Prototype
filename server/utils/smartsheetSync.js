@@ -118,6 +118,14 @@ async function runSmartsheetSync({ actorId, actorName }) {
     // wrapped and when the batch posted, not just whether they did.
     workCompletedDate: smartsheet.findColumn(sheet.columns, ["work", "completed", "date"]),
     batchDate: smartsheet.findColumn(sheet.columns, ["batch", "date"]),
+    // The tracker's own reclass note, kept to the one field that's
+    // actually populated with any consistency (see db.syncWomsFromSheetRows
+    // for why "Reclass to" is kept verbatim rather than parsed into an
+    // enum -- "RECLASS WOM #"/"RECLASS GMP"/"Reclass Confirmed in GL" are
+    // all essentially unused on the real tracker, so they're left alone).
+    reclassAmountRequested: smartsheet.findColumn(sheet.columns, ["reclass", "amount"]),
+    reclassSubmitted: smartsheet.findColumn(sheet.columns, ["reclass", "submitted"]),
+    reclassToRaw: smartsheet.findColumn(sheet.columns, ["reclass", "to"]),
   };
   // Snapshot every task's status before the sync so the diff afterward
   // can say how many of the resulting task-engine writes were this sync's
@@ -194,6 +202,9 @@ async function runSmartsheetSync({ actorId, actorName }) {
     sentToJasonColumn: columns.sentToJason,
     workCompletedDateColumn: columns.workCompletedDate,
     batchDateColumn: columns.batchDate,
+    reclassAmountRequestedColumn: columns.reclassAmountRequested,
+    reclassSubmittedColumn: columns.reclassSubmitted,
+    reclassToColumn: columns.reclassToRaw,
   };
 }
 

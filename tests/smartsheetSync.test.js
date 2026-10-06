@@ -1302,3 +1302,113 @@ test("smartsheet sync: Status/Work Completed/Billing/Requested By surface as sou
     }
   });
 });
+
+const RECLASS_COLUMNS = [
+  { id: 1, title: "WOM #" },
+  { id: 2, title: "Project Name" },
+  { id: 3, title: "Reclass Amount Requested" },
+  { id: 4, title: "Reclass Submitted" },
+  { id: 5, title: "Reclass to" },
+];
+
+test("smartsheet sync: the tracker's reclass note (amount/submitted/target) comes through and classifies for display", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const restore = stubFetchOnce({
+    ok: true,
+    json: async () => ({
+      name: "Midwest PSE Request Tracker",
+      columns: RECLASS_COLUMNS,
+      rows: [
+        {
+          id: 1,
+          cells: [
+            { columnId: 1, value: "20100001", displayValue: "20100001" },
+            { columnId: 2, value: "Reclassed to default E&F coding", displayValue: "x" },
+            { columnId: 3, value: 7773.32, displayValue: "$7,773.32" },
+            { columnId: 4, value: "true", displayValue: "true" },
+            { columnId: 5, value: "GMP", displayValue: "GMP" },
+          ],
+        },
+        {
+          id: 2,
+          cells: [
+            { columnId: 1, value: "20100002", displayValue: "20100002" },
+            { columnId: 2, value: "Reclassed to a WOM on file", displayValue: "x" },
+          ],
+        },
+        {
+          id: 3,
+          cells: [
+            { columnId: 1, value: "20100003", displayValue: "20100003" },
+            { columnId: 2, value: "Reclassed to a WOM NOT on file", displayValue: "x" },
+            { columnId: 5, value: 20100002, displayValue: "20100002" },
+          ],
+        },
+        {
+          id: 4,
+          cells: [
+            { columnId: 1, value: "20100004", displayValue: "20100004" },
+            { columnId: 2, value: "Reclassed to an unrecognized WOM #", displayValue: "x" },
+            { columnId: 5, value: 99999999, displayValue: "99999999" },
+          ],
+        },
+        {
+          id: 5,
+          cells: [
+            { columnId: 1, value: "20100005", displayValue: "20100005" },
+            { columnId: 2, value: "A one-off free-text note", displayValue: "x" },
+            { columnId: 5, value: "Add WOM Reclass - Done April", displayValue: "Add WOM Reclass - Done April" },
+          ],
+        },
+        {
+          id: 6,
+          cells: [
+            { columnId: 1, value: "20100006", displayValue: "20100006" },
+            { columnId: 2, value: "No reclass at all", displayValue: "x" },
+            { columnId: 5, value: "-", displayValue: "-" },
+          ],
+        },
+      ],
+    }),
+  });
+  try {
+    const res = await server.call("POST", "/api/admin/smartsheet/sync-woms", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.reclassAmountRequestedColumn, "Reclass Amount Requested");
+    assert.equal(res.body.reclassSubmittedColumn, "Reclass Submitted");
+    assert.equal(res.body.reclassToColumn, "Reclass to");
+
+    const lookup = async (code) => (await server.call("GET", `/api/woms/${code}/lookup`, { userId: "ADMIN" })).body;
+
+    const gmp = await lookup("20100001");
+    assert.equal(gmp.reclassAmountRequested, 7773.32);
+    assert.equal(gmp.reclassSubmitted, 1);
+    assert.deepEqual(gmp.reclassTarget, { type: "ef_default", label: "Sent to default E&F coding (not kept on this WOM)" });
+
+    // A bare WOM # that this sync run also created -- recognized and linked.
+    const toKnownWom = await lookup("20100003");
+    assert.deepEqual(toKnownWom.reclassTarget, { type: "wom", womCode: "20100002", label: "Reclassed to WOM #20100002" });
+
+    // A bare WOM #-shaped value this app has no record of -- still
+    // classified as a WOM target, just flagged as not found rather than
+    // silently treated like free text.
+    const toUnknownWom = await lookup("20100004");
+    assert.deepEqual(toUnknownWom.reclassTarget, {
+      type: "wom",
+      womCode: "99999999",
+      label: "Reclassed to WOM #99999999 (not found in this app)",
+    });
+
+    const note = await lookup("20100005");
+    assert.deepEqual(note.reclassTarget, { type: "note", label: "Add WOM Reclass - Done April" });
+
+    const none = await lookup("20100006");
+    assert.equal(none.reclassTarget, null);
+    assert.equal(none.reclassAmountRequested, null);
+    assert.equal(none.reclassSubmitted, null);
+  } finally {
+    restore();
+  }
+});
