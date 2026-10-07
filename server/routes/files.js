@@ -25,7 +25,7 @@ const CATEGORY_BY_RELATED = {
   // orphaned by a relatedType change -- "labor_report" the type now covers
   // four report kinds, distinguished by category, all filed by month/year.
   labor_report: new Set(["labor_report", "wom_report", "financial_report", "gl_report"]),
-  vendor: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other"]),
+  vendor: new Set(["coi", "w9", "ach", "vpo_waiver", "blank_invoice", "vendor_other"]),
   // A document that's come in (e.g. a COI from Aon) but isn't ready to be
   // filed against a specific vendor's own record yet -- attach it to a
   // task instead, so it's tracked and doesn't get lost, without the file
@@ -36,7 +36,7 @@ const CATEGORY_BY_RELATED = {
   // ap_invoice_backfill po_request task (see POST /tasks/request-po) --
   // distinct from po_document (the generated PO itself), since this task
   // needs both on file to show the gap was actually closed.
-  task: new Set(["coi", "w9", "ach", "vpo_waiver", "vendor_other", "document", "po_document", "ap_invoice"]),
+  task: new Set(["coi", "w9", "ach", "vpo_waiver", "blank_invoice", "vendor_other", "document", "po_document", "ap_invoice"]),
   // Budget PO Tracker records -- admin-only, same reasoning as vendor/task
   // compliance documents below.
   po: new Set(["po_doc", "document"]),

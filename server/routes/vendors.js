@@ -273,14 +273,44 @@ function auditStageChangeIfAny(req, vendorBefore) {
   }
 }
 
+// "Waiting on VPO Waiver" is a case-status value, offered only for COI --
+// COI is never itself marked Waived (see the spec section this implements).
+const VPO_WAIVER_CASE_STATUS = "Waiting on VPO Waiver";
+
+function requestFieldsFromBody(body) {
+  const { referenceNumber, status, note, asOf, expirationDate, reviewNotesSelected, reviewNotesFreeText, w9Name, w9Address, w9PreviouslyApproved } =
+    body || {};
+  return {
+    referenceNumber,
+    status,
+    note,
+    asOf,
+    expirationDate,
+    reviewNotesSelected,
+    reviewNotesFreeText,
+    w9Name,
+    w9Address,
+    w9PreviouslyApproved,
+  };
+}
+
+function validateCaseStatus(requestType, status) {
+  if (String(status || "").trim() === VPO_WAIVER_CASE_STATUS && requestType !== db.ONBOARDING_CASE_TYPE_BY_KEY.coi) {
+    return `"${VPO_WAIVER_CASE_STATUS}" is only a valid status for the COI case`;
+  }
+  return null;
+}
+
 router.post("/:id/requests", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
-  const { requestType, referenceNumber, status, note, asOf } = req.body || {};
+  const { requestType, referenceNumber } = req.body || {};
   if (!requestType || !String(requestType).trim()) return res.status(400).json({ error: "requestType is required" });
+  const statusError = validateCaseStatus(requestType.trim(), req.body.status);
+  if (statusError) return res.status(400).json({ error: statusError });
 
-  const requests = db.addVendorRequest(vendor.id, requestType.trim(), referenceNumber, status, note, asOf);
+  const requests = db.addVendorRequest(vendor.id, requestType.trim(), requestFieldsFromBody(req.body));
   db.addAudit(
     req.user.id,
     "VENDOR_REQUEST_ADDED",
@@ -294,16 +324,15 @@ router.patch("/:id/requests/:requestId", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
-  const { requestType, referenceNumber, status, note, asOf } = req.body || {};
+  const { requestType } = req.body || {};
   if (!requestType || !String(requestType).trim()) return res.status(400).json({ error: "requestType is required" });
+  const statusError = validateCaseStatus(requestType.trim(), req.body.status);
+  if (statusError) return res.status(400).json({ error: statusError });
 
   const requests = db.updateVendorRequest(vendor.id, Number(req.params.requestId), {
     requestType: requestType.trim(),
-    referenceNumber,
-    status,
-    note,
-    asOf,
     updatedBy: req.user.id,
+    ...requestFieldsFromBody(req.body),
   });
   db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated a case for ${vendor.name}`);
   auditStageChangeIfAny(req, vendor);
@@ -318,6 +347,108 @@ router.delete("/:id/requests/:requestId", (req, res) => {
   db.addAudit(req.user.id, "VENDOR_REQUEST_REMOVED", `${req.user.name} removed a case for ${vendor.name}`);
   auditStageChangeIfAny(req, vendor);
   res.json(requests);
+});
+
+// The VPO Waiver linked to a COI case -- created the first time its status
+// is set to "Waiting on VPO Waiver," edited in place after that. 400 if
+// :requestId isn't actually a COI case, so a waiver can never attach to
+// the wrong document case.
+router.patch("/:id/requests/:requestId/vpo-waiver", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const requestRow = db.listVendorRequests(vendor.id).find((r) => r.id === Number(req.params.requestId));
+  if (!requestRow) return res.status(404).json({ error: "Case not found" });
+  if (requestRow.requestType !== db.ONBOARDING_CASE_TYPE_BY_KEY.coi) {
+    return res.status(400).json({ error: "A VPO Waiver can only be linked to the COI case" });
+  }
+  const { reason, caseNumber, status, expirationDate, notes } = req.body || {};
+  const waiver = db.addOrUpdateVpoWaiver(requestRow.id, { reason, caseNumber, status, expirationDate, notes });
+  db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated the VPO Waiver for ${vendor.name}`);
+  res.json(waiver);
+});
+
+// Checking it requests the 4 forms that haven't been touched yet; clearing
+// it only removes the sent date (see db.setWelcomeEmailSent).
+router.patch("/:id/welcome-email", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const updated = db.setWelcomeEmailSent(vendor.id, Boolean((req.body || {}).sent));
+  db.addAudit(
+    req.user.id,
+    "VENDOR_REQUEST_UPDATED",
+    `${req.user.name} marked the welcome email ${updated.welcomeEmailSentAt ? "sent" : "not sent"} for ${vendor.name}`
+  );
+  auditStageChangeIfAny(req, vendor);
+  res.json(updated);
+});
+
+const ONBOARDING_CASE_KEYS = db.ONBOARDING_CASE_TYPES.map((c) => c.key);
+
+// Collection status per form (Not Requested/Requested/Gathering/Received/
+// Not required) -- separate from the case's own approval status.
+router.patch("/:id/form-status", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const { caseKey, formStatus } = req.body || {};
+  if (!ONBOARDING_CASE_KEYS.includes(caseKey)) {
+    return res.status(400).json({ error: `caseKey must be one of: ${ONBOARDING_CASE_KEYS.join(", ")}` });
+  }
+  if (!db.FORM_STATUSES.includes(formStatus)) {
+    return res.status(400).json({ error: `formStatus must be one of: ${db.FORM_STATUSES.join(", ")}` });
+  }
+  const updated = db.setVendorFormStatus(vendor.id, caseKey, formStatus);
+  db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} set ${caseKey} form status to ${formStatus} for ${vendor.name}`);
+  res.json(updated);
+});
+
+// Parent case's own case #, notes (separate from any document case's own
+// notes), Payment Verification Contact, and PO Notification Email. Dated
+// history comes from the VENDOR_UPDATED audit entry below, same as any
+// other vendor field edit.
+router.patch("/:id/parent-case", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const { caseNumber, notes, paymentContactName, paymentContactPhone, paymentContactEmail, poNotificationEmail } = req.body || {};
+  const updated = db.updateVendorParentCase(vendor.id, {
+    caseNumber,
+    notes,
+    paymentContactName,
+    paymentContactPhone,
+    paymentContactEmail,
+    poNotificationEmail,
+  });
+  db.addAudit(req.user.id, "VENDOR_UPDATED", `${req.user.name} updated the parent onboarding case for ${vendor.name}`);
+  res.json(updated);
+});
+
+// Records submission, not approval -- only reachable once every required
+// document case is Approved (parent_stage is already ready_for_toyota).
+router.post("/:id/submit-to-toyota", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const result = db.submitVendorToToyota(vendor.id);
+  if (result.error === "not_ready") {
+    return res.status(400).json({ error: "Every required document case must be Approved before submitting to Toyota" });
+  }
+  db.addAudit(req.user.id, "VENDOR_ONBOARDING_STAGE_CHANGED", `${req.user.name} submitted ${vendor.name} to Toyota`);
+  res.json(result.vendor);
+});
+
+// Recording Toyota's actual approval -- only reachable after Submit to
+// Toyota, so this can't be used to skip the submission step.
+router.post("/:id/record-toyota-approval", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const result = db.recordVendorToyotaApproval(vendor.id);
+  if (result.error === "not_submitted") {
+    return res.status(400).json({ error: "This vendor must be submitted to Toyota before recording their approval" });
+  }
+  db.addAudit(
+    req.user.id,
+    "VENDOR_ONBOARDING_STAGE_CHANGED",
+    `${req.user.name} recorded Toyota's approval for ${vendor.name} (now ${result.vendor.onboardingStage})`
+  );
+  res.json(result.vendor);
 });
 
 module.exports = router;

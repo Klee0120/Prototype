@@ -392,82 +392,122 @@ Demo logins:
   sake but rendered as a plain "Welcome email sent <date>" line with a
   one-click "Mark sent," never as a status pill. A vendor's `onboardingStage`
   is **derived**, never set by hand: `deriveOnboardingStage()` (`db.js`)
-  looks at the *latest* case of each of the three required types
-  (COI/W-9/Payment) -- all three approved moves the vendor to `onboarded`,
-  any one denied (as its latest case) moves it to `denied`, any case (or
-  welcome-email) activity at all short of that is `in_progress`, none yet
-  is `not_started`. This matches how ServiceEdge itself works:
-  re-submitting after a denial opens a **brand new case** of the same
-  type rather than editing the old one, so "current status" always means
-  the most recently touched case -- `syncOnboardingStage()` re-derives and
-  persists the stage after every case add/update/delete, and
-  `routes/vendors.js` audits a `VENDOR_ONBOARDING_STAGE_CHANGED` entry
+  looks at the *latest* case of each of the four required types
+  (COI/W-9/Payment/Blank Invoice) -- all four approved moves the vendor to
+  `onboarded`, any one denied (as its latest case) moves it to `denied`,
+  any case activity (or a sent welcome email) at all short of that is
+  `in_progress`, none yet is `not_started`. This matches how ServiceEdge
+  itself works: re-submitting after a denial opens a **brand new case** of
+  the same type rather than editing the old one, so "current status"
+  always means the most recently touched case -- `syncOnboardingStage()`
+  re-derives and persists the stage after every case add/update/delete,
+  and `routes/vendors.js` audits a `VENDOR_ONBOARDING_STAGE_CHANGED` entry
   whenever that derivation actually changes it. Adding a vendor from the
   Vendors tab still defaults it straight to `in_progress` (no cases
   needed to show up here at all). The board has three sections: **In
-  Progress** (sorted most-stale-first) and **Denied**, each vendor row
-  showing the welcome-email line plus the three cases as status pills with
-  an inline "Log update" mini form (status + optional case # + optional
-  note) right there -- no need to open the vendor's own record to log a
-  case -- plus **Compliance Needed**, already `onboarded` vendors whose
-  forms have since gone `outdated` or failed a doc check, each linking
-  straight to that vendor's edit form on the main Vendors tab. A COI case
-  shows the vendor's required coverage limits (GL/Auto/WC/Umbrella, from
-  the same Toyota COI matrix that drives the Vendors tab's Services
-  dropdown) right next to it as a reference while reviewing a submitted
-  certificate. Staleness (`ONBOARDING_STALE_DAYS = 7`) still reads the
-  vendor's own `updated_at`, bumped by any case add/update the same way it
-  always was. A bulk `GET /api/admin/vendors/onboarding/case-summary`
-  endpoint returns the latest case of each type for every vendor with any
-  case activity in one round trip, so the board doesn't need a request per
-  vendor shown. This board deliberately shows case **status only** -- never
-  a vendor's actual uploaded documents (those stay on that vendor's own
-  record, see the vendor edit modal below) -- so any admin can see exactly
-  where a vendor stands without touching anything
-  private. Distinct from the document-compliance checklist above -- that's
-  "does the attached COI/W-9/ACH document itself meet requirements,"
-  this is "has ServiceEdge approved the case" -- the vendor edit modal
-  says so explicitly since both live under "COI"/"W-9" naming and are easy
-  to conflate.
-  A **Start Onboarding** search sits above the board for exactly this: all
-  292 real vendors (imported before this tracker existed) default to
-  `not_started`, which is invisible on a board that only lists In
-  Progress/Denied/Compliance Needed -- there was otherwise no way to
-  actually begin onboarding one of them. Typing a name filters
-  `not_started` vendors client-side (already-loaded `vendorsCache`, no
-  extra request); **Start Onboarding** records the welcome email as sent
-  (an `Onboarding - Request` row, status "Sent"), which is enough activity
-  on its own to move the vendor to `in_progress` and onto the board below.
-  A vendor added fresh through **+ Add vendor** still skips this step
-  entirely and starts `in_progress` immediately, same as before.
+  Progress** (sorted most-stale-first) and **Denied**, plus **Compliance
+  Needed** below for already-`onboarded` vendors whose forms have since
+  gone `outdated` or failed a doc check.
+
+  Layered on top of that 4-value board bucket is a richer **parent
+  onboarding case** per vendor (its own case #, notes kept separate from
+  any document case's own notes, a Payment Verification Contact, a PO
+  Notification Email, and a 6-stage pipeline: Gathering forms → Cases
+  started → Document review → Ready for Toyota → Submitted to Toyota →
+  Approved). The first four stages auto-advance (`deriveParentStage`/
+  `syncParentStage`, same recompute-on-mutation pattern as
+  `onboarding_stage`) the moment the underlying case activity supports
+  them; the last two are sticky and only ever change via the parent
+  card's own **Submit to Toyota** / **Record Toyota Approval** buttons (or
+  a denial) -- never silently undone by a later case edit. **C&W
+  Approved** and **Toyota Approval**, shown as badges on that same card,
+  are pure display derivations of `parent_stage`, never stored fields --
+  they're deliberately distinct from the existing `cw_status`/
+  `toyota_status` operational flags, which this redesign never touches.
+
+  Each vendor row shows a real **Welcome Email Sent** checkbox (not a
+  one-way "Mark sent" link) -- checking it stamps
+  `vendors.welcome_email_sent_at` and bulk-advances whichever of the 4
+  forms are still `not_requested` to `requested`; unchecking it only
+  clears the date and never reverts a form's own progress. Collection
+  status per form (Not Requested/Requested/Gathering/Received/Not
+  required, `vendors.<type>_form_status`) is its own dropdown next to each
+  case pill, deliberately separate from that case's own **approval**
+  status (Not started/Case started/In review/Revisions needed/Approved/
+  Denied, plus a COI-only **Waiting on VPO Waiver**) -- collection and
+  approval are different facts, and a form marked Not required is what
+  excludes a case from the "X/4 document cases approved" badge's
+  denominator (`computeApprovalBadge` client-side, mirroring
+  `db.computeApprovalCount`). Each case pill also carries an expiration
+  date (no "no expiration" option) and an expandable, per-form-type
+  review-notes checklist (`REVIEW_NOTES_OPTIONS`) that collapses to a
+  readable summary of whatever's checked, plus a free-text notes field.
+  W-9's pill additionally has Name/Address-as-shown-on-the-form fields and
+  a **Previously approved in ServiceEdge** checkbox, which marks that case
+  Approved with a blank case number allowed and appends (never replaces) a
+  dated record of the historical source to its notes.
+
+  COI is never itself marked Waived -- choosing **Waiting on VPO Waiver**
+  reveals a linked VPO Waiver sub-panel (its own reason, case #, status,
+  expiration, and notes, `vpo_waivers` table/`addOrUpdateVpoWaiver`) for
+  deficient limits or missing coverage. Approving the waiver never
+  auto-approves COI; COI's own case still has to be marked Approved
+  separately, and `computeApprovalCount` only ever reads COI's own status.
+
+  A COI case also shows the vendor's required coverage limits (GL/Auto/
+  WC/Umbrella, from the same Toyota COI matrix that drives the Vendors
+  tab's Services dropdown) right next to it as a reference while
+  reviewing a submitted certificate. Staleness (`ONBOARDING_STALE_DAYS =
+  7`) still reads the vendor's own `updated_at`, bumped by any case
+  add/update the same way it always was. A bulk `GET
+  /api/admin/vendors/onboarding/case-summary` endpoint returns the latest
+  case of each type (including any linked VPO Waiver) for every vendor
+  with any case activity in one round trip, so the board doesn't need a
+  request per vendor shown. This board deliberately shows case **status
+  only** -- never a vendor's actual uploaded documents (those stay on
+  that vendor's own record, see the vendor profile below) -- so any admin
+  can see exactly where a vendor stands without touching anything
+  private. Distinct from the document-compliance checklist described
+  below -- that's "does the attached COI/W-9/ACH document itself meet
+  requirements," this is "has ServiceEdge approved the case" -- both live
+  under "COI"/"W-9" naming and are easy to conflate.
+  A **Start Onboarding** search sits above the board for exactly this: a
+  vendor imported before this tracker existed defaults to `not_started`,
+  which is invisible on a board that only lists In Progress/Denied/
+  Compliance Needed -- there was otherwise no way to actually begin
+  onboarding one of them. Typing a name filters `not_started` vendors
+  client-side (already-loaded `vendorsCache`, no extra request); **Start
+  Onboarding** checks the Welcome Email Sent box for that vendor, which is
+  enough activity on its own to move it to `in_progress` and onto the
+  board below. A vendor added fresh through **+ Add vendor** still skips
+  this step entirely and starts `in_progress` immediately, same as before.
 - **Vendor edit modal is the general profile; onboarding and compliance
-  live in their own separate modal.** These used to be two intermixed
+  live in their own profile tab.** These used to be two intermixed
   concerns on the same scrolling page (case status, document-compliance
   checks, and plain vendor info all stacked together) -- now split cleanly:
   - **Vendor edit modal** (`openVendorEditModal`) keeps Cost history,
     Documents (upload/view/delete, `relatedType: "vendor"`, grouped into
-    COI / W-9 / ACH / VPO Waiver / Other Vendor Document sections, with
-    `trackExpiration: true` so each upload can carry a Type + Expiration
-    date and shows an Expires/Expired badge -- renewing an expired one is
-    the same upload-a-new-one/delete-the-old-one flow as a technician's own
-    Forms on File, not an in-place edit), **Assign a pending task document**
-    (a COI that arrived before it was clear which vendor it belonged to,
-    relocated here via `PATCH /api/files/:id/relocate` -- same bytes on
-    disk, no re-upload), and Vendor Info (name, statuses, contact fields).
-    A single **"Onboarding & Compliance →"** button is the only link to the
-    rest.
-  - **Onboarding & Compliance modal** (`openVendorOnboardingComplianceModal`)
-    is reachable from that button for any vendor, any time, regardless of
-    where it stands on the Onboarding board -- not only the flagged ones.
-    It holds **Onboarding cases** (the same welcome-email line + 3 case
-    pills the Onboarding board shows, shared rendering with
-    `renderCasePillHtml`/`wireCasePill`, plus a **Full case history**
+    COI / W-9 / ACH / VPO Waiver / Blank Invoice / Other Vendor Document
+    sections, with `trackExpiration: true` so each upload can carry a Type
+    + Expiration date and shows an Expires/Expired badge -- renewing an
+    expired one is the same upload-a-new-one/delete-the-old-one flow as a
+    technician's own Forms on File, not an in-place edit), **Assign a
+    pending task document** (a COI that arrived before it was clear which
+    vendor it belonged to, relocated here via `PATCH
+    /api/files/:id/relocate` -- same bytes on disk, no re-upload), and
+    Vendor Info (name, statuses, contact fields).
+  - **Onboarding & Compliance tab** (`VENDOR_PROFILE_TABS`,
+    `renderVendorOnboardingTab`) on the vendor's own profile page holds
+    **Onboarding cases** (the approval badge, the welcome-email checkbox,
+    the parent onboarding case card, and the 4 case pills the Onboarding
+    board shows, shared rendering with `renderCasePillHtml`/`wireCasePill`/
+    `renderParentCaseHtml`/`wireParentCase`, plus a **Full case history**
     toggle), **Document Compliance** (the COI/W-9/ACH checklist --
     `renderVendorDocChecksForm`/`wireVendorDocChecksForm`, PATCHing through
     `vendorFullPayload` same as before), and **Compliance Follow-up** (the
     automated task history -- see below). The Onboarding board's own
-    **Compliance Needed** rows open straight into this modal too (its
-    button is now "Review Compliance", not "Open vendor").
+    **Compliance Needed** rows open straight into this tab too (its
+    button is "Review Compliance", not "Open vendor").
   - **Compliance follow-up tasks generate automatically.**
     `refreshVendorComplianceTask` (called from `catchUpTasks`, same lazy
     pattern as WOM lifecycle tasks) checks four things per vendor -- an

@@ -1509,6 +1509,84 @@ if (!hasColumn("gl_entries", "subledger_gl")) {
   db.exec("ALTER TABLE gl_entries ADD COLUMN subledger_gl TEXT");
 }
 
+// The parent onboarding case layered on top of the existing 4 document
+// cases (vendor_requests) -- its own case #/notes (kept separate from any
+// one document case's own notes), the two onboarding-specific contacts,
+// and a 6-stage pipeline distinct from the legacy 4-value onboarding_stage
+// (which stays as the Onboarding board's own bucket key -- see
+// deriveOnboardingStage). parent_stage only ever moves forward on its own
+// (syncParentStage, recomputed the same way onboarding_stage is); once it
+// reaches submitted_to_toyota/approved it's sticky, changed only by the
+// dedicated submit/record-approval actions (or a denial), never silently
+// recomputed backward by a later case edit.
+if (!hasColumn("vendors", "parent_stage")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN parent_case_number TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN parent_case_notes TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN payment_verification_contact_name TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN payment_verification_contact_phone TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN payment_verification_contact_email TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN po_notification_email TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN parent_stage TEXT NOT NULL DEFAULT 'gathering_forms'");
+}
+// Welcome-Email-Sent is a plain fact about the vendor, not a case -- see
+// the adminReview.js comment this replaces (the old "Onboarding - Request"
+// case-log entries stay on file for history, nothing reads them anymore).
+// Checking it is the one thing that bulk-advances the 4 forms below from
+// not_requested to requested; it's otherwise just a checkbox + date.
+if (!hasColumn("vendors", "welcome_email_sent_at")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN welcome_email_sent_at TEXT");
+}
+// Collection status per form -- deliberately separate from each case's own
+// approval status (vendor_requests.status), and deliberately its own
+// per-vendor field rather than living on a case row, because it has to
+// exist ("defaults to Not Requested") even before any case has been
+// started. "not_required" here is what the approval-count badge excludes
+// from its denominator.
+if (!hasColumn("vendors", "coi_form_status")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN coi_form_status TEXT NOT NULL DEFAULT 'not_requested'");
+  db.exec("ALTER TABLE vendors ADD COLUMN w9_form_status TEXT NOT NULL DEFAULT 'not_requested'");
+  db.exec("ALTER TABLE vendors ADD COLUMN payment_form_status TEXT NOT NULL DEFAULT 'not_requested'");
+  db.exec("ALTER TABLE vendors ADD COLUMN blank_invoice_form_status TEXT NOT NULL DEFAULT 'not_requested'");
+}
+
+// Per-case fields the redesigned onboarding cases need beyond the existing
+// free-text status/reference_number/note/as_of: an expiration date (every
+// case and any linked waiver needs one, no "no expiration" option), the
+// per-type review-notes checklist (stored as a JSON array of selected
+// option keys -- the option list itself differs per request_type and lives
+// client-side, same spirit as CASE_STATUS_OPTIONS), a free-text notes
+// field kept separate from the checklist, and W-9's own name/address-as-
+// shown-on-the-form fields plus its "previously approved in ServiceEdge"
+// shortcut (see addVendorRequest/updateVendorRequest).
+if (!hasColumn("vendor_requests", "expiration_date")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN expiration_date TEXT");
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN review_notes_selected TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN review_notes_free_text TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN w9_name TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN w9_address TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN w9_previously_approved INTEGER NOT NULL DEFAULT 0");
+}
+
+// COI is never itself marked "Waived" -- choosing "Waiting on VPO Waiver"
+// reveals this linked sub-case instead, one per COI case (created the
+// first time that status is chosen). A pending/approved waiver never
+// substitutes for COI's own Approved status -- see computeApprovalCount.
+if (!tableExists("vpo_waivers")) {
+  db.exec(`
+    CREATE TABLE vpo_waivers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vendor_request_id INTEGER NOT NULL,
+      reason TEXT DEFAULT '',
+      case_number TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'not_started',
+      expiration_date TEXT,
+      notes TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -2103,6 +2181,23 @@ function presentVendorRowBase(v) {
     createdBy: v.created_by || null,
     createdAt: v.created_at,
     updatedAt: v.updated_at,
+    parentCaseNumber: v.parent_case_number || "",
+    parentCaseNotes: v.parent_case_notes || "",
+    paymentVerificationContactName: v.payment_verification_contact_name || "",
+    paymentVerificationContactPhone: v.payment_verification_contact_phone || "",
+    paymentVerificationContactEmail: v.payment_verification_contact_email || "",
+    poNotificationEmail: v.po_notification_email || "",
+    parentStage: v.parent_stage || "gathering_forms",
+    welcomeEmailSentAt: v.welcome_email_sent_at || null,
+    coiFormStatus: v.coi_form_status || "not_requested",
+    w9FormStatus: v.w9_form_status || "not_requested",
+    paymentFormStatus: v.payment_form_status || "not_requested",
+    blankInvoiceFormStatus: v.blank_invoice_form_status || "not_requested",
+    // Display-only, never stored -- see deriveParentStage. A manual denial
+    // always wins, the same "denied overrides everything" rule
+    // deriveOnboardingStage already applies.
+    onboardingCwApproved: !v.denied_reason_category && ["ready_for_toyota", "submitted_to_toyota", "approved"].includes(v.parent_stage),
+    onboardingToyotaApproved: !v.denied_reason_category && v.parent_stage === "approved",
   };
 }
 
@@ -3108,6 +3203,7 @@ function reinstateVendor(vendorId) {
   db.prepare(
     "UPDATE vendors SET denied_reason_category = '', denied_reason = '', updated_at = ? WHERE id = ?"
   ).run(new Date().toISOString(), Number(vendorId));
+  syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
   return findVendor(vendorId);
 }
@@ -3117,37 +3213,129 @@ function reinstateVendor(vendorId) {
 // number and a free-text status -- the real tracker uses varied statuses
 // ("Approved", "Waiting", "Denied - No Response - Start over Case") that
 // don't reduce cleanly to a fixed enum, so status is left as free text
-// rather than force-fitting it. Four request_type values are treated as
-// the canonical onboarding cases (matching ServiceEdge's own case types
-// exactly, so entering one here means the same thing it does there); any
-// other request_type is still logged and shown, it just isn't one of the
-// cases that drives onboardingStage below.
+// rather than force-fitting it. Four request_type values are the canonical
+// onboarding document cases (matching ServiceEdge's own case types,
+// expanded to include Blank Invoice alongside COI/W-9/Payment); any other
+// request_type is still logged and shown, it just isn't one of the cases
+// that drives onboardingStage/parentStage below. "Onboarding - Request"
+// (the old welcome-email case type) is no longer created -- see
+// vendors.welcome_email_sent_at -- but existing historical rows of that
+// type stay on file and still show in a vendor's case history.
 const ONBOARDING_CASE_TYPES = [
-  { type: "Onboarding - Request", key: "request", label: "Welcome Email / Request" },
   { type: "Onboarding - COI", key: "coi", label: "COI" },
   { type: "Onboarding - W8/W9", key: "w9", label: "W-9" },
   { type: "Onboarding - Payment Details", key: "payment", label: "Payment / ACH" },
+  { type: "Onboarding - Blank Invoice", key: "blank_invoice", label: "Blank Invoice" },
 ];
 const ONBOARDING_CASE_TYPE_BY_KEY = Object.fromEntries(ONBOARDING_CASE_TYPES.map((c) => [c.key, c.type]));
+const FORM_STATUS_COLUMN_BY_KEY = {
+  coi: "coi_form_status",
+  w9: "w9_form_status",
+  payment: "payment_form_status",
+  blank_invoice: "blank_invoice_form_status",
+};
+const FORM_STATUSES = ["not_requested", "requested", "gathering", "received", "not_required"];
+const PARENT_STAGES = ["gathering_forms", "cases_started", "document_review", "ready_for_toyota", "submitted_to_toyota", "approved"];
+const VPO_WAIVER_REASONS = ["limits", "missing_coverage", "both"];
+const VPO_WAIVER_STATUSES = ["not_started", "in_review", "approved", "denied"];
+
+function presentVpoWaiver(w) {
+  if (!w) return null;
+  return {
+    id: w.id,
+    vendorRequestId: w.vendor_request_id,
+    reason: w.reason || "",
+    caseNumber: w.case_number || "",
+    status: w.status,
+    expirationDate: w.expiration_date || null,
+    notes: w.notes || "",
+    createdAt: w.created_at,
+    updatedAt: w.updated_at,
+  };
+}
+
+function getVpoWaiverForRequest(vendorRequestId) {
+  return presentVpoWaiver(db.prepare("SELECT * FROM vpo_waivers WHERE vendor_request_id = ?").get(vendorRequestId));
+}
+
+// Created the first time a COI case's status is set to "Waiting on VPO
+// Waiver" (see updateVendorRequest/addVendorRequest), then edited in place
+// after that -- one waiver per COI case, never a log of past waivers.
+function addOrUpdateVpoWaiver(vendorRequestId, { reason, caseNumber, status, expirationDate, notes } = {}) {
+  const now = new Date().toISOString();
+  const existing = db.prepare("SELECT id FROM vpo_waivers WHERE vendor_request_id = ?").get(vendorRequestId);
+  const safeReason = VPO_WAIVER_REASONS.includes(reason) ? reason : "";
+  const safeStatus = VPO_WAIVER_STATUSES.includes(status) ? status : "not_started";
+  if (existing) {
+    db.prepare(
+      "UPDATE vpo_waivers SET reason = ?, case_number = ?, status = ?, expiration_date = ?, notes = ?, updated_at = ? WHERE id = ?"
+    ).run(safeReason, caseNumber || "", safeStatus, expirationDate || null, notes || "", now, existing.id);
+  } else {
+    db.prepare(
+      "INSERT INTO vpo_waivers (vendor_request_id, reason, case_number, status, expiration_date, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(vendorRequestId, safeReason, caseNumber || "", safeStatus, expirationDate || null, notes || "", now, now);
+  }
+  return getVpoWaiverForRequest(vendorRequestId);
+}
+
+// ISO-date-prefixed, newline-joined -- for the handful of places the spec
+// requires a note to record a system fact without silently replacing
+// whatever the admin already wrote (W-9's "previously approved in
+// ServiceEdge" source, for one). Who did it lives in the audit trail
+// (already written by every case-mutation route), not in this text.
+function appendNote(existing, line) {
+  const date = new Date().toISOString().slice(0, 10);
+  const stamped = `[${date}] ${line}`;
+  return existing && existing.trim() ? `${existing}\n${stamped}` : stamped;
+}
+
+function presentVendorRequestRow(r) {
+  let reviewNotesSelected = [];
+  if (r.review_notes_selected) {
+    try {
+      reviewNotesSelected = JSON.parse(r.review_notes_selected);
+    } catch {
+      reviewNotesSelected = [];
+    }
+  }
+  return {
+    id: r.id,
+    requestType: r.request_type,
+    referenceNumber: r.reference_number,
+    status: r.status,
+    note: r.note,
+    asOf: r.as_of,
+    requestedAt: r.requested_at,
+    updatedAt: r.updated_at,
+    expirationDate: r.expiration_date || null,
+    reviewNotesSelected,
+    reviewNotesFreeText: r.review_notes_free_text || "",
+    w9Name: r.w9_name || "",
+    w9Address: r.w9_address || "",
+    w9PreviouslyApproved: Boolean(r.w9_previously_approved),
+  };
+}
 
 function listVendorRequests(vendorId) {
-  return db
-    .prepare(
-      `SELECT id, request_type AS requestType, reference_number AS referenceNumber, status, note, as_of AS asOf,
-              requested_at AS requestedAt, updated_at AS updatedAt
-       FROM vendor_requests WHERE vendor_id = ? ORDER BY id DESC`
-    )
-    .all(vendorId);
+  const rows = db.prepare("SELECT * FROM vendor_requests WHERE vendor_id = ? ORDER BY id DESC").all(vendorId);
+  return rows.map((r) => {
+    const presented = presentVendorRequestRow(r);
+    if (r.request_type === ONBOARDING_CASE_TYPE_BY_KEY.coi) presented.vpoWaiver = getVpoWaiverForRequest(r.id);
+    return presented;
+  });
 }
 
 // The vendor's overall onboarding stage is derived from the latest case of
-// each of the three required types (COI, W-9, Payment) rather than stored
-// by hand -- ServiceEdge itself works this way: re-submitting after a
-// denial opens a brand new case rather than editing the old one, so
-// "current status" always means the most recently touched case of that
-// type. All three approved moves the vendor to onboarded; any one denied
-// (as its latest case) moves the vendor to denied; any case activity at
-// all short of that is in_progress; no case activity yet is not_started.
+// each of the four required types (COI, W-9, Payment, Blank Invoice)
+// rather than stored by hand -- ServiceEdge itself works this way:
+// re-submitting after a denial opens a brand new case rather than editing
+// the old one, so "current status" always means the most recently touched
+// case of that type. All four approved moves the vendor to onboarded; any
+// one denied (as its latest case) moves the vendor to denied; any case
+// activity (or a sent welcome email) short of that is in_progress; nothing
+// yet is not_started. This stays the Onboarding board's own bucket key --
+// see parent_stage/deriveParentStage below for the richer 6-stage pipeline
+// shown inside the In Progress bucket's own cards.
 function latestRequestOfType(vendorId, requestType) {
   return db
     .prepare(
@@ -3156,21 +3344,31 @@ function latestRequestOfType(vendorId, requestType) {
     .get(vendorId, requestType);
 }
 
+// IMPORTANT: this reads vendors.parent_stage, so every caller must run
+// syncParentStage(vendorId) first and only then syncOnboardingStage(vendorId)
+// -- never the other order -- or this sees a stale parent_stage.
 function deriveOnboardingStage(vendorId) {
   // An explicit manual denial (see denyVendor) always wins -- it's a
   // standing business decision, not a document-case outcome, so no amount
   // of case activity below should silently clear it.
-  const manualDenial = db.prepare("SELECT denied_reason_category FROM vendors WHERE id = ?").get(vendorId);
-  if (manualDenial && manualDenial.denied_reason_category) return "denied";
-  const request = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.request);
+  const vendorRow = db
+    .prepare("SELECT denied_reason_category, welcome_email_sent_at, parent_stage FROM vendors WHERE id = ?")
+    .get(vendorId);
+  if (vendorRow && vendorRow.denied_reason_category) return "denied";
   const coi = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
   const w9 = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.w9);
   const payment = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.payment);
+  const blankInvoice = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.blank_invoice);
   const norm = (r) => (r ? String(r.status || "").trim().toLowerCase() : "");
-  const required = [coi, w9, payment];
+  const required = [coi, w9, payment, blankInvoice];
   if (required.some((r) => norm(r) === "denied")) return "denied";
-  if (required.every((r) => r && norm(r) === "approved")) return "onboarded";
-  if (request || coi || w9 || payment) return "in_progress";
+  // "onboarded" now means the FULL parent pipeline completed (Toyota's
+  // actual approval recorded), not just every case Approved -- otherwise a
+  // vendor that's merely Ready for Toyota would fall out of the board's
+  // In Progress bucket (where the parent-case Submit/Record-Approval
+  // controls live) before there's any way left to reach them.
+  if (vendorRow && vendorRow.parent_stage === "approved") return "onboarded";
+  if ((vendorRow && vendorRow.welcome_email_sent_at) || coi || w9 || payment || blankInvoice) return "in_progress";
   return "not_started";
 }
 
@@ -3180,45 +3378,177 @@ function syncOnboardingStage(vendorId) {
   return stage;
 }
 
+// Required document cases Approved vs. total, excluding any form the admin
+// has marked Not required from the denominator -- the source of the
+// board/profile's "X/Y document cases approved" badge and of
+// deriveParentStage's auto-advance to ready_for_toyota below. A W-9 marked
+// "previously approved in ServiceEdge" already carries status "Approved"
+// by the time this reads it (see updateVendorRequest/addVendorRequest), so
+// it needs no special-casing here. A pending/approved VPO Waiver never
+// substitutes for COI's own Approved status -- this only ever reads COI's
+// own case status.
+function computeApprovalCount(vendorId) {
+  const vendorRow = db
+    .prepare(
+      "SELECT coi_form_status, w9_form_status, payment_form_status, blank_invoice_form_status FROM vendors WHERE id = ?"
+    )
+    .get(vendorId);
+  if (!vendorRow) return { approved: 0, total: 0 };
+  let approved = 0;
+  let total = 0;
+  for (const key of ["coi", "w9", "payment", "blank_invoice"]) {
+    if (vendorRow[FORM_STATUS_COLUMN_BY_KEY[key]] === "not_required") continue;
+    total++;
+    const latest = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY[key]);
+    if (latest && String(latest.status || "").trim().toLowerCase() === "approved") approved++;
+  }
+  return { approved, total };
+}
+
+// The parent onboarding case's own 6-stage pipeline, recomputed the same
+// "latest case wins" way onboarding_stage is -- except submitted_to_toyota
+// and approved are sticky: only submitVendorToToyota/recordVendorToyotaApproval
+// (or a denial) can reach or leave them, never a later case edit. That's
+// what keeps "Submit to Toyota" meaning a recorded action instead of
+// something a later case-status tweak could silently undo, and keeps a
+// renewal/expiration flag from ever erasing a prior approval (the spec's
+// own requirement).
+function deriveParentStage(vendorId) {
+  const vendor = db.prepare("SELECT parent_stage FROM vendors WHERE id = ?").get(vendorId);
+  if (!vendor) return "gathering_forms";
+  const current = vendor.parent_stage || "gathering_forms";
+  if (current === "submitted_to_toyota" || current === "approved") return current;
+
+  const { approved, total } = computeApprovalCount(vendorId);
+  if (total > 0 && approved === total) return "ready_for_toyota";
+
+  const coi = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
+  const w9 = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.w9);
+  const payment = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.payment);
+  const blankInvoice = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.blank_invoice);
+  const cases = [coi, w9, payment, blankInvoice];
+  const norm = (r) => (r ? String(r.status || "").trim().toLowerCase() : "");
+  const reviewed = new Set(["in review", "revisions needed", "approved", "denied", "waiting on vpo waiver"]);
+  if (cases.some((r) => reviewed.has(norm(r)))) return "document_review";
+  if (cases.some(Boolean)) return "cases_started";
+  return "gathering_forms";
+}
+
+function syncParentStage(vendorId) {
+  const stage = deriveParentStage(vendorId);
+  db.prepare("UPDATE vendors SET parent_stage = ? WHERE id = ?").run(stage, vendorId);
+  return stage;
+}
+
 // One row per vendor that has any onboarding case activity at all, each
 // showing the latest case of each of the four canonical types -- the bulk
 // read behind the Onboarding board, so it can show every vendor's case
-// status without an API round trip per vendor.
+// status without an API round trip per vendor. The VPO Waiver lookup is
+// batched in one query across every COI case rather than once per row, to
+// keep this endpoint's cost independent of vendor count (same reasoning as
+// listVendors' own batched extras).
 function listOnboardingCaseSummaries() {
-  const rows = db
-    .prepare(
-      `SELECT vendor_id AS vendorId, request_type AS requestType, reference_number AS referenceNumber,
-              status, note, as_of AS asOf, updated_at AS updatedAt
-       FROM vendor_requests ORDER BY updated_at ASC, id ASC`
-    )
-    .all();
+  const rows = db.prepare("SELECT * FROM vendor_requests ORDER BY updated_at ASC, id ASC").all();
+  const waiverByRequestId = new Map(
+    db.prepare("SELECT * FROM vpo_waivers").all().map((w) => [w.vendor_request_id, presentVpoWaiver(w)])
+  );
   const typeToKey = Object.fromEntries(ONBOARDING_CASE_TYPES.map((c) => [c.type, c.key]));
   const summaries = {};
   for (const r of rows) {
-    const key = typeToKey[r.requestType];
+    const key = typeToKey[r.request_type];
     if (!key) continue;
-    if (!summaries[r.vendorId]) summaries[r.vendorId] = {};
-    summaries[r.vendorId][key] = { referenceNumber: r.referenceNumber, status: r.status, note: r.note, asOf: r.asOf, updatedAt: r.updatedAt };
+    if (!summaries[r.vendor_id]) summaries[r.vendor_id] = {};
+    const presented = presentVendorRequestRow(r);
+    if (key === "coi") presented.vpoWaiver = waiverByRequestId.get(r.id) || null;
+    summaries[r.vendor_id][key] = presented;
   }
   return summaries;
 }
 
-function addVendorRequest(vendorId, requestType, referenceNumber, status, note, asOf) {
+function addVendorRequest(vendorId, requestType, fields = {}) {
   const now = new Date().toISOString();
+  const {
+    referenceNumber, status, note, asOf,
+    expirationDate, reviewNotesSelected, reviewNotesFreeText,
+    w9Name, w9Address, w9PreviouslyApproved,
+  } = fields;
+  const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
+  // "Previously approved in ServiceEdge" is a shortcut, not a normal status
+  // edit: it forces the case Approved and appends (never replaces) a dated
+  // record of the historical source, while collection (form_status) stays
+  // untouched -- see the spec's W-9 section.
+  const previouslyApproved = isW9 && Boolean(w9PreviouslyApproved);
+  const finalStatus = previouslyApproved ? "Approved" : status || "";
+  const finalNote = previouslyApproved ? appendNote(note || "", "Previously approved in ServiceEdge") : note || "";
   db.prepare(
-    "INSERT INTO vendor_requests (vendor_id, request_type, reference_number, status, note, as_of, requested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(vendorId, requestType, referenceNumber || "", status || "", note || "", asOf || now.slice(0, 10), now, now);
+    `INSERT INTO vendor_requests
+      (vendor_id, request_type, reference_number, status, note, as_of,
+       expiration_date, review_notes_selected, review_notes_free_text,
+       w9_name, w9_address, w9_previously_approved, requested_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    vendorId,
+    requestType,
+    referenceNumber || "",
+    finalStatus,
+    finalNote,
+    asOf || now.slice(0, 10),
+    expirationDate || null,
+    JSON.stringify(Array.isArray(reviewNotesSelected) ? reviewNotesSelected : []),
+    reviewNotesFreeText || "",
+    isW9 ? w9Name || "" : "",
+    isW9 ? w9Address || "" : "",
+    previouslyApproved ? 1 : 0,
+    now,
+    now
+  );
   touchVendorActivity(vendorId);
+  syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
 
-function updateVendorRequest(vendorId, requestId, { requestType, referenceNumber, status, note, asOf, updatedBy }) {
+function updateVendorRequest(vendorId, requestId, fields = {}) {
+  const {
+    requestType, referenceNumber, status, note, asOf, updatedBy,
+    expirationDate, reviewNotesSelected, reviewNotesFreeText,
+    w9Name, w9Address, w9PreviouslyApproved,
+  } = fields;
   const now = new Date().toISOString();
+  const existing = db.prepare("SELECT w9_previously_approved FROM vendor_requests WHERE id = ? AND vendor_id = ?").get(requestId, vendorId);
+  const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
+  const previouslyApproved = isW9 && Boolean(w9PreviouslyApproved);
+  // Only append the historical-approval note the moment the flag is first
+  // checked -- not on every later save while it stays checked, or the note
+  // would grow a duplicate dated line each time.
+  const justMarkedPreviouslyApproved = previouslyApproved && !(existing && existing.w9_previously_approved);
+  const finalStatus = previouslyApproved ? "Approved" : status || "";
+  const finalNote = justMarkedPreviouslyApproved ? appendNote(note || "", "Previously approved in ServiceEdge") : note || "";
   db.prepare(
-    "UPDATE vendor_requests SET request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ?, updated_by = ? WHERE id = ? AND vendor_id = ?"
-  ).run(requestType, referenceNumber || "", status || "", note || "", asOf || now.slice(0, 10), now, updatedBy || null, requestId, vendorId);
+    `UPDATE vendor_requests SET
+      request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ?, updated_by = ?,
+      expiration_date = ?, review_notes_selected = ?, review_notes_free_text = ?,
+      w9_name = ?, w9_address = ?, w9_previously_approved = ?
+     WHERE id = ? AND vendor_id = ?`
+  ).run(
+    requestType,
+    referenceNumber || "",
+    finalStatus,
+    finalNote,
+    asOf || now.slice(0, 10),
+    now,
+    updatedBy || null,
+    expirationDate || null,
+    JSON.stringify(Array.isArray(reviewNotesSelected) ? reviewNotesSelected : []),
+    reviewNotesFreeText || "",
+    isW9 ? w9Name || "" : "",
+    isW9 ? w9Address || "" : "",
+    previouslyApproved ? 1 : 0,
+    requestId,
+    vendorId
+  );
   touchVendorActivity(vendorId);
+  syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
 }
@@ -3232,8 +3562,112 @@ function touchVendorActivity(vendorId) {
 
 function deleteVendorRequest(vendorId, requestId) {
   db.prepare("DELETE FROM vendor_requests WHERE id = ? AND vendor_id = ?").run(requestId, vendorId);
+  syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
+}
+
+// Checking "Welcome Email Sent" requests the 4 forms that haven't been
+// touched yet (coi/w9/payment/blank_invoice_form_status) without
+// disturbing any that have already moved past Not Requested. Unchecking
+// only clears the sent date -- it never reverts a form's collection
+// status, per the spec's "do not... reset it when the checkbox is
+// cleared."
+function setWelcomeEmailSent(vendorId, sent) {
+  const now = new Date().toISOString();
+  if (sent) {
+    const vendor = db
+      .prepare(
+        "SELECT coi_form_status, w9_form_status, payment_form_status, blank_invoice_form_status FROM vendors WHERE id = ?"
+      )
+      .get(vendorId);
+    if (!vendor) return findVendor(vendorId);
+    const nextStatus = (col) => (vendor[col] === "not_requested" ? "requested" : vendor[col]);
+    db.prepare(
+      `UPDATE vendors SET welcome_email_sent_at = ?, coi_form_status = ?, w9_form_status = ?,
+        payment_form_status = ?, blank_invoice_form_status = ?, updated_at = ? WHERE id = ?`
+    ).run(
+      now,
+      nextStatus("coi_form_status"),
+      nextStatus("w9_form_status"),
+      nextStatus("payment_form_status"),
+      nextStatus("blank_invoice_form_status"),
+      now,
+      vendorId
+    );
+  } else {
+    db.prepare("UPDATE vendors SET welcome_email_sent_at = NULL, updated_at = ? WHERE id = ?").run(now, vendorId);
+  }
+  syncOnboardingStage(vendorId);
+  return findVendor(vendorId);
+}
+
+// Per-form collection status (Not Requested/Requested/Gathering/Received/
+// Not required) -- separate from a case's own approval status
+// (vendor_requests.status). Not required also excludes that form from the
+// approval-count badge's denominator (see computeApprovalCount).
+function setVendorFormStatus(vendorId, caseKey, formStatus) {
+  const col = FORM_STATUS_COLUMN_BY_KEY[caseKey];
+  if (!col || !FORM_STATUSES.includes(formStatus)) return findVendor(vendorId);
+  db.prepare(`UPDATE vendors SET ${col} = ?, updated_at = ? WHERE id = ?`).run(formStatus, new Date().toISOString(), vendorId);
+  syncParentStage(vendorId);
+  return findVendor(vendorId);
+}
+
+// "Submit to Toyota" records submission, not approval -- only reachable
+// once every required document case is Approved (parent_stage auto-
+// advances to ready_for_toyota the moment that's true, via syncParentStage
+// above).
+function submitVendorToToyota(vendorId) {
+  const vendor = db.prepare("SELECT parent_stage FROM vendors WHERE id = ?").get(vendorId);
+  if (!vendor) return { error: "not_found" };
+  if (vendor.parent_stage !== "ready_for_toyota") return { error: "not_ready", vendor: findVendor(vendorId) };
+  db.prepare("UPDATE vendors SET parent_stage = 'submitted_to_toyota', updated_at = ? WHERE id = ?").run(
+    new Date().toISOString(),
+    vendorId
+  );
+  return { vendor: findVendor(vendorId) };
+}
+
+// Recording Toyota's actual approval -- the only action that sets
+// onboardingToyotaApproved (see presentVendorRowBase). Only reachable
+// after Submit to Toyota, so an admin can't skip straight from "ready" to
+// "approved" without the submission step actually having happened.
+function recordVendorToyotaApproval(vendorId) {
+  const vendor = db.prepare("SELECT parent_stage FROM vendors WHERE id = ?").get(vendorId);
+  if (!vendor) return { error: "not_found" };
+  if (vendor.parent_stage !== "submitted_to_toyota") return { error: "not_submitted", vendor: findVendor(vendorId) };
+  db.prepare("UPDATE vendors SET parent_stage = 'approved', updated_at = ? WHERE id = ?").run(new Date().toISOString(), vendorId);
+  // parent_stage just reached "approved" -- the one other place
+  // deriveOnboardingStage's own trigger condition can become true outside
+  // the normal case-mutation flow, so re-sync the legacy stage here too.
+  syncOnboardingStage(vendorId);
+  return { vendor: findVendor(vendorId) };
+}
+
+// Plain field update for the parent case's own identifying info -- case #,
+// notes (kept separate from any document case's own notes), and the two
+// onboarding-specific contacts. Dated history comes from the normal
+// VENDOR_UPDATED audit entry the route already writes on every vendor
+// PATCH, same as any other vendor field edit.
+function updateVendorParentCase(vendorId, fields = {}) {
+  const { caseNumber, notes, paymentContactName, paymentContactPhone, paymentContactEmail, poNotificationEmail } = fields;
+  db.prepare(
+    `UPDATE vendors SET parent_case_number = ?, parent_case_notes = ?,
+      payment_verification_contact_name = ?, payment_verification_contact_phone = ?, payment_verification_contact_email = ?,
+      po_notification_email = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(
+    caseNumber || "",
+    notes || "",
+    paymentContactName || "",
+    paymentContactPhone || "",
+    paymentContactEmail || "",
+    poNotificationEmail || "",
+    new Date().toISOString(),
+    vendorId
+  );
+  return findVendor(vendorId);
 }
 
 // ---- Allocation history ----
@@ -8889,7 +9323,19 @@ module.exports = {
   updateVendorRequest,
   deleteVendorRequest,
   ONBOARDING_CASE_TYPES,
+  ONBOARDING_CASE_TYPE_BY_KEY,
   listOnboardingCaseSummaries,
+  PARENT_STAGES,
+  FORM_STATUSES,
+  VPO_WAIVER_REASONS,
+  VPO_WAIVER_STATUSES,
+  setWelcomeEmailSent,
+  setVendorFormStatus,
+  submitVendorToToyota,
+  recordVendorToyotaApproval,
+  updateVendorParentCase,
+  addOrUpdateVpoWaiver,
+  getVpoWaiverForRequest,
   ONBOARDING_TASKS,
   getOnboardingProgress,
   setOnboardingTask,

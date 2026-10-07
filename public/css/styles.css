@@ -3011,6 +3011,153 @@ h1, h2, h3, h4 {
   flex: 1;
 }
 
+.onboarding-welcome-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.onboarding-form-status-select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--card);
+}
+
+.onboarding-review-notes-details {
+  margin-top: 4px;
+  width: 100%;
+}
+.onboarding-review-notes-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+.onboarding-review-notes-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0 14px;
+}
+.onboarding-review-notes-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: normal;
+}
+.onboarding-review-notes-freetext {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.onboarding-vpo-waiver-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  background: var(--accent-bg);
+}
+.onboarding-vpo-waiver-heading {
+  flex-basis: 100%;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+}
+.onboarding-vpo-waiver-panel select,
+.onboarding-vpo-waiver-panel input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.onboarding-vpo-waiver-notes {
+  flex-basis: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.onboarding-parent-case {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+.onboarding-parent-case-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+.onboarding-parent-stage-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0;
+}
+.onboarding-parent-stage-pill {
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--neutral-bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.onboarding-parent-stage-pill-done {
+  background: var(--ok-bg, var(--accent-bg));
+  color: var(--ok, var(--accent));
+  border-color: transparent;
+}
+.onboarding-parent-stage-pill-current {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.onboarding-parent-case-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.onboarding-parent-case-fields input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex: 1;
+  min-width: 150px;
+}
+.onboarding-parent-case-notes {
+  flex-basis: 100%;
+  min-height: 48px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+}
+.onboarding-parent-case-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 /* ---- Tables ---- */
 
 .detail-table {

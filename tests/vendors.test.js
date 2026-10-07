@@ -279,7 +279,7 @@ test("vendors: onboarding tracker (stage, denied reason, case log)", async (t) =
 // onboardingStage mirrors that: it's derived from the latest case of each
 // type, not set by hand, so it stays correct through exactly that
 // deny-then-reopen-a-new-case pattern.
-test("vendors: onboarding stage derives from COI/W-9/Payment case status", async (t) => {
+test("vendors: onboarding stage derives from COI/W-9/Payment/Blank Invoice case status", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
@@ -317,11 +317,32 @@ test("vendors: onboarding stage derives from COI/W-9/Payment case status", async
     assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "in_progress");
   });
 
-  await t.test("all three approved moves the vendor to Onboarded", async () => {
+  await t.test("all four required cases approved advances the parent to Ready for Toyota, but onboardingStage stays In Progress", async () => {
     await logCase("Onboarding - Payment Details", "Denied", "00801515");
     await logCase("Onboarding - Payment Details", "Approved", "00809233");
+    await logCase("Onboarding - Blank Invoice", "Approved", "00809500");
     const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
-    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "onboarded");
+    const v = vendor.body.find((v) => v.id === vendorId);
+    assert.equal(v.parentStage, "ready_for_toyota");
+    assert.equal(v.onboardingStage, "in_progress");
+    assert.equal(v.onboardingCwApproved, true);
+    assert.equal(v.onboardingToyotaApproved, false);
+  });
+
+  await t.test("submit to Toyota records submission, not approval", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/submit-to-toyota`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.parentStage, "submitted_to_toyota");
+    assert.equal(res.body.onboardingStage, "in_progress");
+    assert.equal(res.body.onboardingToyotaApproved, false);
+  });
+
+  await t.test("recording Toyota's approval moves the parent to Approved and the vendor to Onboarded", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/record-toyota-approval`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.parentStage, "approved");
+    assert.equal(res.body.onboardingStage, "onboarded");
+    assert.equal(res.body.onboardingToyotaApproved, true);
   });
 
   await t.test("stage-changing case updates are audited", async () => {
@@ -618,12 +639,14 @@ test("vendors: explicit denial (cost/service, not just a document case) + reinst
     assert.deepEqual(keys, ["insurance", "document_chasing", "unacceptable_service", "cost", "other"]);
   });
 
-  await t.test("set up a vendor with all three cases approved (fully onboarded)", async () => {
+  await t.test("set up a vendor with all four required cases approved and Toyota's approval recorded (fully onboarded)", async () => {
     const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Overpriced Overhead Doors" } });
     vendorId = res.body.id;
-    for (const requestType of ["Onboarding - COI", "Onboarding - W8/W9", "Onboarding - Payment Details"]) {
+    for (const requestType of ["Onboarding - COI", "Onboarding - W8/W9", "Onboarding - Payment Details", "Onboarding - Blank Invoice"]) {
       await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN", body: { requestType, status: "Approved" } });
     }
+    await server.call("POST", `/api/admin/vendors/${vendorId}/submit-to-toyota`, { userId: "ADMIN" });
+    await server.call("POST", `/api/admin/vendors/${vendorId}/record-toyota-approval`, { userId: "ADMIN" });
     const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
     assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "onboarded");
   });
@@ -674,7 +697,7 @@ test("vendors: explicit denial (cost/service, not just a document case) + reinst
     assert.equal(res.status, 200);
     assert.equal(res.body.deniedReasonCategory, "");
     assert.equal(res.body.deniedReason, "");
-    // All three cases are still approved (W-9/Payment from setup, COI re-approved above).
+    // All four required cases are still approved (W-9/Payment/Blank Invoice from setup, COI re-approved above).
     assert.equal(res.body.onboardingStage, "onboarded");
   });
 
@@ -836,4 +859,140 @@ test("vendors: PO-open vs. GL-applied rollup", async (t) => {
   });
 
   raw.close();
+});
+
+// The redesigned onboarding behaviors: Welcome Email Sent as a real
+// checkbox (not a case), per-form collection status separate from case
+// approval status, the COI-only VPO Waiver sub-case, and the blank_invoice
+// upload category bug fix.
+test("vendors: welcome email checkbox, form status, and VPO Waiver", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Redesign Test Vendor" } });
+  const vendorId = create.body.id;
+
+  await t.test("all 4 forms default to Not Requested, welcome email not yet sent", async () => {
+    assert.equal(create.body.coiFormStatus, "not_requested");
+    assert.equal(create.body.w9FormStatus, "not_requested");
+    assert.equal(create.body.paymentFormStatus, "not_requested");
+    assert.equal(create.body.blankInvoiceFormStatus, "not_requested");
+    assert.equal(create.body.welcomeEmailSentAt, null);
+  });
+
+  await t.test("checking Welcome Email Sent advances all 4 Not Requested forms to Requested", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/welcome-email`, { userId: "ADMIN", body: { sent: true } });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.welcomeEmailSentAt);
+    assert.equal(res.body.coiFormStatus, "requested");
+    assert.equal(res.body.w9FormStatus, "requested");
+    assert.equal(res.body.paymentFormStatus, "requested");
+    assert.equal(res.body.blankInvoiceFormStatus, "requested");
+  });
+
+  await t.test("manually advancing COI past Requested is preserved when the checkbox is later cleared", async () => {
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}/form-status`, { userId: "ADMIN", body: { caseKey: "coi", formStatus: "received" } });
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/welcome-email`, { userId: "ADMIN", body: { sent: false } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.welcomeEmailSentAt, null, "clearing the checkbox only removes the sent date");
+    assert.equal(res.body.coiFormStatus, "received", "clearing the checkbox never reverts a form's own progress");
+    assert.equal(res.body.w9FormStatus, "requested", "the other 3 forms also stay exactly where they were");
+  });
+
+  await t.test("rejects an unknown caseKey or formStatus", async () => {
+    const badKey = await server.call("PATCH", `/api/admin/vendors/${vendorId}/form-status`, { userId: "ADMIN", body: { caseKey: "vpo_waiver", formStatus: "received" } });
+    assert.equal(badKey.status, 400);
+    const badStatus = await server.call("PATCH", `/api/admin/vendors/${vendorId}/form-status`, { userId: "ADMIN", body: { caseKey: "coi", formStatus: "waived" } });
+    assert.equal(badStatus.status, 400);
+  });
+
+  await t.test("marking Payment/ACH Not required excludes it from the approval-count denominator", async () => {
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}/form-status`, { userId: "ADMIN", body: { caseKey: "payment", formStatus: "not_required" } });
+    await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN", body: { requestType: "Onboarding - COI", status: "Approved" } });
+    await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN", body: { requestType: "Onboarding - W8/W9", status: "Approved" } });
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN", body: { requestType: "Onboarding - Blank Invoice", status: "Approved" } });
+    assert.equal(res.status, 201);
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const v = vendor.body.find((x) => x.id === vendorId);
+    // COI, W-9, Blank Invoice approved; Payment excluded (Not required) --
+    // 3 of 3 required, so the parent should already be Ready for Toyota.
+    assert.equal(v.parentStage, "ready_for_toyota");
+  });
+
+  await t.test(`"Waiting on VPO Waiver" is rejected for a non-COI case`, async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - W8/W9", status: "Waiting on VPO Waiver" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  let coiRequestId;
+  await t.test("setting COI to Waiting on VPO Waiver is accepted and moves the parent to Document review", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Waiting on VPO Waiver", reviewNotesSelected: ["missing_coverage"] },
+    });
+    assert.equal(res.status, 201);
+    coiRequestId = res.body[0].id;
+    assert.deepEqual(res.body[0].reviewNotesSelected, ["missing_coverage"]);
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).parentStage, "document_review");
+  });
+
+  await t.test("the VPO Waiver can only attach to the COI case", async () => {
+    const list = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" });
+    const w9RequestId = list.body.find((r) => r.requestType === "Onboarding - W8/W9").id;
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${w9RequestId}/vpo-waiver`, {
+      userId: "ADMIN",
+      body: { reason: "limits" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("approving the VPO Waiver never auto-approves COI", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${coiRequestId}/vpo-waiver`, {
+      userId: "ADMIN",
+      body: { reason: "missing_coverage", caseNumber: "VPO-100", status: "approved", expirationDate: "2027-01-01" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.status, "approved");
+
+    const list = await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" });
+    const coi = list.body.find((r) => r.id === coiRequestId);
+    assert.equal(coi.status, "Waiting on VPO Waiver", "COI's own status is untouched by the waiver's approval");
+    assert.equal(coi.vpoWaiver.status, "approved");
+
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const v = vendor.body.find((x) => x.id === vendorId);
+    assert.equal(v.parentStage, "document_review", "a pending/approved waiver alone never clears the COI case or advances the parent");
+  });
+
+  await t.test("marking COI itself Approved is still required, and then the parent reaches Ready for Toyota", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${coiRequestId}`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", status: "Approved" },
+    });
+    assert.equal(res.status, 200);
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).parentStage, "ready_for_toyota");
+  });
+});
+
+test("vendors: blank_invoice is an accepted upload category (files.js whitelist fix)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Blank Invoice Upload Co" } });
+  const vendorId = create.body.id;
+
+  await t.test("uploading a blank_invoice document for a vendor succeeds", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(vendorId), category: "blank_invoice" },
+      fileName: "blank-invoice.pdf",
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.category, "blank_invoice");
+  });
 });
