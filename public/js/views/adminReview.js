@@ -289,6 +289,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
   const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "" };
   const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
+  // Onboarding board rows: which vendor IDs currently have their "Details"
+  // section expanded -- every field in there autosaves, which re-renders
+  // the whole board (drawVendorOnboarding) on every change, so the open/
+  // closed state has to live outside that render or it would snap back
+  // shut after each edit.
+  const onboardingRowDetailsExpanded = new Set();
   // Which vendor's full profile page is open (null = showing the directory
   // list instead), and which of its tabs -- a one-shot deep link (from the
   // Onboarding board, or a Priorities follow-up) just sets both and jumps to
@@ -630,6 +636,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </label>
         ${v.welcomeEmailSentAt ? `<span class="wom-desc">sent ${new Date(v.welcomeEmailSentAt).toLocaleDateString()}</span>` : ""}
       </div>
+      <div class="onboarding-approval-flags">
+        <span class="badge badge-${v.onboardingCwApproved ? "approved" : "draft"}">C&amp;W ${v.onboardingCwApproved ? "Approved" : "Pending"}</span>
+        <span class="badge badge-${v.onboardingToyotaApproved ? "approved" : "draft"}">Toyota ${v.onboardingToyotaApproved ? "Approved" : "Pending"}</span>
+      </div>
     `;
   }
   function wireWelcomeEmailLine(host, v, onLogged) {
@@ -652,7 +662,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   const COI_ONLY_STATUS = "Waiting on VPO Waiver";
   const CASE_STATUS_OPTIONS = ["Not started", "Case started", "In review", "Revisions needed", "Approved", "Denied"];
   function caseStatusOptionsFor(caseKey) {
-    return caseKey === "coi" ? [...CASE_STATUS_OPTIONS, COI_ONLY_STATUS] : CASE_STATUS_OPTIONS;
+    if (caseKey !== "coi") return CASE_STATUS_OPTIONS;
+    const withoutDenied = CASE_STATUS_OPTIONS.slice(0, -1);
+    return [...withoutDenied, COI_ONLY_STATUS, CASE_STATUS_OPTIONS[CASE_STATUS_OPTIONS.length - 1]];
   }
   // Mirrors db.js's VENDOR_DENIAL_REASONS. An explicit denial an admin picks
   // directly -- "unacceptable work or service" and "cost" in particular are
@@ -947,33 +959,54 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // -- Mark vendor denied lives in the deny panel below, same optional-
   // exit action either way). Shared between the board and the vendor
   // profile tab so editing it updates both without duplication.
-  function renderParentCaseHtml(v) {
+  function parentCaseHintText(v, caseSummary) {
+    if (v.parentStage === "approved") return "Toyota's approval is on file -- this vendor is fully onboarded.";
+    if (v.parentStage === "submitted_to_toyota") return "Submitted -- waiting on Toyota to record their approval.";
+    const { approved, total } = computeApprovalBadge(v, caseSummary);
+    const remaining = total - approved;
+    return `${remaining} required case${remaining === 1 ? "" : "s"} pending approval.`;
+  }
+  function renderParentCaseHtml(v, caseSummary) {
     return `
       <div class="onboarding-parent-case">
         <div class="onboarding-parent-case-heading">
           Parent onboarding case
-          <span class="badge badge-${v.onboardingCwApproved ? "approved" : "draft"}">C&amp;W Approved: ${v.onboardingCwApproved ? "Yes" : "Pending"}</span>
-          <span class="badge badge-${v.onboardingToyotaApproved ? "approved" : "draft"}">Toyota Approval: ${v.onboardingToyotaApproved ? "Yes" : "Pending"}</span>
+          <span class="badge badge-draft">${PARENT_STAGE_LABELS[v.parentStage]}</span>
+        </div>
+        <div class="onboarding-parent-grid">
+          <label class="onboarding-field">
+            Payment Verification Contact
+            <span class="onboarding-contact-subfields">
+              <input type="text" class="onboarding-parent-contact-name" placeholder="Contact name" value="${escapeHtml(v.paymentVerificationContactName || "")}" />
+              <input type="text" class="onboarding-parent-contact-phone" placeholder="Contact phone number" value="${escapeHtml(v.paymentVerificationContactPhone || "")}" />
+              <input type="text" class="onboarding-parent-contact-email" placeholder="Contact email" value="${escapeHtml(v.paymentVerificationContactEmail || "")}" />
+            </span>
+          </label>
+          <label class="onboarding-field">
+            PO Notification Email
+            <input type="text" class="onboarding-parent-po-email" placeholder="Email for purchase order notifications" value="${escapeHtml(v.poNotificationEmail || "")}" />
+          </label>
+          <label class="onboarding-field">
+            Parent case number
+            <input type="text" class="onboarding-parent-case-number" placeholder="Case number" value="${escapeHtml(v.parentCaseNumber || "")}" />
+          </label>
+          <label class="onboarding-field">
+            Parent-case notes
+            <textarea class="onboarding-parent-case-notes" placeholder="Notes for the parent case (separate from any document case's own notes)">${escapeHtml(v.parentCaseNotes || "")}</textarea>
+          </label>
         </div>
         ${renderParentStagePillHtml(v)}
-        <div class="onboarding-parent-case-fields">
-          <input type="text" class="onboarding-parent-case-number" placeholder="Parent case #" value="${escapeHtml(v.parentCaseNumber || "")}" />
-          <input type="text" class="onboarding-parent-contact-name" placeholder="Payment Verification Contact name" value="${escapeHtml(v.paymentVerificationContactName || "")}" />
-          <input type="text" class="onboarding-parent-contact-phone" placeholder="Contact phone" value="${escapeHtml(v.paymentVerificationContactPhone || "")}" />
-          <input type="text" class="onboarding-parent-contact-email" placeholder="Contact email" value="${escapeHtml(v.paymentVerificationContactEmail || "")}" />
-          <input type="text" class="onboarding-parent-po-email" placeholder="PO Notification Email" value="${escapeHtml(v.poNotificationEmail || "")}" />
-          <textarea class="onboarding-parent-case-notes" placeholder="Parent case notes (separate from document-case notes)">${escapeHtml(v.parentCaseNotes || "")}</textarea>
-          <button type="button" class="btn btn-secondary onboarding-parent-case-save">Save parent case</button>
-        </div>
         <div class="onboarding-parent-case-actions">
-          <button type="button" class="btn btn-primary onboarding-submit-toyota-btn" ${v.parentStage === "ready_for_toyota" ? "" : "disabled"}>Submit to Toyota</button>
-          <button type="button" class="btn btn-primary onboarding-record-toyota-approval-btn" ${v.parentStage === "submitted_to_toyota" ? "" : "disabled"}>Record Toyota Approval</button>
+          <button type="button" class="btn btn-primary onboarding-submit-toyota-btn" ${v.parentStage === "ready_for_toyota" ? "" : "disabled"}>Submit parent to Toyota</button>
+          <button type="button" class="btn btn-secondary onboarding-record-toyota-approval-btn" ${v.parentStage === "submitted_to_toyota" ? "" : "disabled"}>Record Toyota approval</button>
         </div>
+        <p class="onboarding-parent-case-hint">${parentCaseHintText(v, caseSummary)}</p>
       </div>
     `;
   }
   function wireParentCase(el, v, onLogged) {
-    el.querySelector(".onboarding-parent-case-save").addEventListener("click", async () => {
+    let saveTimer = null;
+    async function save() {
       try {
         const updated = await api.patch(`/api/admin/vendors/${v.id}/parent-case`, {
           caseNumber: el.querySelector(".onboarding-parent-case-number").value.trim(),
@@ -985,10 +1018,24 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         });
         Object.assign(v, updated);
         invalidateVendorsCache();
-        await onLogged();
       } catch (err) {
         window.alert(err.message);
       }
+    }
+    // Autosaves as the admin types/leaves a field -- no explicit Save
+    // button, matching every other field on this card. Debounced while
+    // typing, flushed immediately on blur.
+    el.querySelectorAll(
+      ".onboarding-parent-case-number, .onboarding-parent-contact-name, .onboarding-parent-contact-phone, .onboarding-parent-contact-email, .onboarding-parent-po-email, .onboarding-parent-case-notes"
+    ).forEach((input) => {
+      input.addEventListener("input", () => {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(save, 700);
+      });
+      input.addEventListener("blur", () => {
+        clearTimeout(saveTimer);
+        save();
+      });
     });
     el.querySelector(".onboarding-submit-toyota-btn").addEventListener("click", async () => {
       try {
@@ -1026,40 +1073,56 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${stale ? `<span class="badge badge-rejected">Stale</span>` : ""}
         <button class="btn btn-secondary onboarding-open-vendor-btn" type="button">Open vendor</button>
         <button class="btn btn-link onboarding-log-toggle" type="button">Full case history</button>
+        <button class="btn btn-link onboarding-row-details-toggle" type="button">Details</button>
       </div>
-      ${renderWelcomeEmailLine(v)}
-      ${renderParentCaseHtml(v)}
-      <div class="onboarding-cases-heading">Toyota Onboarding</div>
-      <div class="onboarding-cases">
-        ${caseTypes.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
+      <div class="onboarding-row-details" ${onboardingRowDetailsExpanded.has(v.id) ? "" : "hidden"}>
+        ${renderWelcomeEmailLine(v)}
+        ${renderParentCaseHtml(v, caseSummary)}
+        <div class="onboarding-cases-heading">
+          Forms &amp; individual cases
+          ${renderApprovalBadgeHtml(v, caseSummary)}
+        </div>
+        <div class="onboarding-cases">
+          ${caseTypes.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
+        </div>
+        ${
+          v.onboardingStage === "denied"
+            ? `<div class="onboarding-denied-reason">
+                 ${v.deniedReasonCategory ? `<span class="badge badge-rejected">${escapeHtml(denialReasonLabel(v.deniedReasonCategory))}</span>` : ""}
+                 <input type="text" class="onboarding-denied-reason-input" placeholder="Note (optional, e.g. which case and why)" value="${escapeHtml(v.deniedReason)}" />
+                 <button type="button" class="btn btn-link onboarding-denied-reason-save">Save note</button>
+                 <button type="button" class="btn btn-link onboarding-reinstate-btn">Reinstate vendor</button>
+               </div>`
+            : `<details class="onboarding-deny-action">
+                 <summary class="onboarding-other-outcome-toggle">Other outcome: mark vendor denied</summary>
+                 <div class="onboarding-deny-panel">
+                   <select class="onboarding-deny-reason-select">
+                     <option value="">Reason for denial…</option>
+                     ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
+                   </select>
+                   <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
+                   <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
+                 </div>
+               </details>`
+        }
       </div>
-      ${
-        v.onboardingStage === "denied"
-          ? `<div class="onboarding-denied-reason">
-               ${v.deniedReasonCategory ? `<span class="badge badge-rejected">${escapeHtml(denialReasonLabel(v.deniedReasonCategory))}</span>` : ""}
-               <input type="text" class="onboarding-denied-reason-input" placeholder="Note (optional, e.g. which case and why)" value="${escapeHtml(v.deniedReason)}" />
-               <button type="button" class="btn btn-link onboarding-denied-reason-save">Save note</button>
-               <button type="button" class="btn btn-link onboarding-reinstate-btn">Reinstate vendor</button>
-             </div>`
-          : `<div class="onboarding-deny-action">
-               <button type="button" class="btn btn-link danger-link onboarding-deny-toggle">Mark vendor denied</button>
-               <div class="onboarding-deny-panel" hidden>
-                 <select class="onboarding-deny-reason-select">
-                   <option value="">Reason for denial…</option>
-                   ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
-                 </select>
-                 <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
-                 <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
-                 <button type="button" class="btn btn-link onboarding-deny-cancel-btn">Cancel</button>
-               </div>
-             </div>`
-      }
       <div class="review-row-detail onboarding-case-log" hidden></div>
     `;
 
     el.querySelector(".onboarding-open-vendor-btn").addEventListener("click", () => {
       openVendorProfile(v.id, "onboarding");
     });
+
+    const detailsToggle = el.querySelector(".onboarding-row-details-toggle");
+    const detailsHost = el.querySelector(".onboarding-row-details");
+    detailsToggle.textContent = detailsHost.hidden ? "Details" : "Hide details";
+    detailsToggle.addEventListener("click", () => {
+      detailsHost.hidden = !detailsHost.hidden;
+      detailsToggle.textContent = detailsHost.hidden ? "Details" : "Hide details";
+      if (detailsHost.hidden) onboardingRowDetailsExpanded.delete(v.id);
+      else onboardingRowDetailsExpanded.add(v.id);
+    });
+
     wireWelcomeEmailLine(el, v, () => drawVendorOnboarding(content));
     wireParentCase(el, v, () => drawVendorOnboarding(content));
 
@@ -1090,16 +1153,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       });
     }
 
-    const denyToggle = el.querySelector(".onboarding-deny-toggle");
-    if (denyToggle) {
-      const denyPanel = el.querySelector(".onboarding-deny-panel");
-      denyToggle.addEventListener("click", () => {
-        denyPanel.hidden = !denyPanel.hidden;
-      });
-      el.querySelector(".onboarding-deny-cancel-btn").addEventListener("click", () => {
-        denyPanel.hidden = true;
-      });
-      el.querySelector(".onboarding-deny-confirm-btn").addEventListener("click", async () => {
+    const denyConfirmBtn = el.querySelector(".onboarding-deny-confirm-btn");
+    if (denyConfirmBtn) {
+      denyConfirmBtn.addEventListener("click", async () => {
         const category = el.querySelector(".onboarding-deny-reason-select").value;
         const detail = el.querySelector(".onboarding-deny-detail-input").value.trim();
         if (!category) {
@@ -1146,11 +1202,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     if (!y || !m || !d) return null;
     return `${m}/${d}/${y}`;
   }
-  function todayDateInputValue() {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }
-
   function selectedReviewNoteLabels(ct, selectedKeys) {
     const options = REVIEW_NOTES_OPTIONS[ct.key] || [];
     const keys = Array.isArray(selectedKeys) ? selectedKeys : [];
@@ -1162,7 +1213,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const labels = selectedReviewNoteLabels(ct, latest && latest.reviewNotesSelected);
     return `
       <details class="onboarding-review-notes-details">
-        <summary class="onboarding-review-notes-summary">Review notes: ${labels.length ? escapeHtml(labels.join(", ")) : "None selected"}</summary>
+        <summary class="onboarding-review-notes-summary">${labels.length ? escapeHtml(labels.join(", ")) : "Review notes · select issues"}</summary>
         <div class="onboarding-review-notes-options">
           ${options
             .map(
@@ -1175,7 +1226,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             .join("")}
         </div>
       </details>
-      <textarea class="onboarding-review-notes-freetext" placeholder="Additional notes (optional)">${latest ? escapeHtml(latest.reviewNotesFreeText || "") : ""}</textarea>
     `;
   }
   function vpoWaiverReasonLabel(reason) {
@@ -1211,171 +1261,160 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
   function renderCasePillHtml(v, ct, latest) {
     const coiRef = ct.key === "coi" ? coiRequirementLine(v) : "";
-    const asOfLabel = latest ? formatCaseDate(latest.asOf) : null;
-    const expirationLabel = latest ? formatCaseDate(latest.expirationDate) : null;
     const formStatus = v[FORM_STATUS_KEY_BY_CASE_KEY[ct.key]] || "not_requested";
-    const reviewLabels = selectedReviewNoteLabels(ct, latest && latest.reviewNotesSelected);
-    const isW9PreviouslyApproved = ct.key === "w9" && latest && latest.w9PreviouslyApproved;
+    const isW9 = ct.key === "w9";
+    const statusOptions = caseStatusOptionsFor(ct.key);
+    const currentStatus = latest ? latest.status || "" : "";
     return `
       <div class="onboarding-case" data-case-key="${ct.key}">
-        <div class="onboarding-case-summary">
+        <div class="onboarding-case-header">
           <span class="onboarding-case-label">${escapeHtml(ct.label)}</span>
-          <select class="onboarding-form-status-select">
-            ${FORM_STATUS_OPTIONS.map((s) => `<option value="${s}" ${formStatus === s ? "selected" : ""}>${FORM_STATUS_LABELS[s]}</option>`).join("")}
-          </select>
-          <span class="badge badge-${caseStatusBadgeClass(latest && latest.status)}">${latest ? escapeHtml(latest.status || "No status") : "Not started"}</span>
-          ${latest && latest.referenceNumber ? `<span class="onboarding-case-ref">#${escapeHtml(latest.referenceNumber)}</span>` : ""}
-          ${isW9PreviouslyApproved ? `<span class="badge badge-approved">Previously approved in ServiceEdge</span>` : ""}
-          <button type="button" class="btn btn-link onboarding-case-log-new">Log update</button>
-          ${latest ? `<button type="button" class="btn btn-link onboarding-case-edit">Edit</button>` : ""}
+          <span class="onboarding-case-type-tag">Individual document case</span>
         </div>
         ${coiRef ? `<div class="onboarding-case-coi-ref">${escapeHtml(coiRef)}</div>` : ""}
-        ${
-          latest && (latest.note || asOfLabel || expirationLabel)
-            ? `<div class="onboarding-case-note">${latest.note ? escapeHtml(latest.note) : ""}${asOfLabel ? ` <span class="onboarding-case-asof">(as of ${asOfLabel})</span>` : ""}${expirationLabel ? ` <span class="onboarding-case-asof">(expires ${expirationLabel})</span>` : ""}</div>`
-            : ""
-        }
-        ${reviewLabels.length ? `<div class="onboarding-case-note">Review notes: ${escapeHtml(reviewLabels.join(", "))}</div>` : ""}
-        ${
-          ct.key === "w9" && latest && (latest.w9Name || latest.w9Address)
-            ? `<div class="onboarding-case-note">On form: ${escapeHtml(latest.w9Name || "")}${latest.w9Address ? `, ${escapeHtml(latest.w9Address)}` : ""}</div>`
-            : ""
-        }
-        <div class="onboarding-case-form" hidden>
-          <select class="onboarding-case-status-select">
-            ${caseStatusOptionsFor(ct.key).map((s) => `<option value="${s}">${s}</option>`).join("")}
-          </select>
-          <input type="text" class="onboarding-case-ref-input" placeholder="Case # (optional)" />
-          <label class="onboarding-case-expiration-label">Expiration <input type="date" class="onboarding-case-expiration-input" /></label>
-          <input type="text" class="onboarding-case-note-input" placeholder="Document-case notes (optional, e.g. what's missing)" />
-          <label class="onboarding-case-asof-label">As of <input type="date" class="onboarding-case-asof-input" /></label>
-          ${
-            ct.key === "w9"
-              ? `
-            <input type="text" class="onboarding-w9-name-input" placeholder="Name as shown on the W-9" />
-            <input type="text" class="onboarding-w9-address-input" placeholder="Address as shown on the W-9" />
-            <label class="onboarding-w9-prev-approved-label">
-              <input type="checkbox" class="onboarding-w9-prev-approved-checkbox" /> Previously approved in ServiceEdge
-            </label>
-          `
-              : ""
-          }
-          ${renderReviewNotesChecklistHtml(ct, latest)}
-          <button type="button" class="btn btn-primary onboarding-case-save">Save</button>
-          <button type="button" class="btn btn-link onboarding-case-cancel">Cancel</button>
+        <div class="onboarding-case-grid">
+          <label class="onboarding-field">
+            Form status
+            <select class="onboarding-form-status-select">
+              ${FORM_STATUS_OPTIONS.map((s) => `<option value="${s}" ${formStatus === s ? "selected" : ""}>${FORM_STATUS_LABELS[s]}</option>`).join("")}
+            </select>
+          </label>
+          <label class="onboarding-field">
+            Case number
+            <input type="text" class="onboarding-case-ref-input" placeholder="Case number" value="${escapeHtml(latest ? latest.referenceNumber || "" : "")}" />
+          </label>
+          <label class="onboarding-field">
+            Case status
+            <select class="onboarding-case-status-select">
+              ${statusOptions
+                .map((s) => `<option value="${s}" ${currentStatus ? (currentStatus === s ? "selected" : "") : s === statusOptions[0] ? "selected" : ""}>${s}</option>`)
+                .join("")}
+            </select>
+          </label>
+          <label class="onboarding-field">
+            Expiration date
+            <input type="date" class="onboarding-case-expiration-input" value="${latest && latest.expirationDate ? latest.expirationDate.slice(0, 10) : ""}" />
+          </label>
         </div>
-        ${ct.key === "coi" && latest && String(latest.status || "").trim() === COI_ONLY_STATUS ? renderVpoWaiverPanelHtml(latest) : ""}
+        ${
+          isW9
+            ? `
+          <label class="onboarding-w9-prev-approved-label">
+            <input type="checkbox" class="onboarding-w9-prev-approved-checkbox" ${latest && latest.w9PreviouslyApproved ? "checked" : ""} />
+            Previously approved in ServiceEdge
+          </label>
+          <div class="onboarding-case-w9-grid">
+            <label class="onboarding-field">
+              Name on W-9
+              <input type="text" class="onboarding-w9-name-input" placeholder="Enter name exactly as shown on the form" value="${escapeHtml(latest ? latest.w9Name || "" : "")}" />
+            </label>
+            <label class="onboarding-field">
+              Address on W-9
+              <input type="text" class="onboarding-w9-address-input" placeholder="Street, city, state, ZIP" value="${escapeHtml(latest ? latest.w9Address || "" : "")}" />
+            </label>
+          </div>
+        `
+            : ""
+        }
+        ${renderReviewNotesChecklistHtml(ct, latest)}
+        <label class="onboarding-field onboarding-case-notes-field">
+          Document-case notes
+          <textarea class="onboarding-case-note-input" placeholder="Additional notes for ${escapeHtml(ct.label)}">${latest ? escapeHtml(latest.note || "") : ""}</textarea>
+        </label>
+        ${ct.key === "coi" && currentStatus.trim() === COI_ONLY_STATUS ? renderVpoWaiverPanelHtml(latest) : ""}
       </div>
     `;
   }
 
-  // Shared between the Onboarding board's rows and the vendor edit modal's
-  // own Cases section -- both render the same case-pill markup
-  // (renderCasePillHtml) and need the same "toggle a small log-update
-  // form, save it, then re-render" behavior. The note is stored in its own
-  // column, never appended to `status` itself, since deriveOnboardingStage
-  // (db.js) matches `status` against "approved"/"denied" exactly.
-  //
-  // "Log update" always starts a blank form and POSTs a brand new case
-  // entry (ServiceEdge's own convention -- re-submitting after a denial
-  // opens a new case rather than editing the old one). "Edit" instead
-  // pre-fills the form from the latest entry and PATCHes it in place --
-  // for correcting a typo'd note or an as-of date logged wrong, not a real
-  // new case, so it shouldn't leave a confusing near-duplicate behind in
-  // the history.
+  // Shared between the Onboarding board's rows and the vendor profile's own
+  // Cases section -- both render the same case-pill markup
+  // (renderCasePillHtml) and wire the same autosave behavior. Every field
+  // is always visible and editable (no separate "Log update"/"Edit"
+  // toggle); a case-status/form-status/checkbox change saves immediately,
+  // a text field saves on blur (and silently in the background while
+  // typing, debounced, so the row never re-renders out from under an
+  // active keystroke -- see persist() vs persistAndRefresh() below). The
+  // first save for a case that doesn't exist yet POSTs (creates it);
+  // every save after that PATCHes the same row in place.
   function wireCasePill(caseEl, v, ct, onLogged, latest) {
-    const toggleBtn = caseEl.querySelector(".onboarding-case-log-new");
-    const editBtn = caseEl.querySelector(".onboarding-case-edit");
-    const form = caseEl.querySelector(".onboarding-case-form");
+    let editingId = latest ? latest.id : null;
+    let saveTimer = null;
+
     const statusSelect = caseEl.querySelector(".onboarding-case-status-select");
     const refInput = caseEl.querySelector(".onboarding-case-ref-input");
     const noteInput = caseEl.querySelector(".onboarding-case-note-input");
-    const asOfInput = caseEl.querySelector(".onboarding-case-asof-input");
     const expirationInput = caseEl.querySelector(".onboarding-case-expiration-input");
     const w9NameInput = caseEl.querySelector(".onboarding-w9-name-input");
     const w9AddressInput = caseEl.querySelector(".onboarding-w9-address-input");
     const w9PrevApprovedCheckbox = caseEl.querySelector(".onboarding-w9-prev-approved-checkbox");
     const reviewNotesDetails = caseEl.querySelector(".onboarding-review-notes-details");
     const reviewNotesSummary = caseEl.querySelector(".onboarding-review-notes-summary");
-    const reviewNotesFreeText = caseEl.querySelector(".onboarding-review-notes-freetext");
-    let editingId = null;
 
+    function buildPayload() {
+      const payload = {
+        requestType: ct.type,
+        status: statusSelect.value,
+        referenceNumber: refInput.value.trim(),
+        note: noteInput.value.trim(),
+        expirationDate: expirationInput.value || null,
+        reviewNotesSelected: reviewNotesDetails
+          ? [...reviewNotesDetails.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value)
+          : [],
+      };
+      if (ct.key === "w9") {
+        payload.w9Name = w9NameInput.value.trim();
+        payload.w9Address = w9AddressInput.value.trim();
+        payload.w9PreviouslyApproved = w9PrevApprovedCheckbox.checked;
+      }
+      return payload;
+    }
+
+    async function persist() {
+      const payload = buildPayload();
+      try {
+        if (editingId) {
+          await api.patch(`/api/admin/vendors/${v.id}/requests/${editingId}`, payload);
+        } else {
+          const result = await api.post(`/api/admin/vendors/${v.id}/requests`, payload);
+          editingId = result[0] ? result[0].id : null;
+        }
+      } catch (err) {
+        window.alert(err.message);
+      }
+    }
+    async function persistAndRefresh() {
+      await persist();
+      await refreshVendorFields(v);
+      await onLogged();
+    }
+    function debouncedPersist() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(persist, 700);
+    }
+    function flushAndRefresh() {
+      clearTimeout(saveTimer);
+      persistAndRefresh();
+    }
+
+    statusSelect.addEventListener("change", flushAndRefresh);
+    expirationInput.addEventListener("change", flushAndRefresh);
+    if (w9PrevApprovedCheckbox) w9PrevApprovedCheckbox.addEventListener("change", flushAndRefresh);
+    [refInput, noteInput, w9NameInput, w9AddressInput].forEach((input) => {
+      if (!input) return;
+      input.addEventListener("input", debouncedPersist);
+      input.addEventListener("blur", flushAndRefresh);
+    });
     if (reviewNotesDetails) {
       reviewNotesDetails.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
         cb.addEventListener("change", () => {
           const options = REVIEW_NOTES_OPTIONS[ct.key] || [];
           const checked = [...reviewNotesDetails.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value);
           const labels = options.filter((o) => checked.includes(o.key)).map((o) => o.label);
-          reviewNotesSummary.textContent = `Review notes: ${labels.length ? labels.join(", ") : "None selected"}`;
+          reviewNotesSummary.textContent = labels.length ? labels.join(", ") : "Review notes · select issues";
+          flushAndRefresh();
         });
       });
     }
-
-    function openForm(prefillFrom) {
-      editingId = prefillFrom ? prefillFrom.id : null;
-      const options = caseStatusOptionsFor(ct.key);
-      statusSelect.value = prefillFrom ? prefillFrom.status || options[0] : options[0];
-      refInput.value = prefillFrom ? prefillFrom.referenceNumber || "" : "";
-      noteInput.value = prefillFrom ? prefillFrom.note || "" : "";
-      asOfInput.value = (prefillFrom && prefillFrom.asOf && prefillFrom.asOf.slice(0, 10)) || todayDateInputValue();
-      if (expirationInput) expirationInput.value = (prefillFrom && prefillFrom.expirationDate && prefillFrom.expirationDate.slice(0, 10)) || "";
-      if (w9NameInput) w9NameInput.value = prefillFrom ? prefillFrom.w9Name || "" : "";
-      if (w9AddressInput) w9AddressInput.value = prefillFrom ? prefillFrom.w9Address || "" : "";
-      if (w9PrevApprovedCheckbox) w9PrevApprovedCheckbox.checked = Boolean(prefillFrom && prefillFrom.w9PreviouslyApproved);
-      if (reviewNotesFreeText) reviewNotesFreeText.value = prefillFrom ? prefillFrom.reviewNotesFreeText || "" : "";
-      if (reviewNotesDetails) {
-        const selected = (prefillFrom && prefillFrom.reviewNotesSelected) || [];
-        reviewNotesDetails.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-          cb.checked = selected.includes(cb.value);
-        });
-        const options = REVIEW_NOTES_OPTIONS[ct.key] || [];
-        const labels = options.filter((o) => selected.includes(o.key)).map((o) => o.label);
-        reviewNotesSummary.textContent = `Review notes: ${labels.length ? labels.join(", ") : "None selected"}`;
-      }
-      form.hidden = false;
-    }
-    toggleBtn.addEventListener("click", () => (form.hidden ? openForm(null) : (form.hidden = true)));
-    if (editBtn) editBtn.addEventListener("click", () => (form.hidden ? openForm(latest) : (form.hidden = true)));
-    caseEl.querySelector(".onboarding-case-cancel").addEventListener("click", () => {
-      form.hidden = true;
-    });
-    caseEl.querySelector(".onboarding-case-save").addEventListener("click", async () => {
-      const status = statusSelect.value;
-      const referenceNumber = refInput.value.trim();
-      const note = noteInput.value.trim();
-      const asOf = asOfInput.value || null;
-      const expirationDate = expirationInput ? expirationInput.value || null : null;
-      const reviewNotesSelected = reviewNotesDetails
-        ? [...reviewNotesDetails.querySelectorAll('input[type="checkbox"]:checked')].map((c) => c.value)
-        : [];
-      const reviewNotesFreeTextValue = reviewNotesFreeText ? reviewNotesFreeText.value.trim() : "";
-      const payload = {
-        requestType: ct.type,
-        status,
-        referenceNumber,
-        note,
-        asOf,
-        expirationDate,
-        reviewNotesSelected,
-        reviewNotesFreeText: reviewNotesFreeTextValue,
-      };
-      if (ct.key === "w9") {
-        payload.w9Name = w9NameInput ? w9NameInput.value.trim() : "";
-        payload.w9Address = w9AddressInput ? w9AddressInput.value.trim() : "";
-        payload.w9PreviouslyApproved = w9PrevApprovedCheckbox ? w9PrevApprovedCheckbox.checked : false;
-      }
-      try {
-        if (editingId) {
-          await api.patch(`/api/admin/vendors/${v.id}/requests/${editingId}`, payload);
-        } else {
-          await api.post(`/api/admin/vendors/${v.id}/requests`, payload);
-        }
-        await refreshVendorFields(v);
-        await onLogged();
-      } catch (err) {
-        window.alert(err.message);
-      }
-    });
 
     const formStatusSelect = caseEl.querySelector(".onboarding-form-status-select");
     if (formStatusSelect) {
@@ -1423,10 +1462,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const entries = await api.get(`/api/admin/vendors/${v.id}/requests`);
     const caseSummary = caseSummaryFromEntries(entries);
     host.innerHTML = `
-      ${renderApprovalBadgeHtml(v, caseSummary)}
       ${renderWelcomeEmailLine(v)}
-      ${renderParentCaseHtml(v)}
-      <div class="onboarding-cases-heading">Toyota Onboarding</div>
+      ${renderParentCaseHtml(v, caseSummary)}
+      <div class="onboarding-cases-heading">
+        Forms &amp; individual cases
+        ${renderApprovalBadgeHtml(v, caseSummary)}
+      </div>
       <div class="onboarding-cases">
         ${ONBOARDING_CASE_TYPES.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
       </div>
