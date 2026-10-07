@@ -1587,6 +1587,32 @@ if (!tableExists("vpo_waivers")) {
   `);
 }
 
+// The floating time-tracker widget's own log -- one row per start/stop
+// segment, one admin. Starting a new category auto-stops whatever's
+// already running for that same admin (see startTimeLogEntry) rather than
+// allowing overlapping segments, so "time spent per category" is always a
+// clean sum with no double-counting. ended_at IS NULL means it's the one
+// currently running. related_po_id/related_vendor_id/related_wom_code are
+// optional context the admin can attach while it's running or after the
+// fact (e.g. "this PO/Invoice segment was for PO #12345").
+if (!tableExists("time_log_entries")) {
+  db.exec(`
+    CREATE TABLE time_log_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      admin_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      note TEXT DEFAULT '',
+      related_po_id INTEGER,
+      related_vendor_id INTEGER,
+      related_wom_code TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_time_log_admin_started ON time_log_entries(admin_id, started_at);
+  `);
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -9261,6 +9287,157 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
   return { items, total: countRow.cnt, page: p, pageSize: ps };
 }
 
+// ---- Time tracker widget ----
+
+// Fixed vocabulary, not admin-editable -- matches the real categories of
+// work Krista described (PO/invoice handling, vendor onboarding, the
+// weekly/bi-weekly recurring reviews and meetings, reclasses, COI
+// renewals, employee support, invoicing's multi-step JDE/billing/Ariba
+// process, document management). A closed list keeps every admin's log
+// comparable to every other's -- an open-ended category field would make
+// "how much time goes to reclasses across the territory" unanswerable.
+const TIME_LOG_CATEGORIES = [
+  { key: "po_invoice", label: "PO / Invoice (unplanned)" },
+  { key: "vendor_onboarding", label: "Vendor Onboarding" },
+  { key: "timekeeping", label: "Timekeeping Review" },
+  { key: "project_status", label: "Project Status Review" },
+  { key: "ops_meeting", label: "Operations Meeting" },
+  { key: "safety_meeting", label: "Safety Meeting" },
+  { key: "reclasses", label: "Reclasses" },
+  { key: "coi_renewals", label: "COI Renewals" },
+  { key: "employee_support", label: "Employee Support" },
+  { key: "invoicing", label: "Invoicing" },
+  { key: "documents", label: "Document Management" },
+  { key: "general", label: "General / Other" },
+];
+const TIME_LOG_CATEGORY_KEYS = TIME_LOG_CATEGORIES.map((c) => c.key);
+
+function presentTimeLogEntry(row) {
+  if (!row) return null;
+  const endedAt = row.ended_at || null;
+  const durationSeconds = Math.max(0, Math.round((new Date(endedAt || Date.now()).getTime() - new Date(row.started_at).getTime()) / 1000));
+  return {
+    id: row.id,
+    adminId: row.admin_id,
+    category: row.category,
+    startedAt: row.started_at,
+    endedAt,
+    note: row.note || "",
+    relatedPoId: row.related_po_id || null,
+    relatedVendorId: row.related_vendor_id || null,
+    relatedWomCode: row.related_wom_code || null,
+    durationSeconds,
+  };
+}
+
+// The one entry (if any) still running for this admin -- what the widget
+// polls on load so a page refresh/re-login picks the clock back up
+// exactly where it was, instead of losing the running segment.
+function getRunningTimeLogEntry(adminId) {
+  return presentTimeLogEntry(
+    db.prepare("SELECT * FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1").get(adminId)
+  );
+}
+
+// Auto-switch: starting a new category while one's already running stops
+// the old one at this same instant, one click, no confirmation -- the
+// fast path for moving through a day of short tasks. Going idle without
+// starting something new is still a clean, separate action (see
+// stopTimeLogEntry) so untracked time (a break, an unlogged interruption)
+// never silently gets attributed to whatever ran last.
+function startTimeLogEntry(adminId, category, fields = {}) {
+  if (!TIME_LOG_CATEGORY_KEYS.includes(category)) throw new Error("invalid category");
+  const now = new Date().toISOString();
+  const running = db.prepare("SELECT id FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL").get(adminId);
+  if (running) db.prepare("UPDATE time_log_entries SET ended_at = ? WHERE id = ?").run(now, running.id);
+  const { note, relatedPoId, relatedVendorId, relatedWomCode } = fields;
+  db.prepare(
+    `INSERT INTO time_log_entries (admin_id, category, started_at, note, related_po_id, related_vendor_id, related_wom_code, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(adminId, category, now, note || "", relatedPoId || null, relatedVendorId || null, relatedWomCode || null, now);
+  return getRunningTimeLogEntry(adminId);
+}
+
+function stopTimeLogEntry(adminId, fields = {}) {
+  const running = db.prepare("SELECT id FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL").get(adminId);
+  if (!running) return null;
+  const now = new Date().toISOString();
+  const { note, relatedPoId, relatedVendorId, relatedWomCode } = fields;
+  const sets = ["ended_at = ?"];
+  const params = [now];
+  if (note != null) {
+    sets.push("note = ?");
+    params.push(note);
+  }
+  if (relatedPoId !== undefined) {
+    sets.push("related_po_id = ?");
+    params.push(relatedPoId || null);
+  }
+  if (relatedVendorId !== undefined) {
+    sets.push("related_vendor_id = ?");
+    params.push(relatedVendorId || null);
+  }
+  if (relatedWomCode !== undefined) {
+    sets.push("related_wom_code = ?");
+    params.push(relatedWomCode || null);
+  }
+  params.push(running.id);
+  db.prepare(`UPDATE time_log_entries SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+  return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(running.id));
+}
+
+// Attaches/edits a note or a linked PO/vendor/WOM on an entry -- the
+// currently-running one (add the PO # once you know it, without losing
+// the clock) or a past one. Always scoped to the admin's own rows.
+function updateTimeLogEntry(adminId, id, fields = {}) {
+  const row = db.prepare("SELECT * FROM time_log_entries WHERE id = ? AND admin_id = ?").get(id, adminId);
+  if (!row) return null;
+  const { note, relatedPoId, relatedVendorId, relatedWomCode } = fields;
+  const sets = [];
+  const params = [];
+  if (note != null) {
+    sets.push("note = ?");
+    params.push(note);
+  }
+  if (relatedPoId !== undefined) {
+    sets.push("related_po_id = ?");
+    params.push(relatedPoId || null);
+  }
+  if (relatedVendorId !== undefined) {
+    sets.push("related_vendor_id = ?");
+    params.push(relatedVendorId || null);
+  }
+  if (relatedWomCode !== undefined) {
+    sets.push("related_wom_code = ?");
+    params.push(relatedWomCode || null);
+  }
+  if (sets.length === 0) return presentTimeLogEntry(row);
+  params.push(id);
+  db.prepare(`UPDATE time_log_entries SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+  return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(id));
+}
+
+// This admin's own log, most recent first -- defaults to everything on
+// file when no range is given; the widget's own "today" view passes
+// from/to for that one day. The natural source for a future per-category
+// time rollup (same spirit as the Performance tab's other KPIs).
+function listTimeLogEntries(adminId, { from, to } = {}) {
+  const conditions = ["admin_id = ?"];
+  const params = [adminId];
+  if (from) {
+    conditions.push("started_at >= ?");
+    params.push(from);
+  }
+  if (to) {
+    conditions.push("started_at < ?");
+    params.push(to);
+  }
+  return db
+    .prepare(`SELECT * FROM time_log_entries WHERE ${conditions.join(" AND ")} ORDER BY started_at DESC`)
+    .all(...params)
+    .map(presentTimeLogEntry);
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -9498,4 +9675,10 @@ module.exports = {
   getGlFiscalCalendarYears,
   getGlFiscalCalendar,
   resolveFiscalPeriod,
+  TIME_LOG_CATEGORIES,
+  getRunningTimeLogEntry,
+  startTimeLogEntry,
+  stopTimeLogEntry,
+  updateTimeLogEntry,
+  listTimeLogEntries,
 };

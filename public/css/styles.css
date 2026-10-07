@@ -5782,3 +5782,172 @@ button.vendor-preferred-star:hover {
     flex-wrap: wrap;
   }
 }
+
+/* ---- Time Tracker: persistent floating widget (admin only) ----
+   Mounted once in app.js's render() as a sibling of the sidebar/main
+   shell, so it survives every tab switch. Fixed to the bottom-right,
+   above everything else -- sits higher than the modal backdrop's z-index
+   (1000, styles.css:1664) would be wrong since a modal should still read
+   as "on top"; this only needs to beat ordinary page content. */
+.time-tracker {
+  position: fixed;
+  right: 20px;
+  bottom: 0;
+  z-index: 900;
+  width: 320px;
+  font-family: var(--font-sans);
+}
+
+.time-tracker-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--sidebar-bg);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -2px 10px rgba(40, 20, 20, 0.18);
+  cursor: pointer;
+  user-select: none;
+}
+.time-tracker-tab:hover {
+  background: var(--sidebar-bg-darker);
+}
+
+.time-tracker-tab-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+.time-tracker-tab-active .time-tracker-tab-dot {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(31, 122, 77, 0.25);
+}
+
+.time-tracker-tab-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.time-tracker-tab-chevron {
+  font-size: 10px;
+  color: var(--sidebar-text);
+}
+
+.time-tracker-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -4px 16px rgba(40, 20, 20, 0.14);
+  padding: 14px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.time-tracker-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.time-tracker-cat-btn {
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.time-tracker-cat-btn:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.time-tracker-cat-btn-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.time-tracker-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.time-tracker-note {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.time-tracker-po-link {
+  position: relative;
+}
+
+.time-tracker-po-search {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.time-tracker-po-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.time-tracker-po-result {
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.time-tracker-po-result:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.time-tracker-stop-btn {
+  align-self: flex-start;
+}
+
+.time-tracker-idle-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .time-tracker {
+    right: 10px;
+    width: calc(100vw - 20px);
+    max-width: 360px;
+  }
+}

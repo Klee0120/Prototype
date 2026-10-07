@@ -2,6 +2,7 @@ import { api } from "./api.js";
 import { renderLogin } from "./views/login.js";
 import { renderTechHome } from "./views/techHome.js";
 import { renderAdminReview } from "./views/adminReview.js";
+import { mountTimeTracker } from "./views/timeTracker.js";
 
 export const state = {
   user: loadUser(),
@@ -135,6 +136,9 @@ export async function render() {
 
   root.innerHTML = "";
   root.appendChild(shell);
+
+  const timeTrackerEl = mountTimeTracker();
+  if (timeTrackerEl) shell.appendChild(timeTrackerEl);
 
   const navHost = shell.querySelector("#sidebar-nav");
   const topbarHost = main.querySelector("#topbar-context");
