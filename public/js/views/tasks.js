@@ -478,6 +478,15 @@ export async function renderTaskBoard(container) {
         <div>
           <h1 class="page-header-title">Task Manager</h1>
           <p class="page-header-subtitle">Tasks from WOM updates, recurring work and manual entries.</p>
+          ${
+            isAdmin
+              ? `<p class="page-header-links">
+                   <a href="/documents/FY27-Midwest-Budget-Presentation.pptx" target="_blank" rel="noopener">FY27 Midwest Budget Presentation</a>
+                   &middot;
+                   <a href="https://docs.google.com/forms/d/e/1FAIpQLSfjUmK0QSDFuXT5TXXwa_djgduYHXFvgza8bXTsagIBJyiIHQ/viewform" target="_blank" rel="noopener">C&amp;W Services Combined Forms</a>
+                 </p>`
+              : ""
+          }
         </div>
         <div class="page-header-actions">
           <button class="btn btn-secondary task-notify-toggle" type="button">${notifyPanelOpen ? "Hide email alerts" : "Email alerts"}</button>

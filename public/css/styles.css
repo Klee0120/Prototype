@@ -3505,6 +3505,19 @@ details[open] > .onboarding-other-outcome-toggle::before {
   margin: 4px 0 0;
 }
 
+.page-header-links {
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+.page-header-links a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+.page-header-links a:hover {
+  text-decoration: underline;
+}
+
 .page-header-actions {
   display: flex;
   align-items: center;
