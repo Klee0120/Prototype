@@ -431,22 +431,57 @@ export async function renderGlReconciliation(container) {
       return;
     }
 
-    // Confirm the period before committing -- a GL extract only says which
-    // month it covers via these two columns, and importing it under the
-    // wrong assumption would silently overwrite the wrong period's numbers.
-    const existing = preview.existingImport;
+    // Confirm the period(s) before committing -- a GL extract only says
+    // which month(s) it covers via these two columns, and importing it
+    // under the wrong assumption would silently overwrite the wrong
+    // period's numbers. Most files are a single period (the normal monthly
+    // extract); a rolling multi-month export gets a breakdown instead so
+    // the admin can see every period it's about to touch before confirming.
+    const periods = preview.periods;
+    const isMultiPeriod = periods.length > 1;
     body.innerHTML = `
       <p class="review-checklist-hint">
-        This file reads as <strong>${escapeHtml(monthName(preview.periodNumber))} 20${preview.fiscalYear}</strong>
-        (Period ${preview.periodNumber}/FY${preview.fiscalYear}), ${preview.rowCount} GL line${preview.rowCount === 1 ? "" : "s"}.
         ${
-          existing
-            ? `An import already exists for this exact period -- <strong>${existing.rowCount} GL line${existing.rowCount === 1 ? "" : "s"}</strong>,
-               imported ${new Date(existing.createdAt).toLocaleString()} (${existing.sourceFileName ? escapeHtml(existing.sourceFileName) : "no file name on record"}).
-               Importing this file will <strong>replace it entirely</strong> -- confirm that's what you meant to do.`
-            : `Importing will replace any GL data already on file for that exact period -- confirm that's the report you meant to drop in.`
+          isMultiPeriod
+            ? `This file covers <strong>${periods.length} different periods</strong>, ${preview.totalRowCount} GL lines total.
+               Importing will replace GL data for <strong>every period listed below</strong> -- confirm that's what you meant to do.`
+            : `This file reads as <strong>${escapeHtml(monthName(periods[0].periodNumber))} 20${periods[0].fiscalYear}</strong>
+               (Period ${periods[0].periodNumber}/FY${periods[0].fiscalYear}), ${periods[0].rowCount} GL line${periods[0].rowCount === 1 ? "" : "s"}.
+               ${
+                 periods[0].existingImport
+                   ? `An import already exists for this exact period -- <strong>${periods[0].existingImport.rowCount} GL line${
+                       periods[0].existingImport.rowCount === 1 ? "" : "s"
+                     }</strong>, imported ${new Date(periods[0].existingImport.createdAt).toLocaleString()} (${
+                       periods[0].existingImport.sourceFileName ? escapeHtml(periods[0].existingImport.sourceFileName) : "no file name on record"
+                     }). Importing this file will <strong>replace it entirely</strong> -- confirm that's what you meant to do.`
+                   : `Importing will replace any GL data already on file for that exact period -- confirm that's the report you meant to drop in.`
+               }`
         }
       </p>
+      ${
+        isMultiPeriod
+          ? `<table class="detail-table">
+              <thead><tr><th>Period</th><th>GL Lines</th><th>Existing import on file</th></tr></thead>
+              <tbody>
+                ${periods
+                  .map(
+                    (p) => `
+                  <tr>
+                    <td>${escapeHtml(monthName(p.periodNumber))} 20${p.fiscalYear} (P${p.periodNumber}/FY${p.fiscalYear})</td>
+                    <td>${p.rowCount}</td>
+                    <td>${
+                      p.existingImport
+                        ? `${p.existingImport.rowCount} lines, imported ${new Date(p.existingImport.createdAt).toLocaleDateString()} -- will be replaced`
+                        : "None yet"
+                    }</td>
+                  </tr>
+                `
+                  )
+                  .join("")}
+              </tbody>
+            </table>`
+          : ""
+      }
       <div class="modal-form-actions">
         <button type="button" class="btn btn-secondary gl-import-cancel">Cancel</button>
         <button type="button" class="btn btn-primary gl-import-confirm">Yes, import it</button>
@@ -459,8 +494,9 @@ export async function renderGlReconciliation(container) {
         const result = await api.uploadRawFile("/api/admin/gl/import", file);
         body.innerHTML = `
           <p class="review-checklist-hint">
-            Imported <strong>${result.rowCount}</strong> GL line${result.rowCount === 1 ? "" : "s"} for Period
-            ${result.periodNumber}/FY${result.fiscalYear} -- ${result.matchedCount} GL lines matched to a PO on file,
+            Imported <strong>${result.rowCount}</strong> GL line${result.rowCount === 1 ? "" : "s"}
+            ${result.periods.length > 1 ? `across ${result.periods.length} periods` : `for Period ${result.periods[0].periodNumber}/FY${result.periods[0].fiscalYear}`}
+            -- ${result.matchedCount} GL lines matched to a PO on file,
             ${result.unmatchedCount} GL lines named a PO # that isn't in the Budget PO Tracker,
             ${result.noPoReferenceCount ?? 0} GL lines with no PO reference (payroll, journal entries, accruals, etc.).
           </p>

@@ -65,9 +65,13 @@ function parseWorkbook(buffer) {
     }
   }
 
-  const rows = [];
-  let periodNumber = null;
-  let fiscalYear = null;
+  // A real monthly extract is always a single period, but some exports (e.g.
+  // a rolling "open WOM backlog" report pulled across several months) carry
+  // rows from more than one Period/Fiscal Year. Group by each row's own
+  // period instead of assuming the whole file is one, so every period lands
+  // under its own gl_imports/gl_entries rows instead of getting mislabeled
+  // under whichever period the first row happens to be.
+  const groups = new Map(); // "period|fy" -> { periodNumber, fiscalYear, rows }
   for (const raw0 of raw) {
     // Every real GL line has a period number -- a trailing blank row (or a
     // totals row with no GL detail) doesn't, and isn't a transaction.
@@ -76,9 +80,12 @@ function parseWorkbook(buffer) {
     for (const [header, field] of Object.entries(COLUMN_MAP)) {
       mapped[field] = raw0[header];
     }
-    if (periodNumber == null) periodNumber = Number(mapped.periodNumber);
-    if (fiscalYear == null) fiscalYear = Number(mapped.fiscalYear);
-    rows.push({
+    const periodNumber = Number(mapped.periodNumber);
+    const fiscalYear = Number(mapped.fiscalYear);
+    if (Number.isNaN(periodNumber) || Number.isNaN(fiscalYear)) continue;
+    const key = `${periodNumber}|${fiscalYear}`;
+    if (!groups.has(key)) groups.set(key, { periodNumber, fiscalYear, rows: [] });
+    groups.get(key).rows.push({
       glDate: toIsoDate(mapped.glDate),
       documentType: mapped.documentType != null ? String(mapped.documentType).trim() : null,
       documentNumber: toCleanString(mapped.documentNumber),
@@ -98,22 +105,23 @@ function parseWorkbook(buffer) {
     });
   }
 
-  if (rows.length === 0) {
-    throw Object.assign(new Error('No GL transaction rows found in that file\'s "GL Report" sheet'), { status: 400 });
-  }
-  if (periodNumber == null || Number.isNaN(periodNumber) || fiscalYear == null || Number.isNaN(fiscalYear)) {
-    throw Object.assign(new Error("Couldn't read a Period Number / Fiscal Year off this GL Report -- check those columns are populated"), {
-      status: 400,
-    });
+  const periods = [...groups.values()].sort((a, b) => a.fiscalYear - b.fiscalYear || a.periodNumber - b.periodNumber);
+
+  if (periods.length === 0) {
+    throw Object.assign(
+      new Error('No GL transaction rows with a readable Period Number / Fiscal Year were found in that file\'s "GL Report" sheet'),
+      { status: 400 }
+    );
   }
 
-  return { rows, periodNumber, fiscalYear };
+  return { periods };
 }
 
-// Parses the file and reports what period it covers, without committing
+// Parses the file and reports what period(s) it covers, without committing
 // anything -- lets the frontend show "this looks like Period 8/FY26, 1,204
-// rows" and have the admin confirm that's actually the report they meant to
-// drop in before it overwrites anything for that period.
+// rows" (or a breakdown across several periods for a multi-period file) and
+// have the admin confirm that's actually the report they meant to drop in
+// before it overwrites anything for those periods.
 router.post("/preview", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   let parsed;
@@ -122,11 +130,15 @@ router.post("/preview", upload.single("file"), (req, res) => {
   } catch (err) {
     return res.status(err.status || 400).json({ error: err.message });
   }
+  const periods = parsed.periods.map((p) => ({
+    periodNumber: p.periodNumber,
+    fiscalYear: p.fiscalYear,
+    rowCount: p.rows.length,
+    existingImport: db.findGlImportByPeriod(p.periodNumber, p.fiscalYear),
+  }));
   res.json({
-    periodNumber: parsed.periodNumber,
-    fiscalYear: parsed.fiscalYear,
-    rowCount: parsed.rows.length,
-    existingImport: db.findGlImportByPeriod(parsed.periodNumber, parsed.fiscalYear),
+    periods,
+    totalRowCount: periods.reduce((s, p) => s + p.rowCount, 0),
   });
 });
 
@@ -138,39 +150,60 @@ router.post("/import", upload.single("file"), (req, res) => {
   } catch (err) {
     return res.status(err.status || 400).json({ error: err.message });
   }
-  const glImport = db.importGlEntries(parsed.rows, parsed.periodNumber, parsed.fiscalYear, req.user.id, req.file.originalname);
 
-  // File it the same way a Reports-tab labor report upload is filed, so it
-  // shows up there automatically -- the Reports tab already has a
-  // "gl_report" category slot keyed by "YYYY-MM", it's just never had
-  // anything land in it from this screen before.
-  const relatedId = `20${parsed.fiscalYear}-${String(parsed.periodNumber).padStart(2, "0")}`;
-  const id = crypto.randomUUID();
-  const ext = path.extname(req.file.originalname || "").slice(0, 10);
-  const storedName = `${id}${ext}`;
-  fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), req.file.buffer);
-  db.insertFile({
-    id,
-    relatedType: "labor_report",
-    relatedId,
-    category: "gl_report",
-    originalName: req.file.originalname,
-    storedName,
-    mimeType: req.file.mimetype,
-    size: req.file.size,
-    uploadedBy: req.user.id,
-    uploadedAt: new Date().toISOString(),
-    formType: null,
-    expiresAt: null,
-  });
+  // One importGlEntries call per period -- each only deletes/replaces its
+  // own period's gl_entries rows, so a 14-period file doesn't touch any
+  // period's data it doesn't itself carry rows for.
+  const results = parsed.periods.map((p) => db.importGlEntries(p.rows, p.periodNumber, p.fiscalYear, req.user.id, req.file.originalname));
 
+  // File the source document into the Reports tab the same way a labor
+  // report upload is filed, so it shows up there automatically -- only for
+  // a single-period file, which has one obvious "YYYY-MM" slot to file it
+  // under. A multi-period file (e.g. a rolling open-WOM-backlog export
+  // spanning several months) has no single correct period slot for the
+  // source document itself -- the GL data still lands correctly per period
+  // above either way, it's just not also filed as a Reports-tab document.
+  if (results.length === 1) {
+    const only = results[0];
+    const relatedId = `20${only.fiscalYear}-${String(only.periodNumber).padStart(2, "0")}`;
+    const id = crypto.randomUUID();
+    const ext = path.extname(req.file.originalname || "").slice(0, 10);
+    const storedName = `${id}${ext}`;
+    fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), req.file.buffer);
+    db.insertFile({
+      id,
+      relatedType: "labor_report",
+      relatedId,
+      category: "gl_report",
+      originalName: req.file.originalname,
+      storedName,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      uploadedBy: req.user.id,
+      uploadedAt: new Date().toISOString(),
+      formType: null,
+      expiresAt: null,
+    });
+  }
+
+  const totals = results.reduce(
+    (acc, r) => ({
+      rowCount: acc.rowCount + r.rowCount,
+      matchedCount: acc.matchedCount + r.matchedCount,
+      unmatchedCount: acc.unmatchedCount + r.unmatchedCount,
+      noPoReferenceCount: acc.noPoReferenceCount + (r.noPoReferenceCount ?? 0),
+    }),
+    { rowCount: 0, matchedCount: 0, unmatchedCount: 0, noPoReferenceCount: 0 }
+  );
+
+  const periodsSummary = results.map((r) => `Period ${r.periodNumber}/FY${r.fiscalYear} (${r.rowCount} lines)`).join(", ");
   db.addAudit(
     req.user.id,
     "GL_IMPORTED",
-    `${req.user.name} imported the GL report for Period ${parsed.periodNumber}/FY${parsed.fiscalYear} ` +
-      `(${glImport.rowCount} lines, ${glImport.matchedCount} matched to a PO, ${glImport.unmatchedCount} with a PO # not on file)`
+    `${req.user.name} imported the GL report covering ${periodsSummary} ` +
+      `(${totals.rowCount} lines total, ${totals.matchedCount} matched to a PO, ${totals.unmatchedCount} with a PO # not on file)`
   );
-  res.status(201).json(glImport);
+  res.status(201).json({ periods: results, ...totals });
 });
 
 router.get("/imports", (req, res) => {

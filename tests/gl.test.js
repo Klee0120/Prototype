@@ -1049,3 +1049,163 @@ test("Financials access gate: Midwest admins and the RFM reviewer only", async (
     assert.equal(reviewer.isPseReviewer, true);
   });
 });
+
+// A real monthly extract is always a single period, but a rolling export
+// (e.g. an "open WOM backlog" pull spanning several months) carries rows
+// from more than one Period/Fiscal Year in one file -- /preview and /import
+// need to group by each row's own period instead of assuming the whole file
+// is one, per Krista's "WOM Info" export (same GL line-item columns, 14
+// different periods in one sheet).
+test("GL import: a file spanning multiple periods splits cleanly by Period/Fiscal Year", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Period Number - General Ledger", "Fiscal Year", "GL Date", "Document Type", "Document Number",
+    "Journal Entry Line Number", "Business Unit", "Object Account", "Subsidiary", "Amount",
+    "Batch Number", "Supplier Invoice Number", "Invoice Date", "Location Code",
+    "Name - Alpha Explanation", "Name - Remark Explanation", "Purchase Order", "Subledger - G/L",
+  ];
+
+  function buildRow({ period, fy, amount, po, seq }) {
+    return [
+      period, fy, "2026-07-15", "PU", `DOC${seq}`, seq, "BU1", "605200 - Material", "100",
+      amount, `BATCH${seq}`, `INV${seq}`, "2026-07-10", "LOC1", "Some Vendor", "A remark", po, null,
+    ];
+  }
+
+  function buildWorkbook(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "GL Report");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, po_amount, subsidiary, object_code, status, location_code,
+       lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'Open', ?, 'active', ?, ?, ?, ?)`
+    )
+    .run("gl-multi-1", "PO90500", 1000, "100", "605200", "LOC1", new Date().toISOString(), new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
+
+  // Fiscal year 99 with periods 1-4 -- guaranteed not to collide with any
+  // other test in this file (which reuses real-looking periods/years like
+  // 7/26, 8/26, 1/26 elsewhere), since this file shares one DB across all
+  // its top-level test() blocks.
+  const FY = 99;
+
+  // A pre-existing single period NOT present in the multi-period file --
+  // confirms importing P2/P3 never touches P1's already-imported rows.
+  db.importGlEntries(
+    [{ glDate: "2025-10-01", businessUnit: "BU1", objectAccount: "605200", subsidiary: "100", amount: 50, purchaseOrder: null }],
+    1,
+    FY,
+    "ADMIN",
+    "pre-existing.xlsx"
+  );
+
+  const multiPeriodRows = [
+    buildRow({ period: 2, fy: FY, amount: 500, po: "PO90500", seq: 1 }),
+    buildRow({ period: 2, fy: FY, amount: 250, po: null, seq: 2 }),
+    buildRow({ period: 3, fy: FY, amount: 300, po: "PO90999", seq: 3 }),
+    buildRow({ period: 3, fy: FY, amount: 400, po: null, seq: 4 }),
+    buildRow({ period: 3, fy: FY, amount: 600, po: null, seq: 5 }),
+  ];
+  const multiBuffer = buildWorkbook(multiPeriodRows);
+
+  await t.test("preview reports a breakdown per period, not one assumed period", async () => {
+    const res = await server.upload("/api/admin/gl/preview", {
+      userId: "ADMIN",
+      fileName: "wom-info.xlsx",
+      fileContent: multiBuffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.periods.length, 2);
+    assert.equal(res.body.totalRowCount, 5);
+    const p2 = res.body.periods.find((p) => p.periodNumber === 2 && p.fiscalYear === FY);
+    const p3 = res.body.periods.find((p) => p.periodNumber === 3 && p.fiscalYear === FY);
+    assert.equal(p2.rowCount, 2);
+    assert.equal(p3.rowCount, 3);
+    assert.equal(p2.existingImport, null);
+    assert.equal(p3.existingImport, null);
+  });
+
+  await t.test("import writes every period's rows under its own period, in one call", async () => {
+    const res = await server.upload("/api/admin/gl/import", {
+      userId: "ADMIN",
+      fileName: "wom-info.xlsx",
+      fileContent: multiBuffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const importResult = res.body;
+    assert.equal(importResult.periods.length, 2);
+    assert.equal(importResult.rowCount, 5);
+    assert.equal(importResult.matchedCount, 1); // PO90500
+    assert.equal(importResult.unmatchedCount, 1); // PO90999, not on file
+    assert.equal(importResult.noPoReferenceCount, 3);
+
+    const p2Rows = raw.prepare("SELECT COUNT(*) AS c FROM gl_entries WHERE period_number = 2 AND fiscal_year = ?").get(FY);
+    const p3Rows = raw.prepare("SELECT COUNT(*) AS c FROM gl_entries WHERE period_number = 3 AND fiscal_year = ?").get(FY);
+    assert.equal(p2Rows.c, 2);
+    assert.equal(p3Rows.c, 3);
+  });
+
+  await t.test("a period not present in the multi-period file is left untouched", () => {
+    const p1Rows = raw.prepare("SELECT COUNT(*) AS c FROM gl_entries WHERE period_number = 1 AND fiscal_year = ?").get(FY);
+    assert.equal(p1Rows.c, 1);
+  });
+
+  await t.test("each period got its own gl_imports row", () => {
+    const imports = raw
+      .prepare("SELECT period_number, fiscal_year, row_count FROM gl_imports WHERE fiscal_year = ? AND period_number IN (2, 3) ORDER BY period_number")
+      .all(FY);
+    assert.equal(imports.length, 2);
+    assert.equal(imports[0].period_number, 2);
+    assert.equal(imports[0].row_count, 2);
+    assert.equal(imports[1].period_number, 3);
+    assert.equal(imports[1].row_count, 3);
+  });
+
+  await t.test("a multi-period import is NOT filed as a single Reports-tab document", () => {
+    const files = raw.prepare("SELECT COUNT(*) AS c FROM files WHERE related_type = 'labor_report' AND category = 'gl_report'").get();
+    assert.equal(files.c, 0);
+  });
+
+  await t.test("re-previewing the same file now flags both periods as already imported", async () => {
+    const res = await server.upload("/api/admin/gl/preview", {
+      userId: "ADMIN",
+      fileName: "wom-info.xlsx",
+      fileContent: multiBuffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const p2 = res.body.periods.find((p) => p.periodNumber === 2);
+    const p3 = res.body.periods.find((p) => p.periodNumber === 3);
+    assert.ok(p2.existingImport);
+    assert.ok(p3.existingImport);
+    assert.equal(p2.existingImport.rowCount, 2);
+    assert.equal(p3.existingImport.rowCount, 3);
+  });
+
+  await t.test("a single-period file still files the source document into the Reports tab, as before", async () => {
+    const singleBuffer = buildWorkbook([buildRow({ period: 4, fy: FY, amount: 100, po: null, seq: 10 })]);
+    const res = await server.upload("/api/admin/gl/import", {
+      userId: "ADMIN",
+      fileName: "september.xlsx",
+      fileContent: singleBuffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body.periods.length, 1);
+    assert.equal(res.body.periods[0].periodNumber, 4);
+
+    const files = raw.prepare("SELECT COUNT(*) AS c FROM files WHERE related_type = 'labor_report' AND category = 'gl_report'").get();
+    assert.equal(files.c, 1);
+  });
+});
