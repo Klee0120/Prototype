@@ -8,6 +8,39 @@ function formatMoney(n) {
   return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+// A small "copy this PO #" affordance next to a PO number wherever it shows
+// up in Reconciliation -- lets Krista grab it to search the Budget PO
+// Tracker without opening the GL-line detail modal first (which never
+// showed the PO # as its own copyable field, only buried in its title).
+function poCopyHtml(poNumber) {
+  if (!poNumber) return "";
+  return `<button type="button" class="po-copy-btn" data-po="${escapeHtml(poNumber)}" title="Copy PO #" aria-label="Copy PO number">⧉</button>`;
+}
+
+function wirePoCopyButtons(root) {
+  root.querySelectorAll(".po-copy-btn").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      // Stops the click from also bubbling up into a row's own "open the
+      // detail modal" handler -- copying shouldn't also navigate away.
+      e.stopPropagation();
+      const value = btn.dataset.po;
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        window.prompt("Copy this PO #:", value);
+        return;
+      }
+      const original = btn.textContent;
+      btn.textContent = "✓";
+      btn.classList.add("po-copy-btn-done");
+      setTimeout(() => {
+        btn.textContent = original;
+        btn.classList.remove("po-copy-btn-done");
+      }, 1200);
+    });
+  });
+}
+
 const MONTH_NAMES = [
   "January",
   "February",
@@ -294,7 +327,7 @@ export async function renderGlReconciliation(container) {
             .map(
               (r) => `
             <tr class="gl-row" data-po-id="${r.poId}">
-              <td class="wom-code">${escapeHtml(r.poNumber || "—")}</td>
+              <td class="wom-code po-number-cell">${escapeHtml(r.poNumber || "—")}${poCopyHtml(r.poNumber)}</td>
               <td>${escapeHtml(r.vendorName || "No vendor matched")}</td>
               <td>${escapeHtml(r.locationCode || "—")}</td>
               <td class="wom-code">${escapeHtml(r.womNumber || "—")}</td>
@@ -320,6 +353,7 @@ export async function renderGlReconciliation(container) {
         if (r) openPoDetailModal(r);
       });
     });
+    wirePoCopyButtons(wrap);
     const prevBtn = wrap.querySelector(".gl-reconciled-pager .gl-pager-prev");
     const nextBtn = wrap.querySelector(".gl-reconciled-pager .gl-pager-next");
     if (prevBtn) prevBtn.addEventListener("click", () => { reconciledPage--; renderReconciledTable(); });
@@ -356,7 +390,7 @@ export async function renderGlReconciliation(container) {
             <tr>
               <td>P${escapeHtml(String(e.periodNumber))}/FY${escapeHtml(String(e.fiscalYear))}</td>
               <td>${escapeHtml(e.glDate || "—")}</td>
-              <td class="wom-code">${escapeHtml(e.purchaseOrder || "—")}</td>
+              <td class="wom-code po-number-cell">${escapeHtml(e.purchaseOrder || "—")}${poCopyHtml(e.purchaseOrder)}</td>
               <td>${escapeHtml(e.objectAccount || "—")}</td>
               <td>${escapeHtml(e.subsidiary || "—")}</td>
               <td>${formatMoney(e.amount)}</td>
@@ -369,6 +403,7 @@ export async function renderGlReconciliation(container) {
       </table>
       ${renderPager("gl-unmatched-pager", pageData)}
     `;
+    wirePoCopyButtons(wrap);
     const prevBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-prev");
     const nextBtn = wrap.querySelector(".gl-unmatched-pager .gl-pager-next");
     if (prevBtn) prevBtn.addEventListener("click", () => { unmatchedPage--; renderUnmatchedTable(); });
@@ -376,13 +411,14 @@ export async function renderGlReconciliation(container) {
   }
 
   function openPoDetailModal(r) {
-    openModal({
+    const { body } = openModal({
       title: `PO ${r.poNumber || ""} -- ${r.description || "reconciliation"}`,
       size: "large",
       bodyHtml: `
         <table class="detail-table">
           <tbody>
-            <tr><th>Vendor</th><td>${escapeHtml(r.vendorName || "No vendor matched")}</td><th>Location</th><td>${escapeHtml(r.locationCode || "—")}</td></tr>
+            <tr><th>PO Number</th><td class="po-number-cell">${escapeHtml(r.poNumber || "—")}${poCopyHtml(r.poNumber)}</td><th>Location</th><td>${escapeHtml(r.locationCode || "—")}</td></tr>
+            <tr><th>Vendor</th><td colspan="3">${escapeHtml(r.vendorName || "No vendor matched")}</td></tr>
             <tr><th>WOM #</th><td>${escapeHtml(r.womNumber || "—")}</td><th>GL lines</th><td>${r.glLineCount}</td></tr>
             <tr><th>PO Status</th><td>${escapeHtml(r.poStatus || "—")}</td><th>GL Period</th><td>${escapeHtml(r.periodLabel || "—")}</td></tr>
             <tr><th>Subsidiary</th><td>${r.subsidiaryMismatch ? "Mismatch" : "Matches"}</td><th>Object Code</th><td>${r.objectCodeMismatch ? "Mismatch" : "Matches"}</td></tr>
@@ -419,6 +455,7 @@ export async function renderGlReconciliation(container) {
         </table>
       `,
     });
+    wirePoCopyButtons(body);
   }
 
   async function runImport(file) {

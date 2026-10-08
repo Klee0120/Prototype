@@ -3481,6 +3481,33 @@ details[open] > .onboarding-other-outcome-toggle::before {
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
 }
 
+.po-number-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.po-copy-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  font-size: 13px;
+  padding: 0;
+  cursor: pointer;
+}
+.po-copy-btn:hover {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+.po-copy-btn-done {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
 /* ---- Page header: big title + subtitle + top-right actions, used by the
    WOM Projects and Task Manager style of tab ---- */
 
