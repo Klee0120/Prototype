@@ -27,6 +27,14 @@ export function mountTimeTracker() {
   let tickTimer = null;
   let poSearchResults = [];
   let poSearchTimer = null;
+  // The most recently one-click-logged instant entry -- shown briefly as a
+  // confirmation with an optional "attach a reference" follow-up, since the
+  // whole point of instant logging is never blocking on that at the moment
+  // of the click (see logInstant below).
+  let lastInstantEntry = null;
+  let instantNoteSaveTimer = null;
+  let instantPoSearchResults = [];
+  let instantPoSearchTimer = null;
 
   function formatElapsed(seconds) {
     const h = Math.floor(seconds / 3600);
@@ -39,6 +47,10 @@ export function mountTimeTracker() {
   function categoryLabel(key) {
     const c = TIME_LOG_CATEGORIES.find((cat) => cat.key === key);
     return c ? c.label : key;
+  }
+
+  function instantCategoryDef(key) {
+    return INSTANT_LOG_CATEGORIES.find((c) => c.key === key) || null;
   }
 
   function liveElapsedSeconds() {
@@ -137,6 +149,68 @@ export function mountTimeTracker() {
     });
   }
 
+  // Fires immediately on click -- never touches `current`, so a running
+  // timer keeps going undisturbed (see db.js's logInstantTimeEntry).
+  async function logInstant(key) {
+    try {
+      lastInstantEntry = await api.post("/api/admin/time-log/instant", { category: key });
+      instantPoSearchResults = [];
+      render();
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
+  async function saveInstantDetails(fields) {
+    if (!lastInstantEntry) return;
+    try {
+      const updated = await api.patch(`/api/admin/time-log/${lastInstantEntry.id}`, fields);
+      lastInstantEntry = { ...lastInstantEntry, ...updated };
+    } catch (err) {
+      window.alert(err.message);
+    }
+  }
+
+  async function searchInstantPos(query) {
+    if (!query.trim()) {
+      instantPoSearchResults = [];
+      renderInstantPoResults();
+      return;
+    }
+    try {
+      const results = await api.get(`/api/admin/pos?${new URLSearchParams({ search: query })}`);
+      instantPoSearchResults = Array.isArray(results) ? results : [];
+    } catch {
+      instantPoSearchResults = [];
+    }
+    renderInstantPoResults();
+  }
+
+  function renderInstantPoResults() {
+    const host = el.querySelector(".time-tracker-instant-po-results");
+    if (!host) return;
+    if (instantPoSearchResults.length === 0) {
+      host.innerHTML = "";
+      return;
+    }
+    host.innerHTML = instantPoSearchResults
+      .slice(0, 8)
+      .map(
+        (p) =>
+          `<button type="button" class="time-tracker-po-result" data-id="${p.id}">${escapeHtml(p.poNumber || "PO")} ${
+            p.description ? `&mdash; ${escapeHtml(p.description)}` : ""
+          }</button>`
+      )
+      .join("");
+    host.querySelectorAll(".time-tracker-po-result").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const id = Number(btn.dataset.id);
+        await saveInstantDetails({ relatedPoId: id });
+        render();
+      });
+    });
+  }
+
   function render() {
     stopTicking();
     const tabLabel = current
@@ -155,6 +229,37 @@ export function mountTimeTracker() {
             (c) =>
               `<button type="button" class="time-tracker-cat-btn ${current && current.category === c.key ? "time-tracker-cat-btn-active" : ""}" data-key="${c.key}">${escapeHtml(c.label)}</button>`
           ).join("")}
+        </div>
+        <div class="time-tracker-instant">
+          <div class="time-tracker-instant-label">Quick log</div>
+          <div class="time-tracker-instant-buttons">
+            ${INSTANT_LOG_CATEGORIES.map(
+              (c) =>
+                `<button type="button" class="time-tracker-instant-btn" data-key="${c.key}">${escapeHtml(c.label)} <span class="time-tracker-instant-min">${c.minutes} min</span></button>`
+            ).join("")}
+          </div>
+          ${
+            lastInstantEntry
+              ? `
+            <div class="time-tracker-instant-confirm">
+              <p class="time-tracker-instant-confirm-text">
+                &#10003; Logged ${escapeHtml(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category)}
+                &middot; ${instantCategoryDef(lastInstantEntry.category)?.minutes ?? ""} min
+              </p>
+              <input type="text" class="time-tracker-instant-ref" placeholder="Reference # (Request #, Maximo #...)" value="${escapeHtml(lastInstantEntry.note || "")}" />
+              <div class="time-tracker-po-link">
+                ${
+                  lastInstantEntry.relatedPoId
+                    ? `<span class="badge badge-approved">PO linked</span> <button type="button" class="btn btn-link time-tracker-instant-po-unlink">Unlink</button>`
+                    : `<input type="text" class="time-tracker-instant-po-search" placeholder="Or link a PO (search #, description)..." />
+                       <div class="time-tracker-instant-po-results"></div>`
+                }
+              </div>
+              <button type="button" class="btn btn-link time-tracker-instant-dismiss">Done</button>
+            </div>
+          `
+              : ""
+          }
         </div>
         ${
           current
@@ -185,6 +290,45 @@ export function mountTimeTracker() {
     el.querySelectorAll(".time-tracker-cat-btn").forEach((btn) => {
       btn.addEventListener("click", () => startCategory(btn.dataset.key));
     });
+
+    el.querySelectorAll(".time-tracker-instant-btn").forEach((btn) => {
+      btn.addEventListener("click", () => logInstant(btn.dataset.key));
+    });
+
+    const instantRefInput = el.querySelector(".time-tracker-instant-ref");
+    if (instantRefInput) {
+      instantRefInput.addEventListener("input", () => {
+        clearTimeout(instantNoteSaveTimer);
+        instantNoteSaveTimer = setTimeout(() => saveInstantDetails({ note: instantRefInput.value }), 700);
+      });
+      instantRefInput.addEventListener("blur", () => {
+        clearTimeout(instantNoteSaveTimer);
+        saveInstantDetails({ note: instantRefInput.value });
+      });
+    }
+
+    const instantPoSearchInput = el.querySelector(".time-tracker-instant-po-search");
+    if (instantPoSearchInput) {
+      instantPoSearchInput.addEventListener("input", () => {
+        clearTimeout(instantPoSearchTimer);
+        const q = instantPoSearchInput.value;
+        instantPoSearchTimer = setTimeout(() => searchInstantPos(q), 300);
+      });
+    }
+    const instantPoUnlinkBtn = el.querySelector(".time-tracker-instant-po-unlink");
+    if (instantPoUnlinkBtn) {
+      instantPoUnlinkBtn.addEventListener("click", async () => {
+        await saveInstantDetails({ relatedPoId: null });
+        render();
+      });
+    }
+    const instantDismissBtn = el.querySelector(".time-tracker-instant-dismiss");
+    if (instantDismissBtn) {
+      instantDismissBtn.addEventListener("click", () => {
+        lastInstantEntry = null;
+        render();
+      });
+    }
 
     const stopBtn = el.querySelector(".time-tracker-stop-btn");
     if (stopBtn) stopBtn.addEventListener("click", stopCurrent);
@@ -241,4 +385,10 @@ const TIME_LOG_CATEGORIES = [
   { key: "invoicing", label: "Invoicing" },
   { key: "documents", label: "Document Management" },
   { key: "general", label: "General / Other" },
+];
+
+// Mirrors db.js's INSTANT_LOG_CATEGORIES exactly.
+const INSTANT_LOG_CATEGORIES = [
+  { key: "po_entered_tech_ordered", label: "PO Entered (Tech Ordered)", minutes: 2 },
+  { key: "po_attached_tracker", label: "Attach PO to Tracker", minutes: 1 },
 ];

@@ -9482,6 +9482,18 @@ const TIME_LOG_CATEGORIES = [
 ];
 const TIME_LOG_CATEGORY_KEYS = TIME_LOG_CATEGORIES.map((c) => c.key);
 
+// Short, frequent, interrupt-driven tasks (entering a PO a tech just
+// requested, attaching one to the Tracker) where stopping to run a
+// stopwatch would be its own overhead -- one click logs a fixed-duration
+// segment immediately, instead of a running start/stop clock. Kept out of
+// TIME_LOG_CATEGORIES entirely so these never show up as a selectable
+// "start a running timer" category.
+const INSTANT_LOG_CATEGORIES = [
+  { key: "po_entered_tech_ordered", label: "PO Entered (Tech Ordered)", minutes: 2 },
+  { key: "po_attached_tracker", label: "Attach PO to Tracker", minutes: 1 },
+];
+const INSTANT_LOG_CATEGORY_KEYS = INSTANT_LOG_CATEGORIES.map((c) => c.key);
+
 function presentTimeLogEntry(row) {
   if (!row) return null;
   const endedAt = row.ended_at || null;
@@ -9526,6 +9538,29 @@ function startTimeLogEntry(adminId, category, fields = {}) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(adminId, category, now, note || "", relatedPoId || null, relatedVendorId || null, relatedWomCode || null, now);
   return getRunningTimeLogEntry(adminId);
+}
+
+// Writes a standalone, already-complete segment for one of
+// INSTANT_LOG_CATEGORIES's fixed durations -- deliberately independent of
+// whatever's currently running (unlike startTimeLogEntry, which auto-stops
+// it). These are quick tasks squeezed in alongside other ongoing work, not
+// a context switch, so logging one must never interrupt a running timer;
+// its time window can legitimately overlap one, same as a real interrupt
+// would.
+function logInstantTimeEntry(adminId, category, fields = {}) {
+  const def = INSTANT_LOG_CATEGORIES.find((c) => c.key === category);
+  if (!def) throw new Error("invalid instant-log category");
+  const startedAt = new Date();
+  const endedAt = new Date(startedAt.getTime() + def.minutes * 60 * 1000);
+  const { note, relatedPoId } = fields;
+  const nowIso = startedAt.toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO time_log_entries (admin_id, category, started_at, ended_at, note, related_po_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(adminId, category, nowIso, endedAt.toISOString(), note || "", relatedPoId || null, nowIso);
+  return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(Number(result.lastInsertRowid)));
 }
 
 function stopTimeLogEntry(adminId, fields = {}) {
@@ -10512,9 +10547,11 @@ module.exports = {
   getGlFiscalCalendar,
   resolveFiscalPeriod,
   TIME_LOG_CATEGORIES,
+  INSTANT_LOG_CATEGORIES,
   getRunningTimeLogEntry,
   startTimeLogEntry,
   stopTimeLogEntry,
+  logInstantTimeEntry,
   updateTimeLogEntry,
   listTimeLogEntries,
   listGlCategories,
