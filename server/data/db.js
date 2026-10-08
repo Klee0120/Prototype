@@ -1222,6 +1222,97 @@ if (!tableExists("task_reschedules")) {
 if (!hasColumn("technicians", "is_pse_reviewer")) {
   db.exec("ALTER TABLE technicians ADD COLUMN is_pse_reviewer INTEGER NOT NULL DEFAULT 0");
 }
+// Which Time Off Policy (see time_off_policies below) sets this person's
+// own yearly allowance per time-off type -- null means no policy assigned
+// yet, so their balance tab shows "no policy assigned" rather than zeros
+// that could be mistaken for a real (empty) allowance.
+if (!hasColumn("technicians", "time_off_policy_id")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN time_off_policy_id INTEGER");
+}
+
+// ---- Time Off: policies, approvers, requests ----
+// A real request/approval/balance system, separate from the existing
+// allocations.type='timeoff' rows (those are retrospective -- "this day
+// I already worked was actually PTO," entered the same week it happened,
+// for payroll hours accounting). This is forward-looking -- "I want Dec
+// 24-26 off," requested weeks or months ahead, approved or denied before
+// the day arrives, and only then does it show up anywhere as a real plan.
+// The two systems aren't merged: a tech still logs timeoff hours in their
+// weekly allocation the way they always have; this is what backs the
+// balance/approval/calendar experience modeled on PurelyHR.
+if (!tableExists("time_off_policies")) {
+  db.exec(`
+    CREATE TABLE time_off_policies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
+// One row per (policy, time-off type) -- a type a policy doesn't mention
+// simply isn't offered under it at all (not the same as a 0-hour
+// allowance), so a tech's balance tab only shows the types their own
+// policy actually grants.
+if (!tableExists("time_off_policy_allowances")) {
+  db.exec(`
+    CREATE TABLE time_off_policy_allowances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      yearly_hours REAL NOT NULL,
+      UNIQUE(policy_id, type)
+    );
+  `);
+}
+
+// Who may approve a given person's time-off requests -- a list, not a
+// single "manager" field, since per Krista a tech's requests can have more
+// than one valid approver (both Krista and Kevin), while her own has just
+// one (Kevin). subject_id with no row here at all falls back to "any
+// active admin may approve" (see timeOffApproversFor) rather than a dead
+// end for someone nobody's gotten around to configuring yet. Self-approval
+// is blocked unconditionally in code, regardless of what's configured here.
+if (!tableExists("time_off_approvers")) {
+  db.exec(`
+    CREATE TABLE time_off_approvers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject_id TEXT NOT NULL,
+      approver_id TEXT NOT NULL,
+      UNIQUE(subject_id, approver_id)
+    );
+  `);
+}
+
+// hours_per_day is a flat daily figure (e.g. 8) applied across every
+// weekday in [start_date, end_date] -- not a per-day breakdown -- matching
+// how a request actually gets asked for ("I want next Mon-Wed off") rather
+// than building a day-by-day picker for what's almost always a uniform
+// week. decided_by/decided_at/decision_note are only set on the actual
+// approve/deny action, never touched by anything else.
+if (!tableExists("time_off_requests")) {
+  db.exec(`
+    CREATE TABLE time_off_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tech_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      hours_per_day REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      notes TEXT DEFAULT '',
+      requested_at TEXT NOT NULL,
+      decided_by TEXT,
+      decided_at TEXT,
+      decision_note TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_time_off_requests_tech ON time_off_requests(tech_id);
+    CREATE INDEX idx_time_off_requests_status ON time_off_requests(status);
+  `);
+}
 // Forms on File (tech_form uploads) can carry a type (e.g. "Certification",
 // "License") and an expiration date, so expired ones can be flagged for
 // admin/RFM attention on the Overview tab -- see listExpiringForms below.
@@ -9863,6 +9954,298 @@ async function testApiConnection(id) {
   return findApiConnection(id);
 }
 
+// ---- Time Off (requests, policies, balances, approvers) ----
+// A fixed, closed list -- same reasoning as every other fixed-vocabulary
+// enum in this app (onboarding case types, reclass statuses): keeps every
+// policy's allowances and every request's type directly comparable across
+// people, instead of free text that drifts. The 4 already used in weekly
+// allocation entries (adminReview.js's own TIME_OFF_LABELS), plus Floating
+// Holiday.
+const TIME_OFF_TYPES = [
+  { value: "vacation", label: "Vacation" },
+  { value: "sick", label: "Sick" },
+  { value: "bereavement", label: "Bereavement" },
+  { value: "holiday", label: "Holiday" },
+  { value: "floating_holiday", label: "Floating Holiday" },
+];
+const TIME_OFF_TYPE_VALUES = TIME_OFF_TYPES.map((t) => t.value);
+const TIME_OFF_REQUEST_STATUSES = ["pending", "approved", "denied", "cancelled"];
+
+function presentTimeOffPolicy(row, allowanceRows) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    allowances: allowanceRows.filter((a) => a.policy_id === row.id).map((a) => ({ type: a.type, yearlyHours: a.yearly_hours })),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listTimeOffPolicies() {
+  const policies = db.prepare("SELECT * FROM time_off_policies ORDER BY name").all();
+  const allowances = db.prepare("SELECT * FROM time_off_policy_allowances").all();
+  return policies.map((p) => presentTimeOffPolicy(p, allowances));
+}
+
+function findTimeOffPolicy(id) {
+  const policy = db.prepare("SELECT * FROM time_off_policies WHERE id = ?").get(Number(id));
+  if (!policy) return null;
+  const allowances = db.prepare("SELECT * FROM time_off_policy_allowances WHERE policy_id = ?").all(Number(id));
+  return presentTimeOffPolicy(policy, allowances);
+}
+
+function setTimeOffPolicyAllowances(policyId, allowances) {
+  db.prepare("DELETE FROM time_off_policy_allowances WHERE policy_id = ?").run(policyId);
+  const insert = db.prepare("INSERT INTO time_off_policy_allowances (policy_id, type, yearly_hours) VALUES (?, ?, ?)");
+  for (const a of allowances || []) {
+    if (!TIME_OFF_TYPE_VALUES.includes(a.type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
+    insert.run(policyId, a.type, Number(a.yearlyHours));
+  }
+}
+
+function createTimeOffPolicy({ name, allowances }) {
+  if (!name) throw new Error("name is required");
+  const now = new Date().toISOString();
+  const result = db.prepare("INSERT INTO time_off_policies (name, created_at, updated_at) VALUES (?, ?, ?)").run(name, now, now);
+  setTimeOffPolicyAllowances(result.lastInsertRowid, allowances);
+  return findTimeOffPolicy(result.lastInsertRowid);
+}
+
+function updateTimeOffPolicy(id, { name, allowances }) {
+  const existing = db.prepare("SELECT * FROM time_off_policies WHERE id = ?").get(Number(id));
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  db.prepare("UPDATE time_off_policies SET name = ?, updated_at = ? WHERE id = ?").run(name !== undefined ? name : existing.name, now, Number(id));
+  if (allowances !== undefined) setTimeOffPolicyAllowances(Number(id), allowances);
+  return findTimeOffPolicy(id);
+}
+
+// Unassigns rather than blocking -- a tech left pointing at a deleted
+// policy would show a confusing balance tab, not an informative error;
+// "no policy assigned" (null) is the same state a never-configured tech is
+// already in, so this just returns them to it.
+function deleteTimeOffPolicy(id) {
+  const existing = db.prepare("SELECT 1 FROM time_off_policies WHERE id = ?").get(Number(id));
+  if (!existing) return false;
+  db.prepare("UPDATE technicians SET time_off_policy_id = NULL WHERE time_off_policy_id = ?").run(Number(id));
+  db.prepare("DELETE FROM time_off_policy_allowances WHERE policy_id = ?").run(Number(id));
+  db.prepare("DELETE FROM time_off_policies WHERE id = ?").run(Number(id));
+  return true;
+}
+
+function setTechnicianTimeOffPolicy(techId, policyId) {
+  db.prepare("UPDATE technicians SET time_off_policy_id = ? WHERE id = ?").run(policyId || null, techId);
+  return findTechnician(techId);
+}
+
+// Every admin currently allowed to approve this person's requests --
+// explicit rows if any are configured, or every active admin as a fallback
+// when nobody's configured any yet (see the table's own comment for why).
+// Always excludes the subject themselves, even if they're an admin and
+// somehow got added to their own list -- self-approval is never allowed,
+// regardless of what's configured.
+function listTimeOffApprovers(subjectId) {
+  const rows = db.prepare("SELECT approver_id FROM time_off_approvers WHERE subject_id = ?").all(subjectId);
+  const admins = listAdmins().filter((a) => a.active);
+  const ids = rows.length > 0 ? rows.map((r) => r.approver_id) : admins.map((a) => a.id);
+  return admins.filter((a) => ids.includes(a.id) && a.id !== subjectId);
+}
+
+function setTimeOffApprovers(subjectId, approverIds) {
+  db.prepare("DELETE FROM time_off_approvers WHERE subject_id = ?").run(subjectId);
+  const insert = db.prepare("INSERT INTO time_off_approvers (subject_id, approver_id) VALUES (?, ?)");
+  for (const approverId of approverIds || []) {
+    if (approverId === subjectId) continue; // never store a self-approval row
+    insert.run(subjectId, approverId);
+  }
+  return listTimeOffApprovers(subjectId);
+}
+
+function canApproveTimeOff(approverId, subjectId) {
+  if (approverId === subjectId) return false;
+  return listTimeOffApprovers(subjectId).some((a) => a.id === approverId);
+}
+
+// Weekdays only (Mon-Fri) in [startDate, endDate] inclusive -- a time-off
+// request is asked for in calendar days, but every balance/calendar use of
+// it only cares about the days someone would have otherwise worked.
+function weekdaysInRange(startDate, endDate) {
+  const dates = [];
+  let cursor = new Date(startDate + "T00:00:00");
+  const end = new Date(endDate + "T00:00:00");
+  while (cursor <= end) {
+    const dow = cursor.getDay();
+    if (dow !== 0 && dow !== 6) dates.push(cursor.toISOString().slice(0, 10));
+    cursor = new Date(cursor.getTime() + 86400000);
+  }
+  return dates;
+}
+
+function presentTimeOffRequest(r) {
+  return {
+    id: r.id,
+    techId: r.tech_id,
+    type: r.type,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    hoursPerDay: r.hours_per_day,
+    totalHours: round2(weekdaysInRange(r.start_date, r.end_date).length * r.hours_per_day),
+    status: r.status,
+    notes: r.notes,
+    requestedAt: r.requested_at,
+    decidedBy: r.decided_by,
+    decidedAt: r.decided_at,
+    decisionNote: r.decision_note,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function createTimeOffRequest(techId, { type, startDate, endDate, hoursPerDay, notes }) {
+  if (!TIME_OFF_TYPE_VALUES.includes(type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
+  if (!startDate || !endDate || endDate < startDate) throw new Error("endDate must be on or after startDate");
+  if (!(hoursPerDay > 0)) throw new Error("hoursPerDay must be a positive number");
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO time_off_requests
+        (tech_id, type, start_date, end_date, hours_per_day, status, notes, requested_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
+    )
+    .run(techId, type, startDate, endDate, hoursPerDay, notes || "", now, now, now);
+  return presentTimeOffRequest(db.prepare("SELECT * FROM time_off_requests WHERE id = ?").get(result.lastInsertRowid));
+}
+
+function findTimeOffRequest(id) {
+  const row = db.prepare("SELECT * FROM time_off_requests WHERE id = ?").get(Number(id));
+  return row ? presentTimeOffRequest(row) : null;
+}
+
+function listTimeOffRequests({ techId, status, from, to } = {}) {
+  const clauses = [];
+  const params = [];
+  if (techId) {
+    clauses.push("tech_id = ?");
+    params.push(techId);
+  }
+  if (status) {
+    clauses.push("status = ?");
+    params.push(status);
+  }
+  // Overlap, not containment -- a request spanning into or out of the
+  // window still belongs in it.
+  if (from) {
+    clauses.push("end_date >= ?");
+    params.push(from);
+  }
+  if (to) {
+    clauses.push("start_date <= ?");
+    params.push(to);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  return db.prepare(`SELECT * FROM time_off_requests ${where} ORDER BY start_date DESC`).all(...params).map(presentTimeOffRequest);
+}
+
+// The one gate for approve/deny/cancel -- self-approval and "not this
+// person's approver" both throw, caught by the route as a 403, rather than
+// trusting the caller to have checked canApproveTimeOff first. Cancelling
+// is allowed by the requester themselves (withdrawing your own ask is not
+// "approving" it) or by anyone who could have approved it.
+function decideTimeOffRequest(id, status, actorId, decisionNote) {
+  if (!TIME_OFF_REQUEST_STATUSES.includes(status) || status === "pending") {
+    throw new Error(`status must be one of: approved, denied, cancelled`);
+  }
+  const existing = findTimeOffRequest(id);
+  if (!existing) return null;
+  const isSelfCancel = status === "cancelled" && actorId === existing.techId;
+  if (!isSelfCancel && !canApproveTimeOff(actorId, existing.techId)) {
+    throw new Error("You aren't an approver for this person's time off requests");
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE time_off_requests SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, updated_at = ? WHERE id = ?"
+  ).run(status, actorId, now, decisionNote || "", now, Number(id));
+  return findTimeOffRequest(id);
+}
+
+// Allowance (from the tech's assigned policy), used (approved requests),
+// and pending (pending requests), all scoped to one calendar year -- per
+// Krista's own call, the simple version: the full yearly allowance is
+// available from day one of the year, not accrued period by period.
+function computeTimeOffBalance(techId, year) {
+  const tech = findTechnician(techId);
+  const policy = tech && tech.time_off_policy_id ? findTimeOffPolicy(tech.time_off_policy_id) : null;
+  const yearFrom = `${year}-01-01`;
+  const yearTo = `${year}-12-31`;
+  const requests = listTimeOffRequests({ techId, from: yearFrom, to: yearTo }).filter((r) => r.status === "approved" || r.status === "pending");
+
+  const byType = new Map(TIME_OFF_TYPE_VALUES.map((t) => [t, { type: t, yearlyHours: null, used: 0, pending: 0 }]));
+  if (policy) {
+    for (const a of policy.allowances) {
+      const entry = byType.get(a.type);
+      if (entry) entry.yearlyHours = a.yearlyHours;
+    }
+  }
+  for (const r of requests) {
+    const entry = byType.get(r.type);
+    if (!entry) continue;
+    // Clip to the requested year -- a request spanning New Year's only
+    // counts the days that actually fall in this year's balance.
+    const clippedStart = r.startDate < yearFrom ? yearFrom : r.startDate;
+    const clippedEnd = r.endDate > yearTo ? yearTo : r.endDate;
+    const hours = round2(weekdaysInRange(clippedStart, clippedEnd).length * r.hoursPerDay);
+    if (r.status === "approved") entry.used = round2(entry.used + hours);
+    else entry.pending = round2(entry.pending + hours);
+  }
+
+  return {
+    policyId: policy ? policy.id : null,
+    policyName: policy ? policy.name : null,
+    year,
+    types: TIME_OFF_TYPES.filter((t) => policy && byType.get(t.value).yearlyHours != null).map((t) => {
+      const entry = byType.get(t.value);
+      return {
+        type: t.value,
+        label: t.label,
+        yearlyHours: entry.yearlyHours,
+        used: entry.used,
+        pending: entry.pending,
+        balance: round2(entry.yearlyHours - entry.used - entry.pending),
+      };
+    }),
+  };
+}
+
+// Approved time off, expanded to one entry per weekday, for the given
+// month -- the Schedule calendar's own byDate shape (see
+// server/routes/schedule.js), so merging this in is a plain concat per
+// date, not a parallel rendering path.
+function listApprovedTimeOffForMonth(monthIso) {
+  const [y, m] = monthIso.split("-").map(Number);
+  const from = `${y}-${String(m).padStart(2, "0")}-01`;
+  const to = new Date(y, m, 0).toISOString().slice(0, 10);
+  const requests = listTimeOffRequests({ status: "approved", from, to });
+  const techById = new Map(listTechnicians().map((t) => [t.id, t]));
+  const byDate = {};
+  for (const r of requests) {
+    const tech = techById.get(r.techId);
+    const clippedStart = r.startDate < from ? from : r.startDate;
+    const clippedEnd = r.endDate > to ? to : r.endDate;
+    for (const dateIso of weekdaysInRange(clippedStart, clippedEnd)) {
+      if (!byDate[dateIso]) byDate[dateIso] = [];
+      byDate[dateIso].push({
+        timeOffRequestId: r.id,
+        techId: r.techId,
+        techName: tech ? tech.name : r.techId,
+        type: r.type,
+        hours: r.hoursPerDay,
+      });
+    }
+  }
+  return byDate;
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -10117,4 +10500,21 @@ module.exports = {
   updateApiConnection,
   deleteApiConnection,
   testApiConnection,
+  TIME_OFF_TYPES,
+  TIME_OFF_REQUEST_STATUSES,
+  listTimeOffPolicies,
+  findTimeOffPolicy,
+  createTimeOffPolicy,
+  updateTimeOffPolicy,
+  deleteTimeOffPolicy,
+  setTechnicianTimeOffPolicy,
+  listTimeOffApprovers,
+  setTimeOffApprovers,
+  canApproveTimeOff,
+  createTimeOffRequest,
+  findTimeOffRequest,
+  listTimeOffRequests,
+  decideTimeOffRequest,
+  computeTimeOffBalance,
+  listApprovedTimeOffForMonth,
 };

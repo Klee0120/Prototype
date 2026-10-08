@@ -69,4 +69,19 @@ router.get("/:month", requireAuth, (req, res) => {
   res.json({ gridStart: gridStartMonday, gridEnd: datesForWeek(lastMonday)[6], byDate });
 });
 
+// Approved time off for the month, as its own small per-day list -- kept
+// separate from the WOM entries above rather than merged into the same
+// byDate shape, since the WOM calendar's multi-day "run" bars are grouped
+// by techId+womCode+hours (see buildWeekRuns in schedule.js) and a
+// time-off entry has no womCode; mixing the two would either fail to
+// group time-off days together or wrongly bridge unrelated stretches that
+// happen to share a tech and an hours-per-day figure. The client renders
+// this as a small chip list under each day number instead.
+router.get("/:month/time-off", requireAuth, (req, res) => {
+  const { month } = req.params;
+  const [y, m] = month.split("-").map(Number);
+  if (!y || !m || m < 1 || m > 12) return res.status(400).json({ error: "month must be in YYYY-MM form" });
+  res.json(db.listApprovedTimeOffForMonth(month));
+});
+
 module.exports = router;

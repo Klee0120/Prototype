@@ -4,6 +4,7 @@ import { renderTechWeek } from "./techWeek.js";
 import { renderAttachments } from "./attachments.js";
 import { renderSchedule } from "./schedule.js";
 import { renderTaskBoard } from "./tasks.js";
+import { renderMyTimeOff } from "./timeOff.js";
 import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 import { openModal, closeModal } from "../modal.js";
@@ -258,6 +259,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
   const TECH_TABS = [
     ["mywork", "My Work"],
     ["week", "My Week"],
+    ["timeoff", "Time Off"],
     ["schedule", "Schedule"],
     ["locations", "Locations &amp; WOM"],
     ["vendors", "Vendors"],
@@ -288,9 +290,10 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     const content = container.querySelector("#tab-content");
     // Same shared loading state as the admin view's draw() -- every tab
     // here fetches before rendering, so this covers all of them for free.
-    const loadingLabels = { mywork: "My Work", week: "My Week", schedule: "Schedule", locations: "Locations & WOM", vendors: "Vendors", documents: "My Documents" };
+    const loadingLabels = { mywork: "My Work", week: "My Week", timeoff: "Time Off", schedule: "Schedule", locations: "Locations & WOM", vendors: "Vendors", documents: "My Documents" };
     renderLoadingState(content, loadingLabelFor(loadingLabels[activeTab] || "content"));
     if (activeTab === "mywork") await renderTaskBoard(content);
+    else if (activeTab === "timeoff") await renderMyTimeOff(content);
     else if (activeTab === "schedule") await renderSchedule(content);
     else if (activeTab === "locations") await drawLocationsAndWoms(content);
     else if (activeTab === "vendors") await drawApprovedVendors(content);

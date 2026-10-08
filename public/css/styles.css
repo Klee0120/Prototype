@@ -6015,3 +6015,66 @@ button.vendor-preferred-star:hover {
   color: var(--danger);
   font-weight: 600;
 }
+
+/* ---- Schedule calendar: time-off chips ---- */
+.schedule-timeoff-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.schedule-timeoff-chip {
+  background: var(--violet-bg);
+  color: var(--violet);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- Time Off ---- */
+.timeoff-admin-tabs {
+  margin-bottom: 14px;
+}
+
+.timeoff-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.timeoff-person-select {
+  max-width: 320px;
+  margin-bottom: 16px;
+}
+
+.timeoff-policy-assign {
+  max-width: 320px;
+  margin-bottom: 16px;
+}
+
+.timeoff-approvers-assign {
+  margin: 16px 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.timeoff-approvers-assign > span {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.timeoff-approver-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 14px 4px 0;
+  font-size: 13px;
+}

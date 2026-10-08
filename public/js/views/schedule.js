@@ -218,16 +218,20 @@ function buildWeekRuns(week, byDate, keyOf) {
   return { runs, laneCount: laneEnds.length };
 }
 
-// A month calendar of WOM project work only (no E&F, no time off) -- shared
-// by the admin and technician shells, and open to any logged-in user, since
-// the point is letting anyone see what's already scheduled before adding
-// more to a project or a person's plate. Not a live Teams/Outlook
-// connection; see README "Where this stands" for what that would need.
-// Every date shown is tentative -- a technician's own planned allocation for
-// that day, not a locked commitment -- and filterable to one site at a time
-// since a mixed-site day is hard to read at a glance. Clicking an entry
-// shows that WOM's own detail (status, pricing, budget) without leaving the
-// calendar.
+// A month calendar of WOM project work (no E&F) plus approved time off --
+// shared by the admin and technician shells, and open to any logged-in
+// user, since the point is letting anyone see what's already scheduled
+// before adding more to a project or a person's plate. Not a live Teams/
+// Outlook connection; see README "Where this stands" for what that would
+// need. Every WOM date shown is tentative -- a technician's own planned
+// allocation for that day, not a locked commitment -- and filterable to
+// one site at a time since a mixed-site day is hard to read at a glance.
+// Clicking a WOM entry shows that WOM's own detail (status, pricing,
+// budget) without leaving the calendar. Time off is shown as small name
+// chips under the day number, deliberately kept separate from the WOM run-
+// bar system below (see the /time-off endpoint's own comment in
+// server/routes/schedule.js for why merging the two shapes would be
+// wrong), and is never filtered by location -- time off isn't site-scoped.
 export async function renderSchedule(container, options = {}) {
   if (!state.scheduleMonth) state.scheduleMonth = currentMonthIso();
   if (state.scheduleLocation === undefined) state.scheduleLocation = "";
@@ -316,10 +320,13 @@ export async function renderSchedule(container, options = {}) {
 
     const host = container.querySelector("#schedule-calendar-host");
     const detailHost = container.querySelector("#schedule-detail-host");
-    let data;
+    let data, timeOffByDate;
     try {
       const query = state.scheduleLocation ? `?location=${encodeURIComponent(state.scheduleLocation)}` : "";
-      data = await api.get(`/api/schedule/${state.scheduleMonth}${query}`);
+      [data, timeOffByDate] = await Promise.all([
+        api.get(`/api/schedule/${state.scheduleMonth}${query}`),
+        api.get(`/api/schedule/${state.scheduleMonth}/time-off`),
+      ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
@@ -351,8 +358,18 @@ export async function renderSchedule(container, options = {}) {
               .map((dateIso, i) => {
                 const [dy, dm, dd] = dateIso.split("-").map(Number);
                 const inMonth = dm === m && dy === y;
+                const timeOffToday = timeOffByDate[dateIso] || [];
                 return `<div class="schedule-daycell ${inMonth ? "" : "schedule-calendar-outside"}" style="grid-column:${i + 1}">
                   <div class="schedule-calendar-daynum">${dd}</div>
+                  ${
+                    timeOffToday.length > 0
+                      ? `<div class="schedule-timeoff-chips">
+                          ${timeOffToday
+                            .map((t) => `<span class="schedule-timeoff-chip" title="${escapeHtml(t.techName)} -- ${escapeHtml(t.type.replace("_", " "))}">${escapeHtml(t.techName)}</span>`)
+                            .join("")}
+                        </div>`
+                      : ""
+                  }
                 </div>`;
               })
               .join("");
