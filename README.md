@@ -1950,8 +1950,10 @@ by their existing keys.
   right now this only runs on whatever machine starts it, reachable at
   `localhost:3000` on that machine only.
 - **Deployed on a $6/mo DigitalOcean droplet**, running as a systemd service
-  (auto-restarts on crash or reboot) behind a basic firewall (only SSH + port
-  80 open). See `scripts/deploy.sh` for first-time setup, and
+  on an internal port (auto-restarts on crash or reboot), with Caddy in
+  front of it on 80/443 behind a basic firewall (only SSH + 80/443 open --
+  the app's own port is never opened, so it's unreachable except through
+  Caddy). See `scripts/deploy.sh` for first-time setup, and
   `scripts/redeploy.sh` to pull + restart afterward — both are single-line
   `curl | bash` commands so there's no multi-command line for a
   copy/paste-mangling terminal to break:
@@ -1982,7 +1984,12 @@ by their existing keys.
   missing: the site is served
   over plain HTTP, so credentials and data travel unencrypted over the
   network. Real HTTPS needs a domain name pointed at the droplet's IP (a
-  bare IP can't get a trusted certificate) — a separate decision still ahead.
+  bare IP can't get a trusted certificate) — the domain itself is a separate
+  purchase/registration step still ahead, but the serving side is ready:
+  `scripts/deploy.sh` now puts Caddy in front of the app, and re-running it
+  with `DOMAIN=www.yourdomain.com` set (on the `bash` side of the `curl | bash`
+  pipe, not before `curl`) gets a free, auto-renewing Let's Encrypt cert and
+  an http→https redirect with no further manual cert work.
 - **A dead session used to fail silently.** If a session token the browser
   still holds stops being valid server-side (it expired, or the token row
   is simply gone), every tab that fetches data on load hit a 401, threw,
@@ -2418,7 +2425,8 @@ server/
                                   SMARTSHEET_API_TOKEN/SMARTSHEET_SHEET_ID are set) --
                                   fetchSheet/fetchSimplifiedSheet/simplifySheet
 scripts/
-  deploy.sh               One-shot droplet setup: Node 22, app, systemd service, firewall
+  deploy.sh               One-shot droplet setup: Node 22, app, systemd service, Caddy reverse
+                             proxy (HTTPS once DOMAIN is set), firewall
   import-vendors.js         One-time/repeatable bulk import of vendor records from a JSON
                                file into the live database (see the Vendors feature above)
 tests/
