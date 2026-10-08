@@ -31,7 +31,7 @@ const STATUS_LABELS = {
   rejected: "Rejected",
 };
 
-const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday" };
+const TIME_OFF_LABELS = { vacation: "Vacation", sick: "Sick", bereavement: "Bereavement", holiday: "Holiday", floating_holiday: "Floating Holiday" };
 
 function formatMoney(n) {
   if (n == null) return "—";

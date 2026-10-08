@@ -10,6 +10,7 @@ const { hashPin, verifyPin } = require("../utils/password");
 // regeneration), so centralizing the notify-the-assignee check here is far
 // less error-prone than duplicating it at every call site.
 const mailer = require("../utils/mailer");
+const { mondayOf, datesForWeek, DAY_NAMES } = require("../utils/week");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -10149,6 +10150,27 @@ function listTimeOffRequests({ techId, status, from, to } = {}) {
   return db.prepare(`SELECT * FROM time_off_requests ${where} ORDER BY start_date DESC`).all(...params).map(presentTimeOffRequest);
 }
 
+// Writes an approved request straight onto the tech's real weekly
+// timecard -- one allocations row per weekday in range, same shape (and
+// same "replace just this one day" semantics as saveDayAllocations) the
+// normal weekly-allocation flow already uses, so it shows up on My Week/
+// Weekly Review without the tech re-entering it by hand. Whatever was on
+// that day before (if anything) is replaced -- a day actually taken off
+// shouldn't also be carrying WOM/E&F hours. Only ever called on the
+// pending -> approved transition (see decideTimeOffRequest) -- a request
+// un-approved later doesn't retroactively pull these rows back out; that
+// edge case is left for an admin to fix by hand on the timecard itself.
+function applyApprovedTimeOffToAllocations(request) {
+  for (const dateIso of weekdaysInRange(request.startDate, request.endDate)) {
+    const weekMonday = mondayOf(new Date(dateIso + "T00:00:00"));
+    const dayIndex = datesForWeek(weekMonday).indexOf(dateIso);
+    const day = DAY_NAMES[dayIndex];
+    replaceAllocationsForDays(request.techId, weekMonday, [day], [
+      { day, type: "timeoff", locationCode: null, womCode: request.type, hours: request.hoursPerDay },
+    ]);
+  }
+}
+
 // The one gate for approve/deny/cancel -- self-approval and "not this
 // person's approver" both throw, caught by the route as a 403, rather than
 // trusting the caller to have checked canApproveTimeOff first. Cancelling
@@ -10168,7 +10190,11 @@ function decideTimeOffRequest(id, status, actorId, decisionNote) {
   db.prepare(
     "UPDATE time_off_requests SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, updated_at = ? WHERE id = ?"
   ).run(status, actorId, now, decisionNote || "", now, Number(id));
-  return findTimeOffRequest(id);
+  const updated = findTimeOffRequest(id);
+  if (status === "approved" && existing.status !== "approved") {
+    applyApprovedTimeOffToAllocations(updated);
+  }
+  return updated;
 }
 
 // Allowance (from the tech's assigned policy), used (approved requests),

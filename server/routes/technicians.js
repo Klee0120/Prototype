@@ -6,7 +6,11 @@ const { presentAllocation } = require("../utils/allocation");
 
 const router = express.Router();
 
-const TIME_OFF_TYPES = ["vacation", "sick", "bereavement", "holiday"];
+// The same closed vocabulary the Time Off request/policy system uses (see
+// db.TIME_OFF_TYPES) -- derived rather than duplicated, so an approved
+// request's auto-written allocation row (see db.applyApprovedTimeOffToAllocations)
+// never fails this same validation if a tech's week gets re-submitted later.
+const TIME_OFF_TYPES = db.TIME_OFF_TYPES.map((t) => t.value);
 
 // Sat/Sun are exempt from the submit-time UKG-match check -- see the
 // mismatches loop in the submit route below.

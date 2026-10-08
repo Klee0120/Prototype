@@ -175,4 +175,43 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
     assert.equal(balanceRes.body.policyId, null);
     assert.equal(balanceRes.body.types.length, 0);
   });
+
+  await t.test("approving a request writes it straight onto the real weekly timecard", () => {
+    // requestId (approved earlier, by Kevin) was 2026-06-01 (Mon) to
+    // 2026-06-03 (Wed), vacation, 8h/day -- three weekday rows, one week.
+    const rows = raw
+      .prepare("SELECT day, type, wom_code, hours FROM allocations WHERE tech_id = ? AND week_monday = ? ORDER BY day")
+      .all("T1001", "2026-06-01");
+    assert.equal(rows.length, 3);
+    for (const r of rows) {
+      assert.equal(r.type, "timeoff");
+      assert.equal(r.wom_code, "vacation");
+      assert.equal(r.hours, 8);
+    }
+    assert.deepEqual(rows.map((r) => r.day).sort(), ["Mon", "Tue", "Wed"]);
+  });
+
+  await t.test("a request spanning two weeks writes allocation rows into both", async () => {
+    const createRes = await server.call("POST", "/api/time-off/requests", {
+      userId: "T1001",
+      // 2026-06-26 is a Friday (week of 06-22); 2026-06-29 is the following
+      // Monday (week of 06-29) -- one request, two different week_monday rows.
+      body: { type: "floating_holiday", startDate: "2026-06-26", endDate: "2026-06-29", hoursPerDay: 8 },
+    });
+    await server.call("PATCH", `/api/time-off/requests/${createRes.body.id}`, { token: kevinToken, body: { status: "approved" } });
+
+    const week1 = raw.prepare("SELECT day FROM allocations WHERE tech_id = ? AND week_monday = ?").all("T1001", "2026-06-22");
+    const week2 = raw.prepare("SELECT day FROM allocations WHERE tech_id = ? AND week_monday = ?").all("T1001", "2026-06-29");
+    assert.deepEqual(week1.map((r) => r.day).sort(), ["Fri"]); // 2026-06-26 is a Friday in the week of 06-22
+    assert.deepEqual(week2.map((r) => r.day).sort(), ["Mon"]); // 2026-06-29 is a Monday
+  });
+
+  await t.test("floating_holiday is a recognized time-off type on the normal weekly allocations route", async () => {
+    const weekMonday = require("../server/utils/week").currentWeekMonday();
+    const res = await server.call("PUT", `/api/technicians/T1001/weeks/${weekMonday}/allocations`, {
+      userId: "T1001",
+      body: { allocations: [{ day: "Mon", type: "timeoff", timeOffType: "floating_holiday", hours: 8 }] },
+    });
+    assert.equal(res.status, 200);
+  });
 });

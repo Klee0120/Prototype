@@ -16,6 +16,7 @@ const TIME_OFF_OPTIONS = [
   { value: "sick", label: "Sick" },
   { value: "bereavement", label: "Bereavement" },
   { value: "holiday", label: "Holiday" },
+  { value: "floating_holiday", label: "Floating Holiday" },
 ];
 
 const WEEKEND_DAYS = ["Sat", "Sun"];
@@ -202,7 +203,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
           : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
         : "",
       locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : "",
-      timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday). Everything else opens up closer to the week itself.</div>` : "",
+      timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday, floating holiday). Everything else opens up closer to the week itself.</div>` : "",
       state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
         ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
         : "",
