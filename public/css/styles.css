@@ -5951,3 +5951,60 @@ button.vendor-preferred-star:hover {
     max-width: 360px;
   }
 }
+
+/* ---- Budget Review (Financials) ---- */
+.budget-review-burden-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.budget-review-category-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  padding: 12px 14px;
+  margin-top: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 820px;
+}
+
+.budget-review-category-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.budget-review-table .budget-review-budget-cell {
+  padding: 4px 8px;
+}
+
+.budget-review-budget-input {
+  width: 100px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+.budget-review-budget-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.budget-review-budget-input::placeholder {
+  color: var(--muted);
+}
+
+.budget-review-table td.danger {
+  color: var(--danger);
+  font-weight: 600;
+}

@@ -1613,6 +1613,26 @@ if (!tableExists("time_log_entries")) {
   `);
 }
 
+// The one annual R&M planning number per site -- set by finance once a
+// year, never derived from GL activity (GL tells you what was actually
+// spent, not what was approved to spend) -- so it's its own small
+// hand-entered table rather than a computed column. UNIQUE pair means
+// setting a site's budget for a fiscal year again just replaces it
+// (see setRmBudget), not stacks a second row.
+if (!tableExists("rm_budgets")) {
+  db.exec(`
+    CREATE TABLE rm_budgets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_code TEXT NOT NULL,
+      fiscal_year INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      updated_by TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(location_code, fiscal_year)
+    );
+  `);
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -9438,6 +9458,184 @@ function listTimeLogEntries(adminId, { from, to } = {}) {
     .map(presentTimeLogEntry);
 }
 
+// ---- Budget Review: R&M spend vs. budget + OT rate, by site and fiscal
+// year ----
+// Built to answer the FY27 budget deck's own gap directly: it backs a
+// headcount/R&M increase request at several sites with a 5-year CM/SR
+// work-order count and an R&M-spend-vs-budget table plus an OT-rate
+// trend, but Kansas City only shows up in the deck's one summary row with
+// none of that supporting data. This reuses the exact spend/category/
+// territory logic already proven in getGlSpendBreakdown so a site's own
+// GL-derived number here always matches what Spend Analysis would show
+// for the same filter. CM/SR work-order counts aren't reproducible here
+// (that's Maximo data, not anything ServiceWorks imports); this only
+// covers what's actually derivable from GL + the hours already logged in
+// this app.
+
+// Every distinct category string currently on file (via
+// parseObjectAccountCategory), so the admin picks which one(s) count as
+// "R&M" rather than this guessing at an exact label that may not match
+// the real export's wording.
+function listGlCategories() {
+  const rows = db.prepare("SELECT DISTINCT object_account FROM gl_entries WHERE object_account IS NOT NULL").all();
+  const categories = new Set();
+  for (const r of rows) {
+    const c = parseObjectAccountCategory(r.object_account);
+    if (c) categories.add(c);
+  }
+  return [...categories].sort();
+}
+
+function listRmBudgets() {
+  return db
+    .prepare(
+      `SELECT b.id, b.location_code AS locationCode, l.name AS locationName, b.fiscal_year AS fiscalYear,
+              b.amount, b.updated_by AS updatedBy, b.updated_at AS updatedAt
+       FROM rm_budgets b LEFT JOIN locations l ON l.code = b.location_code
+       ORDER BY b.location_code, b.fiscal_year DESC`
+    )
+    .all();
+}
+
+// Setting a site's budget for a fiscal year that already has one just
+// replaces it (the UNIQUE(location_code, fiscal_year) pair this upserts
+// against) -- a budget number is a single current figure, not a dated
+// history the way vendor notes are.
+function setRmBudget(locationCode, fiscalYear, amount, updatedBy) {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO rm_budgets (location_code, fiscal_year, amount, updated_by, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(location_code, fiscal_year) DO UPDATE SET amount = excluded.amount, updated_by = excluded.updated_by, updated_at = excluded.updated_at`
+  ).run(locationCode, fiscalYear, amount, updatedBy || null, now);
+  return db
+    .prepare(
+      `SELECT b.id, b.location_code AS locationCode, l.name AS locationName, b.fiscal_year AS fiscalYear,
+              b.amount, b.updated_by AS updatedBy, b.updated_at AS updatedAt
+       FROM rm_budgets b LEFT JOIN locations l ON l.code = b.location_code
+       WHERE b.location_code = ? AND b.fiscal_year = ?`
+    )
+    .get(locationCode, fiscalYear);
+}
+
+// Weekly OT, the same 40-hour-threshold rule techWeek.js's own
+// computeReceipt applies (hours beyond 40/week, counted on the week's
+// total worked -- wom + ef only; time off is paid straight time and never
+// counts toward the threshold) -- recomputed here server-side across every
+// tech/week on file, since computeReceipt only ever runs client-side
+// against one tech's own open week. Attributed to the tech's
+// home_location_code: a tech works predominantly out of one site, and
+// that's the same site-level framing the budget deck's own OT-rate charts
+// use (NAPCK's OT rate, not an individual's).
+function getOtRateByLocationFiscalYear() {
+  const rows = db
+    .prepare(
+      `SELECT a.tech_id AS techId, a.week_monday AS weekMonday, a.hours,
+              t.home_location_code AS homeLocationCode
+       FROM allocations a JOIN technicians t ON t.id = a.tech_id
+       WHERE a.type IN ('wom', 'ef') AND a.hours > 0`
+    )
+    .all();
+
+  const byTechWeek = new Map();
+  for (const r of rows) {
+    const key = `${r.techId}|${r.weekMonday}`;
+    const entry = byTechWeek.get(key) || { homeLocationCode: r.homeLocationCode, weekMonday: r.weekMonday, total: 0 };
+    entry.total += r.hours;
+    byTechWeek.set(key, entry);
+  }
+
+  const byLocationYear = new Map();
+  for (const entry of byTechWeek.values()) {
+    if (!entry.homeLocationCode) continue;
+    const period = resolveFiscalPeriod(entry.weekMonday);
+    if (!period) continue;
+    const key = `${entry.homeLocationCode}|${period.fiscalYear}`;
+    const bucket =
+      byLocationYear.get(key) || { locationCode: entry.homeLocationCode, fiscalYear: period.fiscalYear, otHours: 0, totalHours: 0 };
+    bucket.otHours += Math.max(0, entry.total - 40);
+    bucket.totalHours += entry.total;
+    byLocationYear.set(key, bucket);
+  }
+  return byLocationYear;
+}
+
+// The report itself: one row per (site, fiscal year) actually seen in
+// either source, so a site with OT data but no GL spend yet (or the
+// reverse) still gets a row instead of silently dropping out. categories
+// (an array of the same strings listGlCategories returns) narrows the
+// spend total to just those GL categories -- left empty/omitted, every
+// category counts (the same "everything" default Spend Analysis itself
+// uses before narrowing).
+function getBudgetReviewReport({ territory, location, categories, excludeBurden = false } = {}) {
+  const categorySet = Array.isArray(categories) && categories.length ? new Set(categories) : null;
+  const locationMeta = new Map(listLocations().map((l) => [l.code, { name: l.name, territory: l.territory }]));
+  const inScope = (locationCode) => {
+    const meta = locationMeta.get(locationCode);
+    if (territory && (!meta || meta.territory !== territory)) return false;
+    if (location && locationCode !== location) return false;
+    return true;
+  };
+
+  const rows = db
+    .prepare(
+      `SELECT g.object_account, g.amount, g.fiscal_year AS fiscalYear, g.matched_location_code AS locationCode,
+              g.name_alpha AS nameAlpha, g.remark
+       FROM gl_entries g
+       WHERE g.purchase_order IS NULL AND g.subledger_gl IS NULL AND g.matched_location_code IS NOT NULL`
+    )
+    .all();
+
+  const spendByLocationYear = new Map();
+  for (const r of rows) {
+    if (!inScope(r.locationCode)) continue;
+    const category = parseObjectAccountCategory(r.object_account) || "Unknown / Uncategorized";
+    if (excludeBurden && (BURDEN_CATEGORIES.has(category) || isBurdenDescription(r.nameAlpha || r.remark))) continue;
+    if (categorySet && !categorySet.has(category)) continue;
+
+    const key = `${r.locationCode}|${r.fiscalYear}`;
+    const bucket = spendByLocationYear.get(key) || { locationCode: r.locationCode, fiscalYear: r.fiscalYear, spend: 0 };
+    bucket.spend += r.amount || 0;
+    spendByLocationYear.set(key, bucket);
+  }
+
+  const otByLocationYear = getOtRateByLocationFiscalYear();
+  for (const key of [...otByLocationYear.keys()]) {
+    const bucket = otByLocationYear.get(key);
+    if (!inScope(bucket.locationCode)) otByLocationYear.delete(key);
+  }
+
+  const budgets = new Map(listRmBudgets().map((b) => [`${b.locationCode}|${b.fiscalYear}`, b.amount]));
+  const round2v = (n) => Math.round(n * 100) / 100;
+
+  const allKeys = new Set([...spendByLocationYear.keys(), ...otByLocationYear.keys()]);
+  const result = [];
+  for (const key of allKeys) {
+    const [locationCode, fiscalYearStr] = key.split("|");
+    const fiscalYear = Number(fiscalYearStr);
+    const spendBucket = spendByLocationYear.get(key);
+    const otBucket = otByLocationYear.get(key);
+    const rmBudget = budgets.has(key) ? budgets.get(key) : null;
+    const rmSpend = spendBucket ? round2v(spendBucket.spend) : 0;
+    result.push({
+      locationCode,
+      locationName: (locationMeta.get(locationCode) || {}).name || null,
+      fiscalYear,
+      rmSpend,
+      rmBudget,
+      variance: rmBudget != null ? round2v(rmSpend - rmBudget) : null,
+      otHours: otBucket ? round2v(otBucket.otHours) : null,
+      totalHours: otBucket ? round2v(otBucket.totalHours) : null,
+      otRatePct: otBucket && otBucket.totalHours > 0 ? Math.round((otBucket.otHours / otBucket.totalHours) * 1000) / 10 : null,
+    });
+  }
+
+  result.sort(
+    (a, b) => (a.locationName || a.locationCode).localeCompare(b.locationName || b.locationCode) || b.fiscalYear - a.fiscalYear
+  );
+  return { categories: listGlCategories(), rows: result };
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -9681,4 +9879,8 @@ module.exports = {
   stopTimeLogEntry,
   updateTimeLogEntry,
   listTimeLogEntries,
+  listGlCategories,
+  listRmBudgets,
+  setRmBudget,
+  getBudgetReviewReport,
 };

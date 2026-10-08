@@ -319,4 +319,37 @@ router.get("/meals", (req, res) => {
   );
 });
 
+// R&M spend-vs-budget + OT-rate trend by site/fiscal year (see
+// db.getBudgetReviewReport for why this exists -- it fills the gap in
+// C&W's own FY27 budget deck, where some sites get a 5-year supporting
+// chart and others, Kansas City included, don't). categories is a repeated
+// query param (categories=R%26M&categories=Parts) narrowing the spend
+// total to just those GL categories; omitted, every category counts.
+router.get("/budget-review", (req, res) => {
+  const { territory, location, excludeBurden } = req.query || {};
+  let categories = req.query?.categories;
+  if (categories == null) categories = [];
+  else if (!Array.isArray(categories)) categories = [categories];
+  res.json(
+    db.getBudgetReviewReport({
+      territory: territory || null,
+      location: location || null,
+      categories,
+      excludeBurden: excludeBurden === "true",
+    })
+  );
+});
+
+router.get("/rm-budgets", (req, res) => {
+  res.json(db.listRmBudgets());
+});
+
+router.put("/rm-budgets", (req, res) => {
+  const { locationCode, fiscalYear, amount } = req.body || {};
+  if (!locationCode || fiscalYear == null || amount == null) {
+    return res.status(400).json({ error: "locationCode, fiscalYear, and amount are required" });
+  }
+  res.json(db.setRmBudget(locationCode, Number(fiscalYear), Number(amount), req.user.id));
+});
+
 module.exports = router;
