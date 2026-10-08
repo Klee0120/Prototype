@@ -98,6 +98,7 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
     assert.equal(res.body.status, "pending");
     // 2026-06-01 is a Monday, 06-03 a Wednesday -- 3 weekdays * 8h.
     assert.equal(res.body.totalHours, 24);
+    assert.equal(res.body.techName, "Alex Rivera", "a real name, not the raw tech id, for display in the approvals queue");
     requestId = res.body.id;
   });
 

@@ -45,11 +45,27 @@ function renderBalanceTable(balance) {
   `;
 }
 
-function openRequestForm({ types, techId, onSubmitted }) {
+// techId fixed + no people list = the tech's own self-service form (no
+// "who is this for" picker, since there's only one possible answer).
+// people passed in = the admin form, with a "Request For" picker up top --
+// matches PurelyHR's own "Request For: Select User" entry point -- techId
+// becomes that dropdown's initial value (or the first person) rather than
+// a fixed subject.
+function openRequestForm({ types, techId, people, onSubmitted }) {
   const { body, close } = openModal({
     title: "Request Time Off",
     bodyHtml: `
       <form class="modal-form timeoff-request-form">
+        ${
+          people
+            ? `<label class="profile-field">
+                <span>Request For</span>
+                <select name="techId">
+                  ${people.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === techId ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+                </select>
+              </label>`
+            : ""
+        }
         <label class="profile-field">
           <span>Type</span>
           <select name="type">${types.map((t) => `<option value="${t.value}">${escapeHtml(t.label)}</option>`).join("")}</select>
@@ -85,7 +101,7 @@ function openRequestForm({ types, techId, onSubmitted }) {
     }
     try {
       await api.post("/api/time-off/requests", {
-        techId,
+        techId: people ? form.techId.value : techId,
         type: form.type.value,
         startDate: form.startDate.value,
         endDate: form.endDate.value,
@@ -221,19 +237,25 @@ let adminSubTab = "approvals";
 
 export async function renderTimeOffAdmin(container) {
   renderLoadingState(container, loadingLabelFor("Time Off"));
-  let types;
+  let types, technicians;
   try {
-    types = await loadTypes();
+    [types, technicians] = await Promise.all([loadTypes(), api.get("/api/admin/technicians")]);
   } catch (err) {
     container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
     return;
   }
+  const people = technicians.filter((t) => t.employmentStatus === "active");
 
   container.innerHTML = `
-    <div class="tabs timeoff-admin-tabs">
-      <button type="button" class="tab ${adminSubTab === "approvals" ? "active" : ""}" data-sub="approvals">Approvals Queue</button>
-      <button type="button" class="tab ${adminSubTab === "policies" ? "active" : ""}" data-sub="policies">Time-Off Policies</button>
-      <button type="button" class="tab ${adminSubTab === "people" ? "active" : ""}" data-sub="people">By Technician</button>
+    <div class="page-header">
+      <div class="tabs timeoff-admin-tabs">
+        <button type="button" class="tab ${adminSubTab === "approvals" ? "active" : ""}" data-sub="approvals">Approvals Queue</button>
+        <button type="button" class="tab ${adminSubTab === "policies" ? "active" : ""}" data-sub="policies">Time-Off Policies</button>
+        <button type="button" class="tab ${adminSubTab === "people" ? "active" : ""}" data-sub="people">By Technician</button>
+      </div>
+      <div class="page-header-actions">
+        <button type="button" class="btn btn-primary timeoff-admin-toplevel-request-btn">+ Request Time Off</button>
+      </div>
     </div>
     <div class="timeoff-admin-body"></div>
   `;
@@ -242,6 +264,9 @@ export async function renderTimeOffAdmin(container) {
       adminSubTab = btn.dataset.sub;
       renderTimeOffAdmin(container);
     });
+  });
+  container.querySelector(".timeoff-admin-toplevel-request-btn").addEventListener("click", () => {
+    openRequestForm({ types, techId: byTechSelectedId || (people[0] && people[0].id), people, onSubmitted: () => renderTimeOffAdmin(container) });
   });
 
   const body = container.querySelector(".timeoff-admin-body");
@@ -437,12 +462,17 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
   const approverIds = new Set(approvers.map((a) => a.id));
 
   detailHost.innerHTML = `
-    <div class="profile-field timeoff-policy-assign">
-      <span>Time-off policy</span>
-      <select class="timeoff-policy-select">
-        <option value="">No policy</option>
-        ${policies.map((p) => `<option value="${p.id}" ${balance.policyId === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
-      </select>
+    <div class="page-header">
+      <div class="profile-field timeoff-policy-assign">
+        <span>Time-off policy</span>
+        <select class="timeoff-policy-select">
+          <option value="">No policy</option>
+          ${policies.map((p) => `<option value="${p.id}" ${balance.policyId === p.id ? "selected" : ""}>${escapeHtml(p.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="page-header-actions">
+        <button type="button" class="btn btn-primary timeoff-admin-request-btn">+ Request Time Off</button>
+      </div>
     </div>
     ${renderBalanceTable(balance)}
     <div class="timeoff-approvers-assign">
@@ -464,6 +494,10 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
     <div class="timeoff-person-requests-host"></div>
   `;
 
+  const refreshDetail = () => renderPersonDetail(detailHost, techId, { types, policies, admins, host });
+  detailHost.querySelector(".timeoff-admin-request-btn").addEventListener("click", () => {
+    openRequestForm({ types, techId, onSubmitted: refreshDetail });
+  });
   detailHost.querySelector(".timeoff-policy-select").addEventListener("change", async (e) => {
     try {
       await api.patch(`/api/time-off/technicians/${techId}/policy`, { policyId: e.target.value ? Number(e.target.value) : null });
@@ -485,7 +519,6 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
   });
 
   const requestsHost = detailHost.querySelector(".timeoff-person-requests-host");
-  const refresh = () => renderPersonDetail(detailHost, techId, { types, policies, admins, host });
-  requestsHost.innerHTML = renderRequestsTable(requests, types, { onDecide: refresh });
-  wireRequestsTable(requestsHost, { onDecide: refresh });
+  requestsHost.innerHTML = renderRequestsTable(requests, types, { onDecide: refreshDetail });
+  wireRequestsTable(requestsHost, { onDecide: refreshDetail });
 }

@@ -10083,9 +10083,11 @@ function weekdaysInRange(startDate, endDate) {
 }
 
 function presentTimeOffRequest(r) {
+  const tech = findTechnician(r.tech_id);
   return {
     id: r.id,
     techId: r.tech_id,
+    techName: tech ? tech.name : r.tech_id,
     type: r.type,
     startDate: r.start_date,
     endDate: r.end_date,
