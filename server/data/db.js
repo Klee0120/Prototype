@@ -1392,6 +1392,12 @@ if (!hasColumn("reclass_items", "related_po_id")) {
 if (!hasColumn("reclass_items", "admin_name")) {
   db.exec("ALTER TABLE reclass_items ADD COLUMN admin_name TEXT");
 }
+// One-time cleanup for the "Reclasses list is a pin, not a history log"
+// change: a Dismissed row is deleted the moment it's set from here on (see
+// updateReclassItem), but any already sitting in the table from before
+// that change still need clearing out -- per Krista, she never wanted
+// these kept. Safe to run on every boot: a no-op once none are left.
+db.exec("DELETE FROM reclass_items WHERE status = 'dismissed'");
 // Which fiscal period this finding was flagged/imported in (see
 // resolveFiscalPeriod) -- lets the Reclasses tab filter by month/year the
 // same way the rest of the app's GL screens do, instead of a plain calendar
@@ -2656,10 +2662,11 @@ function setWomCostReview(code, { reviewStatus, reviewReason, note }, actorId) {
 // ---- GL Reclasses ----
 
 // "dismissed" is the unflag: a reclass someone looked at and decided
-// doesn't actually need one, after all. Keeps the row (and its audit trail)
-// rather than deleting it -- see attachOpenReclassFlags/flagPosForReclass,
-// both of which already treat it the same as confirmed_posted for "is this
-// still an open flag" purposes.
+// doesn't actually need one, after all. Setting it deletes the row outright
+// (see updateReclassItem) rather than keeping a soft-dismissed row around --
+// it's never actually read back as a persisted status, just the trigger for
+// removal, kept in this enum only so the status dropdown can still offer
+// "dismiss this" as an action.
 const RECLASS_STATUSES = ["flagged", "reviewed", "draft", "submitted", "confirmed_posted", "dismissed"];
 const RECLASS_STATUS_LABELS = {
   flagged: "Flagged",
@@ -2667,7 +2674,7 @@ const RECLASS_STATUS_LABELS = {
   draft: "Draft",
   submitted: "Submitted",
   confirmed_posted: "Confirmed Posted",
-  dismissed: "Dismissed (not needed)",
+  dismissed: "Dismissed (removes this from the list)",
 };
 // Matches the real sheet's own category vocabulary exactly (see
 // parseReclassWorkbook in routes/reclasses.js) rather than inventing a
@@ -2844,6 +2851,15 @@ function buildReclassItemFilterClauses(filters = {}) {
   if (filters.status) {
     clauses.push("status = ?");
     params.push(filters.status);
+  } else {
+    // No status chosen means the default "working list" view -- still
+    // needs a decision. A Dismissed row never persists at all (see
+    // updateReclassItem), but a Confirmed Posted one does, on purpose (the
+    // Performance tab's reclass-turnaround KPI and a WOM's own reclass
+    // history both read it) -- it just doesn't belong in the default pin
+    // list once it's done. Picking "Confirmed Posted" from the status
+    // filter explicitly still finds it.
+    clauses.push("status != 'confirmed_posted'");
   }
   if (filters.source) {
     clauses.push("source = ?");
@@ -3065,11 +3081,13 @@ function flagPosForReclass(poIds, createdBy) {
 }
 
 // The symmetric undo for flagPosForReclass above -- the PO Tracker's own
-// "I noticed this needs a reclass" flag and the "Dismissed" status on the
-// Reclasses tab are really the same one-click lightweight flag, so
-// unflagging from either side has to mean the same thing: dismiss it, not
-// delete it, so the attempt (and whoever flagged it, and when) stays in the
-// record rather than vanishing.
+// "I noticed this needs a reclass" flag and the Reclasses tab's own list
+// are really the same one-click pin (per Krista: "this list is basically a
+// pin. We only want to flag it to keep it on the list. Remove flag and it
+// removes the PO... I dont need to save it in history"), so unflagging
+// deletes the row outright rather than soft-dismissing it -- see
+// updateReclassItem's own handling of status 'dismissed' for the single
+// place that actually happens, which this just calls into.
 function unflagPosForReclass(poIds, actorId) {
   let unflaggedCount = 0;
   let skippedCount = 0;
@@ -3092,6 +3110,15 @@ function updateReclassItem(id, fields) {
   if (!existing) return null;
   if (fields.status && !RECLASS_STATUSES.includes(fields.status)) {
     throw new Error(`status must be one of: ${RECLASS_STATUSES.join(", ")}`);
+  }
+  // "Dismissed" isn't a status this app keeps around -- per Krista, the
+  // Reclasses list is a pin, not a history log, so setting a finding to
+  // Dismissed deletes the row outright rather than persisting it with that
+  // status. Every other status transition below still applies normally;
+  // this is the one terminal case that short-circuits the whole update.
+  if (fields.status === "dismissed") {
+    db.prepare("DELETE FROM reclass_items WHERE id = ?").run(Number(id));
+    return { deleted: true, id: Number(id) };
   }
   const now = new Date().toISOString();
   // Set once, the moment status actually transitions into "submitted" --

@@ -156,16 +156,16 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
   });
 
   // The unflag: a reclass someone looked at and decided isn't actually
-  // needed. Keeps the row (audit trail intact) instead of deleting it, but
-  // stops counting as an open flag -- same treatment as confirmed_posted.
-  await t.test("dismissing a flagged item clears the open flag and frees the PO to be flagged again", async () => {
+  // needed. The Reclasses list is a pin, not a history log, so dismissing
+  // deletes the row outright rather than keeping a Dismissed row around.
+  await t.test("dismissing a flagged item deletes it and frees the PO to be flagged again", async () => {
     const poId = insertPo({ composite: "flag-4", poNumber: "PO60004", e1WomJobNumber: "100110066003", womNumber: null, lifecycleStatus: "active" });
     const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
     const itemId = first.body.items[0].id;
 
     const dismissRes = await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "dismissed" } });
     assert.equal(dismissRes.status, 200);
-    assert.equal(dismissRes.body.status, "dismissed");
+    assert.equal(dismissRes.body.deleted, true);
 
     const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
     assert.equal(po.body.hasOpenReclassFlag, false, "a dismissed flag should no longer count as open");
@@ -174,16 +174,14 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.equal(second.body.flaggedCount, 1, "flagging again after dismissal should create a new entry");
 
     const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
-    const dismissedItem = itemsRes.body.find((i) => i.id === itemId);
-    assert.ok(dismissedItem, "the dismissed item should still exist, not be deleted");
-    assert.equal(dismissedItem.status, "dismissed");
+    assert.ok(!itemsRes.body.some((i) => i.id === itemId), "the dismissed item should be gone, not kept with a Dismissed status");
   });
 
   // The same undo as above, but the one-click version from the Budget PO
   // Tracker itself -- selecting a flagged PO and unflagging it, the mirror
   // image of flag-po, instead of going to the Reclasses tab and changing
   // the status dropdown by hand.
-  await t.test("one-click unflag-po dismisses the open flag without a trip to the Reclasses tab", async () => {
+  await t.test("one-click unflag-po deletes the open flag without a trip to the Reclasses tab", async () => {
     const poId = insertPo({ composite: "unflag-1", poNumber: "PO60005", e1WomJobNumber: "100110066004", womNumber: null, lifecycleStatus: "active" });
     const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
     const itemId = flagRes.body.items[0].id;
@@ -197,9 +195,7 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.equal(po.body.hasOpenReclassFlag, false);
 
     const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
-    const item = itemsRes.body.find((i) => i.id === itemId);
-    assert.ok(item, "the item should still exist, not be deleted");
-    assert.equal(item.status, "dismissed");
+    assert.ok(!itemsRes.body.some((i) => i.id === itemId), "the item should be gone, not kept with a Dismissed status");
   });
 
   await t.test("unflag-po on a PO with no open flag is a no-op", async () => {

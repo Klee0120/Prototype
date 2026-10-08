@@ -214,10 +214,10 @@ router.post("/flag-po", (req, res) => {
   res.json(result);
 });
 
-// The symmetric undo for flag-po above -- dismisses whatever open flag
-// exists for each PO (same "Dismissed" status the Reclasses tab's own
-// Status dropdown sets), so it's gone from "flagged this month" without
-// losing the record of it ever having been flagged.
+// The symmetric undo for flag-po above -- removes whatever open flag
+// exists for each PO outright (same action the Reclasses tab's own Status
+// dropdown triggers by setting "Dismissed"), per Krista: this list is a
+// pin, unflagging means it's gone, not kept around with a Dismissed badge.
 router.post("/unflag-po", (req, res) => {
   const poIds = Array.isArray(req.body?.poIds) ? req.body.poIds : [];
   if (poIds.length === 0) return res.status(400).json({ error: "poIds is required" });
@@ -257,6 +257,13 @@ router.patch("/items/:id", (req, res) => {
   try {
     const updated = db.updateReclassItem(req.params.id, { ...(req.body || {}), updatedBy: req.user.id });
     if (!updated) return res.status(404).json({ error: "Reclass item not found" });
+    // Setting status to 'dismissed' deletes the row instead of persisting
+    // that status (see db.updateReclassItem) -- the list is a pin, not a
+    // history log, so "dismissed" and "removed" are the same action.
+    if (updated.deleted) {
+      db.addAudit(req.user.id, "RECLASS_STATUS_CHANGED", `${req.user.name} dismissed and removed reclass #${updated.id}`);
+      return res.json(updated);
+    }
     if (req.body && req.body.status) {
       db.addAudit(req.user.id, "RECLASS_STATUS_CHANGED", `${req.user.name} set reclass #${updated.id} to ${db.RECLASS_STATUS_LABELS[updated.status] || updated.status}`);
     }
