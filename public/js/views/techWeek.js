@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
-import { DAY_NAMES, shiftWeek, weekRangeLabel } from "../weekUtil.js";
+import { DAY_NAMES, shiftWeek, weekRangeLabel, datesForWeek, formatDateShort } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderWomPhotoPrompt } from "./womPhotoPrompt.js";
 
@@ -203,7 +203,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
           : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
         : "",
       locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : "",
-      timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet -- you can enter time off in advance (vacation, sick, bereavement, holiday, floating holiday). Everything else opens up closer to the week itself.</div>` : "",
+      timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet. Any approved time off will show here automatically; everything else opens up closer to the week itself.</div>` : "",
       state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
         ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
         : "",
@@ -512,9 +512,11 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     const delta = round2(total - ukgActual);
     const remaining = round2(ukgActual - total);
 
+    const dayDate = formatDateShort(datesForWeek(state.weekMonday)[DAY_NAMES.indexOf(day)]);
+
     card.innerHTML = `
       <div class="day-card-header">
-        <span class="day-name">${day}${dayReopened ? ` <span class="badge badge-draft">Weekend entry</span>` : ""}</span>
+        <span class="day-name">${day} <span class="day-date">${dayDate}</span>${dayReopened ? ` <span class="badge badge-draft">Weekend entry</span>` : ""}</span>
         <span class="day-ukg-actual">UKG ACTUAL: <strong>${ukgActual}h</strong></span>
       </div>
       ${
@@ -530,7 +532,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
           ? `<div class="report-punch-host" data-day="${day}"></div>`
           : ""
       }
-      ${timeOffOnly ? "" : `<div class="day-rows"></div>`}
+      <div class="day-rows"></div>
       ${full ? `
         <div class="day-actions">
           <button class="btn btn-link add-split" type="button">+ Add split</button>
@@ -546,25 +548,31 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
           </span>
         </div>
       `}
-      ${locked ? "" : `<div class="time-off-row"></div>`}
     `;
 
-    if (!timeOffOnly) {
+    {
       const rowsEl = card.querySelector(".day-rows");
-      if (splits.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "day-row-empty";
-        empty.textContent = locked ? "No hours logged." : "Not yet allocated.";
-        rowsEl.appendChild(empty);
+      if (!timeOffOnly) {
+        if (splits.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "day-row-empty";
+          empty.textContent = locked ? "No hours logged." : "Not yet allocated.";
+          rowsEl.appendChild(empty);
+        }
+        splits.forEach((row) => rowsEl.appendChild(renderSplitRow(row, locked)));
       }
-      splits.forEach((row) => rowsEl.appendChild(renderSplitRow(row, locked)));
 
-      if (timeOff && locked) {
+      if (timeOff) {
         const label = TIME_OFF_OPTIONS.find((o) => o.value === timeOff.timeOffType)?.label || timeOff.timeOffType;
         const row = document.createElement("div");
         row.className = "day-row";
         row.innerHTML = `<span class="row-wom">Time off — ${escapeHtml(label)}</span><span class="row-hours">${timeOff.hours}h</span>`;
         rowsEl.appendChild(row);
+      } else if (timeOffOnly) {
+        const empty = document.createElement("div");
+        empty.className = "day-row-empty";
+        empty.textContent = "No approved time off on file for this day.";
+        rowsEl.appendChild(empty);
       }
     }
 
@@ -604,11 +612,6 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
         else allocations.push({ day, type: "ef", locationCode: homeLocationCode, womCode: null, hours: afterClear });
         draw();
       });
-    }
-
-    if (!locked) {
-      const timeOffHost = card.querySelector(".time-off-row");
-      timeOffHost.appendChild(renderTimeOffRow(day, timeOff, ukgActual));
     }
 
     return card;
@@ -736,51 +739,6 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     }
 
     return rowEl;
-  }
-
-  function renderTimeOffRow(day, timeOff, ukgActual) {
-    const wrap = document.createElement("div");
-    wrap.className = "time-off-field";
-    const options = [`<option value="">None</option>`]
-      .concat(TIME_OFF_OPTIONS.map((o) => `<option value="${o.value}" ${timeOff && timeOff.timeOffType === o.value ? "selected" : ""}>${o.label}</option>`))
-      .join("");
-
-    wrap.innerHTML = `
-      <label class="time-off-label">Time off</label>
-      <select class="time-off-select">${options}</select>
-      <input class="time-off-hours-input" type="text" inputmode="decimal" value="${timeOff ? timeOff.hours : ""}" data-focus-key="timeoff-hours:${day}" ${timeOff ? "" : "disabled"} />
-    `;
-
-    wrap.querySelector(".time-off-select").addEventListener("change", (e) => {
-      if (e.target.value) {
-        // A real time-off selection means the day (or part of it) wasn't
-        // worked -- clear the auto-filled "everything is home time" guess.
-        clearAutoDefault(day);
-      }
-      const existingIdx = allocations.findIndex((a) => a.day === day && a.type === "timeoff");
-      if (!e.target.value) {
-        if (existingIdx !== -1) allocations.splice(existingIdx, 1);
-      } else if (existingIdx !== -1) {
-        allocations[existingIdx].timeOffType = e.target.value;
-      } else {
-        // Default to the day's full UKG hours -- matches the common case
-        // (a full day off) so it balances immediately without more typing.
-        allocations.push({ day, type: "timeoff", timeOffType: e.target.value, hours: ukgActual || 8 });
-      }
-      draw();
-    });
-    const timeOffHoursInput = wrap.querySelector(".time-off-hours-input");
-    timeOffHoursInput.addEventListener("input", (e) => {
-      const existingIdx = allocations.findIndex((a) => a.day === day && a.type === "timeoff");
-      if (existingIdx !== -1) {
-        allocations[existingIdx].hours = parseHoursInput(e.target.value, allocations[existingIdx].hours);
-      }
-      draw();
-    });
-    timeOffHoursInput.addEventListener("focus", (e) => e.target.select());
-    timeOffHoursInput.addEventListener("blur", () => draw());
-
-    return wrap;
   }
 
   function renderReceipt() {

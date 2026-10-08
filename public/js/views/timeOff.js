@@ -250,6 +250,7 @@ export async function renderTimeOffAdmin(container) {
     <div class="page-header">
       <div class="tabs timeoff-admin-tabs">
         <button type="button" class="tab ${adminSubTab === "approvals" ? "active" : ""}" data-sub="approvals">Approvals Queue</button>
+        <button type="button" class="tab ${adminSubTab === "history" ? "active" : ""}" data-sub="history">History</button>
         <button type="button" class="tab ${adminSubTab === "policies" ? "active" : ""}" data-sub="policies">Time-Off Policies</button>
         <button type="button" class="tab ${adminSubTab === "people" ? "active" : ""}" data-sub="people">By Technician</button>
       </div>
@@ -272,6 +273,7 @@ export async function renderTimeOffAdmin(container) {
   const body = container.querySelector(".timeoff-admin-body");
   if (adminSubTab === "policies") await renderPolicies(body);
   else if (adminSubTab === "people") await renderByTechnician(body, types);
+  else if (adminSubTab === "history") await renderHistory(body, types);
   else await renderApprovalsQueue(body, types, container);
 }
 
@@ -294,6 +296,23 @@ async function renderApprovalsQueue(host, types, container) {
   const queueHost = host.querySelector(".timeoff-queue-host");
   queueHost.innerHTML = renderRequestsTable(requests, types, { showTech: true, onDecide: () => renderTimeOffAdmin(container) });
   wireRequestsTable(queueHost, { onDecide: () => renderTimeOffAdmin(container) });
+}
+
+// Every approved request, company-wide -- separate from the pending-only
+// Approvals Queue, and separate from "By Technician" (which requires
+// picking a person first). Read-only: these are already decided.
+async function renderHistory(host, types) {
+  host.innerHTML = `<p class="empty-note">Loading…</p>`;
+  let requests;
+  try {
+    requests = await api.get("/api/time-off/requests?status=approved");
+  } catch (err) {
+    host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  requests = [...requests].sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+  host.innerHTML = `<div class="timeoff-history-host"></div>`;
+  host.querySelector(".timeoff-history-host").innerHTML = renderRequestsTable(requests, types, { showTech: true });
 }
 
 async function renderPolicies(host) {

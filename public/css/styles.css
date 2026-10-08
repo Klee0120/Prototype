@@ -1083,6 +1083,12 @@ h1, h2, h3, h4 {
   font-weight: 700;
 }
 
+.day-date {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .day-total {
   color: var(--muted);
   font-size: 14px;
@@ -1297,12 +1303,6 @@ h1, h2, h3, h4 {
 .balance-pill.warn {
   background: var(--warn-bg);
   color: var(--warn);
-}
-
-.time-off-row {
-  border-top: 1px dashed var(--border);
-  padding-top: 10px;
-  margin-top: 4px;
 }
 
 /* ---- Weekly receipt (Reg/OT breakdown) ---- */
