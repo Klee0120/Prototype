@@ -6004,6 +6004,13 @@ button.vendor-preferred-star:hover {
   color: var(--muted);
 }
 
+.integration-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
 .budget-review-table td.danger {
   color: var(--danger);
   font-weight: 600;

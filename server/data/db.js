@@ -1639,6 +1639,37 @@ if (!tableExists("rm_budgets")) {
   `);
 }
 
+// Admin-managed connections to outside systems (UKG, Vroozi, JDE, Hubble,
+// etc.) -- just the credential/connection-management piece. What to
+// actually pull/push for any given system is its own real integration
+// work (see server/utils/smartsheet.js for the one that exists today,
+// which still reads its token from an env var rather than this table --
+// a future migration, not required for this to be useful now). credential
+// is the secret itself (bearer token, API key value, or a Basic-auth
+// password); never returned to the browser in full once saved -- see
+// presentApiConnection's masking.
+if (!tableExists("api_connections")) {
+  db.exec(`
+    CREATE TABLE api_connections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      auth_type TEXT NOT NULL,
+      api_key_header TEXT,
+      username TEXT,
+      credential TEXT NOT NULL,
+      test_path TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      last_tested_at TEXT,
+      last_test_status TEXT,
+      last_test_detail TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 seedIfEmpty();
 
 function seedIfEmpty() {
@@ -9663,6 +9694,175 @@ function getBudgetReviewReport({ territory, location, categories, excludeBurden 
   return { categories: listGlCategories(), rows: result };
 }
 
+// ---- API Connections (Integrations) ----
+// Admin-managed credentials for outside systems (UKG, Vroozi, JDE, Hubble,
+// or anything else) -- this is deliberately just the connection/credential
+// piece. Actually pulling or pushing data for any given system is its own
+// real integration work, built one at a time once there's a real API to
+// read and real credentials to test against (same as the Smartsheet
+// integration already in this app). What this does provide: a self-service
+// place to register a connection and prove it reaches the real API, so
+// that future integration work has somewhere to read its credential from
+// instead of a hardcoded env var.
+const API_CONNECTION_AUTH_TYPES = ["bearer", "api_key", "basic"];
+
+function maskCredential(credential) {
+  if (!credential) return "";
+  const tail = credential.length > 4 ? credential.slice(-4) : credential;
+  return `••••${tail}`;
+}
+
+// Never includes the real credential -- only a masked preview (last 4
+// characters) so the browser can show "this connection has a secret saved"
+// without the secret itself ever reaching the network tab or DOM of
+// whoever has the Integrations page open.
+function presentApiConnection(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    baseUrl: row.base_url,
+    authType: row.auth_type,
+    apiKeyHeader: row.api_key_header,
+    username: row.username,
+    credentialPreview: maskCredential(row.credential),
+    testPath: row.test_path,
+    notes: row.notes,
+    lastTestedAt: row.last_tested_at,
+    lastTestStatus: row.last_test_status,
+    lastTestDetail: row.last_test_detail,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function listApiConnections() {
+  return db.prepare("SELECT * FROM api_connections ORDER BY name").all().map(presentApiConnection);
+}
+
+// Unmasked -- only for internal use (testApiConnection building the real
+// auth header), never returned from a route handler directly.
+function findApiConnectionRaw(id) {
+  return db.prepare("SELECT * FROM api_connections WHERE id = ?").get(Number(id));
+}
+
+function findApiConnection(id) {
+  return presentApiConnection(findApiConnectionRaw(id));
+}
+
+function createApiConnection(fields, createdBy) {
+  if (!fields.name) throw new Error("name is required");
+  if (!fields.baseUrl) throw new Error("baseUrl is required");
+  if (!API_CONNECTION_AUTH_TYPES.includes(fields.authType)) {
+    throw new Error(`authType must be one of: ${API_CONNECTION_AUTH_TYPES.join(", ")}`);
+  }
+  if (fields.authType === "api_key" && !fields.apiKeyHeader) throw new Error("apiKeyHeader is required for an API Key connection");
+  if (!fields.credential) throw new Error("credential is required");
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO api_connections
+        (name, base_url, auth_type, api_key_header, username, credential, test_path, notes, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      fields.name,
+      fields.baseUrl,
+      fields.authType,
+      fields.authType === "api_key" ? fields.apiKeyHeader : null,
+      fields.authType === "basic" ? fields.username || null : null,
+      fields.credential,
+      fields.testPath || "",
+      fields.notes || "",
+      createdBy || null,
+      now,
+      now
+    );
+  return findApiConnection(result.lastInsertRowid);
+}
+
+// A blank/omitted credential on update means "keep the one already saved"
+// -- the whole point of masking it on read is that the edit form never has
+// the real value to send back, so the API can't require it be resent on
+// every save the way a plain field would.
+function updateApiConnection(id, fields) {
+  const existing = findApiConnectionRaw(id);
+  if (!existing) return null;
+  if (fields.authType && !API_CONNECTION_AUTH_TYPES.includes(fields.authType)) {
+    throw new Error(`authType must be one of: ${API_CONNECTION_AUTH_TYPES.join(", ")}`);
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE api_connections SET
+      name = ?, base_url = ?, auth_type = ?, api_key_header = ?, username = ?, credential = ?,
+      test_path = ?, notes = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(
+    fields.name !== undefined ? fields.name : existing.name,
+    fields.baseUrl !== undefined ? fields.baseUrl : existing.base_url,
+    fields.authType !== undefined ? fields.authType : existing.auth_type,
+    fields.apiKeyHeader !== undefined ? fields.apiKeyHeader : existing.api_key_header,
+    fields.username !== undefined ? fields.username : existing.username,
+    fields.credential ? fields.credential : existing.credential,
+    fields.testPath !== undefined ? fields.testPath : existing.test_path,
+    fields.notes !== undefined ? fields.notes : existing.notes,
+    now,
+    Number(id)
+  );
+  return findApiConnection(id);
+}
+
+function deleteApiConnection(id) {
+  const existing = findApiConnectionRaw(id);
+  if (!existing) return false;
+  db.prepare("DELETE FROM api_connections WHERE id = ?").run(Number(id));
+  return true;
+}
+
+function buildApiConnectionAuthHeaders(row) {
+  if (row.auth_type === "bearer") return { Authorization: `Bearer ${row.credential}` };
+  if (row.auth_type === "api_key") return { [row.api_key_header]: row.credential };
+  if (row.auth_type === "basic") {
+    const encoded = Buffer.from(`${row.username || ""}:${row.credential}`).toString("base64");
+    return { Authorization: `Basic ${encoded}` };
+  }
+  return {};
+}
+
+// A real, live request to the connection's own base URL (plus test_path,
+// if one's set) with its auth header attached -- not a format check. Any
+// response at all (even a 4xx) means the host and the auth header shape
+// are at least reaching the server; a thrown network error (DNS, timeout,
+// TLS) means they aren't. Never declares the credential itself correct --
+// a 401/403 comes back as a result the admin reads, not a thrown error, so
+// "wrong token" is visible instead of looking like a dead connection.
+async function testApiConnection(id) {
+  const row = findApiConnectionRaw(id);
+  if (!row) return null;
+  const url = row.base_url.replace(/\/+$/, "") + (row.test_path ? `/${row.test_path.replace(/^\/+/, "")}` : "");
+  const now = new Date().toISOString();
+  let status, detail;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url, { headers: buildApiConnectionAuthHeaders(row), signal: controller.signal });
+    clearTimeout(timeout);
+    status = res.ok ? "ok" : "failed";
+    detail = `HTTP ${res.status} ${res.statusText}`;
+  } catch (err) {
+    status = "failed";
+    detail = err.name === "AbortError" ? "Timed out after 8s" : err.message;
+  }
+  db.prepare("UPDATE api_connections SET last_tested_at = ?, last_test_status = ?, last_test_detail = ? WHERE id = ?").run(
+    now,
+    status,
+    detail,
+    Number(id)
+  );
+  return findApiConnection(id);
+}
+
 module.exports = {
   UPLOADS_DIR,
   findTechnician,
@@ -9910,4 +10110,11 @@ module.exports = {
   listRmBudgets,
   setRmBudget,
   getBudgetReviewReport,
+  API_CONNECTION_AUTH_TYPES,
+  listApiConnections,
+  findApiConnection,
+  createApiConnection,
+  updateApiConnection,
+  deleteApiConnection,
+  testApiConnection,
 };

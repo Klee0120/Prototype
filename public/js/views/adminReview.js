@@ -17,6 +17,7 @@ import { renderBudgetReview } from "./budgetReview.js";
 import { renderCellPhones } from "./cellPhones.js";
 import { renderMeals } from "./meals.js";
 import { renderFiscalCalendar } from "./fiscalCalendar.js";
+import { renderIntegrations } from "./integrations.js";
 import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
@@ -85,6 +86,7 @@ const NAV_SECTIONS = [
   { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "spendbreakdown", "budgetreview", "cellphones", "meals", "laborreports"] },
   { key: "performance", label: "Performance", tabs: ["performance"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
+  { key: "integrations", label: "Integrations", tabs: ["integrations"] },
 ];
 
 const TAB_LABELS = {
@@ -113,6 +115,7 @@ const TAB_LABELS = {
   pos: "Budget PO Tracker",
   performance: "Performance",
   audit: "Audit Trail",
+  integrations: "Integrations",
 };
 
 function sectionForTab(tab) {
@@ -427,6 +430,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "meals") await renderMeals(content);
     else if (activeTab === "laborreports") await drawLaborReports(content);
     else if (activeTab === "performance") await renderPerformance(content);
+    else if (activeTab === "integrations") await renderIntegrations(content);
     else await drawAudit(content);
 
     refreshPriorityBadge(myGeneration);
