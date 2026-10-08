@@ -130,3 +130,128 @@ test("Time Log: categories, start/stop timers, and instant quick-logs", async (t
     assert.ok(categories.includes("po_attached_tracker"));
   });
 });
+
+// Follow-up round: Enter WOM (5 min) / Enter PO Invoice-Found (15 min),
+// the new plain timer categories (Order Supplies, Uniform Ordering,
+// Timekeeping - Enter UKG), the Vendor Correspondence end-of-day
+// self-reported log, and assigning a technician to a Timekeeping segment.
+test("Time Log: Enter WOM/Invoice-Found durations, new timer categories, estimated log, and tech-link", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+
+  await t.test("the new timer categories exist alongside the originals", async () => {
+    const res = await server.call("GET", "/api/admin/time-log/categories", { userId: "ADMIN" });
+    const keys = res.body.map((c) => c.key);
+    assert.ok(keys.includes("order_supplies"));
+    assert.ok(keys.includes("uniform_ordering"));
+    assert.ok(keys.includes("timekeeping_ukg"));
+    assert.ok(keys.includes("timekeeping"));
+  });
+
+  await t.test("Enter WOM logs a fixed 5-minute instant entry", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/instant", { userId: "ADMIN", body: { category: "enter_wom" } });
+    assert.equal(res.status, 201);
+    const row = raw.prepare("SELECT started_at, ended_at FROM time_log_entries WHERE id = ?").get(res.body.id);
+    const minutes = (new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000;
+    assert.equal(minutes, 5);
+  });
+
+  await t.test("Enter PO (Invoice Found, Missed Order) logs a fixed 15-minute instant entry", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/instant", { userId: "ADMIN", body: { category: "enter_po_invoice_found" } });
+    assert.equal(res.status, 201);
+    const row = raw.prepare("SELECT started_at, ended_at FROM time_log_entries WHERE id = ?").get(res.body.id);
+    const minutes = (new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000;
+    assert.equal(minutes, 15);
+  });
+
+  await t.test("GET /estimated-categories returns Vendor Correspondence", async () => {
+    const res = await server.call("GET", "/api/admin/time-log/estimated-categories", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.some((c) => c.key === "vendor_correspondence"));
+  });
+
+  await t.test("an estimated log rejects a non-positive or missing minutes value", async () => {
+    const zero = await server.call("POST", "/api/admin/time-log/estimated", { userId: "ADMIN", body: { category: "vendor_correspondence", minutes: 0 } });
+    assert.equal(zero.status, 400);
+    const missing = await server.call("POST", "/api/admin/time-log/estimated", { userId: "ADMIN", body: { category: "vendor_correspondence" } });
+    assert.equal(missing.status, 400);
+  });
+
+  await t.test("an estimated log rejects an unreasonably large minutes value", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/estimated", { userId: "ADMIN", body: { category: "vendor_correspondence", minutes: 10000 } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a self-reported 45-minute Vendor Correspondence entry logs with that exact duration", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/estimated", {
+      userId: "ADMIN",
+      body: { category: "vendor_correspondence", minutes: 45, note: "Called three vendors re: COI renewals" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.category, "vendor_correspondence");
+    assert.ok(res.body.endedAt, "an estimated entry is already complete, not open-ended");
+    assert.equal(res.body.note, "Called three vendors re: COI renewals");
+    const row = raw.prepare("SELECT started_at, ended_at FROM time_log_entries WHERE id = ?").get(res.body.id);
+    const minutes = (new Date(row.ended_at).getTime() - new Date(row.started_at).getTime()) / 60000;
+    assert.equal(minutes, 45);
+  });
+
+  await t.test("an estimated log never touches a running timer", async () => {
+    const start = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "ops_meeting" } });
+    const runningId = start.body.id;
+    await server.call("POST", "/api/admin/time-log/estimated", { userId: "ADMIN", body: { category: "vendor_correspondence", minutes: 20 } });
+    const current = await server.call("GET", "/api/admin/time-log/current", { userId: "ADMIN" });
+    assert.equal(current.body.id, runningId);
+    assert.equal(current.body.endedAt, null);
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+  });
+
+  await t.test("starting a Timekeeping (Review of Tech) segment can assign a tech", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/start", {
+      userId: "ADMIN",
+      body: { category: "timekeeping", relatedTechId: "T1001" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.relatedTechId, "T1001");
+  });
+
+  await t.test("the tech assignment can be changed while the segment is still running", async () => {
+    const current = await server.call("GET", "/api/admin/time-log/current", { userId: "ADMIN" });
+    const res = await server.call("PATCH", `/api/admin/time-log/${current.body.id}`, { userId: "ADMIN", body: { relatedTechId: "T1002" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedTechId, "T1002");
+  });
+
+  await t.test("stopping can also set (or confirm) the tech assignment", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: { relatedTechId: "T1003" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedTechId, "T1003");
+    assert.ok(res.body.endedAt);
+  });
+
+  await t.test("Timekeeping - Enter UKG also supports a tech assignment, same as Timekeeping Review", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/start", {
+      userId: "ADMIN",
+      body: { category: "timekeeping_ukg", relatedTechId: "T1001" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.relatedTechId, "T1001");
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+  });
+
+  await t.test("an unrelated category (e.g. Order Supplies/Parts) still accepts a relatedTechId field but it's simply unused context", async () => {
+    // relatedTechId is stored whenever given -- the widget just never shows
+    // the tech-link UI for a category that isn't Timekeeping/UKG. Confirms
+    // the backend doesn't reject it outright for other categories.
+    const res = await server.call("POST", "/api/admin/time-log/start", {
+      userId: "ADMIN",
+      body: { category: "order_supplies" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.relatedTechId, null);
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+  });
+});

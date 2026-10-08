@@ -35,6 +35,21 @@ export function mountTimeTracker() {
   let instantNoteSaveTimer = null;
   let instantPoSearchResults = [];
   let instantPoSearchTimer = null;
+  // The active technician roster, fetched once and filtered client-side as
+  // the admin types -- same pattern as pos.js's vendor picker, and small
+  // enough (unlike POs) that a server round trip per keystroke isn't worth it.
+  let techListCache = null;
+  let techSearchResults = [];
+  let techSearchQuery = "";
+  // End-of-day form state, keyed by category -- a plain object (not two flat
+  // strings) so this stays correct if ESTIMATED_LOG_CATEGORIES ever grows
+  // past the one category it has today.
+  const estimatedFormState = {}; // { [key]: { minutes, note } }
+  function estimatedState(key) {
+    if (!estimatedFormState[key]) estimatedFormState[key] = { minutes: "", note: "" };
+    return estimatedFormState[key];
+  }
+  let estimatedSaveMessage = "";
 
   function formatElapsed(seconds) {
     const h = Math.floor(seconds / 3600);
@@ -149,6 +164,50 @@ export function mountTimeTracker() {
     });
   }
 
+  function categoryTracksTech(key) {
+    const c = TIME_LOG_CATEGORIES.find((cat) => cat.key === key);
+    return Boolean(c && c.tracksTech);
+  }
+
+  async function ensureTechList() {
+    if (techListCache) return techListCache;
+    try {
+      const all = await api.get("/api/admin/technicians");
+      techListCache = (Array.isArray(all) ? all : []).filter((t) => t.employmentStatus === "active");
+    } catch {
+      techListCache = [];
+    }
+    return techListCache;
+  }
+
+  function techName(id) {
+    const t = (techListCache || []).find((tech) => tech.id === id);
+    return t ? t.name : id;
+  }
+
+  async function searchTechs(query) {
+    techSearchQuery = query;
+    const list = await ensureTechList();
+    const q = query.trim().toLowerCase();
+    techSearchResults = q ? list.filter((t) => t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)) : list;
+    renderTechResults();
+  }
+
+  function renderTechResults() {
+    const host = el.querySelector(".time-tracker-tech-results");
+    if (!host) return;
+    host.innerHTML = techSearchResults
+      .slice(0, 8)
+      .map((t) => `<button type="button" class="time-tracker-po-result" data-id="${escapeHtml(t.id)}">${escapeHtml(t.name)}</button>`)
+      .join("");
+    host.querySelectorAll(".time-tracker-po-result").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await saveCurrentDetails({ relatedTechId: btn.dataset.id });
+        render();
+      });
+    });
+  }
+
   // Fires immediately on click -- never touches `current`, so a running
   // timer keeps going undisturbed (see db.js's logInstantTimeEntry).
   async function logInstant(key) {
@@ -211,6 +270,29 @@ export function mountTimeTracker() {
     });
   }
 
+  // Vendor Correspondence's "end of day" log -- a self-reported duration,
+  // not timed live (see db.js's logEstimatedTimeEntry). Deliberately
+  // independent of `current`, same as the instant logs above.
+  async function logEstimated(key) {
+    const form = estimatedState(key);
+    const minutes = Number(form.minutes);
+    if (!form.minutes || !Number.isFinite(minutes) || minutes <= 0) {
+      estimatedSaveMessage = "Enter a number of minutes greater than 0.";
+      render();
+      return;
+    }
+    try {
+      await api.post("/api/admin/time-log/estimated", { category: key, minutes, note: form.note });
+      form.minutes = "";
+      form.note = "";
+      estimatedSaveMessage = `Logged ${minutes} min.`;
+      render();
+    } catch (err) {
+      estimatedSaveMessage = err.message;
+      render();
+    }
+  }
+
   function render() {
     stopTicking();
     const tabLabel = current
@@ -261,11 +343,39 @@ export function mountTimeTracker() {
               : ""
           }
         </div>
+        <div class="time-tracker-estimated">
+          <div class="time-tracker-instant-label">End of day log</div>
+          ${ESTIMATED_LOG_CATEGORIES.map(
+            (c) => `
+            <div class="time-tracker-estimated-row" data-key="${c.key}">
+              <span class="time-tracker-estimated-cat">${escapeHtml(c.label)}</span>
+              <input type="number" class="time-tracker-estimated-minutes" data-key="${c.key}" placeholder="Minutes" min="1" step="1" value="${escapeHtml(estimatedState(c.key).minutes)}" />
+              <input type="text" class="time-tracker-estimated-note" data-key="${c.key}" placeholder="Note (optional)" value="${escapeHtml(estimatedState(c.key).note)}" />
+              <button type="button" class="btn btn-secondary time-tracker-estimated-log-btn" data-key="${c.key}">Log</button>
+            </div>
+          `
+          ).join("")}
+          ${estimatedSaveMessage ? `<p class="time-tracker-estimated-message">${escapeHtml(estimatedSaveMessage)}</p>` : ""}
+        </div>
         ${
           current
             ? `
           <div class="time-tracker-details">
             <textarea class="time-tracker-note" placeholder="Note (optional)">${escapeHtml(current.note || "")}</textarea>
+            ${
+              categoryTracksTech(current.category)
+                ? `
+              <div class="time-tracker-po-link">
+                ${
+                  current.relatedTechId
+                    ? `<span class="badge badge-approved">Tech: ${escapeHtml(techName(current.relatedTechId))}</span> <button type="button" class="btn btn-link time-tracker-tech-unlink">Unlink</button>`
+                    : `<input type="text" class="time-tracker-tech-search" placeholder="Assign a tech (search name/ID)..." />
+                       <div class="time-tracker-tech-results"></div>`
+                }
+              </div>
+            `
+                : ""
+            }
             <div class="time-tracker-po-link">
               ${
                 current.relatedPoId
@@ -361,6 +471,33 @@ export function mountTimeTracker() {
       });
     }
 
+    const techSearchInput = el.querySelector(".time-tracker-tech-search");
+    if (techSearchInput) {
+      searchTechs(techSearchQuery); // populate right away -- the roster is small enough to show before typing
+      techSearchInput.addEventListener("input", () => searchTechs(techSearchInput.value));
+    }
+    const techUnlinkBtn = el.querySelector(".time-tracker-tech-unlink");
+    if (techUnlinkBtn) {
+      techUnlinkBtn.addEventListener("click", async () => {
+        await saveCurrentDetails({ relatedTechId: null });
+        render();
+      });
+    }
+
+    el.querySelectorAll(".time-tracker-estimated-minutes").forEach((input) => {
+      input.addEventListener("input", () => {
+        estimatedState(input.dataset.key).minutes = input.value;
+      });
+    });
+    el.querySelectorAll(".time-tracker-estimated-note").forEach((input) => {
+      input.addEventListener("input", () => {
+        estimatedState(input.dataset.key).note = input.value;
+      });
+    });
+    el.querySelectorAll(".time-tracker-estimated-log-btn").forEach((btn) => {
+      btn.addEventListener("click", () => logEstimated(btn.dataset.key));
+    });
+
     if (current) startTicking();
   }
 
@@ -375,7 +512,8 @@ export function mountTimeTracker() {
 const TIME_LOG_CATEGORIES = [
   { key: "po_invoice", label: "PO / Invoice (unplanned)" },
   { key: "vendor_onboarding", label: "Vendor Onboarding" },
-  { key: "timekeeping", label: "Timekeeping Review" },
+  { key: "timekeeping", label: "Timekeeping (Review of Tech)", tracksTech: true },
+  { key: "timekeeping_ukg", label: "Timekeeping - Enter UKG", tracksTech: true },
   { key: "project_status", label: "Project Status Review" },
   { key: "ops_meeting", label: "Operations Meeting" },
   { key: "safety_meeting", label: "Safety Meeting" },
@@ -384,6 +522,8 @@ const TIME_LOG_CATEGORIES = [
   { key: "employee_support", label: "Employee Support" },
   { key: "invoicing", label: "Invoicing" },
   { key: "documents", label: "Document Management" },
+  { key: "order_supplies", label: "Order Supplies/Parts" },
+  { key: "uniform_ordering", label: "Uniform Ordering" },
   { key: "general", label: "General / Other" },
 ];
 
@@ -391,4 +531,9 @@ const TIME_LOG_CATEGORIES = [
 const INSTANT_LOG_CATEGORIES = [
   { key: "po_entered_tech_ordered", label: "PO Entered (Tech Ordered)", minutes: 2 },
   { key: "po_attached_tracker", label: "Attach PO to Tracker", minutes: 1 },
+  { key: "enter_wom", label: "Enter WOM", minutes: 5 },
+  { key: "enter_po_invoice_found", label: "Enter PO (Invoice Found, Missed Order)", minutes: 15 },
 ];
+
+// Mirrors db.js's ESTIMATED_LOG_CATEGORIES exactly.
+const ESTIMATED_LOG_CATEGORIES = [{ key: "vendor_correspondence", label: "Vendor Correspondence" }];

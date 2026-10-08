@@ -1711,6 +1711,14 @@ if (!tableExists("time_log_entries")) {
   `);
 }
 
+// For Timekeeping Review / Timekeeping - Enter UKG specifically -- which
+// technician this segment of work was about, same optional-context role as
+// related_po_id/related_vendor_id/related_wom_code above, just a separate
+// column since a tech and a PO/vendor/WOM are never the same reference.
+if (!hasColumn("time_log_entries", "related_tech_id")) {
+  db.exec("ALTER TABLE time_log_entries ADD COLUMN related_tech_id TEXT");
+}
+
 // The one annual R&M planning number per site -- set by finance once a
 // year, never derived from GL activity (GL tells you what was actually
 // spent, not what was approved to spend) -- so it's its own small
@@ -9469,7 +9477,8 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
 const TIME_LOG_CATEGORIES = [
   { key: "po_invoice", label: "PO / Invoice (unplanned)" },
   { key: "vendor_onboarding", label: "Vendor Onboarding" },
-  { key: "timekeeping", label: "Timekeeping Review" },
+  { key: "timekeeping", label: "Timekeeping (Review of Tech)", tracksTech: true },
+  { key: "timekeeping_ukg", label: "Timekeeping - Enter UKG", tracksTech: true },
   { key: "project_status", label: "Project Status Review" },
   { key: "ops_meeting", label: "Operations Meeting" },
   { key: "safety_meeting", label: "Safety Meeting" },
@@ -9478,6 +9487,8 @@ const TIME_LOG_CATEGORIES = [
   { key: "employee_support", label: "Employee Support" },
   { key: "invoicing", label: "Invoicing" },
   { key: "documents", label: "Document Management" },
+  { key: "order_supplies", label: "Order Supplies/Parts" },
+  { key: "uniform_ordering", label: "Uniform Ordering" },
   { key: "general", label: "General / Other" },
 ];
 const TIME_LOG_CATEGORY_KEYS = TIME_LOG_CATEGORIES.map((c) => c.key);
@@ -9491,8 +9502,19 @@ const TIME_LOG_CATEGORY_KEYS = TIME_LOG_CATEGORIES.map((c) => c.key);
 const INSTANT_LOG_CATEGORIES = [
   { key: "po_entered_tech_ordered", label: "PO Entered (Tech Ordered)", minutes: 2 },
   { key: "po_attached_tracker", label: "Attach PO to Tracker", minutes: 1 },
+  { key: "enter_wom", label: "Enter WOM", minutes: 5 },
+  { key: "enter_po_invoice_found", label: "Enter PO (Invoice Found, Missed Order)", minutes: 15 },
 ];
 const INSTANT_LOG_CATEGORY_KEYS = INSTANT_LOG_CATEGORIES.map((c) => c.key);
+
+// A third logging shape, for work that isn't cleanly timed live or worth a
+// fixed-duration button -- e.g. vendor correspondence spread across a day
+// in emails/calls. Logged once, after the fact, with the admin's own
+// estimate of how long it took -- still a real, dated segment in the same
+// table, just self-reported instead of measured.
+const ESTIMATED_LOG_CATEGORIES = [{ key: "vendor_correspondence", label: "Vendor Correspondence" }];
+const ESTIMATED_LOG_CATEGORY_KEYS = ESTIMATED_LOG_CATEGORIES.map((c) => c.key);
+const ESTIMATED_LOG_MAX_MINUTES = 600; // 10 hours -- a generous ceiling against a fat-fingered entry, not a real limit
 
 function presentTimeLogEntry(row) {
   if (!row) return null;
@@ -9508,6 +9530,7 @@ function presentTimeLogEntry(row) {
     relatedPoId: row.related_po_id || null,
     relatedVendorId: row.related_vendor_id || null,
     relatedWomCode: row.related_wom_code || null,
+    relatedTechId: row.related_tech_id || null,
     durationSeconds,
   };
 }
@@ -9532,11 +9555,11 @@ function startTimeLogEntry(adminId, category, fields = {}) {
   const now = new Date().toISOString();
   const running = db.prepare("SELECT id FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL").get(adminId);
   if (running) db.prepare("UPDATE time_log_entries SET ended_at = ? WHERE id = ?").run(now, running.id);
-  const { note, relatedPoId, relatedVendorId, relatedWomCode } = fields;
+  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = fields;
   db.prepare(
-    `INSERT INTO time_log_entries (admin_id, category, started_at, note, related_po_id, related_vendor_id, related_wom_code, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(adminId, category, now, note || "", relatedPoId || null, relatedVendorId || null, relatedWomCode || null, now);
+    `INSERT INTO time_log_entries (admin_id, category, started_at, note, related_po_id, related_vendor_id, related_wom_code, related_tech_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(adminId, category, now, note || "", relatedPoId || null, relatedVendorId || null, relatedWomCode || null, relatedTechId || null, now);
   return getRunningTimeLogEntry(adminId);
 }
 
@@ -9563,11 +9586,34 @@ function logInstantTimeEntry(adminId, category, fields = {}) {
   return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(Number(result.lastInsertRowid)));
 }
 
+// A self-reported, after-the-fact duration (ESTIMATED_LOG_CATEGORIES) --
+// for work that's spread across a day in small pieces (emails, calls) and
+// isn't worth timing live. Also deliberately independent of whatever's
+// currently running, same reasoning as logInstantTimeEntry.
+function logEstimatedTimeEntry(adminId, category, minutes, fields = {}) {
+  if (!ESTIMATED_LOG_CATEGORY_KEYS.includes(category)) throw new Error("invalid estimated-log category");
+  const mins = Number(minutes);
+  if (!Number.isFinite(mins) || mins <= 0 || mins > ESTIMATED_LOG_MAX_MINUTES) {
+    throw new Error(`minutes must be a number between 1 and ${ESTIMATED_LOG_MAX_MINUTES}`);
+  }
+  const endedAt = new Date();
+  const startedAt = new Date(endedAt.getTime() - mins * 60 * 1000);
+  const { note } = fields;
+  const nowIso = endedAt.toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO time_log_entries (admin_id, category, started_at, ended_at, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(adminId, category, startedAt.toISOString(), nowIso, note || "", nowIso);
+  return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(Number(result.lastInsertRowid)));
+}
+
 function stopTimeLogEntry(adminId, fields = {}) {
   const running = db.prepare("SELECT id FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL").get(adminId);
   if (!running) return null;
   const now = new Date().toISOString();
-  const { note, relatedPoId, relatedVendorId, relatedWomCode } = fields;
+  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = fields;
   const sets = ["ended_at = ?"];
   const params = [now];
   if (note != null) {
@@ -9586,6 +9632,10 @@ function stopTimeLogEntry(adminId, fields = {}) {
     sets.push("related_wom_code = ?");
     params.push(relatedWomCode || null);
   }
+  if (relatedTechId !== undefined) {
+    sets.push("related_tech_id = ?");
+    params.push(relatedTechId || null);
+  }
   params.push(running.id);
   db.prepare(`UPDATE time_log_entries SET ${sets.join(", ")} WHERE id = ?`).run(...params);
   return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(running.id));
@@ -9597,7 +9647,7 @@ function stopTimeLogEntry(adminId, fields = {}) {
 function updateTimeLogEntry(adminId, id, fields = {}) {
   const row = db.prepare("SELECT * FROM time_log_entries WHERE id = ? AND admin_id = ?").get(id, adminId);
   if (!row) return null;
-  const { note, relatedPoId, relatedVendorId, relatedWomCode } = fields;
+  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = fields;
   const sets = [];
   const params = [];
   if (note != null) {
@@ -9615,6 +9665,10 @@ function updateTimeLogEntry(adminId, id, fields = {}) {
   if (relatedWomCode !== undefined) {
     sets.push("related_wom_code = ?");
     params.push(relatedWomCode || null);
+  }
+  if (relatedTechId !== undefined) {
+    sets.push("related_tech_id = ?");
+    params.push(relatedTechId || null);
   }
   if (sets.length === 0) return presentTimeLogEntry(row);
   params.push(id);
@@ -10548,10 +10602,12 @@ module.exports = {
   resolveFiscalPeriod,
   TIME_LOG_CATEGORIES,
   INSTANT_LOG_CATEGORIES,
+  ESTIMATED_LOG_CATEGORIES,
   getRunningTimeLogEntry,
   startTimeLogEntry,
   stopTimeLogEntry,
   logInstantTimeEntry,
+  logEstimatedTimeEntry,
   updateTimeLogEntry,
   listTimeLogEntries,
   listGlCategories,
