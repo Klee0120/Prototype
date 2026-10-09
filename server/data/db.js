@@ -680,20 +680,10 @@ db.exec(`
 // still need it), so safe to run on every server start.
 db.exec(`UPDATE vendors SET jde_vendor_number = TRIM(jde_vendor_number) WHERE jde_vendor_number != TRIM(jde_vendor_number)`);
 
-// One-time catch-up for POs that already exist with no location_code --
-// runPoImport's own WOM-location fallback (see its matchedLocation
-// comment) only applies going forward, on the next import that touches
-// each row. This fixes the backlog immediately on deploy instead of
-// waiting on that. No hasColumn marker to gate this one-time-only (unlike
-// the migrations below) since it doesn't add a column -- it's simply
-// idempotent (the WHERE clause only ever matches rows still blank), so
-// running it again on every server start is harmless and cheap at this
-// table's size, not worth a throwaway marker column just to skip it.
-db.exec(
-  `UPDATE pos SET location_code = (SELECT w.location_code FROM woms w WHERE w.code = pos.wom_number)
-   WHERE (location_code IS NULL OR location_code = '') AND wom_number IS NOT NULL
-   AND EXISTS (SELECT 1 FROM woms w WHERE w.code = pos.wom_number AND w.location_code IS NOT NULL AND w.location_code != '')`
-);
+// The WOM-based location/region catch-up that used to live here was moved
+// further down, past where locations.territory is added -- see the
+// comment there for why (same mistake, caught before it shipped this
+// time: `l.territory` doesn't exist yet at this point in the file).
 
 // A sync's actual per-WOM changes (code/description/which fields differed),
 // as JSON -- so "View Sync Details" can say what changed, not just how many
@@ -856,6 +846,32 @@ const TERRITORIES = ["Midwest", "HQ Plano", "East", "West", "North", "TdPR REGIO
 if (!hasColumn("locations", "territory")) {
   db.exec("ALTER TABLE locations ADD COLUMN territory TEXT NOT NULL DEFAULT 'Midwest'");
 }
+
+// One-time catch-up for POs that already exist with no location_code --
+// runPoImport's own WOM-location fallback (see its matchedLocation
+// comment) only applies going forward, on the next import that touches
+// each row. This fixes the backlog immediately on deploy instead of
+// waiting on that. No hasColumn marker to gate this one-time-only (unlike
+// the migrations around it) since it doesn't add a column -- it's simply
+// idempotent (the WHERE clause only ever matches rows still blank), so
+// running it again on every server start is harmless and cheap at this
+// table's size, not worth a throwaway marker column just to skip it.
+// region is set alongside location_code, not left blank for a later
+// import -- runPoImport itself always sets both together from the same
+// matched location, and leaving this one-time pass to only set
+// location_code showed up live as a correctly matched location sitting
+// next to an "Unassigned" region. Placed here, after locations.territory
+// is added above (not back where the rest of this comment block used to
+// sit) -- this references l.territory, which doesn't exist yet any
+// earlier in the file.
+db.exec(
+  `UPDATE pos SET
+     location_code = (SELECT w.location_code FROM woms w WHERE w.code = pos.wom_number),
+     region = (SELECT l.territory FROM woms w JOIN locations l ON l.code = w.location_code WHERE w.code = pos.wom_number)
+   WHERE (location_code IS NULL OR location_code = '') AND wom_number IS NOT NULL
+   AND EXISTS (SELECT 1 FROM woms w WHERE w.code = pos.wom_number AND w.location_code IS NOT NULL AND w.location_code != '')`
+);
+
 // A location's E1 WOM Job Number (from the same JDE lookup table as the E&F
 // Contract Job Number) -- the base job number WOM work at that location
 // posts to; combined with a WOM's own subsidiary code to form its full
@@ -11062,7 +11078,12 @@ for (const po of db
     (po.pps_job_number && findLocationByJobNumber(parseJobNumberCell(po.pps_job_number))) ||
     (po.e1_wom_job_number && findLocationByJobNumber(parseJobNumberCell(po.e1_wom_job_number))) ||
     null;
-  if (location) db.prepare("UPDATE pos SET location_code = ? WHERE id = ?").run(location.code, po.id);
+  // region gets set alongside location_code, not left for a later import --
+  // runPoImport itself always sets both together from the same matched
+  // location (see its matchedLocation comment); leaving this catch-up to
+  // only set location_code left every PO it touched showing a correctly
+  // matched location next to an "Unassigned" region, caught live.
+  if (location) db.prepare("UPDATE pos SET location_code = ?, region = ? WHERE id = ?").run(location.code, location.territory || null, po.id);
 }
 
 // Same catch-up for Admin -- runPoImport only fills a blank Admin from the
