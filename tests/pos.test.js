@@ -1560,6 +1560,55 @@ test("PO Tracker import: a PPS/WOM job number cell combined with a location name
   assert.equal(listRes.body[0].territory, "Midwest");
 });
 
+// Caught live: a PPS/E1 WOM Job # cell combined with a location name isn't
+// always dash-separated -- a real PPS Job Number cell read "100110000656
+// New York ROE", just the number and the name with a single space between
+// them, no dash at all. The dash-only split left this cell's whole string
+// ("100110000656 New York ROE") being compared against locations' job
+// numbers, which never matched anything.
+test("PO Tracker import: a PPS/WOM job number cell combined with a location name (no dash) still matches the location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw
+    .prepare(`INSERT INTO locations (code, name, pps_job_number, territory) VALUES (?, ?, ?, ?)`)
+    .run("NY-ROE", "New York ROE", "100110000656", "East");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-pps-combined-cell-no-dash.xlsx",
+    fileContent: buildBuffer([
+      // E&F blank; PPS Job Number (index 10) carries "number name" with no dash.
+      ["2026-09-28", "Valcourt roof repair", "Logan Pearl", null, null, 3500, null, null, "Valcourt", "Valcourt", "100110000656 New York ROE", null, null, null, null, "605300 Subcontracting Non Recuring", null, null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Valcourt+roof", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].locationCode, "NY-ROE");
+  assert.equal(listRes.body[0].territory, "East");
+});
+
 // Cancelled/Duplicate-status POs are void -- they were never going to need
 // a real vendor/location match, so Krista asked for them hidden from the
 // tracker by default rather than burying the records that actually do.

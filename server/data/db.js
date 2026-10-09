@@ -7369,9 +7369,18 @@ function computePoMatchKeys({ poNumber, requestor, dateRequested, description })
 // -- these are the exact job numbers already on file in this app's own
 // locations table. Returns just the leading numeric job number part, or
 // null for a blank/placeholder cell ("-").
+// Splits a job-number cell down to just the number -- Krista's source
+// sheets don't keep the job number and the location name in separate
+// cells consistently. Confirmed combined formats seen in real data:
+// "100110033928 - TEMA Georgetown" (dash-separated) and "100110000656 New
+// York ROE" (just a space, no dash at all). Both put the number first, so
+// splitting on ANY run of whitespace and taking the first token covers
+// both -- the dash in the first format ends up as its own throwaway token
+// between two whitespace runs, which never changes what the first token
+// is.
 function parseJobNumberCell(raw) {
   if (!raw) return null;
-  const first = String(raw).split(/[\t\n]| - /)[0].trim();
+  const first = String(raw).trim().split(/\s+/)[0];
   if (!first || first === "-") return null;
   return first;
 }
