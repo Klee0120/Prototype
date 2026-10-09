@@ -1559,3 +1559,43 @@ test("PO Tracker import: a PPS/WOM job number cell combined with a location name
   assert.equal(listRes.body[0].locationCode, "TEMA-GEO");
   assert.equal(listRes.body[0].territory, "Midwest");
 });
+
+// Cancelled/Duplicate-status POs are void -- they were never going to need
+// a real vendor/location match, so Krista asked for them hidden from the
+// tracker by default rather than burying the records that actually do.
+test("Budget PO Tracker: Cancelled/Duplicate-status POs are hidden by default, shown with the opt-in checkbox", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, description, status }) {
+    raw
+      .prepare(
+        `INSERT INTO pos (composite_key, description, status, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+      )
+      .run(composite, description, status, now, now, now, now);
+  }
+
+  insertPo({ composite: "cd-1", description: "Elevator Maintenance servicing", status: "Cancelled" });
+  insertPo({ composite: "cd-2", description: "A/B Water Line Repair", status: "Duplicate" });
+  insertPo({ composite: "cd-3", description: "Normal open request", status: "Open" });
+
+  const hidden = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization", { userId: "ADMIN" });
+  const hiddenDescriptions = hidden.body.map((p) => p.description);
+  assert.ok(!hiddenDescriptions.includes("Elevator Maintenance servicing"), "Cancelled should be hidden by default");
+  assert.ok(!hiddenDescriptions.includes("A/B Water Line Repair"), "Duplicate should be hidden by default");
+  assert.ok(hiddenDescriptions.includes("Normal open request"), "a normal Open-status PO should still show");
+
+  const shown = await server.call(
+    "GET",
+    "/api/admin/pos?lifecycleStatus=needs_organization&includeCancelledDuplicate=true",
+    { userId: "ADMIN" }
+  );
+  const shownDescriptions = shown.body.map((p) => p.description);
+  assert.ok(shownDescriptions.includes("Elevator Maintenance servicing"), "checking the box should reveal Cancelled");
+  assert.ok(shownDescriptions.includes("A/B Water Line Repair"), "checking the box should reveal Duplicate");
+  assert.ok(shownDescriptions.includes("Normal open request"));
+});

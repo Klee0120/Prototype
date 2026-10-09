@@ -7534,6 +7534,13 @@ function listPos(filters = {}) {
     clauses.push("status = ?");
     params.push(filters.status);
   }
+  // A Cancelled/Duplicate-status PO is void -- it was never going to need a
+  // real vendor/location match, so leaving it mixed into Needs Organization
+  // just buries the records that actually do. Hidden by default; the
+  // checkbox on the tracker itself opts back in when Krista wants to look.
+  if (!filters.includeCancelledDuplicate) {
+    clauses.push("(status IS NULL OR LOWER(TRIM(status)) NOT IN ('cancelled', 'duplicate'))");
+  }
   if (filters.vendorUnmatched) {
     clauses.push("vendor_id IS NULL");
   }

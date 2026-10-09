@@ -47,6 +47,7 @@ export async function renderPos(container, { openPoId } = {}) {
     womLinkMissing: false,
     subsidiaryMismatch: false,
     objectCodeMismatch: false,
+    includeCancelledDuplicate: false,
   };
   const selectedIds = new Set();
   let listCache = null;
@@ -71,6 +72,7 @@ export async function renderPos(container, { openPoId } = {}) {
             ...(filters.womLinkMissing ? { womLinkMissing: "true" } : {}),
             ...(filters.subsidiaryMismatch ? { subsidiaryMismatch: "true" } : {}),
             ...(filters.objectCodeMismatch ? { objectCodeMismatch: "true" } : {}),
+            ...(filters.includeCancelledDuplicate ? { includeCancelledDuplicate: "true" } : {}),
           })}`
         ),
         api.get("/api/admin/pos/last-import"),
@@ -144,6 +146,7 @@ export async function renderPos(container, { openPoId } = {}) {
         <label class="po-filter-checkbox"><input type="checkbox" class="po-wom-link-missing" ${filters.womLinkMissing ? "checked" : ""} /> WOM coding, no WOM #</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-subsidiary-mismatch" ${filters.subsidiaryMismatch ? "checked" : ""} /> Subsidiary mismatch</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-objectcode-mismatch" ${filters.objectCodeMismatch ? "checked" : ""} /> Object code mismatch</label>
+        <label class="po-filter-checkbox"><input type="checkbox" class="po-include-cancelled-duplicate" ${filters.includeCancelledDuplicate ? "checked" : ""} /> Show cancelled/duplicate</label>
       </div>
       <p class="po-count"></p>
       <div class="po-bulk-toolbar task-bulk-toolbar" id="po-bulk-toolbar"></div>
@@ -197,6 +200,10 @@ export async function renderPos(container, { openPoId } = {}) {
     });
     container.querySelector(".po-objectcode-mismatch").addEventListener("change", (e) => {
       filters.objectCodeMismatch = e.target.checked;
+      draw();
+    });
+    container.querySelector(".po-include-cancelled-duplicate").addEventListener("change", (e) => {
+      filters.includeCancelledDuplicate = e.target.checked;
       draw();
     });
 

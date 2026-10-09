@@ -143,6 +143,7 @@ router.get("/", (req, res) => {
       vendorId: req.query.vendorId,
       locationCode: req.query.locationCode,
       status: req.query.status,
+      includeCancelledDuplicate: req.query.includeCancelledDuplicate === "true",
       vendorUnmatched: req.query.vendorUnmatched === "true",
       regionUnassigned: req.query.regionUnassigned === "true",
       adminUnmatched: req.query.adminUnmatched === "true",
