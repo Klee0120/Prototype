@@ -11119,6 +11119,22 @@ for (const po of db
   if (location) db.prepare("UPDATE pos SET location_code = ?, region = ? WHERE id = ?").run(location.code, location.territory || null, po.id);
 }
 
+// General version of the same gap, for a PO that already had a
+// location_code set from BEFORE the region-alongside-location-code fix
+// above existed -- the two location backfills (this one and the WOM-based
+// one near the top of this file) only ever consider a PO once, gated on
+// location_code still being blank, so a PO either of them had already
+// matched on an earlier boot never gets reconsidered once region-filling
+// was added. This catches any PO with a real location on file but no
+// region, whatever left it that way (an older boot of either backfill, or
+// an import that ran before region-filling existed at all). Idempotent --
+// only rows still missing region match -- so safe on every server start.
+db.exec(
+  `UPDATE pos SET region = (SELECT l.territory FROM locations l WHERE l.code = pos.location_code)
+   WHERE (region IS NULL OR region = '') AND location_code IS NOT NULL AND location_code != ''
+   AND EXISTS (SELECT 1 FROM locations l WHERE l.code = pos.location_code AND l.territory IS NOT NULL AND l.territory != '')`
+);
+
 // Same catch-up for Admin -- runPoImport only fills a blank Admin from the
 // matched location's territory (see findAdminForTerritory) going forward,
 // on the next import that touches each row. This fixes every PO already
