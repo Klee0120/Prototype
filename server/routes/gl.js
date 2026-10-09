@@ -142,8 +142,22 @@ router.post("/preview", upload.single("file"), (req, res) => {
   });
 });
 
+// A plain "YYYY-MM" the admin typed/picked for what calendar month they
+// mean this report to be for -- their own stated intent, recorded
+// alongside the file's own Period/Fiscal Year columns (which may cover
+// several periods at once) so there's always a visible, ordered record of
+// what was imported when. Not required to match the file's own period(s)
+// -- the frontend's confirm step already shows both side by side -- just
+// required to be present and shaped like a month.
+function validateCalendarMonth(raw) {
+  if (!raw || !/^\d{4}-\d{2}$/.test(raw)) return null;
+  return raw;
+}
+
 router.post("/import", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  const calendarMonth = validateCalendarMonth(req.body.calendarMonth);
+  if (!calendarMonth) return res.status(400).json({ error: "calendarMonth is required (YYYY-MM)" });
   let parsed;
   try {
     parsed = parseWorkbook(req.file.buffer);
@@ -154,7 +168,9 @@ router.post("/import", upload.single("file"), (req, res) => {
   // One importGlEntries call per period -- each only deletes/replaces its
   // own period's gl_entries rows, so a 14-period file doesn't touch any
   // period's data it doesn't itself carry rows for.
-  const results = parsed.periods.map((p) => db.importGlEntries(p.rows, p.periodNumber, p.fiscalYear, req.user.id, req.file.originalname));
+  const results = parsed.periods.map((p) =>
+    db.importGlEntries(p.rows, p.periodNumber, p.fiscalYear, req.user.id, req.file.originalname, calendarMonth)
+  );
 
   // File the source document into the Reports tab the same way a labor
   // report upload is filed, so it shows up there automatically -- only for

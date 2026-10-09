@@ -176,7 +176,7 @@ export async function renderGlReconciliation(container) {
       <p class="review-checklist-hint">
         ${
           lastImport
-            ? `Last import: Period ${lastImport.periodNumber}/FY${lastImport.fiscalYear}, ${new Date(lastImport.createdAt).toLocaleString()} -- ${lastImport.rowCount} GL lines: ${lastImport.matchedCount} GL lines matched to a PO, ${lastImport.unmatchedCount} GL lines with a PO # not on file, ${lastImport.noPoReferenceCount ?? 0} GL lines with no PO reference (payroll, journal entries, accruals, etc.).`
+            ? `Last import: Period ${lastImport.periodNumber}/FY${lastImport.fiscalYear}${lastImport.calendarMonth ? ` (filed as ${escapeHtml(lastImport.calendarMonth)})` : ""}, ${new Date(lastImport.createdAt).toLocaleString()} -- ${lastImport.rowCount} GL lines: ${lastImport.matchedCount} GL lines matched to a PO, ${lastImport.unmatchedCount} GL lines with a PO # not on file, ${lastImport.noPoReferenceCount ?? 0} GL lines with no PO reference (payroll, journal entries, accruals, etc.).`
             : "No GL report imported yet."
         }
         Compares real GL amounts against the Budget PO Tracker -- this never changes anything on the PO or WOM side, it's a read-only check.
@@ -490,6 +490,17 @@ export async function renderGlReconciliation(container) {
     // the admin can see every period it's about to touch before confirming.
     const periods = preview.periods;
     const isMultiPeriod = periods.length > 1;
+    // A period "shrinks" when this file would replace more existing lines
+    // than it brings -- the exact shape of the WOM Info report incident (a
+    // narrower WOM-only export silently wiping a period that already had
+    // the full monthly GL on file). Flagged loudly instead of folded into
+    // the same neutral "will be replaced" wording every other re-import
+    // gets, and gated behind an explicit acknowledgment before the import
+    // button will even run.
+    const shrinking = periods.filter((p) => p.existingImport && p.rowCount < p.existingImport.rowCount);
+    const totalShrinkAmount = shrinking.reduce((sum, p) => sum + (p.existingImport.rowCount - p.rowCount), 0);
+    const today = new Date();
+    const defaultMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
     body.innerHTML = `
       <p class="review-checklist-hint">
         ${
@@ -515,34 +526,69 @@ export async function renderGlReconciliation(container) {
               <thead><tr><th>Period</th><th>GL Lines</th><th>Existing import on file</th></tr></thead>
               <tbody>
                 ${periods
-                  .map(
-                    (p) => `
-                  <tr>
+                  .map((p) => {
+                    const isShrinking = p.existingImport && p.rowCount < p.existingImport.rowCount;
+                    return `
+                  <tr class="${isShrinking ? "gl-import-shrink-row" : ""}">
                     <td>${escapeHtml(monthName(p.periodNumber))} 20${p.fiscalYear} (P${p.periodNumber}/FY${p.fiscalYear})</td>
                     <td>${p.rowCount}</td>
                     <td>${
                       p.existingImport
-                        ? `${p.existingImport.rowCount} lines, imported ${new Date(p.existingImport.createdAt).toLocaleDateString()} -- will be replaced`
+                        ? `${p.existingImport.rowCount} lines, imported ${new Date(p.existingImport.createdAt).toLocaleDateString()}${
+                            isShrinking
+                              ? ` -- <strong class="gl-import-shrink-warning">⚠ will REMOVE ${p.existingImport.rowCount - p.rowCount} lines</strong>`
+                              : " -- will be replaced"
+                          }`
                         : "None yet"
                     }</td>
                   </tr>
-                `
-                  )
+                `;
+                  })
                   .join("")}
               </tbody>
             </table>`
           : ""
       }
+      ${
+        shrinking.length > 0
+          ? `<p class="gl-import-shrink-warning">
+              ⚠ This import will <strong>remove ${totalShrinkAmount} GL line${totalShrinkAmount === 1 ? "" : "s"}</strong> across
+              ${shrinking.length} period${shrinking.length === 1 ? "" : "s"} that${shrinking.length === 1 ? "" : "'ve"} already got more data on file than this file brings --
+              usually a sign this file only covers part of what's already imported (e.g. a WOM-only extract, not the full monthly GL report).
+              Double check this is really the file you meant before continuing.
+            </p>
+            <label class="roster-filter-field gl-import-shrink-ack-row">
+              <input type="checkbox" class="gl-import-shrink-ack" />
+              <span>I understand this will remove ${totalShrinkAmount} GL line${totalShrinkAmount === 1 ? "" : "s"} already on file, and that's what I meant to do</span>
+            </label>`
+          : ""
+      }
+      <label class="profile-field">
+        <span>What calendar month is this report for?</span>
+        <input type="month" class="gl-import-calendar-month" value="${defaultMonth}" required />
+      </label>
       <div class="modal-form-actions">
         <button type="button" class="btn btn-secondary gl-import-cancel">Cancel</button>
-        <button type="button" class="btn btn-primary gl-import-confirm">Yes, import it</button>
+        <button type="button" class="btn btn-primary gl-import-confirm" ${shrinking.length > 0 ? "disabled" : ""}>Yes, import it</button>
       </div>
     `;
     body.querySelector(".gl-import-cancel").addEventListener("click", close);
-    body.querySelector(".gl-import-confirm").addEventListener("click", async () => {
+    const confirmBtn = body.querySelector(".gl-import-confirm");
+    const ackCheckbox = body.querySelector(".gl-import-shrink-ack");
+    if (ackCheckbox) {
+      ackCheckbox.addEventListener("change", (e) => {
+        confirmBtn.disabled = !e.target.checked;
+      });
+    }
+    confirmBtn.addEventListener("click", async () => {
+      const calendarMonth = body.querySelector(".gl-import-calendar-month").value;
+      if (!calendarMonth) {
+        window.alert("Pick which calendar month this report is for before importing.");
+        return;
+      }
       body.innerHTML = `<p class="empty-note">Importing…</p>`;
       try {
-        const result = await api.uploadRawFile("/api/admin/gl/import", file);
+        const result = await api.uploadRawFile("/api/admin/gl/import", file, { calendarMonth });
         body.innerHTML = `
           <p class="review-checklist-hint">
             Imported <strong>${result.rowCount}</strong> GL line${result.rowCount === 1 ? "" : "s"}

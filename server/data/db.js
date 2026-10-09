@@ -1486,6 +1486,17 @@ if (!hasColumn("gl_imports", "no_po_reference_count")) {
   db.exec("ALTER TABLE gl_imports ADD COLUMN no_po_reference_count INTEGER NOT NULL DEFAULT 0");
 }
 
+// Which real calendar month Krista meant this report for, "2026-03" style --
+// the admin's own stated intent, confirmed at import time against what the
+// file's own Period/Fiscal Year columns say, so there's a visible, ordered
+// record of what was imported when a multi-period file could otherwise make
+// that ambiguous (see the WOM Info report incident this is meant to
+// prevent -- a 14-period file imported without anyone seeing just how much
+// of the year it was about to touch).
+if (!hasColumn("gl_imports", "calendar_month")) {
+  db.exec("ALTER TABLE gl_imports ADD COLUMN calendar_month TEXT");
+}
+
 // "Name - Alpha Explanation" -- confirmed against Krista's real July GL
 // export to be where a reclass posting actually identifies itself (e.g.
 // "AER Reclass", "AER Reclass July 2026"), as a batch of offsetting debit/
@@ -8450,7 +8461,7 @@ function getGlFiscalCalendarYears() {
   return [...new Set(getGlFiscalCalendar().map((p) => p.fiscalYear))].sort((a, b) => b - a);
 }
 
-function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileName) {
+function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileName, calendarMonth) {
   const now = new Date().toISOString();
   db.prepare("DELETE FROM gl_entries WHERE period_number = ? AND fiscal_year = ?").run(periodNumber, fiscalYear);
 
@@ -8501,9 +8512,9 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
 
   const importRow = db.prepare(
     `INSERT INTO gl_imports
-      (period_number, fiscal_year, row_count, matched_count, unmatched_count, no_po_reference_count, source_file_name, imported_by, created_at)
-     VALUES (?, ?, 0, 0, 0, 0, ?, ?, ?)`
-  ).run(periodNumber, fiscalYear, sourceFileName, importedBy, now);
+      (period_number, fiscal_year, row_count, matched_count, unmatched_count, no_po_reference_count, source_file_name, imported_by, created_at, calendar_month)
+     VALUES (?, ?, 0, 0, 0, 0, ?, ?, ?, ?)`
+  ).run(periodNumber, fiscalYear, sourceFileName, importedBy, now, calendarMonth || null);
   const importId = Number(importRow.lastInsertRowid);
 
   let matchedCount = 0;
@@ -8583,6 +8594,7 @@ function presentGlImport(row) {
     sourceFileName: row.source_file_name,
     importedBy: row.imported_by,
     createdAt: row.created_at,
+    calendarMonth: row.calendar_month || null,
   };
 }
 

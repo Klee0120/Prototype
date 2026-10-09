@@ -1139,6 +1139,7 @@ test("GL import: a file spanning multiple periods splits cleanly by Period/Fisca
   await t.test("import writes every period's rows under its own period, in one call", async () => {
     const res = await server.upload("/api/admin/gl/import", {
       userId: "ADMIN",
+      fields: { calendarMonth: "2026-07" },
       fileName: "wom-info.xlsx",
       fileContent: multiBuffer,
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1197,6 +1198,7 @@ test("GL import: a file spanning multiple periods splits cleanly by Period/Fisca
     const singleBuffer = buildWorkbook([buildRow({ period: 4, fy: FY, amount: 100, po: null, seq: 10 })]);
     const res = await server.upload("/api/admin/gl/import", {
       userId: "ADMIN",
+      fields: { calendarMonth: "2026-09" },
       fileName: "september.xlsx",
       fileContent: singleBuffer,
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1207,5 +1209,46 @@ test("GL import: a file spanning multiple periods splits cleanly by Period/Fisca
 
     const files = raw.prepare("SELECT COUNT(*) AS c FROM files WHERE related_type = 'labor_report' AND category = 'gl_report'").get();
     assert.equal(files.c, 1);
+  });
+
+  await t.test("importing without a calendarMonth is rejected", async () => {
+    const buffer = buildWorkbook([buildRow({ period: 5, fy: FY, amount: 100, po: null, seq: 11 })]);
+    const res = await server.upload("/api/admin/gl/import", {
+      userId: "ADMIN",
+      fileName: "no-month.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a malformed calendarMonth is rejected", async () => {
+    const buffer = buildWorkbook([buildRow({ period: 5, fy: FY, amount: 100, po: null, seq: 12 })]);
+    const res = await server.upload("/api/admin/gl/import", {
+      userId: "ADMIN",
+      fields: { calendarMonth: "September 2026" },
+      fileName: "bad-month.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("the chosen calendarMonth is recorded on the import and surfaced in /imports", async () => {
+    const buffer = buildWorkbook([buildRow({ period: 6, fy: FY, amount: 100, po: null, seq: 13 })]);
+    const res = await server.upload("/api/admin/gl/import", {
+      userId: "ADMIN",
+      fields: { calendarMonth: "2026-11" },
+      fileName: "november.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.equal(res.body.periods[0].calendarMonth, "2026-11");
+
+    const imports = await server.call("GET", "/api/admin/gl/imports", { userId: "ADMIN" });
+    const thisImport = imports.body.find((i) => i.periodNumber === 6 && i.fiscalYear === FY);
+    assert.ok(thisImport, "expected the new import to show up in the imports list");
+    assert.equal(thisImport.calendarMonth, "2026-11");
   });
 });
