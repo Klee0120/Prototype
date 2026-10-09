@@ -123,6 +123,7 @@ export async function renderGlReconciliation(container) {
   let imports = [];
   let status = null;
   let missingFromTrackerCount = 0;
+  let needsWomNumberConfirmedCount = 0;
 
   // PO reconciliation table filters -- sent to the server, not applied
   // client-side. "PO reference not found" isn't one of these: that's a
@@ -151,6 +152,7 @@ export async function renderGlReconciliation(container) {
         api.get("/api/admin/gl/reconciliation/missing-from-tracker"),
       ]);
       missingFromTrackerCount = missingFromTracker.count;
+      needsWomNumberConfirmedCount = missingFromTracker.needsWomNumberConfirmedCount;
     } catch (err) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
@@ -165,6 +167,11 @@ export async function renderGlReconciliation(container) {
         <h3 style="margin: 0;">Reconciliation</h3>
         <button type="button" class="btn btn-primary gl-import-btn">Import GL Report</button>
         <input type="file" class="gl-import-file" accept=".xlsx,.xls" hidden />
+        ${
+          missingFromTrackerCount > 0
+            ? `<button type="button" class="btn btn-primary gl-export-missing-btn">&#8681; Export ${missingFromTrackerCount} missing PO${missingFromTrackerCount === 1 ? "" : "s"} to tracker format</button>`
+            : ""
+        }
       </div>
       ${
         status && status.overdue
@@ -237,28 +244,32 @@ export async function renderGlReconciliation(container) {
       ${
         summary.unmatchedCount > 0
           ? `
-      <div class="review-actions">
-        <h3 style="margin: 0;">GL lines with a PO # not on file</h3>
-        ${
-          missingFromTrackerCount > 0
-            ? `<button type="button" class="btn btn-outline gl-export-missing-btn">&#8681; Export ${missingFromTrackerCount} missing PO${missingFromTrackerCount === 1 ? "" : "s"} to tracker format</button>`
-            : ""
-        }
-      </div>
+      <h3>GL lines with a PO # not on file</h3>
       <p class="review-checklist-hint">
         These GL lines name a Purchase Order # that isn't in the Budget PO Tracker -- worth checking whether it's
         missing from the tracker, or was billed against the wrong PO #.
         ${
           missingFromTrackerCount > 0
-            ? `The export above lists each of those ${missingFromTrackerCount} PO # once, in the exact columns of the real
-               Operations PO Request Tracking sheet -- paste the rows in directly. Only what GL actually carries gets
-               filled in (E&F Contract Job # or E1 WOM Job #/WOM Number depending on which one it's coded to, PO Amount
-               from GL activity to date, Object Code/Subsidiary, and Requestor from the GL's own reported name, marked
-               "(GL Reported)" since it's not a confirmed requestor). Everything else -- Date Requested, Asset #,
-               Maximo WO#, Vendor Number, Admin -- is left blank for you to fill in rather than guessed.`
+            ? `The "Export ${missingFromTrackerCount} missing POs" button above lists each of those ${missingFromTrackerCount} PO # once, in the
+               exact columns of the real Operations PO Request Tracking sheet -- paste the rows in directly. Only what GL
+               actually carries gets filled in (E&F Contract Job # or E1 WOM Job #/WOM Number depending on which one it's
+               coded to, PO Amount from GL activity to date, Object Code/Subsidiary, Vendor Name from the GL's own vendor
+               field, and Date Requested as the earliest GL date posted -- a placeholder worth double-checking, not a
+               confirmed request date). Everything else -- Asset #, Maximo WO#, Vendor Number, Requestor, Admin -- is
+               left blank for you to fill in rather than guessed.`
             : ""
         }
       </p>
+      ${
+        needsWomNumberConfirmedCount > 0
+          ? `<p class="attachments-error">
+              ${needsWomNumberConfirmedCount} of those PO${needsWomNumberConfirmedCount === 1 ? "" : "s"} ${needsWomNumberConfirmedCount === 1 ? "is" : "are"} coded to a
+              location's WOM job # on GL but have no WOM #/Subledger on the line itself -- marked "WOM is Required" on
+              Question 1 in the export (not "E&F Job") and flagged right in the Description column. Confirm the real
+              WOM # on each before filing it into the tracker.
+            </p>`
+          : ""
+      }
       <div class="gl-unmatched-wrap"></div>
       `
           : ""

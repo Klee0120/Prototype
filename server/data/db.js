@@ -9630,10 +9630,17 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
 // Only fields GL genuinely carries get filled in -- Asset #/Maximo WO#/
 // Vendor Number/PPS Job Number/Admin/etc. are left blank rather than
 // guessed, same principle runPoImport already follows for everything it
-// can't actually confirm. "Date Requested" is also left blank on purpose:
-// a GL posting date isn't when the PO was requested, and backfilling it
-// with one would corrupt the PO turnaround KPIs (getPoRequestTurnaroundStats)
-// once this gets re-imported.
+// can't actually confirm. "Date Requested" is the one exception: Krista
+// asked for it pre-filled as an editable placeholder rather than left
+// blank, so it's the earliest GL date posted against this PO # -- not the
+// real requested date (GL only knows when something posted, not when it
+// was asked for), so it's worth a glance/correction before filing, same
+// as every other field here.
+//
+// name_alpha ("Name - Alpha Explanation") is the vendor's own name on the
+// GL line (confirmed directly) -- fills Vendor Name, not Requestor, which
+// GL has no way to know (an intake-form field, not a GL one) and is left
+// blank.
 //
 // Question 1/Question 2 use the real sheet's own vocabulary (confirmed
 // against that same export): a line with no WOM # (subledger_gl) gets
@@ -9651,6 +9658,15 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
 // absent, the matched location's ef_job_number fills E&F Contract Job #
 // instead -- one or the other, never both, same as the real sheet.
 //
+// A line can also be posted against the location's own WOM job number
+// (its Business Unit matches locations.wom_job_number -- the same
+// job-number match importGlEntries/resolveMatchedLocation already does)
+// while still carrying no WOM # on the line itself. That's not the E&F
+// case -- it's the exact "WOM coding, no WOM #" gap pos.js's own
+// poMissingWomLink flags on the PO Tracker side -- so it's called out
+// separately (needsWomNumberConfirmed) rather than silently defaulted to
+// "E&F Job", which would be the wrong instruction on the real sheet.
+//
 // A PO # can have several GL lines (different periods, a split charge);
 // MAX() on the text fields just needs one representative value when they
 // agree, which they do in practice for a single PO #.
@@ -9659,7 +9675,9 @@ function getPosMissingFromTrackerForExport() {
     .prepare(
       `SELECT purchase_order AS poNumber,
               SUM(amount) AS totalAmount,
+              MIN(gl_date) AS earliestGlDate,
               MAX(matched_location_code) AS matchedLocationCode,
+              MAX(business_unit) AS businessUnit,
               MAX(subledger_gl) AS subledgerGl,
               MAX(name_alpha) AS nameAlpha,
               MAX(remark) AS remark,
@@ -9677,21 +9695,26 @@ function getPosMissingFromTrackerForExport() {
   return rows.map((r) => {
     const location = r.matchedLocationCode ? locationsByCode.get(r.matchedLocationCode) : null;
     const hasWom = Boolean(r.subledgerGl);
+    const codedToWomJobNumber = Boolean(location && location.wom_job_number && r.businessUnit && r.businessUnit === location.wom_job_number);
+    const needsWomNumberConfirmed = !hasWom && codedToWomJobNumber;
     return {
-      dateRequested: null,
-      question1: hasWom ? null : "E&F Job",
-      question2: hasWom ? null : "-",
-      description: r.remark || null,
-      requestor: r.nameAlpha ? `${r.nameAlpha} (GL Reported)` : null,
+      dateRequested: r.earliestGlDate || null,
+      question1: hasWom ? null : needsWomNumberConfirmed ? "WOM is Required" : "E&F Job",
+      question2: hasWom ? null : needsWomNumberConfirmed ? null : "-",
+      needsWomNumberConfirmed,
+      description:
+        (needsWomNumberConfirmed ? "[Coded to this location's WOM job # on GL, but no WOM # on the line -- confirm the WOM # before filing] " : "") +
+        (r.remark || "") || null,
+      requestor: null,
       poNumber: r.poNumber,
-      efJobNumber: !hasWom && location && location.ef_job_number ? `${location.ef_job_number}\t${location.name}` : null,
+      efJobNumber: !hasWom && !needsWomNumberConfirmed && location && location.ef_job_number ? `${location.ef_job_number}\t${location.name}` : null,
       poAmount: r.totalAmount,
       changeOrder: null,
       status: null,
-      vendorName: null,
+      vendorName: r.nameAlpha || null,
       vendorNumber: null,
       ppsJobNumber: null,
-      e1WomJobNumber: hasWom && location && location.wom_job_number ? location.wom_job_number : null,
+      e1WomJobNumber: (hasWom || needsWomNumberConfirmed) && location && location.wom_job_number ? location.wom_job_number : null,
       womNumber: hasWom ? r.subledgerGl : null,
       assetNumber: null,
       maximoWo: null,

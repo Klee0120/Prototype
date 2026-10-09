@@ -535,6 +535,18 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
         purchaseOrder: "PO90102",
         subledgerGl: "WOM-9500",
       },
+      // Posted against the location's own WOM job # (Business Unit matches
+      // locations.wom_job_number, not ef_job_number) but with no WOM #/
+      // Subledger on the line itself -- the ambiguous case Krista asked
+      // about: this is NOT an E&F-coded request.
+      {
+        glDate: "2026-09-03",
+        businessUnit: "100110099999",
+        objectAccount: "605400 WOM Work, No WOM#",
+        subsidiary: "300 Tertiary",
+        amount: 750,
+        purchaseOrder: "PO90103",
+      },
     ],
     16,
     26,
@@ -546,43 +558,61 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
     const rows = db.getPosMissingFromTrackerForExport();
     const efRow = rows.find((r) => r.poNumber === "PO90101");
     const womRow = rows.find((r) => r.poNumber === "PO90102");
+    const needsWomRow = rows.find((r) => r.poNumber === "PO90103");
     assert.ok(efRow, "expected the E&F-coded unmatched PO to show up");
     assert.ok(womRow, "expected the WOM-coded unmatched PO to show up");
+    assert.ok(needsWomRow, "expected the WOM-job-number-but-no-WOM# unmatched PO to show up");
 
     // No WOM # -> Question 1/2 use the real sheet's own E&F vocabulary,
     // and the location's own E&F job # fills E&F Contract Job #.
     assert.equal(efRow.question1, "E&F Job");
     assert.equal(efRow.question2, "-");
+    assert.equal(efRow.needsWomNumberConfirmed, false);
     assert.equal(efRow.efJobNumber, "100110099000\tMock Facility Test");
     assert.equal(efRow.e1WomJobNumber, null);
     assert.equal(efRow.womNumber, null);
-    assert.equal(efRow.requestor, "John Doe Vendor (GL Reported)");
+    assert.equal(efRow.requestor, null, "GL has no requestor field -- left blank, not guessed");
+    assert.equal(efRow.vendorName, "John Doe Vendor", "name_alpha is the vendor's own name, not a requestor");
     assert.equal(efRow.description, "Repair work");
+    assert.equal(efRow.dateRequested, "2026-09-01", "pre-filled with the earliest GL date as an editable placeholder");
     assert.equal(efRow.poAmount, 250);
     assert.equal(efRow.objectCode, "605200 Subcontracting");
     assert.equal(efRow.subsidiary, "100 Primary");
     assert.equal(efRow.assetNumber, null, "never fabricates Asset # from GL");
     assert.equal(efRow.maximoWo, null, "never fabricates Maximo WO# from GL");
-    assert.equal(efRow.dateRequested, null, "never backfills Date Requested from a GL posting date");
 
     // WOM # present -> Question 1/2 left blank (Krista only specified the
     // no-WOM case), WOM Number filled directly, and the location's own
     // E1 WOM Job # fills that column instead of E&F Contract Job #.
     assert.equal(womRow.question1, null);
     assert.equal(womRow.question2, null);
+    assert.equal(womRow.needsWomNumberConfirmed, false);
     assert.equal(womRow.efJobNumber, null);
     assert.equal(womRow.e1WomJobNumber, "100110099999");
     assert.equal(womRow.womNumber, "WOM-9500");
-    assert.equal(womRow.requestor, null, "no name_alpha on this line -- left blank, not guessed");
+    assert.equal(womRow.vendorName, null, "no name_alpha on this line -- left blank, not guessed");
     assert.equal(womRow.poAmount, 500);
+
+    // Business Unit matches the location's WOM job # (not E&F), but no
+    // WOM #/Subledger on the line -- not an E&F request, flagged instead
+    // of silently defaulted.
+    assert.equal(needsWomRow.needsWomNumberConfirmed, true);
+    assert.equal(needsWomRow.question1, "WOM is Required");
+    assert.equal(needsWomRow.question2, null);
+    assert.equal(needsWomRow.efJobNumber, null, "should never fall back to E&F Contract Job # for a WOM-job-number line");
+    assert.equal(needsWomRow.e1WomJobNumber, "100110099999");
+    assert.equal(needsWomRow.womNumber, null, "the actual WOM # is still unknown -- not guessed");
+    assert.match(needsWomRow.description, /confirm the WOM #/i);
   });
 
   await t.test("GET /reconciliation/missing-from-tracker returns the same rows with a count", async () => {
     const res = await server.call("GET", "/api/admin/gl/reconciliation/missing-from-tracker", { userId: "ADMIN" });
     assert.equal(res.status, 200);
-    assert.ok(res.body.count >= 2);
+    assert.ok(res.body.count >= 3);
+    assert.ok(res.body.needsWomNumberConfirmedCount >= 1);
     assert.ok(res.body.items.some((r) => r.poNumber === "PO90101"));
     assert.ok(res.body.items.some((r) => r.poNumber === "PO90102"));
+    assert.ok(res.body.items.some((r) => r.poNumber === "PO90103"));
   });
 
   await t.test("GET /reconciliation/missing-from-tracker/export returns a downloadable xlsx", async () => {

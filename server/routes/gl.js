@@ -307,7 +307,11 @@ const MISSING_FROM_TRACKER_EXPORT_COLUMNS = [
 
 router.get("/reconciliation/missing-from-tracker", (req, res) => {
   const items = db.getPosMissingFromTrackerForExport();
-  res.json({ count: items.length, items });
+  res.json({
+    count: items.length,
+    needsWomNumberConfirmedCount: items.filter((r) => r.needsWomNumberConfirmed).length,
+    items,
+  });
 });
 
 router.get("/reconciliation/missing-from-tracker/export", (req, res) => {
