@@ -147,6 +147,8 @@ router.get("/", (req, res) => {
       regionUnassigned: req.query.regionUnassigned === "true",
       adminUnmatched: req.query.adminUnmatched === "true",
       womLinkMissing: req.query.womLinkMissing === "true",
+      subsidiaryMismatch: req.query.subsidiaryMismatch === "true",
+      objectCodeMismatch: req.query.objectCodeMismatch === "true",
       womNumber: req.query.womNumber,
       search: req.query.search,
     })

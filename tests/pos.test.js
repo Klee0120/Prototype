@@ -343,6 +343,63 @@ test("PO Tracker import: Subsidiary and PPS Subsidiary coalesce into one field",
   assert.equal(po2.subsidiary, "200 Janitorial", "PPS Subsidiary should fill the subsidiary field when Subsidiary itself is blank");
 });
 
+// Budget PO Tracker's own subsidiary/object_code fields can drift out of
+// date once the real GL activity posts against a PO (see
+// refreshPoCodingDriftTask) -- these checkboxes surface exactly the same
+// GL-vs-PO comparison, filterable directly on the tracker so Krista can
+// pull up and correct the drifted records without going through GL
+// Reconciliation.
+test("PO Tracker: Subsidiary/Object code mismatch filters", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  const poId = raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, subsidiary, object_code, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run("checkbox-drift-1", "PO85001", "100 Primary", "22067000", "active", now, now, now, now).lastInsertRowid;
+  const cleanPoId = raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, subsidiary, object_code, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run("checkbox-drift-2", "PO85002", "100 Primary", "22067000", "active", now, now, now, now).lastInsertRowid;
+
+  // One GL line against each PO: the first disagrees with the PO on both
+  // subsidiary and object code, the second matches on both.
+  raw
+    .prepare(
+      `INSERT INTO gl_entries (subsidiary, object_account_code, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("200 Janitorial", "99999000", Number(poId), 1, 1, now);
+  raw
+    .prepare(
+      `INSERT INTO gl_entries (subsidiary, object_account_code, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("100 Primary", "22067000", Number(cleanPoId), 0, 0, now);
+
+  const subsidiaryMismatches = db.listPos({ subsidiaryMismatch: true });
+  assert.ok(subsidiaryMismatches.some((p) => p.id === Number(poId)), "the drifted PO should show up under the subsidiary-mismatch filter");
+  assert.ok(!subsidiaryMismatches.some((p) => p.id === Number(cleanPoId)), "the clean PO should not show up");
+
+  const objectCodeMismatches = db.listPos({ objectCodeMismatch: true });
+  assert.ok(objectCodeMismatches.some((p) => p.id === Number(poId)), "the drifted PO should show up under the object-code-mismatch filter");
+  assert.ok(!objectCodeMismatches.some((p) => p.id === Number(cleanPoId)), "the clean PO should not show up");
+
+  const viaRoute = await server.call("GET", "/api/admin/pos?subsidiaryMismatch=true&objectCodeMismatch=true", { userId: "ADMIN" });
+  assert.equal(viaRoute.status, 200);
+  assert.ok(viaRoute.body.some((p) => p.id === Number(poId)), "the route should pass the query params through to the same filter");
+
+  raw.close();
+});
+
 // "Vendor Number" and "Vendor ID" are two separate columns some rows on the
 // real sheet use for the same identifier -- confirmed directly after a real
 // import left a couple of vendors stuck on "Needs matching" despite already

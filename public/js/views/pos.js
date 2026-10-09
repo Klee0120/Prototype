@@ -38,7 +38,16 @@ const PO_DOC_CATEGORIES = [
 export async function renderPos(container, { openPoId } = {}) {
   let subTab = "active"; // "active" | "needs_organization"
   let detailId = openPoId || null;
-  const filters = { search: "", locationCode: "", vendorUnmatched: false, regionUnassigned: false, adminUnmatched: false, womLinkMissing: false };
+  const filters = {
+    search: "",
+    locationCode: "",
+    vendorUnmatched: false,
+    regionUnassigned: false,
+    adminUnmatched: false,
+    womLinkMissing: false,
+    subsidiaryMismatch: false,
+    objectCodeMismatch: false,
+  };
   const selectedIds = new Set();
   let listCache = null;
   let locationsCache = null;
@@ -60,6 +69,8 @@ export async function renderPos(container, { openPoId } = {}) {
             ...(filters.regionUnassigned ? { regionUnassigned: "true" } : {}),
             ...(filters.adminUnmatched ? { adminUnmatched: "true" } : {}),
             ...(filters.womLinkMissing ? { womLinkMissing: "true" } : {}),
+            ...(filters.subsidiaryMismatch ? { subsidiaryMismatch: "true" } : {}),
+            ...(filters.objectCodeMismatch ? { objectCodeMismatch: "true" } : {}),
           })}`
         ),
         api.get("/api/admin/pos/last-import"),
@@ -131,6 +142,8 @@ export async function renderPos(container, { openPoId } = {}) {
         <label class="po-filter-checkbox"><input type="checkbox" class="po-region-unassigned" ${filters.regionUnassigned ? "checked" : ""} /> Unassigned region</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-admin-unmatched" ${filters.adminUnmatched ? "checked" : ""} /> Unmatched admin</label>
         <label class="po-filter-checkbox"><input type="checkbox" class="po-wom-link-missing" ${filters.womLinkMissing ? "checked" : ""} /> WOM coding, no WOM #</label>
+        <label class="po-filter-checkbox"><input type="checkbox" class="po-subsidiary-mismatch" ${filters.subsidiaryMismatch ? "checked" : ""} /> Subsidiary mismatch</label>
+        <label class="po-filter-checkbox"><input type="checkbox" class="po-objectcode-mismatch" ${filters.objectCodeMismatch ? "checked" : ""} /> Object code mismatch</label>
       </div>
       <p class="po-count"></p>
       <div class="po-bulk-toolbar task-bulk-toolbar" id="po-bulk-toolbar"></div>
@@ -176,6 +189,14 @@ export async function renderPos(container, { openPoId } = {}) {
     });
     container.querySelector(".po-wom-link-missing").addEventListener("change", (e) => {
       filters.womLinkMissing = e.target.checked;
+      draw();
+    });
+    container.querySelector(".po-subsidiary-mismatch").addEventListener("change", (e) => {
+      filters.subsidiaryMismatch = e.target.checked;
+      draw();
+    });
+    container.querySelector(".po-objectcode-mismatch").addEventListener("change", (e) => {
+      filters.objectCodeMismatch = e.target.checked;
       draw();
     });
 

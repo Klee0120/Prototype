@@ -7466,6 +7466,17 @@ function listPos(filters = {}) {
     clauses.push("wom_number = ?");
     params.push(filters.womNumber);
   }
+  // Same GL-vs-PO coding comparison refreshPoCodingDriftTask already makes
+  // (gl_entries.matched_po_id linking a posted GL line back to this PO) --
+  // surfaces exactly the POs that task flags, filterable directly on the
+  // tracker itself so the coding can get corrected without waiting on GL
+  // Reconciliation's own equivalent checkboxes.
+  if (filters.subsidiaryMismatch) {
+    clauses.push("EXISTS (SELECT 1 FROM gl_entries g WHERE g.matched_po_id = pos.id AND g.subsidiary_mismatch = 1)");
+  }
+  if (filters.objectCodeMismatch) {
+    clauses.push("EXISTS (SELECT 1 FROM gl_entries g WHERE g.matched_po_id = pos.id AND g.object_code_mismatch = 1)");
+  }
   if (filters.search) {
     clauses.push("(vendor_name LIKE ? OR description LIKE ? OR po_number LIKE ? OR requestor LIKE ?)");
     const like = `%${filters.search}%`;
