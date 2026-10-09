@@ -233,8 +233,13 @@ router.patch("/:id/vendor", (req, res) => {
   const { vendorId } = req.body || {};
   if (!vendorId) return res.status(400).json({ error: "vendorId is required" });
   try {
-    const updated = db.confirmPoVendor(po.id, Number(vendorId));
-    db.addAudit(req.user.id, "PO_VENDOR_CONFIRMED", `${req.user.name} confirmed a vendor link for PO record #${po.id}`);
+    const updated = db.confirmPoVendorAndPropagateByName(po.id, Number(vendorId));
+    db.addAudit(
+      req.user.id,
+      "PO_VENDOR_CONFIRMED",
+      `${req.user.name} confirmed a vendor link for PO record #${po.id}` +
+        (updated.propagatedCount ? ` (and ${updated.propagatedCount} other record${updated.propagatedCount === 1 ? "" : "s"} sharing the same vendor name)` : "")
+    );
     res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });

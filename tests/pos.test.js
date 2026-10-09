@@ -1599,3 +1599,58 @@ test("Budget PO Tracker: Cancelled/Duplicate-status POs are hidden by default, s
   assert.ok(shownDescriptions.includes("A/B Water Line Repair"), "checking the box should reveal Duplicate");
   assert.ok(shownDescriptions.includes("Normal open request"));
 });
+
+// Caught live: "Bill Spade Electric, Heating, & Cooling" showed up on two
+// separate PO rows, neither with a Vendor Number anywhere (not the
+// dedicated column, not embedded in the name) -- confirming the vendor
+// manually on one left the other sitting on "Needs Matching" forever,
+// since nothing auto-links by name alone. Manually confirming a vendor
+// for one PO should also pick up any sibling PO with the exact same
+// Vendor Name and no Vendor # of its own to go on.
+test("Budget PO Tracker: manually confirming a vendor also links sibling POs sharing the same Vendor Name with no Vendor #", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+  const now = new Date().toISOString();
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Bill Spade Electric, Heating, & Cooling", jdeVendorNumber: "9912345" },
+  });
+  assert.equal(vendorRes.status, 201);
+  const vendorId = vendorRes.body.id;
+
+  function insertPo({ composite, description, vendorName, vendorNumber }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, description, vendor_name, vendor_number, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+      )
+      .run(composite, description, vendorName, vendorNumber || null, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  const poId1 = insertPo({ composite: "bs-1", description: "RTU 13 not heating", vendorName: "Bill Spade Electric, Heating, & Cooling" });
+  const poId2 = insertPo({ composite: "bs-2", description: "RTU 14 is not working", vendorName: "Bill Spade Electric, Heating, & Cooling" });
+  // A third, unrelated PO that just happens to also have no Vendor Number
+  // but a totally different name -- must never get swept in.
+  const poId3 = insertPo({ composite: "bs-3", description: "Unrelated request", vendorName: "Some Other Vendor" });
+  // A fourth PO with the SAME name but its OWN (different, unmatched)
+  // Vendor Number -- must be left alone, since that could be a genuinely
+  // different vendor that just shares the name.
+  const poId4 = insertPo({ composite: "bs-4", description: "Different numbered one", vendorName: "Bill Spade Electric, Heating, & Cooling", vendorNumber: "4455667" });
+
+  const confirmRes = await server.call("PATCH", `/api/admin/pos/${poId1}/vendor`, { userId: "ADMIN", body: { vendorId } });
+  assert.equal(confirmRes.status, 200);
+  assert.equal(confirmRes.body.propagatedCount, 1, "should have propagated to exactly the one sibling with no Vendor #");
+
+  const po1 = await server.call("GET", `/api/admin/pos/${poId1}`, { userId: "ADMIN" });
+  const po2 = await server.call("GET", `/api/admin/pos/${poId2}`, { userId: "ADMIN" });
+  const po3 = await server.call("GET", `/api/admin/pos/${poId3}`, { userId: "ADMIN" });
+  const po4 = await server.call("GET", `/api/admin/pos/${poId4}`, { userId: "ADMIN" });
+  assert.equal(po1.body.vendorId, vendorId);
+  assert.equal(po2.body.vendorId, vendorId, "sibling with the same name and no Vendor # should have linked too");
+  assert.equal(po3.body.vendorId, null, "a different-named PO should never be swept in");
+  assert.equal(po4.body.vendorId, null, "a PO with its own (different) Vendor # should be left for its own matching");
+});

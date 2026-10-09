@@ -8177,6 +8177,39 @@ function confirmPoVendor(id, vendorId) {
   return findPo(id);
 }
 
+// confirmPoVendor only ever touches the ONE PO it's told to -- deliberately,
+// since matching by vendor name text risks collisions across unrelated
+// vendors (see findVendorByNumber's own comment on that). But the real
+// sheet often has no Vendor Number on file ANYWHERE for a run of rows
+// that are genuinely the same vendor (confirmed directly: "Bill Spade
+// Electric, Heating, & Cooling" on two different PO rows, no number in
+// either the dedicated column or the name text) -- in that case there's
+// nothing else to match on, and making Krista manually confirm the same
+// vendor one PO at a time, every time it comes up, is exactly the
+// busywork this app exists to remove. Used only by the manual "confirm
+// vendor" action on a single PO (a human decision, not an automatic
+// import-time match) -- and only extends to a sibling PO that ALSO has
+// no Vendor Number of its own; one that does gets left alone, since a
+// different number there could mean a genuinely different vendor that
+// just happens to share the same name.
+function confirmPoVendorAndPropagateByName(id, vendorId) {
+  const po = confirmPoVendor(id, vendorId);
+  const normalizedName = normalizeMatchText(po.vendorName);
+  let propagatedCount = 0;
+  if (normalizedName) {
+    const candidates = db
+      .prepare("SELECT id, vendor_name FROM pos WHERE vendor_id IS NULL AND id != ? AND (vendor_number IS NULL OR vendor_number = '')")
+      .all(id);
+    for (const candidate of candidates) {
+      if (normalizeMatchText(candidate.vendor_name) === normalizedName) {
+        confirmPoVendor(candidate.id, vendorId);
+        propagatedCount++;
+      }
+    }
+  }
+  return { ...findPo(id), propagatedCount };
+}
+
 function clearPoVendorMatch(id) {
   // Lets an admin undo a wrong auto-match/confirmation -- back to "needs
   // matching" so it shows up in that filter again, picked up by the next
@@ -11342,6 +11375,7 @@ module.exports = {
   getLastPoImport,
   runPoImport,
   confirmPoVendor,
+  confirmPoVendorAndPropagateByName,
   clearPoVendorMatch,
   tagLocationForPo,
   bulkConfirmPoVendor,

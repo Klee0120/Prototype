@@ -815,7 +815,12 @@ export async function renderPos(container, { openPoId } = {}) {
     }
     container.querySelector(".po-vendor-pick-btn").addEventListener("click", () => {
       openVendorPickerModal(async (vendorId) => {
-        await api.patch(`/api/admin/pos/${po.id}/vendor`, { vendorId });
+        const updated = await api.patch(`/api/admin/pos/${po.id}/vendor`, { vendorId });
+        if (updated.propagatedCount) {
+          window.alert(
+            `Also matched ${updated.propagatedCount} other record${updated.propagatedCount === 1 ? "" : "s"} with the same Vendor Name and no Vendor # of its own.`
+          );
+        }
         await draw();
       });
     });
