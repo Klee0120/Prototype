@@ -1292,3 +1292,53 @@ test("PO Tracker import: two rows with no PO # yet but identical requestor/date/
   const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
   assert.equal(listRes2.body.length, 1, "still one record after a second identical import");
 });
+
+// Caught live on Krista's real 825-PO file: one row carries a real PO #
+// (deferred to the po_number_key group pass, see runPoImport) while
+// ANOTHER row with no PO # yet, but the exact same requestor/date/
+// description, gets written immediately ahead of it in the same import.
+// The group pass used to only trust the match it found while first
+// scanning the file -- before that other row existed on file yet -- so its
+// own INSERT then collided with the composite_key that row had just
+// claimed. It has to re-check for a match right before it writes, not just
+// once up front.
+test("PO Tracker import: a PO'd row and a not-yet-PO'd row for the same request don't crash on composite_key", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  // Row 1 carries a real PO # and gets deferred to the group pass. Row 2
+  // has no PO # yet but the identical requestor/date/description, and
+  // (being a single) gets written to the database immediately -- before
+  // row 1's deferred group is ever processed.
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-cross-dup-1.xlsx",
+    fileContent: buildBuffer([
+      ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", "10070939", null, 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null],
+      ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", null, null, 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body), "the import should succeed, not abort on the composite_key collision");
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1, "the two lines are the same request and should land on one record");
+  assert.equal(listRes.body[0].poNumber, "10070939");
+  assert.equal(listRes.body[0].poAmount, 1350, "not a combine case -- same request, amount unchanged");
+});

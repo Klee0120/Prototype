@@ -7588,6 +7588,21 @@ function linkPoRequestTaskFromImport(poId, description, importedBy) {
   );
 }
 
+// The line_number + composite_key lookup runPoImport uses to find a row's
+// existing pos record -- pulled out so it can be re-run fresh right before
+// a deferred PO #-group is written (see runPoImport), not just once while
+// scanning, since by then sibling rows may have written new matches of
+// their own.
+function findExistingPo(row, lineNumber, compositeKey) {
+  if (lineNumber) {
+    const byLine = db.prepare("SELECT * FROM pos WHERE line_number = ?").get(lineNumber);
+    if (byLine && normalizeMatchText(byLine.requestor) === normalizeMatchText(row.requestor)) {
+      return byLine;
+    }
+  }
+  return db.prepare("SELECT * FROM pos WHERE composite_key = ?").get(compositeKey);
+}
+
 // Every place elsewhere in the schema that points at a pos row by id --
 // kept in one spot so collapsing a duplicate PO into another record
 // re-points all of them, not just whichever one came to mind first.
@@ -7772,14 +7787,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
       // shifts every later line_number down or up by one, and without that
       // guard this would silently hijack a since-shifted, unrelated record
       // instead of falling through to the composite-key lookup below.
-      let existing = null;
-      if (lineNumber) {
-        const byLine = db.prepare("SELECT * FROM pos WHERE line_number = ?").get(lineNumber);
-        if (byLine && normalizeMatchText(byLine.requestor) === normalizeMatchText(row.requestor)) {
-          existing = byLine;
-        }
-      }
-      if (!existing) existing = db.prepare("SELECT * FROM pos WHERE composite_key = ?").get(compositeKey);
+      const existing = findExistingPo(row, lineNumber, compositeKey);
 
       const efJobNumber = parseEfJobNumber(row.efJobNumberRaw);
       let matchedLocation = efJobNumber ? findLocationByEfJobNumber(efJobNumber) : null;
@@ -7831,6 +7839,18 @@ function runPoImport(rows, importedBy, { dryRun }) {
     }
 
     for (const [poNumberKey, entries] of groups) {
+      // Re-resolve each entry's existing match fresh, right now, rather
+      // than trusting whatever it found while this whole file was still
+      // being scanned above -- a row with no PO # yet, written immediately
+      // as this group sat deferred, can easily be the real match for one
+      // of these entries (same requestor/date/description, just missing a
+      // PO # of its own), and the stale snapshot would miss it: this
+      // group's own compositeKey-based INSERT would then collide with
+      // that already-written row instead of folding into it.
+      for (const e of entries) {
+        e.existing = findExistingPo(e.row, e.lineNumber, computePoMatchKeys(e.row).compositeKey);
+      }
+
       // Whichever pos record already owns this key (from a previous
       // import) is the survivor; failing that, the lowest-id record among
       // this group's own matches; failing that, there's no existing record
