@@ -658,6 +658,21 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_allocations_tech_week ON allocations(tech_id, week_monday);
 `);
 
+// One-time catch-up for POs that already exist with no location_code --
+// runPoImport's own WOM-location fallback (see its matchedLocation
+// comment) only applies going forward, on the next import that touches
+// each row. This fixes the backlog immediately on deploy instead of
+// waiting on that. No hasColumn marker to gate this one-time-only (unlike
+// the migrations below) since it doesn't add a column -- it's simply
+// idempotent (the WHERE clause only ever matches rows still blank), so
+// running it again on every server start is harmless and cheap at this
+// table's size, not worth a throwaway marker column just to skip it.
+db.exec(
+  `UPDATE pos SET location_code = (SELECT w.location_code FROM woms w WHERE w.code = pos.wom_number)
+   WHERE (location_code IS NULL OR location_code = '') AND wom_number IS NOT NULL
+   AND EXISTS (SELECT 1 FROM woms w WHERE w.code = pos.wom_number AND w.location_code IS NOT NULL AND w.location_code != '')`
+);
+
 // A sync's actual per-WOM changes (code/description/which fields differed),
 // as JSON -- so "View Sync Details" can say what changed, not just how many
 // rows were touched, and still show it after a page reload.
@@ -7559,7 +7574,17 @@ function runPoImport(rows, importedBy, { dryRun }) {
       if (!existing) existing = db.prepare("SELECT * FROM pos WHERE composite_key = ?").get(compositeKey);
 
       const efJobNumber = parseEfJobNumber(row.efJobNumberRaw);
-      const matchedLocation = efJobNumber ? findLocationByEfJobNumber(efJobNumber) : null;
+      let matchedLocation = efJobNumber ? findLocationByEfJobNumber(efJobNumber) : null;
+      // No E&F Job Number match -- fall back to the location already on the
+      // WOM this PO is linked to (its own Smartsheet-synced project
+      // location), rather than leaving location_code blank. A PO linked to
+      // a real WOM almost always belongs at that WOM's location; the E&F
+      // match stays tried first since it's the more precise, PO-specific
+      // signal when it's actually there.
+      if (!matchedLocation && row.womNumber) {
+        const linkedWom = db.prepare("SELECT location_code FROM woms WHERE code = ?").get(String(row.womNumber).trim());
+        if (linkedWom && linkedWom.location_code) matchedLocation = findLocation(linkedWom.location_code);
+      }
       const matchedVendor = row.vendorNumber ? findVendorByNumber(row.vendorNumber) : null;
 
       if (existing) {
@@ -8175,14 +8200,21 @@ function poWomLocationMismatchTaskSourceKey(poId) {
 // A PO's own WOM Number should belong to the same location the PO itself is
 // coded to -- the WOM's location_code (its own Smartsheet-synced project
 // location, not anything this app guesses) is the source of truth to check
-// against. A mismatch here means either the PO's location or its WOM # is
-// wrong in the tracker; only meaningful once the PO actually has both a
-// resolved location and a WOM # on file.
+// against. Two distinct problems, both worth a task: the PO disagrees with
+// its WOM ("mismatch"), or the PO still has no location at all even though
+// its WOM has one to offer ("missing" -- runPoImport already tries to
+// backfill this at import time, so by the time this runs it should mean
+// either a PO that's never been re-imported since getting its WOM #, or
+// hand-entered data that bypassed the import path entirely). Returns null
+// when there's nothing to compare against (no WOM #, or the WOM itself has
+// no location on file either -- nothing to flag or backfill from).
 function poWomLocationMismatch(po) {
-  if (!po.wom_number || !po.location_code) return null;
+  if (!po.wom_number) return null;
   const wom = db.prepare("SELECT code, location_code FROM woms WHERE code = ?").get(po.wom_number);
-  if (!wom || !wom.location_code || wom.location_code === po.location_code) return null;
-  return wom;
+  if (!wom || !wom.location_code) return null;
+  if (!po.location_code) return { location_code: wom.location_code, reason: "missing" };
+  if (wom.location_code === po.location_code) return null;
+  return { location_code: wom.location_code, reason: "mismatch" };
 }
 
 // Only checked once a PO is Active, same reasoning as the job-number-type
@@ -8197,12 +8229,16 @@ function refreshPoWomLocationMismatchTask(poId) {
     return;
   }
   const matchedAdmin = matchAdminByName(po.admin_name);
+  const description =
+    mismatch.reason === "missing"
+      ? `This PO has no location coded, but WOM ${po.wom_number} is synced to location ${mismatch.location_code} -- confirm that's right and correct it in the next PO Tracker import.`
+      : `This PO is coded to location ${po.location_code}, but WOM ${po.wom_number} is synced to a different location (${mismatch.location_code}) -- confirm which is right and correct it in the next PO Tracker import.`;
   upsertTaskBySourceKey(
     sourceKey,
     {
       title: `Confirm WOM # ${po.wom_number} on PO ${po.po_number || poId}`,
       description:
-        `This PO is coded to location ${po.location_code}, but WOM ${po.wom_number} is synced to a different location (${mismatch.location_code}) -- confirm which is right and correct it in the next PO Tracker import.` +
+        description +
         (po.admin_name && !matchedAdmin
           ? ` The Budget PO Tracker lists "${po.admin_name}" as this PO's admin, but that name doesn't match any admin account -- route this manually.`
           : ""),

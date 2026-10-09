@@ -127,7 +127,8 @@ export async function renderGlReconciliation(container) {
   // client-side. "PO reference not found" isn't one of these: that's a
   // GL-line-level gap, not a PO-level one, so it's its own section below.
   let glStatusFilter = ""; // "" | "open" | "closed"
-  let glCodingFilter = ""; // "" | "subsidiary" | "objectCode" | "either"
+  let glSubsidiaryOnly = false;
+  let glObjectCodeOnly = false;
   let glAboveOnly = false; // variance > 0 ("posted above PO")
   let glMissingLocationOnly = false;
 
@@ -206,12 +207,14 @@ export async function renderGlReconciliation(container) {
           <option value="open" ${glStatusFilter === "open" ? "selected" : ""}>Open POs</option>
           <option value="closed" ${glStatusFilter === "closed" ? "selected" : ""}>Closed POs</option>
         </select>
-        <select class="gl-coding-filter">
-          <option value="">Any coding</option>
-          <option value="subsidiary" ${glCodingFilter === "subsidiary" ? "selected" : ""}>Subsidiary mismatch</option>
-          <option value="objectCode" ${glCodingFilter === "objectCode" ? "selected" : ""}>Object code mismatch</option>
-          <option value="either" ${glCodingFilter === "either" ? "selected" : ""}>Any coding mismatch</option>
-        </select>
+        <label class="roster-filter-field">
+          <input type="checkbox" class="gl-subsidiary-filter" ${glSubsidiaryOnly ? "checked" : ""} />
+          <span>Subsidiary mismatch</span>
+        </label>
+        <label class="roster-filter-field">
+          <input type="checkbox" class="gl-objectcode-filter" ${glObjectCodeOnly ? "checked" : ""} />
+          <span>Object code mismatch</span>
+        </label>
         <label class="roster-filter-field">
           <input type="checkbox" class="gl-above-filter" ${glAboveOnly ? "checked" : ""} />
           <span>Posted above PO</span>
@@ -256,8 +259,13 @@ export async function renderGlReconciliation(container) {
       reconciledPage = 1;
       renderReconciledTable();
     });
-    container.querySelector(".gl-coding-filter").addEventListener("change", (e) => {
-      glCodingFilter = e.target.value;
+    container.querySelector(".gl-subsidiary-filter").addEventListener("change", (e) => {
+      glSubsidiaryOnly = e.target.checked;
+      reconciledPage = 1;
+      renderReconciledTable();
+    });
+    container.querySelector(".gl-objectcode-filter").addEventListener("change", (e) => {
+      glObjectCodeOnly = e.target.checked;
       reconciledPage = 1;
       renderReconciledTable();
     });
@@ -286,7 +294,13 @@ export async function renderGlReconciliation(container) {
           page: String(reconciledPage),
           pageSize: String(GL_PAGE_SIZE),
           ...(glStatusFilter ? { status: glStatusFilter } : {}),
-          ...(glCodingFilter ? { coding: glCodingFilter } : {}),
+          ...(glSubsidiaryOnly && glObjectCodeOnly
+            ? { coding: "either" }
+            : glSubsidiaryOnly
+              ? { coding: "subsidiary" }
+              : glObjectCodeOnly
+                ? { coding: "objectCode" }
+                : {}),
           ...(glAboveOnly ? { aboveOnly: "true" } : {}),
           ...(glMissingLocationOnly ? { missingLocationOnly: "true" } : {}),
         })}`

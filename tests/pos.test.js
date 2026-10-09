@@ -394,6 +394,111 @@ test("PO Tracker import: Vendor Number and Vendor ID coalesce into one field", a
   assert.equal(po.vendorLinkStatus, "matched", "should auto-match the existing vendor profile by JDE #");
 });
 
+// A PO whose E&F Job Number doesn't match any location should still get a
+// location when its WOM # points at a WOM that already has one on file --
+// previously the only way a PO got a location at all was the E&F match,
+// which meant any PO with a missing/unmatched E&F # stayed permanently
+// unlocated even with a perfectly good WOM # (and real location) sitting
+// right there on the same row.
+test("PO Tracker import: falls back to the linked WOM's location when E&F Job Number doesn't match", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+  const rows = [
+    headers,
+    // No E&F match, but WOM-4471 (seeded, locationCode PRINCETON) is on file.
+    ["2026-01-01", "WOM fallback row", "Jane Doe", "PO90020", "NOT-A-REAL-JOB-NUMBER", 100, null, "Open", "Vendor A", "1001", null, null, "WOM-4471", null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    // No E&F match, and this WOM # doesn't exist at all -- should stay unlocated, not error.
+    ["2026-01-02", "No WOM on file row", "John Smith", "PO90021", null, 200, null, "Open", "Vendor B", "1002", null, null, "WOM-NOPE-999", null, null, null, null, "200 Janitorial", "Krista Lee", null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90020", { userId: "ADMIN" });
+  const po1 = listRes.body.find((p) => p.poNumber === "PO90020");
+  assert.ok(po1, "expected PO90020 to have imported");
+  assert.equal(po1.locationCode, "PRINCETON", "should fall back to the linked WOM's own location");
+
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90021", { userId: "ADMIN" });
+  const po2 = listRes2.body.find((p) => p.poNumber === "PO90021");
+  assert.ok(po2, "expected PO90021 to have imported");
+  assert.equal(po2.locationCode, null, "a WOM # that doesn't exist on file has nothing to fall back to -- stays unlocated, not an error");
+});
+
+// Re-importing never overwrites a location already resolved some other way
+// (a manual location-tag, an earlier E&F match, or an earlier WOM
+// fallback) -- COALESCE(location_code, ?) applies to the WOM fallback
+// exactly the same as it already does to the E&F match.
+test("PO Tracker import: re-import never overwrites an already-resolved location via the WOM fallback", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  function buildBuffer(womNumber) {
+    const headers = [
+      "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+      "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+      "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+      "Admin", "Urgent", "Urgent Reason/Notes",
+    ];
+    const rows = [
+      headers,
+      ["2026-01-01", "Re-import row", "Jane Doe", "PO90022", null, 100, null, "Open", "Vendor A", "1001", null, null, womNumber, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buildBuffer("WOM-4471"),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body));
+  const afterFirst = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90022", { userId: "ADMIN" });
+  assert.equal(afterFirst.body.find((p) => p.poNumber === "PO90022").locationCode, "PRINCETON");
+
+  // Re-import the same PO, now pointing at a different WOM (WOM-4502, also
+  // seeded at PRINCETON -- same location here, so cross-check with a
+  // second WOM at a different location next).
+  const secondImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buildBuffer("WOM-4502"),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(secondImport.status, 200, JSON.stringify(secondImport.body));
+  const afterSecond = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90022", { userId: "ADMIN" });
+  assert.equal(
+    afterSecond.body.find((p) => p.poNumber === "PO90022").locationCode,
+    "PRINCETON",
+    "location_code was already resolved on the first import -- COALESCE keeps it, even though the WOM # on the row changed"
+  );
+});
+
 // A PO whose vendor_number doesn't match any vendor profile on file (see
 // listUnregisteredPoVendors) should task the admin who owns that PO to
 // create one -- one task per vendor #, even if several POs share it.
