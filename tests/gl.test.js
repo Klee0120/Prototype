@@ -511,6 +511,7 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
   raw
     .prepare("INSERT INTO locations (code, name, ef_job_number, wom_job_number, territory) VALUES (?, ?, ?, ?, ?)")
     .run("MFT-1", "Mock Facility Test", "100110099000", "100110099999", "East");
+  db.createAdmin({ id: "RFM-EAST", name: "Jordan RFM", pin: "1234", homeLocationCode: "MFT-1" });
 
   db.importGlEntries(
     [
@@ -571,7 +572,8 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
     assert.equal(efRow.efJobNumber, "100110099000\tMock Facility Test");
     assert.equal(efRow.e1WomJobNumber, null);
     assert.equal(efRow.womNumber, null);
-    assert.equal(efRow.requestor, null, "GL has no requestor field -- left blank, not guessed");
+    assert.equal(efRow.requestor, "Jordan RFM", "Requestor carries the active RFM covering this PO's territory");
+    assert.equal(efRow.admin, "Jordan RFM", "Admin carries the same territory RFM");
     assert.equal(efRow.vendorName, "John Doe Vendor", "name_alpha is the vendor's own name, not a requestor");
     assert.equal(efRow.description, "Repair work");
     assert.equal(efRow.dateRequested, "2026-09-01", "pre-filled with the earliest GL date as an editable placeholder");
@@ -603,6 +605,38 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
     assert.equal(needsWomRow.e1WomJobNumber, "100110099999");
     assert.equal(needsWomRow.womNumber, null, "the actual WOM # is still unknown -- not guessed");
     assert.match(needsWomRow.description, /confirm the WOM #/i);
+
+    // Same location (East territory) across all three POs -> same RFM.
+    assert.equal(womRow.requestor, "Jordan RFM");
+    assert.equal(womRow.admin, "Jordan RFM");
+    assert.equal(needsWomRow.requestor, "Jordan RFM");
+    assert.equal(needsWomRow.admin, "Jordan RFM");
+  });
+
+  await t.test("no active admin covers the territory -> Requestor/Admin left null, not guessed", () => {
+    raw
+      .prepare("INSERT INTO locations (code, name, ef_job_number, territory) VALUES (?, ?, ?, ?)")
+      .run("NOADMIN-LOC", "No Admin Coverage Site", "100110088000", "West");
+    db.importGlEntries(
+      [
+        {
+          glDate: "2026-09-04",
+          businessUnit: "100110088000",
+          objectAccount: "605500 Orphan Territory",
+          subsidiary: "400 Quaternary",
+          amount: 100,
+          purchaseOrder: "PO90104",
+        },
+      ],
+      17,
+      26,
+      "ADMIN",
+      "t-missing-from-tracker-noadmin.xlsx"
+    );
+    const row = db.getPosMissingFromTrackerForExport().find((r) => r.poNumber === "PO90104");
+    assert.ok(row);
+    assert.equal(row.requestor, null, "no active admin's home location is tagged West -- left blank, not guessed");
+    assert.equal(row.admin, null);
   });
 
   await t.test("GET /reconciliation/missing-from-tracker returns the same rows with a count", async () => {

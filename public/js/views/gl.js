@@ -254,9 +254,10 @@ export async function renderGlReconciliation(container) {
                exact columns of the real Operations PO Request Tracking sheet -- paste the rows in directly. Only what GL
                actually carries gets filled in (E&F Contract Job # or E1 WOM Job #/WOM Number depending on which one it's
                coded to, PO Amount from GL activity to date, Object Code/Subsidiary, Vendor Name from the GL's own vendor
-               field, and Date Requested as the earliest GL date posted -- a placeholder worth double-checking, not a
-               confirmed request date). Everything else -- Asset #, Maximo WO#, Vendor Number, Requestor, Admin -- is
-               left blank for you to fill in rather than guessed.`
+               field, Date Requested as the earliest GL date posted -- a placeholder worth double-checking, not a
+               confirmed request date -- and Requestor/Admin both set to the active RFM whose home location covers this
+               PO's own territory). Everything else -- Asset #, Maximo WO#, Vendor Number -- is left blank for you to
+               fill in rather than guessed.`
             : ""
         }
       </p>

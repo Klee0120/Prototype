@@ -3373,6 +3373,22 @@ function activeAdminMatch(name) {
   return admin && admin.employment_status === "active" ? admin : null;
 }
 
+// The reverse of poTerritory: given a territory, which active admin (RFM)
+// actually covers it -- their own home location is tagged with that
+// territory. Alphabetical-by-name is just a deterministic tie-break for
+// the rare case two active admins share a territory; there's no ranking
+// implied.
+function findAdminForTerritory(territory) {
+  if (!territory) return null;
+  return db
+    .prepare(
+      `SELECT t.* FROM technicians t JOIN locations l ON l.code = t.home_location_code
+       WHERE t.role = 'admin' AND t.employment_status = 'active' AND l.territory = ?
+       ORDER BY t.name LIMIT 1`
+    )
+    .get(territory);
+}
+
 // A PO's territory -- the Budget PO Tracker's own Admin column is a more
 // reliable signal than the PO's own location match: every row carries an
 // admin name, while the location match can be missing or wrong, and each
@@ -9638,9 +9654,15 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
 // as every other field here.
 //
 // name_alpha ("Name - Alpha Explanation") is the vendor's own name on the
-// GL line (confirmed directly) -- fills Vendor Name, not Requestor, which
-// GL has no way to know (an intake-form field, not a GL one) and is left
-// blank.
+// GL line (confirmed directly) -- fills Vendor Name, not Requestor.
+//
+// Requestor and Admin both get the RFM covering the PO's own territory
+// (see findAdminForTerritory) -- the real sheet's Admin column is already
+// "whichever active admin owns this territory" everywhere else in this
+// app (poTerritory reads it the same way, just in reverse), and Krista
+// asked for Requestor to carry the same name here rather than being left
+// blank. Null when the matched location has no territory on file, or no
+// active admin's home location is tagged with it -- never guessed.
 //
 // Question 1/Question 2 use the real sheet's own vocabulary (confirmed
 // against that same export): a line with no WOM # (subledger_gl) gets
@@ -9697,6 +9719,7 @@ function getPosMissingFromTrackerForExport() {
     const hasWom = Boolean(r.subledgerGl);
     const codedToWomJobNumber = Boolean(location && location.wom_job_number && r.businessUnit && r.businessUnit === location.wom_job_number);
     const needsWomNumberConfirmed = !hasWom && codedToWomJobNumber;
+    const rfm = location && location.territory ? findAdminForTerritory(location.territory) : null;
     return {
       dateRequested: r.earliestGlDate || null,
       question1: hasWom ? null : needsWomNumberConfirmed ? "WOM is Required" : "E&F Job",
@@ -9705,7 +9728,7 @@ function getPosMissingFromTrackerForExport() {
       description:
         (needsWomNumberConfirmed ? "[Coded to this location's WOM job # on GL, but no WOM # on the line -- confirm the WOM # before filing] " : "") +
         (r.remark || "") || null,
-      requestor: null,
+      requestor: rfm ? rfm.name : null,
       poNumber: r.poNumber,
       efJobNumber: !hasWom && !needsWomNumberConfirmed && location && location.ef_job_number ? `${location.ef_job_number}\t${location.name}` : null,
       poAmount: r.totalAmount,
@@ -9721,7 +9744,7 @@ function getPosMissingFromTrackerForExport() {
       objectCode: r.objectAccount || null,
       subsidiary: r.subsidiary || null,
       ppsSubsidiary: null,
-      admin: null,
+      admin: rfm ? rfm.name : null,
       urgent: null,
       urgentNotes: null,
       subcontracted: null,
