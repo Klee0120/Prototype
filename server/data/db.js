@@ -7593,11 +7593,23 @@ function listPos(filters = {}) {
   // WOM job number typed into the wrong column -- same gap either way. See
   // poMissingWomLink for the JS-side equivalent used by the live task.
   if (filters.womLinkMissing) {
+    // Excludes a location whose own ef_job_number/pps_job_number already
+    // equals the same value as its wom_job_number -- that's not a number
+    // typed into the wrong field, it's a location using the same job
+    // number for more than one type (see poMissingWomLink's own guard).
     clauses.push(`(
       (wom_number IS NULL OR wom_number = '') AND (
         (e1_wom_job_number IS NOT NULL AND e1_wom_job_number != '') OR
-        (ef_job_number IS NOT NULL AND ef_job_number IN (SELECT wom_job_number FROM locations WHERE wom_job_number IS NOT NULL AND wom_job_number != '')) OR
-        (pps_job_number IS NOT NULL AND pps_job_number IN (SELECT wom_job_number FROM locations WHERE wom_job_number IS NOT NULL AND wom_job_number != ''))
+        (ef_job_number IS NOT NULL AND EXISTS (
+          SELECT 1 FROM locations WHERE wom_job_number = pos.ef_job_number
+          AND (ef_job_number IS NULL OR ef_job_number != pos.ef_job_number)
+          AND (pps_job_number IS NULL OR pps_job_number != pos.ef_job_number)
+        )) OR
+        (pps_job_number IS NOT NULL AND EXISTS (
+          SELECT 1 FROM locations WHERE wom_job_number = pos.pps_job_number
+          AND (ef_job_number IS NULL OR ef_job_number != pos.pps_job_number)
+          AND (pps_job_number IS NULL OR pps_job_number != pos.pps_job_number)
+        ))
       )
     )`);
   }
@@ -8111,9 +8123,17 @@ function poMissingWomLink(po) {
   }
   const ef = po.ef_job_number ? String(po.ef_job_number).trim() : null;
   const pps = po.pps_job_number ? String(po.pps_job_number).trim() : null;
-  const findByWomJobNumber = db.prepare("SELECT 1 FROM locations WHERE wom_job_number = ?");
-  if (ef && findByWomJobNumber.get(ef)) return { field: "E&F Job #", value: ef };
-  if (pps && findByWomJobNumber.get(pps)) return { field: "PPS Job #", value: pps };
+  // Only a real "typed into the wrong field" case when the number is NOT
+  // ALSO that same location's own E&F/PPS job number -- a location whose
+  // Chart of Accounts data carries the identical job number under more
+  // than one type isn't secretly WOM-coded just because it shows up under
+  // wom_job_number too; the PO's own E&F/PPS field is still accurate. Same
+  // guard poJobNumberTypeMismatch already uses for the same reason.
+  const findWomOnlyMatch = db.prepare(
+    "SELECT 1 FROM locations WHERE wom_job_number = ? AND (ef_job_number IS NULL OR ef_job_number != ?) AND (pps_job_number IS NULL OR pps_job_number != ?)"
+  );
+  if (ef && findWomOnlyMatch.get(ef, ef, ef)) return { field: "E&F Job #", value: ef };
+  if (pps && findWomOnlyMatch.get(pps, pps, pps)) return { field: "PPS Job #", value: pps };
   return null;
 }
 

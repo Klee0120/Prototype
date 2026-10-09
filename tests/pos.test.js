@@ -105,6 +105,34 @@ test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
     assert.ok(missing.some((p) => p.id === ppsGapId), "listPos filter should also catch the PPS-field case");
   });
 
+  // Caught live: a location's Chart of Accounts data can carry the exact
+  // same job number under BOTH ef_job_number and wom_job_number (e.g. the
+  // site doesn't split E&F vs. WOM work into separate numbers). A PO coded
+  // against that number in its E&F field is genuinely E&F work -- it's
+  // still that location's real E&F job number, not a WOM number typed into
+  // the wrong column -- so it shouldn't get flagged as missing a WOM link.
+  await t.test("a location whose own E&F/PPS job number equals its WOM job number is not flagged as wrong-field", async () => {
+    raw.prepare(`INSERT INTO locations (code, name, ef_job_number, wom_job_number) VALUES (?, ?, ?, ?)`).run(
+      "SHARED-NUM", "Shared Job Number Site", "100110042972", "100110042972"
+    );
+    raw.prepare(`INSERT INTO locations (code, name, pps_job_number, wom_job_number) VALUES (?, ?, ?, ?)`).run(
+      "SHARED-NUM-PPS", "Shared Job Number Site (PPS)", "100110042973", "100110042973"
+    );
+
+    const efSharedId = insertPo({ composite: "shared-ef-1", poNumber: "PO50040", efJobNumber: "100110042972", womNumber: null, lifecycleStatus: "active" });
+    const ppsSharedId = insertPo({ composite: "shared-pps-1", poNumber: "PO50041", ppsJobNumber: "100110042973", womNumber: null, lifecycleStatus: "active" });
+
+    db.refreshAllPoWomLinkTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === efSharedId), "should not flag a PO whose E&F job # is also that location's own E&F job #, even though it matches wom_job_number too");
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === ppsSharedId), "should not flag a PO whose PPS job # is also that location's own PPS job #, even though it matches wom_job_number too");
+
+    const missing = db.listPos({ womLinkMissing: true });
+    assert.ok(!missing.some((p) => p.id === efSharedId), "listPos filter should also leave the E&F shared-number case alone");
+    assert.ok(!missing.some((p) => p.id === ppsSharedId), "listPos filter should also leave the PPS shared-number case alone");
+  });
+
   // A lightweight, one-click "needs a reclass eventually" flag -- distinct
   // from the full Flag a Finding form. Admin notices a gap on a PO (any
   // reason, not just the WOM-link one above) and marks it for their running
