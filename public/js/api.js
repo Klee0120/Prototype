@@ -143,6 +143,36 @@ async function downloadFile(id, filename) {
   URL.revokeObjectURL(url);
 }
 
+// Same save-this-blob pattern as downloadFile, but for a server-generated
+// export (an XLSX built on the fly, e.g. GL Reconciliation's "missing from
+// the tracker" export) rather than a previously uploaded file on record.
+async function downloadFromUrl(path, filename) {
+  const headers = {};
+  const token = currentSessionToken();
+  if (token) headers["x-session-token"] = token;
+
+  const res = await fetch(path, { headers });
+  if (!res.ok) {
+    reportIfSessionExpired(res.status, token);
+    let message = `Could not load export (${res.status})`;
+    try {
+      message = (await res.json()).error || message;
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   get: (path) => request("GET", path),
   post: (path, body) => request("POST", path, body),
@@ -152,5 +182,6 @@ export const api = {
   uploadFile,
   uploadRawFile,
   downloadFile,
+  downloadFromUrl,
   fetchFileBlob,
 };

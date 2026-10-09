@@ -495,6 +495,135 @@ test("GL location matching: Business Unit job number takes priority over the Loc
   });
 });
 
+// "GL lines with a PO # not on file" export -- one row per distinct PO #
+// GL already knows about that the Budget PO Tracker doesn't, shaped to
+// paste straight into the real Operations PO Request Tracking sheet (see
+// MISSING_FROM_TRACKER_EXPORT_COLUMNS in server/routes/gl.js for the exact
+// 25-column header order, confirmed against a real export of that sheet).
+test("GL Reconciliation: export POs missing from the tracker", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw
+    .prepare("INSERT INTO locations (code, name, ef_job_number, wom_job_number, territory) VALUES (?, ?, ?, ?, ?)")
+    .run("MFT-1", "Mock Facility Test", "100110099000", "100110099999", "East");
+
+  db.importGlEntries(
+    [
+      // E&F-coded, no WOM # -- the "no WOM # listed" case.
+      {
+        glDate: "2026-09-01",
+        businessUnit: "100110099000",
+        objectAccount: "605200 Subcontracting",
+        subsidiary: "100 Primary",
+        amount: 250,
+        purchaseOrder: "PO90101",
+        nameAlpha: "John Doe Vendor",
+        remark: "Repair work",
+      },
+      // WOM-coded (subledgerGl set) at the same location.
+      {
+        glDate: "2026-09-02",
+        businessUnit: "100110099000",
+        objectAccount: "605300 Other Work",
+        subsidiary: "200 Secondary",
+        amount: 500,
+        purchaseOrder: "PO90102",
+        subledgerGl: "WOM-9500",
+      },
+    ],
+    16,
+    26,
+    "ADMIN",
+    "t-missing-from-tracker.xlsx"
+  );
+
+  await t.test("getPosMissingFromTrackerForExport fills only what GL actually carries", () => {
+    const rows = db.getPosMissingFromTrackerForExport();
+    const efRow = rows.find((r) => r.poNumber === "PO90101");
+    const womRow = rows.find((r) => r.poNumber === "PO90102");
+    assert.ok(efRow, "expected the E&F-coded unmatched PO to show up");
+    assert.ok(womRow, "expected the WOM-coded unmatched PO to show up");
+
+    // No WOM # -> Question 1/2 use the real sheet's own E&F vocabulary,
+    // and the location's own E&F job # fills E&F Contract Job #.
+    assert.equal(efRow.question1, "E&F Job");
+    assert.equal(efRow.question2, "-");
+    assert.equal(efRow.efJobNumber, "100110099000\tMock Facility Test");
+    assert.equal(efRow.e1WomJobNumber, null);
+    assert.equal(efRow.womNumber, null);
+    assert.equal(efRow.requestor, "John Doe Vendor (GL Reported)");
+    assert.equal(efRow.description, "Repair work");
+    assert.equal(efRow.poAmount, 250);
+    assert.equal(efRow.objectCode, "605200 Subcontracting");
+    assert.equal(efRow.subsidiary, "100 Primary");
+    assert.equal(efRow.assetNumber, null, "never fabricates Asset # from GL");
+    assert.equal(efRow.maximoWo, null, "never fabricates Maximo WO# from GL");
+    assert.equal(efRow.dateRequested, null, "never backfills Date Requested from a GL posting date");
+
+    // WOM # present -> Question 1/2 left blank (Krista only specified the
+    // no-WOM case), WOM Number filled directly, and the location's own
+    // E1 WOM Job # fills that column instead of E&F Contract Job #.
+    assert.equal(womRow.question1, null);
+    assert.equal(womRow.question2, null);
+    assert.equal(womRow.efJobNumber, null);
+    assert.equal(womRow.e1WomJobNumber, "100110099999");
+    assert.equal(womRow.womNumber, "WOM-9500");
+    assert.equal(womRow.requestor, null, "no name_alpha on this line -- left blank, not guessed");
+    assert.equal(womRow.poAmount, 500);
+  });
+
+  await t.test("GET /reconciliation/missing-from-tracker returns the same rows with a count", async () => {
+    const res = await server.call("GET", "/api/admin/gl/reconciliation/missing-from-tracker", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.count >= 2);
+    assert.ok(res.body.items.some((r) => r.poNumber === "PO90101"));
+    assert.ok(res.body.items.some((r) => r.poNumber === "PO90102"));
+  });
+
+  await t.test("GET /reconciliation/missing-from-tracker/export returns a downloadable xlsx", async () => {
+    const res = await server.rawGet("/api/admin/gl/reconciliation/missing-from-tracker/export", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    assert.match(res.headers.get("content-disposition") || "", /attachment; filename="PO_Tracker_Missing_From_GL_.*\.xlsx"/);
+    assert.ok(res.text.length > 0);
+  });
+
+  await t.test("once the PO is added to the tracker, it drops out of the export", async () => {
+    raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("now-tracked", "PO90101", "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z");
+    // A fresh import re-runs the PO match against the now-existing PO row.
+    db.importGlEntries(
+      [
+        {
+          glDate: "2026-09-01",
+          businessUnit: "100110099000",
+          objectAccount: "605200 Subcontracting",
+          subsidiary: "100 Primary",
+          amount: 250,
+          purchaseOrder: "PO90101",
+          nameAlpha: "John Doe Vendor",
+          remark: "Repair work",
+        },
+      ],
+      16,
+      26,
+      "ADMIN",
+      "t-missing-from-tracker-2.xlsx"
+    );
+    const rows = db.getPosMissingFromTrackerForExport();
+    assert.ok(!rows.some((r) => r.poNumber === "PO90101"), "now matched to a real PO, so it should no longer show up as missing");
+  });
+});
+
 // A line coded straight to a WOM project (Subledger - G/L set, see
 // subledgerGl) never has a PO either -- a different reason for having no PO
 // than payroll burden or an accrual, and already tracked through the WOM

@@ -271,6 +271,59 @@ router.get("/reconciliation/unmatched", (req, res) => {
   res.json(db.getUnmatchedEntriesPage({ page: req.query.page, pageSize: req.query.pageSize }));
 });
 
+// The real Operations PO Request Tracking sheet's own 25-column header
+// order, confirmed directly against an actual export of it -- Question 1/
+// Question 2/Subcontracted/Subcontracted Vendor Name aren't read by the
+// PO Tracker's own import (see pos.js's COLUMN_MAP), but they're real
+// columns on the live sheet, so the export still carries them in place so
+// pasting this straight into the sheet doesn't shift anything over.
+const MISSING_FROM_TRACKER_EXPORT_COLUMNS = [
+  { header: "Date Requested", key: "dateRequested" },
+  { header: "Question 1", key: "question1" },
+  { header: "Question 2", key: "question2" },
+  { header: "Description", key: "description" },
+  { header: "Requestor", key: "requestor" },
+  { header: "PO Number", key: "poNumber" },
+  { header: "E&F Contract Job #", key: "efJobNumber" },
+  { header: "PO Amount", key: "poAmount" },
+  { header: "Change Order", key: "changeOrder" },
+  { header: "Status", key: "status" },
+  { header: "Vendor Name", key: "vendorName" },
+  { header: "Vendor Number", key: "vendorNumber" },
+  { header: "PPS Job Number", key: "ppsJobNumber" },
+  { header: "E1 WOM Job #", key: "e1WomJobNumber" },
+  { header: "WOM Number", key: "womNumber" },
+  { header: "Asset Number", key: "assetNumber" },
+  { header: "Maximo WO#", key: "maximoWo" },
+  { header: "Object Code", key: "objectCode" },
+  { header: "Subsidiary", key: "subsidiary" },
+  { header: "PPS Subsidiary", key: "ppsSubsidiary" },
+  { header: "Admin", key: "admin" },
+  { header: "Urgent", key: "urgent" },
+  { header: "Urgent Reason/Notes", key: "urgentNotes" },
+  { header: "Subcontracted", key: "subcontracted" },
+  { header: "Subcontracted Vendor Name", key: "subcontractedVendorName" },
+];
+
+router.get("/reconciliation/missing-from-tracker", (req, res) => {
+  const items = db.getPosMissingFromTrackerForExport();
+  res.json({ count: items.length, items });
+});
+
+router.get("/reconciliation/missing-from-tracker/export", (req, res) => {
+  const items = db.getPosMissingFromTrackerForExport();
+  const headerRow = MISSING_FROM_TRACKER_EXPORT_COLUMNS.map((c) => c.header);
+  const dataRows = items.map((r) => MISSING_FROM_TRACKER_EXPORT_COLUMNS.map((c) => (r[c.key] == null ? null : r[c.key])));
+  const sheet = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "Operations PO Request Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  const fileName = `PO_Tracker_Missing_From_GL_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(buffer);
+});
+
 // Every imported GL line grouped by its own chart-of-accounts category
 // (phone, health insurance, software license, etc. -- see
 // db.getGlSpendBreakdown) and by territory -- the Spend Breakdown view's

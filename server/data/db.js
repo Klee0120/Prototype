@@ -9621,6 +9621,92 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
   return { items, total: countRow.cnt, page: p, pageSize: ps };
 }
 
+// One row per distinct PO # that GL knows about but the Budget PO Tracker
+// doesn't -- the export behind "GL lines with a PO # not on file", shaped
+// to paste straight into the real Operations PO Request Tracking sheet
+// (see server/routes/gl.js's EXPORT_COLUMNS for the exact 25-column header
+// order, confirmed directly against a real export of that sheet).
+//
+// Only fields GL genuinely carries get filled in -- Asset #/Maximo WO#/
+// Vendor Number/PPS Job Number/Admin/etc. are left blank rather than
+// guessed, same principle runPoImport already follows for everything it
+// can't actually confirm. "Date Requested" is also left blank on purpose:
+// a GL posting date isn't when the PO was requested, and backfilling it
+// with one would corrupt the PO turnaround KPIs (getPoRequestTurnaroundStats)
+// once this gets re-imported.
+//
+// Question 1/Question 2 use the real sheet's own vocabulary (confirmed
+// against that same export): a line with no WOM # (subledger_gl) gets
+// "E&F Job"/"-", matching how every other E&F-coded request on the real
+// sheet reads. A WOM-coded line (subledger_gl present) is left blank in
+// both -- Krista only specified the no-WOM case, and guessing between
+// "There is already a WOM"/"A new WOM is required" isn't something GL
+// activity alone can answer.
+//
+// subledger_gl is this app's established WOM-number signal for a GL line
+// (see getGlSpendBreakdown's own noWomReferenceOnly handling) -- when
+// present, it fills the WOM Number column directly, and the matched
+// location's own wom_job_number fills E1 WOM Job # (the location-level
+// field WOM-coded PPS requests use, distinct from the WOM # itself). When
+// absent, the matched location's ef_job_number fills E&F Contract Job #
+// instead -- one or the other, never both, same as the real sheet.
+//
+// A PO # can have several GL lines (different periods, a split charge);
+// MAX() on the text fields just needs one representative value when they
+// agree, which they do in practice for a single PO #.
+function getPosMissingFromTrackerForExport() {
+  const rows = db
+    .prepare(
+      `SELECT purchase_order AS poNumber,
+              SUM(amount) AS totalAmount,
+              MAX(matched_location_code) AS matchedLocationCode,
+              MAX(subledger_gl) AS subledgerGl,
+              MAX(name_alpha) AS nameAlpha,
+              MAX(remark) AS remark,
+              MAX(object_account) AS objectAccount,
+              MAX(subsidiary) AS subsidiary
+       FROM gl_entries
+       WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL
+       GROUP BY purchase_order
+       ORDER BY purchase_order`
+    )
+    .all();
+
+  const locationsByCode = new Map(db.prepare("SELECT * FROM locations").all().map((l) => [l.code, l]));
+
+  return rows.map((r) => {
+    const location = r.matchedLocationCode ? locationsByCode.get(r.matchedLocationCode) : null;
+    const hasWom = Boolean(r.subledgerGl);
+    return {
+      dateRequested: null,
+      question1: hasWom ? null : "E&F Job",
+      question2: hasWom ? null : "-",
+      description: r.remark || null,
+      requestor: r.nameAlpha ? `${r.nameAlpha} (GL Reported)` : null,
+      poNumber: r.poNumber,
+      efJobNumber: !hasWom && location && location.ef_job_number ? `${location.ef_job_number}\t${location.name}` : null,
+      poAmount: r.totalAmount,
+      changeOrder: null,
+      status: null,
+      vendorName: null,
+      vendorNumber: null,
+      ppsJobNumber: null,
+      e1WomJobNumber: hasWom && location && location.wom_job_number ? location.wom_job_number : null,
+      womNumber: hasWom ? r.subledgerGl : null,
+      assetNumber: null,
+      maximoWo: null,
+      objectCode: r.objectAccount || null,
+      subsidiary: r.subsidiary || null,
+      ppsSubsidiary: null,
+      admin: null,
+      urgent: null,
+      urgentNotes: null,
+      subcontracted: null,
+      subcontractedVendorName: null,
+    };
+  });
+}
+
 // ---- Time tracker widget ----
 
 // Fixed vocabulary, not admin-editable -- matches the real categories of
@@ -10755,6 +10841,7 @@ module.exports = {
   listKnownCellPhoneNumbers,
   getReconciledPage,
   getUnmatchedEntriesPage,
+  getPosMissingFromTrackerForExport,
   getGlImportStatus,
   getGlFiscalYearCoverage,
   getGlFiscalCalendarYears,

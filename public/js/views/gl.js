@@ -122,6 +122,7 @@ export async function renderGlReconciliation(container) {
   let summary = null;
   let imports = [];
   let status = null;
+  let missingFromTrackerCount = 0;
 
   // PO reconciliation table filters -- sent to the server, not applied
   // client-side. "PO reference not found" isn't one of these: that's a
@@ -142,11 +143,14 @@ export async function renderGlReconciliation(container) {
   async function draw() {
     renderLoadingState(container, loadingLabelFor("Reconciliation"));
     try {
-      [summary, imports, status] = await Promise.all([
+      let missingFromTracker;
+      [summary, imports, status, missingFromTracker] = await Promise.all([
         api.get("/api/admin/gl/reconciliation/summary"),
         api.get("/api/admin/gl/imports"),
         api.get("/api/admin/gl/status"),
+        api.get("/api/admin/gl/reconciliation/missing-from-tracker"),
       ]);
+      missingFromTrackerCount = missingFromTracker.count;
     } catch (err) {
       container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
@@ -233,10 +237,27 @@ export async function renderGlReconciliation(container) {
       ${
         summary.unmatchedCount > 0
           ? `
-      <h3>GL lines with a PO # not on file</h3>
+      <div class="review-actions">
+        <h3 style="margin: 0;">GL lines with a PO # not on file</h3>
+        ${
+          missingFromTrackerCount > 0
+            ? `<button type="button" class="btn btn-outline gl-export-missing-btn">&#8681; Export ${missingFromTrackerCount} missing PO${missingFromTrackerCount === 1 ? "" : "s"} to tracker format</button>`
+            : ""
+        }
+      </div>
       <p class="review-checklist-hint">
         These GL lines name a Purchase Order # that isn't in the Budget PO Tracker -- worth checking whether it's
         missing from the tracker, or was billed against the wrong PO #.
+        ${
+          missingFromTrackerCount > 0
+            ? `The export above lists each of those ${missingFromTrackerCount} PO # once, in the exact columns of the real
+               Operations PO Request Tracking sheet -- paste the rows in directly. Only what GL actually carries gets
+               filled in (E&F Contract Job # or E1 WOM Job #/WOM Number depending on which one it's coded to, PO Amount
+               from GL activity to date, Object Code/Subsidiary, and Requestor from the GL's own reported name, marked
+               "(GL Reported)" since it's not a confirmed requestor). Everything else -- Date Requested, Asset #,
+               Maximo WO#, Vendor Number, Admin -- is left blank for you to fill in rather than guessed.`
+            : ""
+        }
       </p>
       <div class="gl-unmatched-wrap"></div>
       `
@@ -253,6 +274,26 @@ export async function renderGlReconciliation(container) {
       if (!file) return;
       await runImport(file);
     });
+
+    const exportMissingBtn = container.querySelector(".gl-export-missing-btn");
+    if (exportMissingBtn) {
+      exportMissingBtn.addEventListener("click", async () => {
+        exportMissingBtn.disabled = true;
+        const original = exportMissingBtn.textContent;
+        exportMissingBtn.textContent = "Exporting…";
+        try {
+          await api.downloadFromUrl(
+            "/api/admin/gl/reconciliation/missing-from-tracker/export",
+            `PO_Tracker_Missing_From_GL_${new Date().toISOString().slice(0, 10)}.xlsx`
+          );
+        } catch (err) {
+          window.alert(err.message);
+        } finally {
+          exportMissingBtn.disabled = false;
+          exportMissingBtn.textContent = original;
+        }
+      });
+    }
 
     container.querySelector(".gl-status-filter").addEventListener("change", (e) => {
       glStatusFilter = e.target.value;
