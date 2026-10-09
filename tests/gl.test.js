@@ -688,6 +688,91 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
   });
 });
 
+// A GL line only ever gets matched to a PO at the moment its own period's
+// file is imported -- a PO added to the Budget PO Tracker *afterward*
+// never retroactively links back. reconcileUnmatchedGlEntries closes that
+// gap (called after every PO import, see runPoImport, and once at
+// startup) -- the exact scenario Krista found live: a real PO # on the
+// tracker still showing up in "GL lines with a PO # not on file".
+test("reconcileUnmatchedGlEntries: a PO added after its GL already posted gets linked retroactively", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  await t.test("reconcileUnmatchedGlEntries links an unmatched line once the PO exists, and recomputes mismatch flags", () => {
+    // GL imported first, with no matching PO on file yet -- lands unmatched,
+    // same as importGlEntries always does for a PO # it's never heard of.
+    db.importGlEntries(
+      [{ glDate: "2026-09-01", objectAccount: "605200 Subcontracting", subsidiary: "999", amount: 300, purchaseOrder: "PO10044053" }],
+      18,
+      26,
+      "ADMIN",
+      "t-reconcile-1.xlsx"
+    );
+    let line = raw.prepare("SELECT matched_po_id, subsidiary_mismatch FROM gl_entries WHERE purchase_order = ?").get("PO10044053");
+    assert.equal(line.matched_po_id, null, "sanity check -- should start unmatched");
+
+    // The PO shows up on the tracker later (e.g. a fresh PO Tracker import).
+    const now = new Date().toISOString();
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, subsidiary, object_code, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("reconcile-1", "PO10044053", "100 Primary", "605200 Subcontracting", now, now, now, now);
+    const poId = Number(result.lastInsertRowid);
+
+    const linkedCount = db.reconcileUnmatchedGlEntries();
+    assert.ok(linkedCount >= 1);
+
+    line = raw.prepare("SELECT matched_po_id, subsidiary_mismatch FROM gl_entries WHERE purchase_order = ?").get("PO10044053");
+    assert.equal(line.matched_po_id, poId, "should now be linked to the real PO");
+    assert.equal(line.subsidiary_mismatch, 1, "GL's subsidiary (999) disagrees with the PO's (100 Primary) -- recomputed, not left stale");
+
+    assert.ok(!db.getPosMissingFromTrackerForExport().some((r) => r.poNumber === "PO10044053"), "should drop out of the missing-from-tracker export now that it's linked");
+  });
+
+  await t.test("a PO Tracker import triggers the same reconcile automatically", async () => {
+    db.importGlEntries(
+      [{ glDate: "2026-09-01", objectAccount: "605300 Other", subsidiary: "100", amount: 400, purchaseOrder: "PO10099999" }],
+      19,
+      26,
+      "ADMIN",
+      "t-reconcile-2.xlsx"
+    );
+    let line = raw.prepare("SELECT matched_po_id FROM gl_entries WHERE purchase_order = ?").get("PO10099999");
+    assert.equal(line.matched_po_id, null);
+
+    const XLSX = require("xlsx");
+    const headers = [
+      "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+      "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+      "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+      "Admin", "Urgent", "Urgent Reason/Notes",
+    ];
+    const rows = [headers, ["2026-09-01", "Reconcile test row", "Jane Doe", "PO10099999", null, 400, null, "Open", "Vendor X", "9001", null, null, null, null, null, null, "100", null, "Krista Lee", null, null]];
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+    const importRes = await server.upload("/api/admin/pos/import", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "reconcile-test.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+    line = raw.prepare("SELECT matched_po_id FROM gl_entries WHERE purchase_order = ?").get("PO10099999");
+    assert.ok(line.matched_po_id, "the PO Tracker import itself should have triggered the reconcile, no separate call needed");
+  });
+});
+
 // A line coded straight to a WOM project (Subledger - G/L set, see
 // subledgerGl) never has a PO either -- a different reason for having no PO
 // than payroll burden or an accrual, and already tracked through the WOM

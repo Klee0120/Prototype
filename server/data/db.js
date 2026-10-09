@@ -1643,6 +1643,14 @@ if (!hasColumn("gl_entries", "subledger_gl")) {
   db.exec("ALTER TABLE gl_entries ADD COLUMN subledger_gl TEXT");
 }
 
+// One-time catch-up for the matched-at-import-time gap reconcileUnmatchedGlEntries
+// exists to close (see its own comment): every redeploy, not just every PO
+// import, so a server that's been sitting on stale unmatched GL lines from
+// before this fix shipped gets them linked immediately rather than waiting
+// on the next PO Tracker import. Cheap and safe to run unconditionally --
+// it only ever touches gl_entries rows that are still unmatched.
+reconcileUnmatchedGlEntries();
+
 // The parent onboarding case layered on top of the existing 4 document
 // cases (vendor_requests) -- its own case #/notes (kept separate from any
 // one document case's own notes), the two onboarding-specific contacts,
@@ -7773,6 +7781,11 @@ function runPoImport(rows, importedBy, { dryRun }) {
         "INSERT INTO po_imports (imported_by, imported_at, total_rows, created_count, updated_count, unchanged_count, missing_count, invalid_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
       ).run(importedBy, now, summary.totalRows, created, updated, unchanged, missingIds.length, invalid);
       db.exec("COMMIT");
+      // Any PO this import just created or updated may be the missing
+      // piece for a GL line that's been sitting unmatched since before
+      // this PO was on file -- link those up now rather than waiting on
+      // the next GL import (see reconcileUnmatchedGlEntries).
+      reconcileUnmatchedGlEntries();
     }
     return summary;
   } catch (err) {
@@ -8606,6 +8619,50 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
     importId
   );
   return findGlImport(importId);
+}
+
+// A GL line only ever gets matched to a PO at the one moment its own
+// period's file is imported (see importGlEntries above) -- a PO added or
+// updated in the Budget PO Tracker *afterward* never retroactively links
+// back to GL lines that already posted against it before that PO existed
+// on file. Left alone, that PO sits forever in "GL lines with a PO # not
+// on file" even once it's genuinely on the tracker -- exactly the gap
+// Krista found (PO 10044053: on the tracker, still showing as missing).
+//
+// Re-checks every currently-unmatched GL line against the live pos table
+// and links it the moment a real match exists, recomputing the same
+// subsidiary/object-code mismatch flags a fresh import would (same
+// comparison importGlEntries itself makes). purchase_order is already
+// normalized at import time (see normalizePoNumber); pos.po_number is
+// normalized the same way here rather than compared as stored text, so a
+// leading zero or an Excel-float artifact on either sheet doesn't block
+// an otherwise-real match. Called after every PO Tracker import (see
+// runPoImport) and once at startup to catch up whatever's already stale.
+function reconcileUnmatchedGlEntries() {
+  const unmatched = db
+    .prepare("SELECT id, purchase_order, object_account_code, subsidiary FROM gl_entries WHERE matched_po_id IS NULL AND purchase_order IS NOT NULL")
+    .all();
+  if (unmatched.length === 0) return 0;
+
+  const posByNumber = new Map();
+  for (const p of db.prepare("SELECT id, po_number, subsidiary, object_code FROM pos WHERE po_number IS NOT NULL").all()) {
+    const key = normalizePoNumber(p.po_number);
+    if (key && !posByNumber.has(key)) posByNumber.set(key, p);
+  }
+
+  const update = db.prepare("UPDATE gl_entries SET matched_po_id = ?, subsidiary_mismatch = ?, object_code_mismatch = ? WHERE id = ?");
+  let linkedCount = 0;
+  for (const line of unmatched) {
+    const match = posByNumber.get(normalizePoNumber(line.purchase_order));
+    if (!match) continue;
+    const poSubsidiaryCode = parseObjectAccountCode(match.subsidiary);
+    const poObjectCode = parseObjectAccountCode(match.object_code);
+    const subsidiaryMismatch = poSubsidiaryCode && line.subsidiary && String(line.subsidiary) !== poSubsidiaryCode ? 1 : 0;
+    const objectCodeMismatch = poObjectCode && line.object_account_code && String(line.object_account_code) !== poObjectCode ? 1 : 0;
+    update.run(match.id, subsidiaryMismatch, objectCodeMismatch, line.id);
+    linkedCount++;
+  }
+  return linkedCount;
 }
 
 function presentGlImport(row) {
@@ -10872,6 +10929,7 @@ module.exports = {
   refreshAllPoWomLocationMismatchTasks,
   refreshAllWomInvoicingTasks,
   importGlEntries,
+  reconcileUnmatchedGlEntries,
   refreshGlMismatchFlagsForPo,
   listGlImports,
   findGlImport,
