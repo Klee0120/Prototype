@@ -871,6 +871,17 @@ if (!hasColumn("locations", "pps_job_number")) {
   db.exec("ALTER TABLE locations ADD COLUMN pps_job_number TEXT");
 }
 
+// Checks a job number against all three of a location's own job-number
+// columns at once -- declared here (not down by findLocationByJobNumber's
+// own definition, where this statement used to live) because the
+// startup backfill just below is the first thing in the file that calls
+// it; a plain `function` is hoisted, but this `const` is not, and calling
+// it before this line was ever reached crashed the whole server on boot
+// with "Cannot access 'findLocationByJobNumberStmt' before initialization"
+// -- caught live. See findLocationByJobNumber's own comment for what this
+// is actually for.
+const findLocationByJobNumberStmt = db.prepare("SELECT * FROM locations WHERE ef_job_number = ? OR pps_job_number = ? OR wom_job_number = ?");
+
 // One-time catch-up for POs that already exist with no location_code, now
 // that all three of a location's job-number columns are on file -- a PO's
 // E&F/PPS/WOM job number is matched against all three, not just the
@@ -7440,8 +7451,9 @@ function findLocationByEfJobNumber(jobNumber) {
 // Prepared once, not per call -- this runs once for every gl_entries row on
 // a full re-backfill (see the matched_location_source migration), and
 // re-preparing the same statement hundreds of thousands of times measurably
-// slowed server startup on real production data.
-const findLocationByJobNumberStmt = db.prepare("SELECT * FROM locations WHERE ef_job_number = ? OR pps_job_number = ? OR wom_job_number = ?");
+// slowed server startup on real production data. The statement itself
+// (findLocationByJobNumberStmt) is declared near the top of the file, not
+// here -- see its own comment for why.
 function findLocationByJobNumber(businessUnit) {
   if (!businessUnit) return null;
   return findLocationByJobNumberStmt.get(businessUnit, businessUnit, businessUnit);
