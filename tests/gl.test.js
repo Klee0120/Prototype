@@ -123,12 +123,16 @@ test("GL Reconciliation: precomputed mismatch flags + server-side pagination", a
   });
 
   await t.test("GET /reconciliation/reconciled paginates with a correct total count", async () => {
+    // All FY26 -- GL Reconciliation is scoped to the current fiscal year
+    // only (GL_RECONCILIATION_FISCAL_YEAR), so distinct periods (not
+    // fiscal years) are what avoid each import's own per-period-replace
+    // wiping the previous iteration's row.
     for (let i = 0; i < 5; i++) {
       insertPo({ composite: `gl-page-${i}`, poNumber: `PO801${20 + i}`, poAmount: 10, subsidiary: "100 Primary", objectCode: "605200 X", status: "Open", locationCode: "LOC1" });
       db.importGlEntries(
         [{ glDate: "2026-09-01", businessUnit: "BU", objectAccount: "605200", subsidiary: "100", amount: 10, purchaseOrder: `PO801${20 + i}` }],
-        9,
-        26 + i,
+        20 + i,
+        26,
         "ADMIN",
         `t${i}.xlsx`
       );
@@ -686,6 +690,82 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
     const rows = db.getPosMissingFromTrackerForExport();
     assert.ok(!rows.some((r) => r.poNumber === "PO90101"), "now matched to a real PO, so it should no longer show up as missing");
   });
+});
+
+// GL Reconciliation is scoped to the current fiscal year only
+// (GL_RECONCILIATION_FISCAL_YEAR) -- Krista explicitly asked for this:
+// the Budget PO Tracker carries POs older than the current year, but she
+// doesn't want GL activity from a prior fiscal year surfaced, matched, or
+// counted anywhere on the Reconciliation page. Covers every FY-scoped
+// query in one pass since they'd otherwise each need their own fixture.
+test("GL Reconciliation is scoped to the current fiscal year only", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  const now = new Date().toISOString();
+  raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, po_amount, subsidiary, object_code, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+    )
+    .run("fy-scope-1", "PO90201", 100, "999 Mismatched", "605200", now, now, now, now);
+
+  // A prior-fiscal-year GL line matched to a real PO (importGlEntries
+  // itself matches regardless of year -- fiscal-year scoping is strictly a
+  // display/aggregate-layer concern, not a matching one), plus an
+  // unmatched one -- neither should count anywhere on the FY26-scoped
+  // Reconciliation page.
+  db.importGlEntries(
+    [
+      { glDate: "2025-09-01", objectAccount: "605200", subsidiary: "100", amount: 500, purchaseOrder: "PO90201" },
+      { glDate: "2025-09-01", objectAccount: "605200", subsidiary: "100", amount: 50, purchaseOrder: "PO90202" },
+    ],
+    9,
+    25,
+    "ADMIN",
+    "t-fy-scope-25.xlsx"
+  );
+
+  // This file's own db is shared across every test() in it, so other
+  // tests' FY26 POs/GL lines are already in these counts -- assert PO90201/
+  // PO90202 specifically aren't among them, not an absolute 0, which would
+  // break depending on test order.
+  const reconciled = db.getReconciledPage({ pageSize: 500 });
+  assert.ok(!reconciled.items.some((i) => i.poNumber === "PO90201"), "FY25 shouldn't show up in the reconciled PO list");
+
+  const unmatched = db.getUnmatchedEntriesPage({ pageSize: 500 });
+  assert.ok(!unmatched.items.some((e) => e.purchaseOrder === "PO90202"), "FY25 shouldn't show up in the unmatched-lines table");
+
+  assert.ok(!db.getPosMissingFromTrackerForExport().some((r) => r.poNumber === "PO90202"), "FY25 shouldn't show up in the missing-from-tracker export");
+
+  // PO90202 (still unmatched) gets added to the tracker later -- the
+  // backfill should skip linking it specifically because it's FY25, even
+  // though reconcileUnmatchedGlEntries: PO-added-later test (above) proves
+  // it would link an equivalent FY26 line without hesitation.
+  raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, 'active', ?, ?, ?, ?)`
+    )
+    .run("fy-scope-2", "PO90202", now, now, now, now);
+  db.reconcileUnmatchedGlEntries();
+  const stillUnmatched25 = raw.prepare("SELECT matched_po_id FROM gl_entries WHERE purchase_order = ? AND fiscal_year = 25").get("PO90202");
+  assert.equal(stillUnmatched25.matched_po_id, null, "the backfill shouldn't link an FY25 line even once a real matching PO exists");
+
+  // Now the same shape, but FY26 -- should show up everywhere.
+  db.importGlEntries(
+    [{ glDate: "2026-09-01", objectAccount: "605200", subsidiary: "100", amount: 500, purchaseOrder: "PO90201" }],
+    10,
+    26,
+    "ADMIN",
+    "t-fy-scope-26.xlsx"
+  );
+  const reconciled26 = db.getReconciledPage({ pageSize: 500 });
+  assert.ok(reconciled26.items.some((i) => i.poNumber === "PO90201"), "FY26 should show up in the reconciled PO list");
 });
 
 // A GL line only ever gets matched to a PO at the moment its own period's

@@ -14,6 +14,19 @@ const { mondayOf, datesForWeek, DAY_NAMES } = require("../utils/week");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+// Krista only wants GL Reconciliation (summary tiles, the reconciled PO
+// list, the unmatched-lines table, the missing-from-tracker export, and
+// the PO-matching backfill) scoped to the current fiscal year -- the
+// Budget PO Tracker itself carries older POs too, but GL activity before
+// FY26 isn't something she wants surfaced or matched against there. A
+// single shared constant rather than a literal 26 scattered across every
+// query, so rolling to FY27 is a one-line change. Declared this early
+// (rather than near the GL functions that use it) because
+// reconcileUnmatchedGlEntries runs once at startup, during this file's
+// own top-level migrations -- a const declared further down wouldn't be
+// initialized yet at that point.
+const GL_RECONCILIATION_FISCAL_YEAR = 26;
+
 // Overridable so tests can point at a throwaway file instead of the real
 // mock database.
 const DB_PATH = process.env.LABOR_DB_PATH || path.join(__dirname, "store.sqlite");
@@ -8468,10 +8481,10 @@ function getGlImportStatus() {
 // admin can see at a glance how much of the fiscal year is actually covered
 // rather than just the single most-recent gap getGlImportStatus flags.
 // "Not closed yet" is distinct from "missing": nothing to import there yet
-// either way. Defaults to FY26 (today's working year) -- the GL
-// Reconciliation coverage strip shows one fiscal year at a time, not every
-// seeded year at once.
-function getGlFiscalYearCoverage(fiscalYear = 26) {
+// either way. Defaults to the current GL Reconciliation fiscal year -- the
+// coverage strip shows one fiscal year at a time, not every seeded year at
+// once.
+function getGlFiscalYearCoverage(fiscalYear = GL_RECONCILIATION_FISCAL_YEAR) {
   const today = new Date().toISOString().slice(0, 10);
   const importedPeriods = new Set(
     db
@@ -8640,8 +8653,10 @@ function importGlEntries(rows, periodNumber, fiscalYear, importedBy, sourceFileN
 // runPoImport) and once at startup to catch up whatever's already stale.
 function reconcileUnmatchedGlEntries() {
   const unmatched = db
-    .prepare("SELECT id, purchase_order, object_account_code, subsidiary FROM gl_entries WHERE matched_po_id IS NULL AND purchase_order IS NOT NULL")
-    .all();
+    .prepare(
+      "SELECT id, purchase_order, object_account_code, subsidiary FROM gl_entries WHERE matched_po_id IS NULL AND purchase_order IS NOT NULL AND fiscal_year = ?"
+    )
+    .all(GL_RECONCILIATION_FISCAL_YEAR);
   if (unmatched.length === 0) return 0;
 
   const posByNumber = new Map();
@@ -8851,29 +8866,36 @@ function buildGlSpendPeriodConditions({ periodNumber, fiscalYear, periodFrom, pe
 }
 
 // Cheap aggregate-only counts/totals for the summary tiles -- computed over
-// the whole GL history (not just the current page), but as single SQL
+// the whole fiscal year (not just the current page), but as single SQL
 // aggregates rather than materializing every matched line in JS. Backed by
-// idx_gl_entries_mismatch and idx_gl_entries_purchase_order.
+// idx_gl_entries_mismatch and idx_gl_entries_purchase_order. Scoped to
+// GL_RECONCILIATION_FISCAL_YEAR throughout -- Krista only wants GL
+// Reconciliation looking at the current fiscal year's activity, even
+// though the Budget PO Tracker itself carries older POs too.
 function getGlReconciliationSummary() {
+  const fy = GL_RECONCILIATION_FISCAL_YEAR;
   const reconciledRow = db
     .prepare(
       `SELECT COUNT(*) AS cnt, COALESCE(SUM(variance), 0) AS total FROM (
          SELECT SUM(g.amount) - COALESCE(p.po_amount, 0) AS variance
          FROM pos p JOIN gl_entries g ON g.matched_po_id = p.id
+         WHERE g.fiscal_year = ?
          GROUP BY p.id
        ) t`
     )
-    .get();
+    .get(fy);
   const subsidiaryMismatchCount = db
-    .prepare("SELECT COUNT(DISTINCT matched_po_id) AS cnt FROM gl_entries WHERE matched_po_id IS NOT NULL AND subsidiary_mismatch = 1")
-    .get().cnt;
+    .prepare("SELECT COUNT(DISTINCT matched_po_id) AS cnt FROM gl_entries WHERE matched_po_id IS NOT NULL AND subsidiary_mismatch = 1 AND fiscal_year = ?")
+    .get(fy).cnt;
   const objectCodeMismatchCount = db
-    .prepare("SELECT COUNT(DISTINCT matched_po_id) AS cnt FROM gl_entries WHERE matched_po_id IS NOT NULL AND object_code_mismatch = 1")
-    .get().cnt;
+    .prepare("SELECT COUNT(DISTINCT matched_po_id) AS cnt FROM gl_entries WHERE matched_po_id IS NOT NULL AND object_code_mismatch = 1 AND fiscal_year = ?")
+    .get(fy).cnt;
   const unmatchedRow = db
-    .prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL")
-    .get();
-  const noPoReferenceRow = db.prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM gl_entries WHERE purchase_order IS NULL").get();
+    .prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL AND fiscal_year = ?")
+    .get(fy);
+  const noPoReferenceRow = db
+    .prepare("SELECT COUNT(*) AS cnt, COALESCE(SUM(amount), 0) AS total FROM gl_entries WHERE purchase_order IS NULL AND fiscal_year = ?")
+    .get(fy);
 
   return {
     reconciledCount: reconciledRow.cnt,
@@ -9557,7 +9579,7 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
 }
 
 function buildReconciledFilterClauses(filters) {
-  const whereClauses = [];
+  const whereClauses = [`g.fiscal_year = ${GL_RECONCILIATION_FISCAL_YEAR}`];
   const havingClauses = [];
   if (filters.missingLocationOnly) {
     whereClauses.push("(p.location_code IS NULL OR p.location_code = '')");
@@ -9627,11 +9649,14 @@ function getReconciledPage(filters = {}) {
     )
     .all(pageSize, (page - 1) * pageSize);
 
-  // Only this page's POs' own matched lines -- never the whole history.
+  // Only this page's POs' own matched lines, and only the fiscal year GL
+  // Reconciliation is scoped to -- never the whole history.
   const linesByPo = new Map();
   if (rows.length > 0) {
     const placeholders = rows.map(() => "?").join(",");
-    for (const line of db.prepare(`SELECT * FROM gl_entries WHERE matched_po_id IN (${placeholders})`).all(...rows.map((r) => r.id))) {
+    for (const line of db
+      .prepare(`SELECT * FROM gl_entries WHERE matched_po_id IN (${placeholders}) AND fiscal_year = ?`)
+      .all(...rows.map((r) => r.id), GL_RECONCILIATION_FISCAL_YEAR)) {
       if (!linesByPo.has(line.matched_po_id)) linesByPo.set(line.matched_po_id, []);
       linesByPo.get(line.matched_po_id).push({
         periodNumber: line.period_number,
@@ -9683,14 +9708,19 @@ function getReconciledPage(filters = {}) {
 
 // A GL line naming a PO # that isn't in the Budget PO Tracker -- a real gap
 // worth investigating (missing from the tracker, or billed against the
-// wrong PO #).
+// wrong PO #). Scoped to GL_RECONCILIATION_FISCAL_YEAR like the rest of
+// GL Reconciliation.
 function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const ps = Math.max(1, Number(pageSize) || GL_PAGE_SIZE_DEFAULT);
-  const countRow = db.prepare("SELECT COUNT(*) AS cnt FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL").get();
+  const countRow = db
+    .prepare("SELECT COUNT(*) AS cnt FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL AND fiscal_year = ?")
+    .get(GL_RECONCILIATION_FISCAL_YEAR);
   const items = db
-    .prepare(`SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL ORDER BY ABS(amount) DESC LIMIT ? OFFSET ?`)
-    .all(ps, (p - 1) * ps);
+    .prepare(
+      `SELECT ${GL_ENTRY_COLUMNS} FROM gl_entries WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL AND fiscal_year = ? ORDER BY ABS(amount) DESC LIMIT ? OFFSET ?`
+    )
+    .all(GL_RECONCILIATION_FISCAL_YEAR, ps, (p - 1) * ps);
   return { items, total: countRow.cnt, page: p, pageSize: ps };
 }
 
@@ -9698,7 +9728,8 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
 // doesn't -- the export behind "GL lines with a PO # not on file", shaped
 // to paste straight into the real Operations PO Request Tracking sheet
 // (see server/routes/gl.js's EXPORT_COLUMNS for the exact 25-column header
-// order, confirmed directly against a real export of that sheet).
+// order, confirmed directly against a real export of that sheet). Scoped
+// to GL_RECONCILIATION_FISCAL_YEAR like the rest of GL Reconciliation.
 //
 // Only fields GL genuinely carries get filled in -- Asset #/Maximo WO#/
 // Vendor Number/PPS Job Number/Admin/etc. are left blank rather than
@@ -9763,11 +9794,11 @@ function getPosMissingFromTrackerForExport() {
               MAX(object_account) AS objectAccount,
               MAX(subsidiary) AS subsidiary
        FROM gl_entries
-       WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL
+       WHERE purchase_order IS NOT NULL AND matched_po_id IS NULL AND fiscal_year = ?
        GROUP BY purchase_order
        ORDER BY purchase_order`
     )
-    .all();
+    .all(GL_RECONCILIATION_FISCAL_YEAR);
 
   const locationsByCode = new Map(db.prepare("SELECT * FROM locations").all().map((l) => [l.code, l]));
 
