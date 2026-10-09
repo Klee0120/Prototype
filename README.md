@@ -1,1 +1,2607 @@
-# Prototype 
+# Labor Allocation Prototype
+
+A functional prototype for internal weekly labor allocation: an admin enters
+each technician's actual per-day UKG hours (from that week's UKG timesheet
+screenshot), which prompts the technician to split those hours across
+location-based general time (E&F), specific WOM projects, and time off, then
+submit for approval. Admin reviews, approves/rejects, and locks completed
+weeks, with everything — screenshots, WOM allocation history, budget
+drawdown — kept on file.
+
+This is a prototype, not a production system: mock login data (short PINs
+instead of real passwords) and no HTTPS by default. Login itself is real,
+though — PINs are hashed at rest, sessions are real random tokens, and
+brute-force login attempts get rate-limited. See "Where this stands" below
+for what that means in practice.
+
+## Stack
+
+- **Backend:** Node.js + Express, plain JS. Data lives in a real embedded
+  SQLite database (`server/data/store.sqlite`, via Node's built-in
+  `node:sqlite` — no external DB server, no native module to compile).
+  Uploaded files are stored on local disk under `server/data/uploads/`,
+  referenced by a `files` table.
+- **Frontend:** Vanilla JS (native ES modules, no build step) + plain CSS,
+  served as static files by Express.
+- No cloud services are required — the whole thing runs on one machine with
+  two local files/folders as its only state. The one optional exception is
+  outbound email (`nodemailer`, via `server/utils/mailer.js`): it's a no-op
+  until you point it at an SMTP account (see "Where this stands"), and
+  nothing else in the app depends on it.
+
+## Running it
+
+```
+npm install
+npm start
+```
+
+Then open http://localhost:3000
+
+To run the automated test suite (Node's built-in test runner, no extra
+dependency):
+
+```
+npm test
+```
+
+The suite boots the Express app on an ephemeral port with a throwaway
+SQLite database and uploads folder per test file (`tests/helpers.js`), so
+it never touches your real `server/data/store.sqlite`. It covers login,
+allocation validation (hours mismatch, closed/unknown WOM rejection,
+per-tech authorization, admin-on-behalf-of), week locking, the Thu-Mon
+technician edit window (open/past/future/gap). Every test file gets a
+default clock pin (Thursday of "this week", via `tests/helpers.js`) so a
+plain technician PUT/submit doesn't depend on which real day/time
+`npm test` happens to run — `weekWindow.test.js` overrides that pin
+per-test to specifically exercise the other three states. Also:
+admin approve/reject/unlock, the UKG-confirmed checklist, WOM status
+management, technician creation and employment status,
+onboarding/devices/allocation history, file upload/download/delete
+authorization, and audit log writes/read-access. The Reg/OT receipt
+calculation exists client-side (technician's own view) and server-side
+(admin Overview); the server copy has OT-flagging test coverage, the
+client copy is verified manually (see "Where this stands").
+
+Demo logins:
+
+| ID    | PIN  | Role       |
+|-------|------|------------|
+| T1001 | 1234 | Technician |
+| T1002 | 1234 | Technician |
+| T1003 | 2345 | Technician |
+| ADMIN | 9999 | Admin      |
+
+## Features
+
+- **Visual design pass**: an actual typeface (Inter, via Google Fonts --
+  `public/index.html`) instead of the bare system-font stack, a refined
+  color/shadow token set in `:root` (`--shadow-sm`/`--shadow-md`,
+  a slightly richer accent/ink), a small logo mark and drop-shadowed
+  header in place of a flat bottom border, elevated card surfaces (the
+  Schedule detail panel, WOM Lookup's result card), and buttons/nav pills/
+  tabs with real hover and active states and short transitions instead of
+  instant, static color swaps. All in `public/css/styles.css`'s shared
+  tokens and a handful of high-traffic components -- not a rewrite of
+  every view's markup, but enough that the app doesn't read as an
+  unstyled skeleton anymore.
+- **"Add a new X" forms open as an actual pop-up dialog** (`public/js/modal.js`
+  -- a small shared `openModal({ title, bodyHtml })` helper: centered card,
+  dimmed backdrop, closes on its own &times;, Escape, or a backdrop click),
+  not an inline form expanding into the page -- feedback from real use was
+  that the inline pattern didn't feel like a real application. Converted:
+  + New Task (Priorities), + Schedule a WOM (Schedule), + Add vendor
+  (Vendors), + Add technician (Roster). `openModal` also takes a
+  `size: "large"` variant (a bigger, content-sized dialog rather than the
+  standard ~560px form width) for a view that's genuinely a lot of data --
+  a WOM's **Smartsheet detail** (every raw column/value from its tracker
+  row) opens this way instead of pushing the rest of the WOM list down,
+  and the document viewer (below) uses the same size. A small, simple
+  read-only panel (clicking a Schedule entry, a task card's "Details")
+  still stays inline -- the line is really about how much room something
+  needs, not "create vs. view."
+- **Document viewer**: every attachment list (`public/js/views/attachments.js`,
+  shared by employee Forms on File/Documents, vendor documents, WOM docs,
+  UKG screenshots/receipts, and Labor Reports) got a **View** action next
+  to Download -- opens a large pop-up (`openModal({ size: "large" })` in
+  `public/js/modal.js`) with the file's metadata and Download/Delete on
+  one side and a large inline preview on the other: a PDF renders in an
+  `<iframe>` (the browser's own built-in PDF viewer, so zoom/print/rotate
+  come for free, no PDF-rendering library needed), an image renders
+  directly, anything else falls back to "no inline preview -- use
+  Download." **Previous/Next** moves through the same list the viewer was
+  opened from without closing it, and the preview is fetched as a blob
+  (`api.fetchFileBlob`) and shown via an object URL that's revoked when
+  the viewer closes or moves on, rather than ever navigating away from the
+  app to view a file. Fixed a real bug found while building this: a
+  technician's Forms on File and Documents tabs share one `relatedType`
+  ("technician") with two different file categories, but the attachments
+  list was never actually filtering by its own declared categories --
+  each tab was silently also showing the other's files. Now filtered
+  client-side to exactly the categories a given panel declares.
+- Technician login (mock ID + PIN)
+- **Technician's own tabs**: "My Week" (the allocation screen below),
+  **"Locations & WOM"** (view-only — every location and every WOM project,
+  including closed/invoiced ones, so a technician can see what's out there
+  and what they've worked on historically; no add/edit/close controls at
+  all), **"Vendors"** (see below), and **"My Documents"** (view-only Forms
+  & Certifications and Documents from their own profile — the same records
+  an admin manages from the Technicians tab, just read-only here).
+  Technicians can view their own stuff but can't delete anything anywhere
+  in the app, including their own uploads — deleting is admin-only, full
+  stop.
+- **Technician's own "Vendors" tab**: a narrow, read-only vendor directory
+  (`GET /api/vendors`, `server/routes/vendorLookup.js`) -- name,
+  phone/email, services, online source URL, nothing about forms, COI
+  limits, onboarding cases, or any other admin/compliance detail. The
+  filter is the point: a vendor merely *appearing* on a list a technician
+  looks at reads as "this is fine to use," so only a vendor that's
+  `cwStatus: active`, `toyotaStatus: approved`, and `formsStatus` not
+  `outdated` is returned at all -- one that's inactive, not Toyota-
+  approved, or has outdated forms is left out entirely rather than shown
+  with a different badge or greyed out. A vendor explicitly denied during
+  a case recheck (Onboarding tab) is excluded too, even if its older
+  status fields still say active/approved. Deliberately gated on those
+  real-world status fields rather than the case-based onboarding tracker
+  (`onboardingStage`) above -- that tracker defaults every one of the 292
+  vendors already on file to `not_started` (it postdates them), and
+  requiring full case approval before a technician could see a vendor
+  would hide the entire existing vendor base they already legitimately
+  use today; `onboardingStage` is only ever consulted here to catch an
+  explicit `denied`. This endpoint existed for a while with no screen
+  calling it (`presentVendorForLookup` was already written narrow, per its
+  own comment, well before this tab was built) -- it just wasn't filtered
+  yet and nothing in the client called it.
+- **Admin enters UKG hours per day, per technician** (Weekly Review → a
+  technician's Details) — this is the actual source-of-truth input, not mock
+  data; it's what the tech's target is checked against
+- **Split allocation per day**, matching how the hours actually get worked:
+  - **E&F** — general (non-project) time at a location
+  - **WOM Project** — a specific job; picking a location filters which WOMs
+    are selectable, and each shows remaining budget hours (e.g. "104h left
+    of 120h"), computed live from everyone's allocations against it
+  - **Time off** — vacation/sick/bereavement/holiday, counts toward the
+    day's target like any other split
+  - **"Default to home"** one-click button fills a day's remaining
+    unallocated hours as E&F time at the technician's home location
+  - **Every day starts pre-filled** with a full E&F split at home matching
+    that day's UKG hours, so the common case (no WOM work that day) is
+    already balanced with zero clicks. Only applies to days with nothing
+    entered yet, and clears itself the moment it's no longer the whole
+    story: clicking **+ Add split** removes it (so a new WOM split doesn't
+    just stack on top and double the hours), picking a real **Time off**
+    type removes it (and defaults the time-off hours to the day's full UKG
+    total), and **Default to home** clears any WOM/other-location splits
+    for that day and reverts to home for whatever's left after time off
+- Submission blocked until **every day's** allocated hours exactly equal
+  that day's UKG hours (not just the weekly total)
+- A technician can mark a WOM project complete from their own allocation
+  screen — it closes the WOM (for everyone) only once they successfully
+  submit that week, not the moment they click it, so it can't lock them
+  out of submitting their own in-progress draft. **WOM status lifecycle:
+  Pending → Requested → Open → Invoiced → Closed, with Cancelled as the
+  other way a job can end** — an admin can set a WOM directly to any of
+  those at any time from the E&F Locations & WOM tab's status dropdown,
+  completely independent of whether (or when) a technician ever marked it
+  complete. "Invoiced" is there specifically for the moment the invoice
+  actually goes out, distinct from fully closing the job out; "Cancelled" is
+  for a job that was declined or dropped and never billed at all — a
+  technician can't allocate new hours to a WOM once it's anything other than
+  Open. The **WOM Projects** list (E&F Locations & WOM tab) groups WOMs into
+  three sections so day-to-day work isn't cluttered by old ones: **Active**
+  (Pending/Requested/Open — the ones still in play), **Invoiced** (Invoiced
+  and Closed together, since both mean the job was billed), and
+  **Cancelled**. Each row leads with the **project name** and a **location**
+  tag — the two things people actually recognize — with the WOM code shown
+  small and secondary, since it mostly matters for keying into JDE/UKG.
+  A WOM can also be **deleted** outright (its own button on the row,
+  admin-only, `DELETE /api/woms/:code`) for one created by mistake — a test
+  entry, a typo — rather than leaving it sitting under some status forever.
+  Blocked with a clear error if hours are already allocated against it
+  anywhere (deleting would otherwise silently pull those hours out from
+  under a technician's timesheet); the confirm dialog surfaces that and asks
+  again before forcing it through, which also removes those allocation rows.
+  A row also flags **"Not imported from Smartsheet"** whenever no sync has
+  ever touched it (`smartsheetSyncedAt` is still null) — those are exactly
+  the ones worth a look when cleaning up test entries or typos, since a
+  real WOM in active use almost always has a sync behind it
+- **WOM Profile**: clicking a WOM (from WOM Projects, WOM Lookup, Schedule,
+  Cost Analysis, the Vendor profile's Costs tab, Task Manager's WOM
+  reference, or a reclass item's WOM link) opens one full profile page
+  (`renderWomProfile` in `adminReview.js`) instead of the separate thin edit
+  modal and raw Smartsheet-dump modal this used to be split across — same
+  shell as the Vendor Directory's own profile page. Six tabs:
+  **Overview** (project info, lifecycle checklist, and both the app's own
+  status and the source's status side by side — with a conflict banner if
+  the sheet shows real invoicing evidence the app status hasn't caught up to
+  yet, since a sync never auto-overwrites a manually-set status once a WOM
+  is past Pending/Requested); **Tasks** (every task linked to this WOM,
+  regardless of status or assignee, with a quick-add form — the exact same
+  rows Task Manager and a linked vendor's own Tasks tab read, not a copy);
+  **Vendors & POs** (every vendor connected to this WOM — its own matched
+  vendor plus whoever's on its linked Budget POs — and every one of those
+  POs, each a real link to its own profile; an unmatched vendor name shows
+  "needs matching" as plain text rather than a fabricated profile);
+  **Labor & Financials** (budget/remaining hours, the Smartsheet-reported
+  estimate/applied figures, and separately what's actually posted to the GL
+  against this WOM's linked POs — the two can disagree — plus any reclass
+  activity tied to this WOM); **Documents** (the same attachment manager
+  every other profile uses, with Vendor Quote/Approved Quote Revision added
+  as categories); and **Activity** (status-change history with who changed
+  it and when, the Smartsheet sync history showing exactly what a sync
+  changed and on which run, and this WOM's task activity). A header action,
+  **Source details**, reuses the old raw-dump modal for "every column
+  Smartsheet has on this row" when the structured tabs aren't enough.
+- **Bulk UKG entry**: paste 7 space/comma-separated numbers (Mon→Sun) to
+  fill a week's hours in one go instead of typing each day, with a live
+  **Total** readout in both decimal (e.g. `42.5`) and UKG's own clock format
+  (`42:30`), so it's easy to eyeball against the UKG screenshot you're
+  transcribing from — each individual day field shows this same live
+  decimal/clock pairing too, not just the total.
+- **UKG hours fields accept clock format directly, not just decimal.**
+  Typing the number straight off a UKG timesheet screenshot into a
+  decimal-only field is a trap: `8.25` decimal is 8h **15m**, not 8h25m, so
+  naively typing "8.25" to mean "8:25" silently saves the wrong value on any
+  punch that isn't a clean quarter hour. Every UKG hours field (the main
+  per-day fields, the bulk-paste box, and the corrected-hours field when
+  resolving a punch issue) now accepts either form — type `8:25` and it
+  converts to the correct decimal (`8.42`) the moment you leave the field,
+  or keep typing plain decimals as before. The live clock readout underneath
+  each field is the way to sanity-check either way.
+- Admin review screen: approve, reject (with note, returns to technician), or
+  unlock an approved week for correction; UKG screenshots/receipts for that
+  week are visible right there, not just on the technician's own screen
+- **Overview tab (RFM/admin)**: every technician's week at a glance for the
+  selected week — total UKG hours, +/- 40, Regular/OT split, and OT broken
+  into "on a WOM" vs. "not on a WOM." A row is **flagged** (and sorted to the
+  top) when more than 3 overtime hours in the week aren't charged to any WOM
+  project, since that's overtime nobody can currently explain by a specific
+  job. Each row's "View" button jumps straight to that technician's expanded
+  entry on the Weekly Review tab — hour-by-hour detail, approve/reject, and
+  the UKG screenshot/receipt attachments — so admin/RFM can pull whatever
+  they need from one table instead of opening each technician individually
+- **Employee OT Trends** (below the Overview table): the same OT-not-on-WOM
+  number as the main table, but across the trailing 8 weeks per technician
+  (`OT_TREND_WEEKS` in `server/routes/admin.js`), so a repeat pattern is
+  visible instead of just this week's snapshot. Only lists technicians
+  flagged at least once in that window, with a flagged-weeks count, the
+  8-week average, and a simple Rising/Falling/Steady trend (comparing the
+  first half of the window's average to the second half's) — a "View" jumps
+  to that technician on Weekly Review the same as the main table's does
+- **"Your hours are ready to allocate" notifications**: as soon as an admin
+  saves UKG hours for a technician's still-draft week, that technician sees a
+  clear in-app note the next time they open that week ("Your hours are in —
+  go ahead and allocate your time below"). On top of that, each technician
+  can pick **Notify me by: In-app only / Email** for themselves (right on
+  their own week screen) — email is only offered once they have an email
+  address on file (set by an admin on their Basic Info; not editable by the
+  technician), and choosing it sends a real email at that same trigger
+  point. Email delivery is opt-in infrastructure: it's a no-op (logs what it
+  would have sent, doesn't error) until real SMTP credentials are set via
+  environment variables — see "Where this stands" for exactly which ones.
+- **Pending punch correction flag**: either side can flag a specific day as
+  waiting on a real UKG punch fix (a missed clock-out, etc.) -- admin from
+  the "Flag punch" link next to that day's UKG hours field, or the
+  **technician themselves** from a "⚠ Flag a punch issue" link on their own
+  day card, with an optional note (e.g. "forgot to clock out"), instead of
+  their only option being a phone call or text. Either way the technician
+  sees a clear note on that day's card ("waiting on admin" if they reported
+  it themselves, a generic one if admin flagged it) explaining the hours
+  aren't final yet, instead of it looking like their time was forgotten or
+  entered wrong. A tech-reported issue also shows up in the admin's
+  **Priorities** tab ("Punch issues reported by techs") with their note, so
+  a new report never just sits unnoticed on a week admin isn't currently
+  looking at. **Resolving one is a single step on Weekly Review**, same
+  pattern as the weekend-hours addendum: the flagged day's existing
+  allocation shows inline (with accounting codes) alongside a corrected-
+  UKG-hours field, and clicking "Resolve" fixes both together and clears the
+  flag -- without unlocking the rest of an already-submitted/approved week,
+  which would otherwise reset the *whole* week to draft and force the
+  technician to redo Mon-Fri even though only one day's number changed.
+- **WOM photo prompt**: when a technician has WOM hours entered for the week,
+  a dismissible prompt (shown *before* Submit, right alongside the day cards,
+  not as an after-the-fact step with nothing left to do) offers to attach a
+  work photo for each WOM touched that week — reusing the same WOM documents
+  store as the E&F Locations & WOM tab's Documents panel, so a photo added either way
+  shows up in both places. It's the technician's own reminder, so it's never
+  shown to an admin (allocating on a technician's behalf on Tech Allocation,
+  or confirming "entered in UKG" on Weekly Review) — an admin who wants to
+  attach a WOM photo does it from the E&F Locations & WOM tab's Documents panel.
+- **Vendors tab (admin)**: a vendor onboarding/compliance tracker, separate
+  from technicians/locations since a vendor is a company, not a person who
+  logs in or a place work happens. Each vendor tracks a JDE Vendor #, three
+  independent statuses (**C&W** active/inactive, **Toyota** approved/not
+  approved, **Forms** current/outdated — each defaulting to "unknown" until
+  set), plus detail fields (phone/email/PO email, services, Midwest sites
+  seen, invoicing history, notes, etc.). Search by name/JDE#/service and
+  filter by C&W or Toyota status; **Open** launches the edit form as a
+  pop-up dialog (not an inline expand in the list -- with 292 real
+  vendors, scrolling back down to find your row every time was exactly the
+  friction the pop-up pattern elsewhere in the app exists to avoid), where
+  it can be edited or removed outright (unlike locations/WOMs, which can't
+  currently be deleted — see "Where this stands"). Two badges
+  ("Onboarding: In Progress" / "Onboarding: Denied") show right on the
+  main list row when relevant, so a vendor's onboarding case status is
+  visible without switching to the Onboarding tab at all -- an already-
+  onboarded vendor shows neither, keeping the common case quiet.
+  `scripts/import-vendors.js` bulk-loads or updates vendor records from a
+  JSON file — built for importing an existing vendor tracker spreadsheet
+  once, safe to re-run (matches existing vendors by JDE # or name and
+  updates them instead of duplicating). Every vendor imported this way (or
+  existing before the case-based onboarding tracker below was built)
+  defaults to `not_started` rather than `in_progress` -- see **Start
+  Onboarding** below for how one of those actually gets picked up.
+- **Vendor document compliance checklist**: specific checkboxes verified
+  against the actual attached COI/W-9/ACH document, separate from the COI
+  coverage-limit checks (`coiMeetsRequiredLimits`/`coiMeetsLanguageRequirements`)
+  and from `formsStatus` (currency/expiration) — these are about the
+  document itself being the right form and matching the vendor's other
+  paperwork:
+  - **COI**: issued on ACORD 25 (2016/03 version); matches the vendor's W-9
+    name & address.
+  - **W-9**: signed and dated; correct version (October 2018 or March
+    2024); has a phone number; has a remit-to address; has the vendor's
+    name. Plus a **blank invoice date** field — flagged stale once it's
+    over 2 years old.
+  - **ACH**: on bank letterhead; has the vendor's W-9 name; has the
+    vendor's W-9 address.
+
+  Any box left unchecked (or a stale invoice date) marks that vendor
+  "Doc checks incomplete" on the Vendors list and rolls up into the
+  Priorities tab, same flagging idea as an outdated form.
+- **Vendors -> Onboarding tab**: mirrors ServiceEdge's own onboarding model
+  rather than a single hand-set status -- a vendor being onboarded has
+  three independent **cases** (`vendor_requests` rows with one of three
+  canonical `request_type` values: `Onboarding - COI`,
+  `Onboarding - W8/W9`, `Onboarding - Payment Details`), each carrying its
+  own free-text status (real ServiceEdge statuses -- "Approved", "Denied",
+  "Denied - No Response - Start over Case" -- don't reduce to a boolean,
+  so status stays free text) plus an optional free-text **note** (its own
+  `vendor_requests.note` column, e.g. "missing Auto Liability language" on
+  a case marked Needs Adjustment) -- kept separate from `status` itself
+  since `deriveOnboardingStage()` matches `status` against
+  "approved"/"denied" exactly, and appending a reason onto it would break
+  that match. The COI/W-9/Payment cases are the three sub-items of one
+  parent **Toyota Onboarding** case per vendor (a `.onboarding-cases-heading`
+  label above the three pills says so) -- each still independently
+  approved/denied/noted, since that's the real granularity ServiceEdge
+  tracks, just grouped under the name they actually share.
+  - **Each case entry also carries an editable `asOf` date** -- the date a
+    case's status is actually *true as of*, separate from `updated_at`
+    (when the row was last touched, still what sorting/"latest case"/
+    staleness all key off). The two legitimately differ: a COI reviewed on
+    the document itself as of the 15th might not get logged in this app
+    until a few days later. Shown right on the pill next to the note (e.g.
+    "Missing E&O (as of 9/29/2026)") rather than buried in Full case
+    history, since it's exactly the kind of thing worth a glance without
+    opening anything. Defaults to today when logging a new case, but is a
+    plain editable date input, not a stamp. An **Edit** button next to Log
+    update (only shown once a case has at least one entry) opens the same
+    form pre-filled from the latest entry and **PATCHes it in place**
+    (`PATCH /api/admin/vendors/:id/requests/:requestId`, already existed
+    server-side for the vendor edit modal's device-request-style editing but
+    wasn't wired up here) rather than appending a new log row -- for
+    correcting a typo'd note or a wrong date, which isn't a new case the way
+    "Log update" always is (ServiceEdge's own convention: re-submitting
+    after a denial opens a new case rather than editing the old one, which
+    "Log update" still does). Existing history logged before this existed
+    backfills its `asOf` to its log date via an additive migration.
+  The **welcome email is deliberately not a case** -- there's
+  no New/Approved/Denied to assign to "did I send an email," so it's
+  logged as a fourth `Onboarding - Request` request-type row for history's
+  sake but rendered as a plain "Welcome email sent <date>" line with a
+  one-click "Mark sent," never as a status pill. A vendor's `onboardingStage`
+  is **derived**, never set by hand: `deriveOnboardingStage()` (`db.js`)
+  looks at the *latest* case of each of the four required types
+  (COI/W-9/Payment/Blank Invoice) -- all four approved moves the vendor to
+  `onboarded`, any one denied (as its latest case) moves it to `denied`,
+  any case activity (or a sent welcome email) at all short of that is
+  `in_progress`, none yet is `not_started`. This matches how ServiceEdge
+  itself works: re-submitting after a denial opens a **brand new case** of
+  the same type rather than editing the old one, so "current status"
+  always means the most recently touched case -- `syncOnboardingStage()`
+  re-derives and persists the stage after every case add/update/delete,
+  and `routes/vendors.js` audits a `VENDOR_ONBOARDING_STAGE_CHANGED` entry
+  whenever that derivation actually changes it. Adding a vendor from the
+  Vendors tab still defaults it straight to `in_progress` (no cases
+  needed to show up here at all). The board has three sections: **In
+  Progress** (sorted most-stale-first) and **Denied**, plus **Compliance
+  Needed** below for already-`onboarded` vendors whose forms have since
+  gone `outdated` or failed a doc check.
+
+  Layered on top of that 4-value board bucket is a richer **parent
+  onboarding case** per vendor (its own case #, notes kept separate from
+  any document case's own notes, a Payment Verification Contact, a PO
+  Notification Email, and a 6-stage pipeline: Gathering forms → Cases
+  started → Document review → Ready for Toyota → Submitted to Toyota →
+  Approved). The first four stages auto-advance (`deriveParentStage`/
+  `syncParentStage`, same recompute-on-mutation pattern as
+  `onboarding_stage`) the moment the underlying case activity supports
+  them; the last two are sticky and only ever change via the parent
+  card's own **Submit to Toyota** / **Record Toyota Approval** buttons (or
+  a denial) -- never silently undone by a later case edit. **C&W
+  Approved** and **Toyota Approval**, shown as badges on that same card,
+  are pure display derivations of `parent_stage`, never stored fields --
+  they're deliberately distinct from the existing `cw_status`/
+  `toyota_status` operational flags, which this redesign never touches.
+
+  Each vendor row shows a real **Welcome Email Sent** checkbox (not a
+  one-way "Mark sent" link) -- checking it stamps
+  `vendors.welcome_email_sent_at` and bulk-advances whichever of the 4
+  forms are still `not_requested` to `requested`; unchecking it only
+  clears the date and never reverts a form's own progress. Collection
+  status per form (Not Requested/Requested/Gathering/Received/Not
+  required, `vendors.<type>_form_status`) is its own dropdown next to each
+  case pill, deliberately separate from that case's own **approval**
+  status (Not started/Case started/In review/Revisions needed/Approved/
+  Denied, plus a COI-only **Waiting on VPO Waiver**) -- collection and
+  approval are different facts, and a form marked Not required is what
+  excludes a case from the "X/4 document cases approved" badge's
+  denominator (`computeApprovalBadge` client-side, mirroring
+  `db.computeApprovalCount`). Each case pill also carries an expiration
+  date (no "no expiration" option) and an expandable, per-form-type
+  review-notes checklist (`REVIEW_NOTES_OPTIONS`) that collapses to a
+  readable summary of whatever's checked, plus a free-text notes field.
+  W-9's pill additionally has Name/Address-as-shown-on-the-form fields and
+  a **Previously approved in ServiceEdge** checkbox, which marks that case
+  Approved with a blank case number allowed and appends (never replaces) a
+  dated record of the historical source to its notes.
+
+  COI is never itself marked Waived -- choosing **Waiting on VPO Waiver**
+  reveals a linked VPO Waiver sub-panel (its own reason, case #, status,
+  expiration, and notes, `vpo_waivers` table/`addOrUpdateVpoWaiver`) for
+  deficient limits or missing coverage. Approving the waiver never
+  auto-approves COI; COI's own case still has to be marked Approved
+  separately, and `computeApprovalCount` only ever reads COI's own status.
+
+  A COI case also shows the vendor's required coverage limits (GL/Auto/
+  WC/Umbrella, from the same Toyota COI matrix that drives the Vendors
+  tab's Services dropdown) right next to it as a reference while
+  reviewing a submitted certificate. Staleness (`ONBOARDING_STALE_DAYS =
+  7`) still reads the vendor's own `updated_at`, bumped by any case
+  add/update the same way it always was. A bulk `GET
+  /api/admin/vendors/onboarding/case-summary` endpoint returns the latest
+  case of each type (including any linked VPO Waiver) for every vendor
+  with any case activity in one round trip, so the board doesn't need a
+  request per vendor shown. This board deliberately shows case **status
+  only** -- never a vendor's actual uploaded documents (those stay on
+  that vendor's own record, see the vendor profile below) -- so any admin
+  can see exactly where a vendor stands without touching anything
+  private. Distinct from the document-compliance checklist described
+  below -- that's "does the attached COI/W-9/ACH document itself meet
+  requirements," this is "has ServiceEdge approved the case" -- both live
+  under "COI"/"W-9" naming and are easy to conflate.
+  A **Start Onboarding** search sits above the board for exactly this: a
+  vendor imported before this tracker existed defaults to `not_started`,
+  which is invisible on a board that only lists In Progress/Denied/
+  Compliance Needed -- there was otherwise no way to actually begin
+  onboarding one of them. Typing a name filters `not_started` vendors
+  client-side (already-loaded `vendorsCache`, no extra request); **Start
+  Onboarding** checks the Welcome Email Sent box for that vendor, which is
+  enough activity on its own to move it to `in_progress` and onto the
+  board below. A vendor added fresh through **+ Add vendor** still skips
+  this step entirely and starts `in_progress` immediately, same as before.
+- **Vendor edit modal is the general profile; onboarding and compliance
+  live in their own profile tab.** These used to be two intermixed
+  concerns on the same scrolling page (case status, document-compliance
+  checks, and plain vendor info all stacked together) -- now split cleanly:
+  - **Vendor edit modal** (`openVendorEditModal`) keeps Cost history,
+    Documents (upload/view/delete, `relatedType: "vendor"`, grouped into
+    COI / W-9 / ACH / VPO Waiver / Blank Invoice / Other Vendor Document
+    sections, with `trackExpiration: true` so each upload can carry a Type
+    + Expiration date and shows an Expires/Expired badge -- renewing an
+    expired one is the same upload-a-new-one/delete-the-old-one flow as a
+    technician's own Forms on File, not an in-place edit), **Assign a
+    pending task document** (a COI that arrived before it was clear which
+    vendor it belonged to, relocated here via `PATCH
+    /api/files/:id/relocate` -- same bytes on disk, no re-upload), and
+    Vendor Info (name, statuses, contact fields).
+  - **Onboarding & Compliance tab** (`VENDOR_PROFILE_TABS`,
+    `renderVendorOnboardingTab`) on the vendor's own profile page holds
+    **Onboarding cases** (the approval badge, the welcome-email checkbox,
+    the parent onboarding case card, and the 4 case pills the Onboarding
+    board shows, shared rendering with `renderCasePillHtml`/`wireCasePill`/
+    `renderParentCaseHtml`/`wireParentCase`, plus a **Full case history**
+    toggle), **Document Compliance** (the COI/W-9/ACH checklist --
+    `renderVendorDocChecksForm`/`wireVendorDocChecksForm`, PATCHing through
+    `vendorFullPayload` same as before), and **Compliance Follow-up** (the
+    automated task history -- see below). The Onboarding board's own
+    **Compliance Needed** rows open straight into this tab too (its
+    button is "Review Compliance", not "Open vendor").
+  - **Compliance follow-up tasks generate automatically.**
+    `refreshVendorComplianceTask` (called from `catchUpTasks`, same lazy
+    pattern as WOM lifecycle tasks) checks four things per vendor -- an
+    unconfirmed COI/W-9/ACH document check, `formsStatus === "outdated"`,
+    a W-9 invoice over 2 years old, or an expired COI/W-9/ACH upload
+    (`vendorHasExpiredComplianceDoc`, checking the files table's own
+    `expires_at`, since that's not a fact the vendor row carries) -- and
+    keeps one task (category `vendor_compliance`, `workflowRule:
+    "vendor_compliance"`, a stable `VENDOR-<id>-COMPLIANCE` source key)
+    open for as long as any of them is true, auto-completing it the moment
+    none are. It's a completely ordinary task otherwise: snoozable, has
+    comments, shows up in Priorities like anything else -- the only special
+    behavior is that completing it while a gap still genuinely exists just
+    reopens it on the next check, since "done" has to mean the gap is
+    actually closed (a box checked, a document re-uploaded, forms status
+    corrected), not that someone said so. `GET
+    /api/admin/vendors/:id/compliance-tasks` (`listVendorComplianceTasks`)
+    returns every such task ever generated for that vendor, open and
+    completed, each with its full comment log -- that's what the
+    Compliance Follow-up section in the Onboarding & Compliance modal
+    renders, so whatever got noted while following up stays visible right
+    next to the case/document status it's about.
+- **Schedule tab**: a month calendar of **WOM project work only** — no E&F
+  time and no time off, since the point is seeing what's already scheduled
+  project-wise, not a general timesheet view (Tech Allocation and Weekly
+  Review already cover that). Each day's cell lists every technician's WOM
+  assignment landing on that actual calendar date, headlined by the
+  **project name and technician's own name** (the WOM code and Maximo # are
+  secondary, shown on the smaller line below along with hours and site),
+  built entirely from allocations already in this app
+  (`GET /api/schedule/:month`, `server/routes/schedule.js`,
+  month as `YYYY-MM`) with **Prev/Next month** navigation, and open to any
+  logged-in user (not admin-only), since the point is letting anyone check
+  what's already on the books before scheduling more onto a project or a
+  person's plate. A **site filter** (`?location=CODE` on the same endpoint)
+  narrows the whole calendar down to one location at a time, since a
+  mixed-site day is hard to read at a glance — every entry also always shows
+  its site regardless of the filter, for when "All sites" is selected.
+  Every date shown is explicitly labeled **"Tentative"**: a technician's own
+  planned allocation for that day, not a locked commitment, so the calendar
+  reads as a working plan rather than a confirmed schedule. **A WOM
+  scheduled across several consecutive days draws as a single bar spanning
+  those days' columns** (`buildWeekRuns` in `schedule.js`), not a repeated,
+  identical entry on every day it covers -- grouped by matching
+  technician + WOM + hours, with overlapping bars in the same week packed
+  into their own rows (a simple Gantt-style lane-packing algorithm) rather
+  than piling on top of each other. **Clicking a bar** opens that WOM's own
+  detail inline (status, location, budget/remaining hours, estimated/
+  applied pricing, and the date range plus which technician it's assigned
+  to) without leaving the calendar — the schedule API embeds this straight
+  from the underlying WOM record on each entry, so no second request is
+  needed. A single **"+ Schedule a WOM"** button in the calendar's own nav
+  bar (not a `+` scattered on every day) opens a form to put a WOM on the
+  calendar — a technician for themselves, admin/RFM for anyone — without
+  leaving the calendar for Tech Allocation/My Week: pick a technician
+  (admin only; a technician can only schedule their own time), then a
+  **location, then that location's project name** (the same two-step
+  location-first cascade Tech Allocation's own add-technician flow uses).
+  The location defaults to **whichever technician is selected/logged in's
+  own home location** (if it has open work) rather than the calendar's own
+  site filter or just the first location alphabetically -- still fully
+  open to pick anywhere else that has open WOMs, this just saves the most
+  common case (someone scheduling their own site) a step; picking a
+  different technician (admin only) re-defaults it to that technician's
+  home location. Then hours per day, and a **first/last day date range**
+  (one day is just a range of one), and it's added as a normal allocation
+  alongside whatever else each technician already has on those days (never
+  replacing it). A range spanning more than one calendar week is
+  split by the client into per-day batches (capped at 62 days/~2 months per
+  request) and saved via a **dedicated endpoint that ignores the week's own
+  edit lock/window entirely** —
+  `PUT /api/technicians/:id/weeks/:weekMonday/schedule-wom`
+  (`server/routes/technicians.js`) — since scheduling is a planning action,
+  not a timesheet edit: a locked/submitted/approved week, a past week, or a
+  week whose window hasn't even opened yet all still accept a schedule
+  entry. The one thing that still blocks a day is the WOM itself (still has
+  to be open — closed/invoiced/pending/requested all still get rejected,
+  same validation Tech Allocation/My Week use). Scoped to exactly one day
+  per call (mirrors the existing weekend-allocations/resolve-punch-issue
+  endpoints' own safety property) so this can never be used to quietly
+  change the rest of an already-locked week — only the specific day(s)
+  actually being scheduled are ever touched. **Not a Microsoft Teams/Outlook
+  integration** — that would need Azure AD app registration and IT approval
+  before any of it could be built; for now it only reflects what's been
+  allocated here, not a technician's other real-world commitments. See
+  "Where this stands" for what that future integration would actually need.
+- **WOM projects closed here don't close on your external Smartsheet
+  tracker** — a new Priorities section ("WOM projects closed -- update
+  Smartsheet") lists every WOM that's been closed (by a technician's own
+  "mark complete" or admin's status dropdown) but not yet reflected there,
+  with a "Mark updated in Smartsheet" button that clears it once you've
+  gone and done that by hand. Reopening and re-closing a WOM flags it again
+  from scratch, so a second closure doesn't get silently skipped just
+  because the first one was already handled.
+- **PurelyHR time-off verification, 4th step on Weekly Review**: PurelyHR
+  tracks time-off balances/requests separately from UKG and doesn't link to
+  either UKG or this app, so a technician's PTO/Sick/Holiday/Bereavement
+  hours logged here have to be manually cross-checked there. Any
+  submitted/approved week containing time off gets a 4th checklist step
+  ("PurelyHR verified") right alongside the existing three on Weekly Review
+  — a week isn't "Completed" until that's checked too, same as the other
+  three. Verification is per-week (not per individual time-off entry), set/
+  unset via `PATCH /api/admin/weeks/:techId/:weekMonday/purelyhr-verified`
+  (mirrors the existing `ukg-confirmed` step), and automatically clears if
+  the week's allocations are edited afterward (an edit could add, remove,
+  or change the time off that was already checked). Also rolled up into the
+  Priorities tab ("Time off needing PurelyHR verification") so a past
+  week's unverified time off doesn't just get missed once Weekly Review
+  moves on to a later week.
+- **Reports tab (admin)**: a month-by-month archive for four monthly report
+  kinds -- **WOM Report, Labor Report, Financial Report, and GL Report** --
+  saved here so each is kept alongside the timesheeting for that period, for
+  comparing against what this app tracked. A **Month/Year dropdown picker**
+  jumps straight to any period (rather than paging Prev/Next one month at a
+  time), and each report kind gets its **own section**, always in the same
+  WOM/Labor/Financial/GL order, so a given kind's history reads top to
+  bottom without hunting through the others. File storage only for now; see
+  "Where this stands" for the bigger reconciliation idea this could grow
+  into.
+- **Admin nav grouped into sections**: the 10 admin tabs used to sit in one
+  flat, horizontally-scrolling row (Priorities, Tech Allocation, Schedule,
+  Overview, Weekly Review, E&F Locations & WOM, Technicians, Vendors,
+  Reports, Audit Trail) -- wide enough on most screens to need scrolling
+  just to see the last few. They're now grouped under eight top-level
+  sections (`public/js/views/adminReview.js`'s `NAV_SECTIONS`):
+  **Priorities**, **Timekeeping** (Tech Allocation, Schedule, Overview,
+  Weekly Review), **Roster** (Technicians), **Vendors**, **Locations** (its
+  own section -- see below), **WOM** (WOM Projects + Smartsheet Connection,
+  plus the WOM Lookup below), **Financials** (Cost Analysis, then
+  Reports -- kept separate from Timekeeping since portfolio-wide cost
+  tracking and filing WOM/Labor/Financial/GL reports are financial tasks,
+  not timekeeping ones), and **Audit Trail**. (Financials used to also carry
+  its own **PSE Tasks** tab -- removed once the Priorities/Tasks board's own
+  WOM-lifecycle checklist tasks covered exactly the same ground, so RFM and
+  every other admin now work that checklist from Priorities only, instead of
+  the same work existing in two places.) A section
+  with only one tab behaves exactly as before (clicking it goes straight
+  there); a section with more shows a second row of its own sub-tabs
+  underneath, and remembers which sub-tab you were last on when you click
+  back into it. No tab, route, or view was removed or renamed in the
+  process -- purely a navigation-chrome change.
+- **WOM Lookup**: a searchable "everything about one WOM" tool under the
+  WOM section, open to technicians too (as an expandable "Details" row on
+  their own read-only Locations & WOM list, `techHome.js`) since it's a
+  lookup, not a management screen. A **location dropdown and a live text
+  search** (by WOM # or project name) narrow the list down first -- a
+  plain `<select>` can't be typed into to filter its own options, so the
+  search box rebuilds the list as you type instead, same idea as the
+  roster's own filters -- then picking a WOM shows its status, budget, and
+  pricing (same data the admin's own WOM management screen already tracks)
+  plus **every technician who's ever logged time against it and how much**
+  -- `GET /api/woms/:code/lookup`, all-time across every week it's ever
+  appeared on, not scoped to the current month the way most other views
+  here are. This is the same all-time total the WOM's own budget math
+  already used internally (`countWomAllocatedHours` in `server/data/db.js`)
+  plus a new per-technician breakdown (`womHoursByTechnician`), just
+  surfaced as its own lookup rather than buried in a budget-remaining
+  calculation. For an admin, the result card also has a **"View full
+  profile"** link straight into the WOM Profile above -- Lookup itself
+  stays a pure finder, not a second place to manage a WOM.
+- **"Request a new WOM" / "Request a C&W PO" links on the tech's
+  Locations & WOM tab** (`techHome.js`): a technician can't create a WOM or
+  a C&W purchase order in this app -- "C&W PO" here means a C&W-internal
+  purchase order, a different thing entirely from the Toyota PO tracked on
+  the WOM lifecycle checklist above, and from a vendor's own PO. Rather than
+  duplicating either intake form in-app, two buttons at the top of that tab
+  hand off to the real Smartsheet request forms (`WOM_REQUEST_FORM_URL`/
+  `CW_PO_REQUEST_FORM_URL`, opened in a new tab) -- the same plain
+  external-link pattern (`target="_blank" rel="noopener"`) the admin's own
+  "Open in Smartsheet ↗" links already use elsewhere, rather than embedding
+  either form (a real iframe embed isn't guaranteed to work depending on
+  Smartsheet's own framing settings, and this app never writes back to
+  Smartsheet regardless -- see the sync section below). The tab's own hint
+  text was updated to point elsewhere ("locations, or changing an existing
+  WOM") now that a new WOM/PO no longer needs an admin at all. The same two
+  links also sit at the top of the admin's own WOM Projects list
+  (`drawWoms` in `adminReview.js`) -- Admin and RFM need the same quick
+  path just as much as a tech does, not just a way to watch requests come
+  in after the fact. Both URLs now live in one place
+  (`public/js/constants.js`) rather than copy-pasted into each view, so the
+  two can't quietly drift out of sync if a form URL ever changes.
+- **Smartsheet Line # and direct link on every synced WOM**: a WOM that
+  syncs in without a real WOM # or description yet (a bare request row) used
+  to be nearly impossible to trace back to the actual Smartsheet request --
+  its only identifier was `smartsheet_row_id`, Smartsheet's own long opaque
+  internal id with no relation to anything visible in the sheet itself.
+  Every synced WOM now also carries `smartsheetLineNumber` (the small row
+  number shown in the Smartsheet grid's own left-hand column -- "Line 42")
+  and `smartsheetLink`, a direct **"Open in Smartsheet ↗"** link straight to
+  that row in the Smartsheet web app (Smartsheet's own standard row-deep-
+  link URL shape, built server-side from the sheet id this app is already
+  configured with plus the row's internal id -- no extra API call needed).
+  Both show up on the WOM Projects list, WOM Lookup, and PSE Tasks (below).
+  Refreshed on every sync, so existing already-synced rows pick up their
+  line number/link automatically the next time a sync touches them, not
+  just newly-created ones.
+- **WOM lifecycle checklist ("PSE Tasks", under the Financials section)**:
+  a single persistent task per WOM that tracks the real-world PSE-to-invoice
+  workflow as a fixed 7-step checklist, not a stage machine -- there's no
+  "current stage" a WOM can be in; instead each step is either done or not,
+  and the task itself only ever completes once every step is checked off.
+  This is kept entirely separate from the WOM's own `status` column (which
+  still only ever gates whether a WOM can be allocated to; a WOM stays
+  "open" for its entire time on the checklist, then flips to `invoiced`
+  when the last step -- Invoice -- is checked). A WOM auto-enters the
+  checklist the moment it first syncs in from Smartsheet, and the same one
+  task sticks with it the whole way through
+  (`WOM_LIFECYCLE_STEPS`/`refreshWomLifecycleTask` in `server/data/db.js`):
+
+  | # | Step | Role | How it completes |
+  |---|---|---|---|
+  | 1 | Send PSE to Toyota | RFM | Manual -- "PSE produced -- send to Toyota" button, captures the Toyota email + date sent; also auto-completes if the tracker's own "Date Requested" column is already filled in |
+  | 2 | Create WOM & PO | Admin | Auto -- completes itself once a Maximo/PO # is on file for the WOM |
+  | 3 | Schedule vendor | Tech | Auto -- completes itself once any hours are allocated against the WOM on the calendar, or once a cost is applied (see below) |
+  | 4 | Work complete | Tech | Auto -- completes itself once the WOM is marked complete (timecards), or once a cost is applied (see below) |
+  | 5 | Post applied cost | Admin | Auto -- completes itself once an applied cost is on file for the WOM |
+  | 6 | Review charges | *(shared -- RFM & Admin together)* | Manual -- a single "Mark reviewed" click, no role gate |
+  | 7 | Invoice | Admin | Manual -- a small form for batch # and invoice #; also flips the WOM's own `status` to `invoiced` |
+
+  Two roles still split the manual work, matching how this is actually
+  done -- **RFM** (exactly one admin at a time, designated via a
+  **"Set as RFM"** toggle in Manage admin accounts on the Roster tab; still
+  stored internally as the `reviewer` role -- `pseRoleFor` in
+  `server/data/db.js` -- since that's what actually gates who can act on
+  which step) sends the PSE to Toyota; **Admin** (any other active admin,
+  stored internally as `financial`) creates the WOM/PO, posts cost, and
+  invoices. Both this checklist's role filter and the Priorities board's
+  own role filter/labels collapse down to three choices this way --
+  **Admin**, **Tech**, **RFM** -- rather than surfacing the underlying
+  `admin`/`financial`/`reviewer`/`tech` split directly; picking "Admin" in
+  a filter searches both `admin` and `financial` at once
+  (`role=admin,financial`, split back into an `IN` list server-side -- see
+  `listTasks` in `server/data/db.js`). If nobody's been designated RFM yet,
+  every admin can still *act* on every step (the permission check,
+  `isReviewer`/`isFinancial` in `tasks.js`/`adminReview.js`, is independent
+  and already permissive by default), so the feature isn't locked up before
+  that one-time setup -- but **`rolesForViewer` (`server/routes/tasks.js`)
+  deliberately never broadens an admin's own queue to include `reviewer`
+  just because no RFM is designated yet.** It used to, which meant every
+  unclaimed RFM-role task showed up in every admin's own My Work by default
+  ("why do I see RFM tasks? If I want to see RFM I'll go look at his
+  list") -- an admin's own queue is always just `admin` + `financial`
+  (both display as plain "Admin"); RFM's queue stays fully visible on Team
+  Work (unscoped by role for an admin) and via the role filter, exactly
+  where you'd deliberately go looking for it, it just doesn't auto-populate
+  into your own default list anymore. "Review charges" has no role *gate* -- either an RFM
+  or an Admin can check it off, since reviewing charges together is a joint
+  action rather than one person's job (`roleAllowed` in
+  `tasks.js`/`adminReview.js` treats a step's `role: null` as "anyone").
+  That's a permission check, not a queue, though -- a task actually sitting
+  at that step still defaults its own `assignedRole` to `reviewer` (RFM)
+  purely so it lands somewhere a person looks by default (RFM's My
+  Work/Team Work) rather than falling into the Unassigned list, which is
+  what a bare `null` queue role would otherwise do, the one step this could
+  happen on since every other step has a real owner. Admin can still open
+  and act on it either way. Every step still carries a role field even
+  where it's auto-completed (used for
+  queue-visibility -- e.g. "Schedule vendor" and "Work complete" are
+  tagged Tech even though nothing here gives a technician a button to
+  click, since a calendar entry or a timecard is what completes them).
+  Completing a manual step is always audit-logged (`WOM_LIFECYCLE_STEP_COMPLETED`).
+  - **A cost applied is treated as proof the earlier fulfillment steps
+    happened, even with nothing else on file to show it.** A vendor-only
+    job -- no internal technician ever logs hours against it in this
+    app -- never satisfies "Schedule vendor"'s allocation check or "Work
+    complete"'s status check on their own, so without this, such a WOM
+    would sit stuck on those two steps forever despite plainly being done
+    (a vendor can't be paid for work that was never scheduled or
+    finished). Whenever any applied cost is on file, "Schedule vendor" and
+    "Work complete" both auto-complete alongside "Post applied cost" if
+    they haven't already.
+  - **Steps can complete out of order**, and the task's "next up" step
+    (and the role it's routed to) is picked accordingly -- not simply the
+    first incomplete step in the table above, which would leave a WOM
+    stuck showing as RFM's problem forever the moment any later step
+    completed first (exactly the shape most of the existing backlog was in
+    on day one of this feature: Toyota's already approved a real PO, but
+    nobody's clicked "Send PSE to Toyota" in this app to log it).
+    `nextLifecycleStep` (in `server/data/db.js`, mirrored in
+    `tasks.js` and reused from there in `adminReview.js`) instead finds the
+    furthest-completed step and returns whichever step right after it is
+    still open, falling back to the classic first-incomplete-overall only
+    if nothing's open past that point (a lingering earlier gap, e.g. "Send
+    PSE to Toyota" never logged even though everything after it, including
+    invoicing, is done -- the task correctly stays open and routed to RFM
+    rather than closing with a gap still unfilled).
+  - **The task's priority is computed live, not manually set**
+    (`refreshWomLifecycleTask` in `server/data/db.js`), and reads High
+    whenever any of these is true: the PSE hasn't been sent to Toyota yet
+    (step 1 still open -- the very first gate, so it shouldn't get buried
+    behind Normal-priority tasks with an earlier due date); the work is
+    already done (step 4 complete -- whatever's left is pure administrative
+    closeout standing between finished work and getting paid for it, always
+    worth flagging); or there's a **Toyota paperwork gap** -- either an
+    applied cost with no Maximo/PO # on file at all, or a real **Toyota
+    change order** (the applied cost, once posted, came in higher than the
+    original estimate). Otherwise priority is Normal.
+    - **The two paperwork-gap cases are deliberately never the same
+      color, and the color is the whole row, not just the badge.** A
+      colored pill alone was too easy to miss scanning down a long list --
+      a missing PO with no cost overage gets a "-- Needs Toyota PO" title
+      suffix and reads **orange** end to end (badge, and the row's own
+      left border plus background tint, `.task-card-po-gap` in
+      `styles.css`, the same whole-row treatment `.task-card-emergency`
+      already used) -- a paperwork-catch-up problem, still needs chasing,
+      but not (yet) a money problem. A real cost overage gets a "-- Needs
+      Toyota PO change order" title suffix, reads **red** end to end
+      (`.task-card-change-order`, same red as Urgent/Emergency), and a 🚩
+      flag right on its row -- Toyota has to sign off on an actual dollar
+      difference, one notch more urgent than a plain missing PO, and the
+      flag exists specifically to call out that stronger case rather than
+      sitting on every exception regardless of severity (a flag that means
+      "somewhere in here is exceptional" reads as noise on a long list; one
+      that means "this is the worse kind" is worth a glance). Both cases
+      still count as a workflow exception (`isException`) and route the
+      task straight to **RFM regardless of what step its own progress would
+      otherwise route it to** -- a Toyota paperwork problem is RFM's to
+      chase down no matter how far along the rest of the checklist is. A
+      dedicated `isChangeOrder` flag (a `tasks.is_change_order` column,
+      separate from the general `is_exception`) is what actually drives the
+      color/flag split, rather than parsing the title text. All of this is
+      re-evaluated live, so a correction that brings the numbers back in
+      line or a PO that finally arrives clears both the color and the flag
+      automatically rather than either staying stuck. "TOY PO" (rather than
+      just "PO") is deliberate too -- unqualified "PO" is ambiguous with a
+      vendor's own PO or a C&W internal one (see the tech-facing "Request a
+      C&W PO" link below, a genuinely different kind of PO from either of
+      these).
+    - **A paperwork-gap task shows the real dollar figures behind it, and
+      two real ways forward, not just a flag saying something's wrong**
+      (`renderWomCostBreakdown` in `tasks.js`, shown in the task detail
+      above the checklist whenever `isChangeOrder` or `isException` is
+      true). A table of every cost category the tracker itemizes --
+      Labor, Materials, Contracted Services, Other Direct Costs, Sales
+      Tax, Contingency -- estimated vs. applied side by side, only for
+      whichever categories either side actually has a number for, plus the
+      Project Total row and (when synced) the Toyota PO Value row with the
+      exact overage called out. From there, RFM (or finance, once referred
+      -- see below) picks one of two ways forward:
+      - **"Request Toyota PO [change order]"** -- the same email+date
+        record as the initial PSE send (`openRequestToyotaPoModal` in
+        `tasks.js`, `POST /api/woms/:code/change-order/request-po`), just
+        logged against this later moment instead. Puts the task on
+        **Waiting** and logs the request as an activity-feed comment;
+        clears any pending referral below, since once the PO is actually
+        being requested there's nothing left to hand back.
+      - **"Ask admin to reduce labor instead"** (change orders only --
+        there's no labor to trim on a plain missing-PO gap) --
+        `openReferChangeOrderToAdminModal` in `tasks.js`, `POST
+        /api/woms/:code/change-order/refer-to-admin`. Takes a required
+        note, logs it as a comment, and hands the task to finance's own
+        queue (`assignedRole: "financial"`, unclaimed) instead of closing
+        or creating anything new. This needed one real piece of persisted
+        state beyond the task's usual live-recomputed fields:
+        `tasks.referred_to_admin_at`. Every WOM lifecycle task normally
+        gets fully re-derived on every sync and every task-list read
+        (`refreshWomLifecycleTask`), and a Toyota paperwork gap's
+        `assignedRole` is hard-forced back to `reviewer` regardless of
+        checklist progress (see above) -- without a flag surviving that
+        re-derivation, handing the task to finance would snap straight
+        back to RFM's queue the very next time anyone loaded the task
+        list, before finance had a chance to even look at it. The flag
+        only stays "active" while there's still a live change order to
+        refer (`referredToAdminActive` in `refreshWomLifecycleTask`); the
+        moment the overage clears on its own (finance actually trimmed the
+        labor, or any other correction brought applied back under
+        estimate) it's wiped automatically, so a *future*, unrelated
+        change order on that same WOM never inherits a stale referral.
+    - The task list itself sorts by full priority tier first (Emergency
+      down to Low), then due date -- previously only Emergency got special
+      treatment, so a High-priority task with no due date could sink below
+      an old Normal one. Plain High-priority tasks (no paperwork gap) still
+      read with a red badge (previously the same blue used for routine
+      in-progress status, which didn't read as urgent) -- only the two
+      paperwork-gap cases above split off their own orange tier. The
+      Priorities board also has two tiles specifically for RFM's own
+      mental model of the backlog -- **PSE Not Sent**
+      (`countWomLifecyclePseNotSent` in `server/data/db.js`) and **Needs
+      Change Order/TOY PO** (the combined workflow-exception count across
+      both paperwork-gap cases, just labeled for what it actually always
+      means today rather than the generic "Workflow Exceptions") -- so "how
+      many PSEs do I need to produce and send" and "how many of these need
+      chasing" are both a glance at the top of the board, not something to
+      infer from a single "High Priority: N" total.
+    - **"What do these mean?" legend** (`openLegendModal` in `tasks.js`) --
+      a plain-English key for exactly the two things that aren't obvious
+      from a short tab/badge label alone: what each list (My Work/Team
+      Work/Unassigned/Overdue/Waiting/Needs Change Order/TOY PO/Recurring/
+      Upcoming/Completed) actually includes, and what each badge color and
+      the 🚩 flag mean (reusing this same red/orange split explanation). A
+      third section spells out the "Unclaimed -- Admin/RFM/Tech" vs. plain
+      "Unassigned" vs. a named person distinction on a task's assignee
+      line, since the two unassigned-looking states mean very different
+      things (one's in a role's shared queue already; the other is
+      nobody's problem yet). Pushed to the far right of the action row
+      (`.task-legend-btn { margin-left: auto }`), separate from **Filters**
+      -- a solid button now, same visual weight as + New Task, rather than
+      a text link easy to miss among the row's other links.
+    - **"Unassigned" actually means unassigned.** Its filter
+      (`filters.unassignedOnly` in `listTasks`) used to check only
+      `assigned_to IS NULL`, so it caught nearly every WOM lifecycle task
+      ever created -- those are almost never claimed by a specific named
+      person, they live in a role's shared queue instead (Unclaimed --
+      RFM/Tech/Admin), a completely different, already-handled state. Now
+      requires `assigned_to IS NULL AND assigned_role IS NULL`, so
+      Unassigned only ever shows a task with neither -- genuinely nobody's
+      queue yet, which in practice is just a hand-created task where no
+      person or role was picked at all.
+  - **"PSE produced -- send to Toyota" captures who it was sent to and
+    when** -- clicking that action opens a small modal (rather than firing
+    immediately) asking for the Toyota reviewer's email (defaulting from
+    `localStorage`, so it's remembered across WOMs) and the date sent
+    (defaulting to today, editable for a same-day-but-logged-late entry).
+    Both land on the WOM itself (`pse_toyota_email`/`pse_toyota_sent_at`)
+    and show up as a plain "Sent to Toyota: `email` on `date`" line right
+    on the task card from then on -- both in Financials &rarr; PSE Tasks
+    and on the matching task in Priorities &rarr; My Work, since they're
+    the same underlying WOM. Available from either surface
+    (`openPseSentToToyotaModal` in `adminReview.js` and its mirror in
+    `tasks.js`).
+  - **No automatic follow-up reminders and no "don't schedule until Toyota
+    PO" hold** -- both existed in an earlier version of this feature and
+    were deliberately dropped. Scheduling is calendar-only now (whatever a
+    tech puts on the calendar is what completes "Schedule vendor," full
+    stop, with no gate in front of it), and nothing sets or snoozes a
+    follow-up date on its own. The existing general task-edit feature (see
+    below) can still hand-adjust a lifecycle task's own due date if one is
+    ever needed, but nothing does so automatically.
+  - **Reschedule (snooze with a status note), and the Upcoming tab** --
+    for a task genuinely stuck on the Toyota paperwork gap above (posted
+    cost, no PO yet), RFM often can't move it forward today; they can only
+    confirm what's been posted so far and check back later. The
+    "Reschedule" button on the task detail panel (admin-only, next to
+    "Smartsheet detail"/"Edit") opens a small inline form -- a follow-up
+    date (defaults to one week out) and a **required** status note (e.g.
+    "$100 expenses posted, labor posted, still waiting on vendor $") --
+    and on submit the task drops out of every default view (My Work, Team
+    Work, Overdue, Needs Change Order/TOY PO, etc.) until that date
+    arrives, at which point it reappears there on its own with no action
+    needed. `tasks.snoozed_until` (`rescheduleTask`/`unsnoozeTask` in
+    `server/data/db.js`, `POST /api/tasks/:id/reschedule` and
+    `POST /api/tasks/:id/unsnooze`) is purely a visibility flag -- it never
+    touches the task's own computed priority, role, or exception state
+    (still driven entirely by `refreshWomLifecycleTask`/the checklist), so
+    a snoozed WOM-paperwork-gap task is still High/flagged the moment it's
+    back in view.
+    - **A dedicated, append-only history, not the Activity/comment feed.**
+      Each reschedule appends a row to its own `task_reschedules` table
+      (`listTaskReschedules`) rather than overwriting a single field or
+      mixing into `task_comments` -- a standing status ("what's actually
+      confirmed as of the last check-in") reads differently than a
+      one-off remark, and RFM needs the full trail across repeated
+      follow-ups, not just the latest note. It renders in its own "Status
+      Notes" section on the task detail panel, above the existing
+      "Activity" feed, oldest first (same chronological convention as
+      Activity).
+    - **Fully hidden until due, with one place to still find it.** A new
+      admin-only **Upcoming** view/tab (`view=upcoming`,
+      `filters.snoozedOnly`) is the *only* place a snoozed task remains
+      visible before its follow-up date -- everywhere else it's
+      completely absent, on the theory that a list RFM checks daily
+      shouldn't include things there's deliberately nothing to do about
+      yet. Its row shows the snooze date directly ("snoozed until
+      10/7/2026"), and its detail panel shows a banner plus a "Bring back
+      now" button for pulling it into every other view immediately, e.g.
+      to log a correction or act on it early once the missing paperwork
+      actually shows up.
+    - **A later Smartsheet sync (or any hand-edit) never erases a snooze,
+      a claim, or the status-note history.** `upsertTaskBySourceKey`
+      (`server/data/db.js`, what every sync and every WOM hand-edit
+      ultimately runs through) only ever writes the computed fields --
+      title, priority, assignedRole, isException/isChangeOrder, description
+      -- its `UPDATE` statement doesn't include `snoozed_until` or
+      `assigned_to` at all, so whatever a sync re-derives from the WOM's
+      current numbers, a task that's been claimed by name or snoozed
+      forward stays exactly that way; `task_reschedules` is a wholly
+      separate table a sync never touches. What a sync genuinely *should*
+      change -- the title/color flipping once a real PO lands, say -- still
+      happens, since that's the point of recomputing live; it just never
+      costs you the parts that are a person's own record of where things
+      stand. Covered by a regression test modeling exactly this sequence
+      (claim, snooze with a note, then a sync-equivalent hand-edit) in
+      `tests/tasks.test.js`.
+  - **Claiming and assigning a task.** "Unclaimed -- Role" used to be a dead
+    end: the legend explained what it meant, but changing it meant checking
+    a box and going through the bulk-select toolbar even for a single task
+    -- nobody's actually going to do that, so tasks just stayed Unclaimed
+    forever. Two fixes, both through `PATCH /api/tasks/:id/assign`
+    (`assignTask` in `server/data/db.js`):
+    - A **Claim** button sits right on the task card's summary line
+      whenever it's actually claimable for the person looking at it -- any
+      admin on an admin-bucket (`admin`/`financial`/`reviewer`) task (an
+      admin can already act on all of them regardless of role, same as
+      `canSeeTask`), a technician only on their own `tech`-bucket one. One
+      click, no bulk-select detour.
+    - The task detail panel also has a full **Assign** control (a dropdown
+      of every technician/admin, plus a **Back to role queue** button once
+      someone's assigned) for assigning to *anyone*, not just claiming for
+      yourself -- admin-only, same as the bulk toolbar it supplements
+      rather than replaces.
+    - `assignTask` itself only ever overwrites a field actually present in
+      the call (including explicitly `null`, to clear it) -- a plain
+      `{assignedTo}` call used to silently wipe `assignedRole` back to
+      `null` too (since the old code always wrote both), which meant
+      **Back to role queue** would have cleared the role it's supposed to
+      fall back into, and a plain reassignment (including the existing
+      bulk-assign toolbar) would have silently detached a task from its
+      role bucket every time. Fixed at the `assignTask` level so both
+      callers get it right.
+    - The server route itself stays admin-only for reassigning *between*
+      people, with one narrow carve-out: a non-admin claiming a task
+      already unclaimed with their own role (`assignedTo` is their own id,
+      `assignedRole` isn't being touched, and the task isn't already
+      assigned to someone else) is allowed -- claiming your own unclaimed
+      work isn't really a privileged action, it's just a faster version of
+      what `canSeeTask` already lets a tech act on.
+  - **With a single active admin, an admin-bucket task skips "Unclaimed"
+    entirely and goes straight to them.** Claim still exists for a real
+    multi-admin team, but on a one-person team every `admin`/`financial`/
+    `reviewer`-routed task (WOM lifecycle, recurring, vendor compliance,
+    even a hand-added one left role-only) has exactly one honest answer to
+    "who does this belong to" -- making that person click Claim on every
+    single one added nothing but clicks. `defaultAssigneeForRole`/
+    `withAutoAssignee` (`server/data/db.js`) resolve a default owner --
+    the designated RFM for the `reviewer` queue specifically
+    (`getPseReviewerId`), or whichever admin account is the *only* active
+    one -- and both `createTask` and `upsertTaskBySourceKey`'s refresh path
+    apply it whenever a task would otherwise land with a role but no
+    person. Centralized in those two functions rather than each workflow
+    remembering to call it, so it applies uniformly (and retroactively, on
+    the very next lazy refresh, to a backlog of already-existing unclaimed
+    tasks too, not just newly-created ones going forward). The moment a
+    second active admin exists with no RFM designated, `defaultAssigneeForRole`
+    has no more single honest answer and returns nothing -- new/refreshed
+    tasks fall straight back to today's role-queued "Unclaimed -- Admin,
+    Claim" behavior, no flag or migration needed for that transition.
+    `assignTask` (the explicit Assign control / Back to role queue) is
+    deliberately untouched by this -- it stays a direct "set exactly what
+    was asked," so on a genuine multi-admin team, intentionally bouncing a
+    task back to the shared queue still means something.
+  - **A comment on a recurring task pushes its due date out, clearing
+    overdue.** An ongoing responsibility worked in pieces over time (vendor
+    compliance cleanup, say) used to read "N days overdue" indefinitely
+    once its generated due date passed, even while someone was actively
+    chipping away at it -- there was no way to tell the board "still being
+    worked" short of finishing it outright. `addTaskComment` now calls
+    `pushRecurringTaskDueDate` after logging the comment: for an open
+    `category: "recurring"` task, it pushes `due_at` out to (now + 7 days)
+    if that's later than what's already there -- never backward, never on
+    a closed task, and never on anything outside the `recurring` category
+    (a real one-time deadline must only ever mean "late," not something a
+    comment can quietly move). The push is a flat week rather than each
+    task's own exact cadence (weekly/biweekly/monthly, which isn't
+    uniformly stored anywhere a comment handler could cheaply look up) --
+    simple, and it still works fine for a monthly task: multiple comments
+    across the month just keep pushing it out the same way one comment
+    would for a weekly one.
+    - **This fought directly against the lazy regeneration every recurring
+      task already uses.** `ensureRecurringTasks` recomputes (and
+      previously re-wrote) the same spec's due date fresh on every
+      `GET /api/tasks` call -- without a fix, that recompute would silently
+      undo a comment's push the very next time anyone loaded the task list.
+      `upsertTaskBySourceKey` now takes a `preserveDueAtOnUpdate` option
+      (used by both the hardcoded specs and user-defined recurring
+      templates in `ensureRecurringTasks`): once a recurring occurrence
+      already exists, its `due_at` is left alone on every subsequent
+      upsert, no matter what the spec would otherwise recompute -- only its
+      very first creation still gets the freshly computed date.
+    - Note what this does *not* change: the handful of hardcoded monthly/
+      weekly specs (Vendor compliance cleanup, Final timecard review, etc.)
+      still generate a brand-new task row under a new, period-keyed source
+      key once the period rolls over, regardless of whether the prior
+      occurrence was ever touched or completed -- that's a separate,
+      pre-existing structural question (whether a "standing" recurring task
+      should instead stay as one single row forever) this change doesn't
+      attempt to solve.
+  - **Where does a lifecycle task actually go, and what happens once it's
+    fully checked off?** It never just disappears. The same one task
+    (`lifecycleTaskSourceKey`, upserted by `refreshWomLifecycleTask` after
+    every relevant change -- a sync, a manual step, or a lazy catch-up on
+    every task-list read) shows up in the general Priorities &rarr; My
+    Work / Unassigned board (as a `category: "wom_workflow"` task). Once
+    every step is checked, the task completes for good -- `reopenIfClosed`
+    is off, so it never reopens even if a later sync touches that WOM
+    again -- and it moves to the Completed filter, carrying its full
+    history of when each step happened and who did it (`wom_lifecycle_steps`
+    table) as a permanent record attached to that WOM, effectively the
+    WOM's own paper trail. Photos/attachments for the job can already be
+    attached directly to this task the same way any task supports
+    attachments, so they travel with it.
+- **Cost Analysis (under the Financials section)**: a portfolio-wide
+  estimated-vs-applied view across **every** WOM on file (`GET
+  /api/woms/cost-summary`, admin-only) -- not just the ones currently on the
+  lifecycle checklist, so a WOM that never went through it (or has already
+  been invoiced and closed) still counts. Cancelled WOMs are excluded
+  throughout, and every list is sorted with the largest dollar figure first.
+  - **Six itemized cost categories, not just two.** The tracker breaks
+    estimate/applied cost into Labor, Materials, Contracted Services (a.k.a.
+    "PO $"), Other Direct Costs, Sales Tax, and Contingency -- all six sum
+    to the project total on each side. `WOM_COST_BREAKDOWN_FIELDS` in
+    `server/data/db.js` centralizes the dbColumn/jsField/diffLabel for all
+    thirteen breakdown figures (the six pairs plus Toyota PO value below) in
+    one place, built into the WOM upsert's SQL dynamically rather than
+    hand-copied across the sync's five separate INSERT/UPDATE statements --
+    a hand-copied, positional param list across that many statements is
+    exactly the kind of thing that silently drifts out of order in
+    financial data. Each category gets its own stat tile (jumping to its
+    own list below) and its own "N Overcharged" section once applied comes
+    in over estimate for that category specifically -- generic rendering
+    for Materials/Other Direct/Tax/Contingency (`categoryOverages` in the
+    API response), since none of them need Contracted Services' extra
+    vendor attribution.
+  - **Column names are inconsistent sheet to sheet, even between estimate
+    and applied side on the same sheet** -- the real tracker names its
+    applied-side Labor/Materials/Other Direct/Tax columns with no "Applied"
+    "$" suffix at all in some cases ("Applied Labor", not "Applied Labor
+    $"), and names the applied-side Contracted Services column "Applied PO
+    $" with no mention of "Contracted" at all, while contingency's
+    applied-side column is just "Contingency $" with no "Applied"/estimate
+    word whatsoever. `findColumn`/`findAnyColumn` in
+    `server/utils/smartsheet.js` handle this: `findAnyColumn` tries several
+    keyword sets in order (so "Contracted Services $" or "PO $" naming both
+    resolve to the same field), and `findColumn` takes an optional exclude
+    list (so "Contingency $" can be matched by just the word "contingency"
+    while explicitly ruling out "Estimated Contingency $", which would
+    otherwise match first). A column silently failing to match meant its
+    field stayed null forever and whatever depended on it (an overcharge
+    count, a "what changed" line) looked permanently empty regardless of
+    real data -- the actual root cause behind "Contracted Services
+    Increased" reading 0 forever despite real increases existing on the
+    sheet, and the same class of bug IDed for "Applied Labor" while building
+    a more faithful test fixture against it.
+  - **Excess Labor Budget vs. Labor Overcharged -- opposite things, never
+    conflated.** Estimated coming in *higher* than applied on the project
+    total (`overquoted` in the API) is unused budget -- money quoted but
+    never spent, a good thing, shown with a green "unused" badge. Applied
+    *labor* coming in higher than estimated *labor* specifically is the
+    actual overspend, shown with a red "over" badge. The first says nothing
+    about the second -- a WOM can show excess on its total while still
+    being overcharged on labor if some other line item swung the other way.
+  - **Toyota PO value** ("TOY Value" on the tracker) is a distinct, more
+    authoritative figure from this app's own estimate/applied numbers --
+    the actual dollar amount on the real Toyota-approved PO. **Applied Over
+    Toyota PO Value** compares applied cost against it directly, catching a
+    real overage even on a WOM that clears every estimate-vs-applied check
+    above (if the estimate itself undersold what Toyota approved, or vice
+    versa, those checks alone can't catch it).
+  - **Contracted Services Increased**: each row names the **vendor** whose
+    charge went over (matched from the tracker's own "Vendor(s)
+    Name/#/Phone" column by name, tolerant of the sheet's "Name -
+    Phone#" format, left unmatched rather than guessed at if no vendor by
+    that name exists yet -- see `matchVendorIdByName` in
+    `server/data/db.js`, the same approach as location matching).
+  - **Vendors reoccuringly over quote** (only shown when at least one
+    exists): vendors who show up in Contracted Services Increased on more
+    than one WOM, with their total overage -- the answer to "who keeps
+    coming in over their own quote."
+  - **Vendor cost analysis**: total contracted-services $ actually applied
+    per vendor, across **every** WOM linked to them (overage or not) -- how
+    much business is actually done with each vendor, independent of
+    whether any single job ran over. The same total (plus a "last
+    invoiced" date, pulled from that vendor's most recent WOM to reach the
+    lifecycle checklist's own "Invoice" step) also shows at the top of that
+    vendor's own edit modal on the Vendors tab, so it's visible without a
+    trip to Cost Analysis.
+  - A WOM with contracted-services cost already applied but still no
+    Maximo/PO # on file is automatically **High priority** on its own
+    lifecycle task (Priorities board and the WOM lifecycle checklist
+    alike) -- money's gone out the door to a vendor with no paperwork
+    backing it yet, which deserves the same urgency as a PSE that hasn't
+    been sent to Toyota, independent of whatever step the rest of the
+    checklist is on.
+- **Task / workflow engine (Phase 1) -- "Priorities &rarr; My Work"**: a
+  general-purpose task system built around one rule: **states create
+  tasks, tasks create timestamps, timestamps create analytics.** Not a
+  bolted-on to-do list -- WOM lifecycle changes, recurring admin
+  responsibilities, and (later phases) vendor/financial exceptions all
+  drive the same `tasks` table through one write path, so nothing has to
+  be manually re-created every time something changes.
+  - **One reusable board, not a page per employee** (`public/js/views/tasks.js`,
+    mounted from both Priorities &rarr; My Work and the technician's own
+    My Work tab): views are resolved server-side from who's asking
+    (`GET /api/tasks?view=...`) --  a technician only ever sees their own
+    assigned tasks plus their role's unclaimed queue (e.g. any open
+    `tech`-role task); an admin sees everyone's by default and can filter
+    by employee, role, location, WOM, vendor, category, due date, and
+    status. Views: **My Work, Team Work, Overdue, Waiting, Workflow
+    Exceptions, Recurring Tasks, Completed** (plus an admin-only
+    **Unassigned**). A dashboard strip of tiles up top (Due Today,
+    Overdue, High Priority, Waiting, Recurring, Workflow Exceptions) --
+    click one to jump straight to that view.
+  - **Every task carries**: title/description, assigned employee and/or
+    role, category, priority, due date, status (`open` / `in_progress` /
+    `waiting` / `completed` / `cancelled`), related WOM/vendor/location/
+    technician/PO, source + source record id, the workflow rule that
+    generated it (if any), and a full set of timestamps (created,
+    assigned, started, completed, last status change) -- plus threaded
+    comments. **Priority isn't purely manual**: a computed `urgency`
+    (`computeTaskUrgency` in `server/routes/tasks.js`) bumps a task up for
+    being overdue, flagged as a workflow exception, aging past 14 days, or
+    due within 24 hours, regardless of its stored priority. **Emergency**
+    is a fifth priority tier above Urgent (`low` / `normal` / `high` /
+    `urgent` / `emergency`) for a hard-stop, drop-everything item (an urgent
+    PO that just came in, etc.) -- it always reads as the top urgency
+    tier no matter its due date, renders the *entire* task card as a solid
+    red box (`.task-card-emergency` in `public/css/styles.css`, the same
+    red-border-plus-tint treatment `.review-row-pending` already uses
+    elsewhere) rather than just a colored badge, and always sorts to the
+    top of every list regardless of due date.
+  - **The board groups into color-coded sections instead of one flat list or
+    another tab** (`TASK_SECTIONS` in `public/js/views/tasks.js`) --
+    Compliance Items, Onboarding, IT Requests, Financial & PO/WOM,
+    Recurring, and General, each with its own heading color and a matching
+    left-border tint on its cards (`renderTaskList`). This reuses the same
+    `category` field every task already had; the New Task modal now also
+    offers a **Type** picker (Compliance/Onboarding/IT Request/Financial/
+    General -- `MANUAL_CATEGORY_OPTIONS`, one-time tasks only, since a
+    recurring occurrence always lands in Recurring regardless of what's
+    picked). **Related WOM and Related Vendor are both collapsed behind
+    their own "Related to a ..." checkbox** rather than always-visible
+    fields, so the Related section reads as empty until there's actually
+    something to relate -- checking "Related to a WOM" reveals a Location
+    dropdown (real locations, defaulting to "All locations") that narrows a
+    second dropdown of real open-text WOM codes/descriptions at that
+    location, replacing what used to be a free-text WOM # field a person
+    had to already know by heart; checking "Related to a Vendor" reveals
+    the same type-a-name/pick-from-matches search described above. A task
+    like "Update COI" can point straight at that vendor's own profile the
+    same way it already could point at a WOM. All three are purely
+    additive to what the backend already accepted (`relatedVendorId` on
+    `POST /api/tasks` was already there, just not exposed in this form
+    yet) -- no new endpoints. The WOM link stays available even on a
+    recurring task (its template does carry `relatedWomCode` through to
+    every occurrence); Type and Related Vendor don't, so both are hidden
+    while "Repeats on specific days" is checked.
+  - **A "Related to an Employee" picker sits next to Related Vendor**,
+    same type-a-name/pick-from-matches shape, searching active technicians
+    instead of vendors (`relatedTechId`, already accepted by the backend
+    the same way `relatedVendorId` was). Both pickers share one
+    `wireRelatedPicker` helper now rather than two near-identical copies.
+    Choosing **Onboarding** as the Type reveals a one-off **"Onboarding
+    for"** sub-select (Vendor / New Employee) purely as a shortcut --
+    picking one auto-checks and opens the matching Related picker instead
+    of making you find and check it yourself, since "Onboarding" always
+    means either a new vendor or a new hire.
+  - **A hand-added task can be edited after the fact** (`PATCH
+    /api/tasks/:id`, `db.updateTask`) -- title, description, Type,
+    priority, due date/time, and all three Related pickers (WOM/Vendor/
+    Employee), via an **Edit** link next to a task's own "Added by hand"
+    line in its detail panel. Deliberately separate from `/assign` (who)
+    and `/status` (state), which keep their own routes and audit verbs.
+    Only ever available for a task with `source: "manual"` -- an automated
+    WOM-workflow task's fields are that workflow's own source of truth and
+    would just get overwritten by the next sync/action, so only its real
+    action and status apply to it, never a title edit. An admin can edit
+    any hand-added task; a non-admin only their own. Saving re-draws the
+    whole board (a title change needs to show up on the outer card too,
+    not just the open detail panel), audited as `TASK_EDITED`.
+  - **Due dates read relative and color-coded, not as a raw date**
+    (`formatRelativeDue` in `tasks.js`) -- "3 days overdue" in red, "due
+    today"/"due tomorrow"/"due in N days" in orange, and only a date past
+    a week out falls back to the plain `M/D/YYYY` format. Compares
+    calendar days, not raw hours, so a task due at 11pm today still reads
+    "due today" right up until midnight, not "overdue" the moment the
+    clock passes its due *time*. A closed (completed/cancelled) task shows
+    its due date plainly ("was due M/D/YYYY") instead -- a countdown on
+    something already finished isn't meaningful.
+  - **Bulk actions**: an admin-only checkbox per card and a bar that
+    appears above the list the moment at least one is checked -- mark
+    complete, cancel, set priority, or reassign, all applied to every
+    checked task at once. Each one loops the same single-task endpoints
+    the rest of the UI already uses (`/status`, `/assign`, the general
+    edit route for priority) rather than a new bulk backend route, since
+    the volume here doesn't call for one; the whole board re-draws once
+    all of them finish.
+    - **Mark complete/Cancel skip any selected WOM lifecycle task.** A
+      lifecycle task's status is derived entirely from its own checklist
+      (`refreshWomLifecycleTask`, `reopenIfClosed: false`) -- the
+      single-task detail panel already enforces this by never showing the
+      generic Start/Waiting/Mark complete/Cancel buttons for one
+      (`renderPseActions` always takes over instead), but the bulk
+      toolbar called the same generic `PATCH /:id/status` route directly
+      and had no such guard, so checking one and clicking "Mark complete"
+      would force it closed with real steps (e.g. Review charges, Invoice)
+      still unchecked -- and since the lazy per-read refresh only touches
+      non-completed lifecycle tasks, there was no path back except by
+      hand. `PATCH /:id/status` now rejects `completed`/`cancelled` for a
+      `category: "wom_workflow"` task (400, server-side, so this holds
+      regardless of caller); the bulk toolbar's Mark complete/Cancel
+      filter any selected lifecycle tasks out before running (so the rest
+      of a mixed selection still goes through) and alert once naming how
+      many were skipped and why. A lifecycle task only ever completes by
+      finishing its checklist, and only ever pauses via Reschedule.
+  - **One unified activity feed per task, not a separate "opened/started/
+    completed" sentence plus a disconnected comments list below it**
+    (`buildActivityEvents`/`renderActivityFeed`) -- built client-side from
+    timestamps the task already carries (created, assigned, started,
+    completed, or its last status change for waiting/cancelled) merged
+    with its comments and sorted chronologically, so a note someone left
+    reads in the actual order it happened relative to the task's real
+    state changes, no new backend query needed. Posting a new comment
+    re-renders this same merged feed rather than a comments-only list.
+  - **The board can be grouped four other ways besides Type** (`groupBy`
+    state + `groupTasks` in `tasks.js`, picked from a "Group by" dropdown
+    next to "+ New Task"): **Assignee** (alphabetical, including an
+    "Unclaimed — role" bucket for queue tasks), **Priority** (Emergency
+    down to Low), **Due Date** (Overdue / Due Today / Due This Week /
+    Later / No Due Date -- reuses the same `formatRelativeDue` buckets as
+    the colored due-date text above), and **None** (one flat list, no
+    headers at all). Only Type keeps the semantic Compliance/Onboarding/
+    IT/Financial colors; the other modes use one neutral heading color
+    (Overdue still gets a warning tint) since "who it's assigned to" isn't
+    itself a kind of work the way Type is. Switching modes re-renders
+    against the already-fetched task list -- no extra round trip.
+  - **The Type filter can invert to "everything but"** -- an **"Exclude
+    this type"** checkbox next to the Filters panel's Type dropdown
+    (`filters.categoryExclude` in `tasks.js`) flips `category=X` to
+    `excludeCategory=X` on the request (`category != ?` server-side in
+    `listTasks`) instead of adding a second control. Built for exactly the
+    "show me everything except Compliance" case -- a single large category
+    (e.g. a long tail of per-vendor compliance follow-ups) can otherwise
+    bury every other kind of task on the board, and picking every *other*
+    type one at a time isn't a real option once there are more than a
+    couple.
+  - **A WOM-workflow task's detail panel takes the real action, not a
+    generic "mark complete."** Opening a task like "WOM lifecycle:
+    LC-1234" fetches that WOM's live `lifecycleSteps` and renders the
+    same 7-step checklist described above (mirroring
+    `WOM_LIFECYCLE_STEP_HINTS`/the checklist markup in `adminReview.js`'s
+    own PSE Tasks tab), with whichever manual step is next rendered as a
+    real button/form -- clicking it calls the same
+    `POST /api/woms/:code/lifecycle/:stepKey` the dedicated Financials
+    &rarr; PSE Tasks page uses, so it genuinely checks off that step on the
+    one shared task (there's nothing to "advance" to -- it's the same task
+    the whole way through) instead of just closing the task card with
+    nothing behind it. An auto-trigger step (e.g. "Create WOM & PO") shows
+    plain hint text instead of a button, since nothing here completes it --
+    only the underlying WOM data changing does.
+  - **No duplicate tasks, ever, no matter how many times a sync or action
+    re-fires**: every automated task gets a deterministic `source_key`
+    (e.g. `WOM-20528831-LIFECYCLE`) and is written through
+    `upsertTaskBySourceKey` -- if that key already exists, its fields are
+    refreshed in place rather than a second row ever being inserted. A WOM
+    lifecycle task passes `reopenIfClosed: false` once fully checked off
+    (like recurring tasks do), since re-upserting an already-completed
+    checklist on the next sync or page load must not silently un-complete
+    it.
+  - **WOM workflow rules, tied to the checklist's own auto-trigger steps**
+    (`checkWomLifecycleAutoSteps`/`refreshWomLifecycleTask` in
+    `server/data/db.js`, called after every write that could satisfy a
+    step -- a Smartsheet sync, `PATCH /:code/details`, `PATCH
+    /:code/pricing`, `POST /:code/complete` -- plus a lazy catch-up
+    (`refreshAllOpenWomLifecycles`) run on every task-list read, needed
+    for "Schedule vendor" since there's no single write path that covers
+    every way an allocation can be created): a WOM entering the checklist
+    for the first time creates its one lifecycle task, assigned to
+    whichever role owns the first incomplete step; every step completing
+    (auto or manual) just re-evaluates and re-upserts that same task with
+    its role and "next up" label moved forward, until the last step
+    (Invoice) closes it for good and flips the WOM's own `status` to
+    `invoiced`.
+  - **WOM status history** (`wom_status_history` table,
+    `GET /api/woms/:code/history`, admin-only): every meaningful `status`
+    change, recorded separately from the tasks themselves -- keeps both
+    the real event time (`changed_at`, known for in-app actions) and when
+    this app actually noticed it (`detected_at`, always known, since a
+    Smartsheet sync is a manual, point-in-time pull). The lifecycle
+    checklist's own step-by-step history (`wom_lifecycle_steps` table)
+    covers the finer-grained "when did each step happen and who did it"
+    record that sits alongside this.
+  - **Recurring admin tasks**, not tied to any WOM (`ensureRecurringTasks`
+    in `server/data/db.js`, called lazily whenever the task list loads --
+    there's no cron/scheduler anywhere in this app): technician time
+    allocation and final timecard review (weekly), AP open items
+    (weekly), completed-WOM charge confirmation (biweekly), and open-PO/
+    vendor-compliance cleanup (monthly) -- each keyed to its own period
+    (e.g. the Monday of the current week) so it's a no-op once that
+    period's task already exists.
+  - **User-defined recurring tasks** ("+ New Task" -> **Repeats on
+    specific days of the week**), distinct from the fixed specs just
+    above: pick any set of weekdays and a task gets created automatically
+    on each one going forward, without re-adding it by hand every time.
+    A checked template lives in its own `recurring_task_templates` table
+    (title/description/priority/assignee/role/WOM/days-of-week/a daily
+    due time) rather than as a task row itself -- `ensureRecurringTasks()`
+    upserts *today's* actual task (source key
+    `RECURRING-USER-<templateId>-<today>`) whenever today's weekday is in
+    the template, the same lazy-on-read, never-duplicated,
+    never-un-completed-early pattern the fixed recurring specs already
+    use. Admin-only to create (same as assigning into a role queue).
+  - **"+ New Task" is a real form now**, not a stack of unlabeled inputs --
+    sectioned into What (title/description), When (priority, due date
+    *and time*, or the recurring day-picker above), Who (assignee/role,
+    admin only), Related (WOM #), and Attachment. A one-time task's due
+    date and time combine into a single `dueAt` timestamp server-side
+    (`YYYY-MM-DDTHH:MM`) rather than needing a separate time field on the
+    task itself.
+  - **A task can carry documents that aren't filed to any vendor yet**
+    (admin-only, task detail panel, and now attachable right at creation
+    from "+ New Task" too -- skipped for a recurring task, since there's
+    no single task row yet to attach it to until the first occurrence
+    exists): a COI from a renewal email is real compliance material the
+    moment it lands, even before it's clear which vendor record it
+    belongs to (or before that vendor exists in this app at all) --
+    rather than forcing a choice up front, a task gives it somewhere to
+    live (create a task like "File COI from Aon once vendor confirmed",
+    attach the PDF there) so it isn't lost, without it being tied to any
+    vendor. Reuses `server/routes/files.js`'s existing generic
+    relatedType/relatedId file system with a new `task` relatedType,
+    sharing the exact same category vocabulary
+    (`coi`/`w9`/`ach`/`vpo_waiver`/`vendor_other`, plus a plain `document`)
+    as a vendor's own files -- filing it for real later is a plain
+    re-upload onto that vendor's record under the same category, no
+    re-labeling. Same admin-only read/write rule as vendor documents (a
+    technician never sees it, even if the task happens to be assigned to
+    them).
+  - **Smartsheet sync now reports what it actually changed downstream**:
+    the sync panel persists a **"Last sync: &lt;when&gt; -- N WOMs
+    updated, N tasks created, N tasks completed, N workflow exceptions"**
+    line (`wom_sync_log` table, survives a page reload) with a **View Sync
+    Details** toggle for the full breakdown -- diffed directly against the
+    tasks table before/after that specific sync call, not inferred from
+    WOM row counts. The details panel now also names **which WOM changed
+    and which fields** (estimate/applied/Maximo #/subsidiary code/
+    location) -- `diffFields`/`valuesDiffer` in `server/data/db.js` compare
+    against the WOM's actual previous values first, so "N WOMs updated"
+    only counts a WOM that genuinely changed, not every already-synced WOM
+    the sheet still happens to mention (previously *every* row reaching
+    that branch counted as "updated" regardless of whether anything about
+    it differed, which is why the count was too large to mean anything).
+    Persisted on `wom_sync_log.changed_woms_json` so the list survives a
+    page reload, not just the sync that produced it.
+  - **A sheet row with neither a real WOM # nor a real project name is
+    skipped outright**, not synced in as an unidentifiable
+    `PENDING-<rowId>` WOM -- some sheets keep header/legend/key rows near
+    the top ("CODE", "Check Box < F/U Already", a blank filler row) that
+    aren't work requests at all. `"-"` and `"0"` in the WOM # column both
+    count as "no real code," matching how a spreadsheet actually marks a
+    blank cell. A sync also cleans up a junk pending WOM an earlier sync
+    (before this check existed) already created, once that row still has
+    nothing real on it -- safe to hard-delete outright, since a row like
+    that could never have real hours allocated against it.
+  - **Pending/requested WOMs (no real WOM # yet) are left out of WOM
+    Lookup** (admin) and the technician's own read-only Locations & WOM
+    list -- both are for finding a WOM you already have hours/pricing to
+    look up, and a placeholder with nothing real on it yet doesn't belong
+    there. They still show up in the main WOM Projects list and
+    Priorities, where following up on them *is* the point.
+  - **Manual tasks**: anyone can add one (a technician's own follow-up is
+    force-assigned to themselves; only an admin can hand a task to someone
+    else or drop it into a role queue with no owner yet), and everyone can
+    comment on a task they can see. Every automated action is logged to
+    the Audit Trail (`TASK_CREATED`, `TASK_COMPLETED`, `TASK_STATUS_CHANGED`,
+    `TASK_REASSIGNED`, on top of the existing `WOM_STATUS_CHANGED`/
+    `WOM_LIFECYCLE_STEP_COMPLETED`).
+  - Deliberately **not yet built** (Phase 1 stops here by design, before
+    the larger financial/vendor analytics pieces): vendor-triggered tasks,
+    financial-module tasks/alerts, vendor profile analytics, the
+    financial control-center fields, and bottleneck/lifecycle-duration
+    analytics.
+- **Priorities tab (admin)**: split into two sub-tabs -- **My Work** (the
+  task engine above, now the default) and **Checklist** (everything below,
+  unchanged). One calm, dedicated place gathering everything
+  that needs a look -- outdated vendor forms, vendors with incomplete
+  document checks, expiring/missing employee forms, technicians with zero
+  UKG hours entered for the current week, pending weekend-hours addenda,
+  punch issues reported by techs, WOM closures not yet reflected in
+  Smartsheet, unverified PurelyHR time off, and trailing months with no
+  report saved at all. Deliberately not
+  more banners scattered across other tabs -- the only "in your face"
+  surface is a small red count badge on the tab itself. That badge
+  deliberately **excludes** the vendor document-checks-incomplete section:
+  against a real, bulk-imported vendor list, "not yet checked" starts out
+  true for nearly every vendor, so counting it in the badge would make the
+  number reflect the size of that whole backlog rather than "a few things
+  to look at today" -- it's still fully listed in its own section to work
+  through at whatever pace makes sense, just not driving the badge. A
+  **Today's focus** box at the top suggests a concrete daily target (try
+  clearing 10 of however many outdated vendor/employee forms are
+  outstanding) and calls out Mondays specifically (timecards + vendor case
+  updates on ServiceEdge) -- fixed defaults for now, not yet
+  admin-configurable goal numbers; see "Where this stands."
+  That badge count comes from 9 parallel API calls
+  (`computePriorityCount()`), which against a real dataset (292 vendors,
+  234+ WOMs with embedded raw Smartsheet data each) is not cheap. It used
+  to run before every single page render -- every nav click, and the very
+  first screen after login -- so the whole app waited on it every time.
+  It now runs in the background after the page has already rendered, and
+  the badge fills in a moment later without blocking anything else; a
+  `drawGeneration` counter discards a stale badge refresh if the admin has
+  already navigated elsewhere by the time it resolves.
+- **Short-hours flag, symmetric with the existing OT-not-on-WOM flag**: a
+  week that comes in more than 3 hours under 40 (and has UKG hours entered
+  at all, so this never fires on a week that's simply not been touched yet
+  -- that's the separate "missing UKG" case above) now flags for RFM
+  attention on Overview too, labeled distinctly ("short hours" vs. "OT not
+  on WOM") since a week can only ever be one or the other. The technician
+  sees the same two self-checks themselves, right on their own week, before
+  they submit -- a dismissible nudge ("Was this approved by your RFM? Any
+  additional WOM time to report?" for OT, or "Did you arrange to take these
+  hours unpaid?" for a short week), not a submission gate. Answering "this
+  is accurate" just tells them it'll show up flagged for RFM, since it
+  already will via the same Overview mechanism -- it doesn't create a
+  second, separate flag.
+- **Admin succession**: each admin gets their own login (id + PIN) rather
+  than sharing one account, via a small "Manage admin accounts" panel on
+  the Technicians tab. Admins live in the same `technicians` table as
+  everyone else (`role = 'admin'`), reusing the exact same active/inactive
+  gate already built for technicians -- deactivating a departing admin's
+  account blocks their login immediately without deleting anything or
+  touching the audit trail, since every past entry already has that
+  person's name baked into its details text at write time, not a live
+  lookup. An admin can't deactivate their own account (the one guard that
+  matters -- since only an active admin can reach this endpoint at all,
+  and they can't touch their own account, there's always at least one
+  active admin left after any call). An admin account's **name can be
+  renamed** from that same panel (`PATCH /api/admin/admins/:id/name`,
+  audit-logged as `ADMIN_RENAMED`) -- a legal name change, a typo at
+  creation, or a seeded demo name that never got updated to whoever's
+  actually using the account. Renaming yourself updates the stored session
+  (`setUser` in `app.js`) **and now live-refreshes the header on screen
+  immediately** (`refreshHeader`, which swaps the header's DOM in place --
+  it's otherwise only drawn once per page load) -- previously the rename
+  saved correctly but the header kept showing the old name until the next
+  reload, which read as "the rename didn't work" even though it had. The
+  same Edit form also sets an admin account's **home location, UKG ID, and
+  hire date** (`PATCH /api/admin/admins/:id/basic-info`, audit-logged as
+  `ADMIN_BASIC_INFO_UPDATED`) -- real columns a technician row already has
+  (admins live in the same table), but nothing ever exposed them for an
+  admin account before, even though there's no reason an admin's own
+  profile shouldn't carry the same real details a technician's does. Purely
+  record-keeping -- none of this feeds any admin-side logic the way it
+  does for a technician's allocations/scheduling, and it's a dedicated,
+  narrowly-scoped update (only those 3 columns) rather than reusing the
+  technician basic-info function, which overwrites every field it knows
+  about at once and would otherwise risk blanking out something later if
+  an admin account ever gains its own email/phone/etc. The same panel also
+  has a **"Set as RFM" / "RFM -- remove"** toggle per admin, designating
+  who plays the `reviewer` role in the WOM lifecycle checklist (see PSE
+  Tasks below, and the role-label note there on why this reads "RFM" on
+  screen) -- only one at a time, enforced server-side
+  (`PATCH /api/admin/admins/:id/pse-reviewer`; setting a new one always
+  clears whoever held it before, so this one toggle is also how RFM gets
+  transferred to someone else, not just designated the first time). Each
+  admin row also has **Reset PIN** (`POST /api/admin/admins/:id/reset-pin`,
+  audit-logged as `ADMIN_PIN_RESET`) -- the same reset technician accounts
+  already had, now extended to admin accounts, which had no way to recover
+  a forgotten PIN at all before this. A PIN is hashed one-way on purpose
+  (same as any real password), so there's no "look the old one back up" --
+  this issues a brand-new random one instead, shown once inline under the
+  admin's name ("New PIN: 1234 (give this to \<name\> now -- it won't be
+  shown again)") until dismissed, same pattern the technician profile's own
+  Reset PIN already uses.
+  **+ Add Admin / + Add RFM** on the main Roster page (next to +
+  Add technician) surface this same admin-creation capability up front,
+  for the common case of onboarding a brand-new admin or RFM without
+  first opening the Manage admin accounts panel -- + Add RFM creates the
+  account and immediately sets it as RFM in the same step. The form also
+  collects **home location, UKG ID, and hire date** up front (same fields
+  + Add technician already asks for), rather than requiring a second trip
+  through the separate Edit form afterward -- it used to only take
+  id/name/PIN. And since this modal is a top-level action, not something
+  reached from inside the (collapsed by default) Manage admin accounts
+  panel, creating an account here used to leave it genuinely invisible --
+  "it doesn't show up on the roster list" was a real report, not a
+  misunderstanding: the main Roster table only ever lists technicians
+  (`listTechnicians` filters `role = 'tech'`), and the new admin's one
+  actual home, the Manage admin accounts panel, was still collapsed.
+  Creating one now force-opens that panel so the account that was just
+  created is actually on screen afterward, not just "created somewhere I
+  can't see."
+- **Team Roster** (admin's Technicians tab): filterable by location/status,
+  showing name, UKG ID, position, and home location. Clicking a row opens a
+  tabbed **employee profile**:
+  - Basic Info (editable email/phone/UKG ID/position/home location/
+    **employment status**: active/inactive/terminated/retired/**hire
+    date**/**termination date**/**standard daily hours (net of break)**).
+    The technician's own `id` (e.g. `T1001`) already serves as the stable
+    internal identifier a UKG ID correction shouldn't be able to disturb —
+    no separate "Employee ID" field was added on top of it
+  - Labor Allocation History — every WOM/E&F/time-off row ever allocated to
+    that technician, across all weeks, so you can see what's been worked on
+  - Onboarding — a fixed 5-item checklist per technician (not yet an
+    admin-editable template — see "Where this stands")
+  - Devices — Phone, iPad, or Laptop, each with its identifier (phone
+    number, iPad #, or an asset tag/serial for a laptop), an optional
+    **plan** (e.g. a phone's carrier plan), and notes. Each device also has
+    its own small **IT Requests** log (e.g. a Calero line cancellation): a
+    request type + reference number that can be marked completed and
+    reopened, and edited after the fact (e.g. to correct or fill in a
+    reference number once the vendor provides it), so a pending vendor
+    request doesn't get lost track of
+  - Forms on File — file attachments like the others, but with two extra
+    fields for a form/certification: a **type** (e.g. "Forklift License")
+    and an **expiration date**. A form past (or close to) its expiration
+    date shows an Expired/Expiring badge here, and also surfaces in a
+    dedicated banner at the top of the admin's **Overview** tab ("Forms &
+    certifications needing attention") so it doesn't just sit unnoticed on
+    an individual profile — a "View" link jumps straight to that
+    technician's Forms on File tab
+  - Documents — general file attachments, same mechanism as WOM docs but
+    with no type/expiration tracking
+- **Add technician**: a form on the roster (ID, name, PIN, position,
+  home location, contact info, and an optional start date) creates a new
+  technician who can log in immediately. This is the one-at-a-time form;
+  see **Bulk add technicians** right below for onboarding several at once
+  (a shorter, paste-based set of fields -- no PIN or start date entry, since
+  those aren't practical to type per row for a whole roster).
+- **Terminate employee**: a one-click quick action right on the roster
+  toolbar next to + Add technician (same pop-up pattern), for the common
+  "this person is leaving" case without having to open their full profile,
+  find Basic Info, and change the status dropdown there (that path still
+  works too, e.g. to un-terminate someone or edit other fields at the same
+  time). Picks an employee (anyone not already terminated) and a
+  termination date, then sets both the date and employment status in one
+  step -- carries the technician's other Basic Info fields (email, phone,
+  position, etc.) through unchanged rather than blanking them, since the
+  underlying `basic-info` endpoint replaces that whole field set at once.
+- **Typeable MM/DD/YYYY date fields, not native date pickers**: every date
+  field a person actually fills in by hand (a new technician's start date,
+  Basic Info's hire/termination dates, the Schedule tab's date range) is a
+  plain text input with a slash-auto-inserting mask instead of a native
+  `<input type="date">`, which forces month/day/year to be clicked and set
+  as three separate segments and can't take a pasted or fully-typed date in
+  one go. Typing all 8 digits in one go (`09252026`) or pasting an already-
+  slashed date works the same way; the small shared helper
+  (`public/js/dateMask.js` -- `wireDateMaskInput`/`isoFromUs`/`usFromIso`)
+  converts to/from the app's own `YYYY-MM-DD` at the API boundary, so
+  nothing server-side changed. An incomplete or malformed date shows a
+  plain validation message rather than silently being sent as garbage.
+- **Bulk add technicians**: for onboarding a whole real roster at once
+  instead of one form per person. Paste one technician per line — `ID,
+  Name, Position, Email, Location code` (tab or comma separated; a
+  straight paste from a spreadsheet column selection works), location
+  code optional — and `POST /api/admin/technicians/bulk` creates all of
+  them, generating a random 4-digit PIN for each row rather than making
+  anyone type one in. The response is the *only* place those PINs are ever
+  shown — same as any password, there's no way to look one back up
+  afterward — so the UI's result table has a **Copy list** button and a
+  reminder to save it immediately. A bad row (missing id/name, a duplicate
+  ID, an unknown location code) is skipped with its own per-row error
+  rather than failing the whole batch, so one typo doesn't block everyone
+  else in the paste.
+- **Admin PIN reset**: a **Reset PIN** button on a technician's own profile
+  (next to Delete) issues them a brand-new random PIN on demand —
+  `POST /api/admin/technicians/:id/reset-pin`, admin-only, logged to the
+  audit trail as `PIN_RESET` every time it's used — for when a technician
+  calls in having forgotten theirs. There's deliberately no way to read
+  back their *current* PIN (it's hashed one-way, same as any real password,
+  and stays that way — see "Where this stands" for why that matters given
+  the compliance-sensitive vendor documents gated behind this same login):
+  resetting invalidates the old PIN and shows the new one once, right there
+  on screen, for admin to relay — never baked into the roster or profile
+  payload, and dismissed again on a second click so it isn't left sitting
+  on screen. PINs are also never shown anywhere on the public login page
+  itself — that used to carry a "Demo logins" hint with real technician IDs
+  and PINs in plain sight of anyone who visited the site unauthenticated;
+  it's been removed now that this is in real use, not just a demo.
+- **Delete technician**: for one created by mistake — a test entry, real
+  data typed into the wrong row — rather than leaving it under some
+  employment status forever (own **Delete** button on the technician's
+  profile, admin-only, `DELETE /api/admin/technicians/:id`). Blocked with a
+  409 if they have any allocated hours on record; forcing it through
+  removes that whole history along with them (allocations, UKG hours,
+  weeks, onboarding progress, devices/device requests, any active session)
+  but never their uploaded files/forms, same as a WOM's own documents
+  surviving a WOM delete — those aren't the technician's identity, just
+  attachments. Never touches an admin account; this only ever looks at
+  `role = 'tech'` rows, same as every other `/technicians/:id` route.
+- **Delete location**: same idea, but with no force option — a location in
+  use by a whole set of technicians/WOMs/allocations is too large a blast
+  radius for one confirm click, so it's blocked outright (409, naming
+  exactly how many of each) until those are reassigned elsewhere first
+  (`DELETE /api/locations/:code`, admin-only).
+- **Admin can allocate on a technician's behalf** (new "Tech Allocation"
+  tab): the exact same day-by-day splitting screen a technician sees, with
+  an employee switcher (dropdown + Prev/Next) to move through the roster —
+  for when someone's on vacation or otherwise can't do it themselves. If
+  the week they land on is already approved, an **"Unlock for correction"**
+  link sits right there in the status banner — no need to switch over to
+  Weekly Review to unlock it first (that's a separate action from the
+  Weekly Review checklist's "Undo," which only un-checks your own "entered
+  in UKG" confirmation and never touches submitted/approved status)
+- **Weekly Reg/OT receipt**: live-updating breakdown (Week Total, Regular,
+  Overtime, OT on WOM, Time Off, plus a per-bucket Reg/OT/Total table) shown
+  under the day cards. Hours beyond 40/week are OT; WOM hours are charged to
+  OT before E&F hours; time off is always straight time and excluded from
+  the 40-hour threshold entirely (see "Where this stands" for a documented
+  simplification in this calculation)
+- **Technician edit window (Thu 12am – Mon 12pm Eastern)**: a technician can
+  only fully allocate the one week whose window is currently open. Outside
+  that window: past weeks are read-only (locked, same as an approved week,
+  regardless of status), and future weeks are open for **time off only**
+  (vacation/sick/bereavement/holiday) so someone can pre-book known time off
+  before their actual hours are known — no WOM/E&F splitting, no submit,
+  since there's nothing to balance against yet. A rejected week is always
+  fully editable for the technician regardless of the window, so a late
+  rejection never strands them. **Admin is never restricted by this window**
+  — the existing allocate-on-behalf/unlock tools work exactly as before, any
+  time. See "Where this stands" for the exact rule and how to change it.
+- **Weekly Review's admin checklist**: three steps per technician per week —
+  UKG hours entered, allocation matches UKG, and a third, purely
+  admin-controlled confirmation ("entered in UKG") for once you've put it
+  into the real UKG system. That third step is independent of the
+  technician's own submit/approve status — since in practice you often
+  drive all three steps yourself based on a conversation with the
+  technician. Marking it moves that technician into a separate "Completed"
+  list (undo-able) so Weekly Review always shows who still needs attention.
+- Week locking: a submitted/approved week can't be edited by the technician
+  until an admin rejects or unlocks it. **Unlock works on a merely-submitted
+  week, not just an approved one** — the case that matters is admin
+  correcting a technician's UKG hours after they've already submitted but
+  before anyone's approved it, which used to leave the week stuck mismatched
+  with no way back in (Reject would bounce it to the technician instead of
+  letting admin fix it directly)
+- **Weekend hours addendum**: if a technician gets called in over the
+  weekend on a week that's already submitted/approved, they can still log
+  Saturday/Sunday hours directly on their locked week — no unlock needed,
+  and the hours don't have to match UKG at save time, since the technician
+  just logs what they worked and admin true's it up at review time.
+  Deliberately its own **Weekend hours** box (accent-bordered, own "Save
+  weekend hours" button) placed right after the status banner — above the
+  Mon-Fri grid, not buried in it and not at the bottom of the page — since
+  this is meant to feel like a distinct add-on for an unplanned callout, not
+  just another day card, and a technician shouldn't have to scroll past a
+  whole locked week to find where to log it. Saving flags the week (a red
+  "Weekend hours added -- needs review" banner on the admin's **Overview**
+  tab, with a "View" link) so admin knows to look. **Correcting and
+  accepting are one step, right on Weekly Review**: the flagged row there
+  shows the actual Sat/Sun entries inline — allocation, accounting code, and
+  an editable hours field — so admin can fix the hours to match UKG's actual
+  time (if needed) and click **Accept weekend hours** in a single action.
+  That one click both saves the correction and clears the flag; it never
+  bounces anything back to the technician for their own re-approval, and
+  never requires a separate "acknowledge" click or a detour to Tech
+  Allocation. The underlying week status (draft/submitted/approved) never
+  changes as part of any of this — it's a separate flag, not a status
+  transition. **Accepting also defaults that day's UKG hours (from
+  timesheet) to match** — otherwise the allocated total would jump by the
+  accepted hours while UKG stayed at 0, leaving the row looking unbalanced
+  until admin remembered to separately retype the same number into the UKG
+  hours field. It's still just a default: the UKG hours form is always
+  editable regardless of week status (never gated by the lock, on the
+  client or the server), so admin can adjust it further once the real UKG
+  punch is keyed in and comes out slightly different.
+- **Sat/Sun don't have to match UKG hours to submit, even on a still-open
+  week** — the same leniency as the weekend addendum above, just for the
+  ordinary case where a technician gets called in on a weekend during a
+  week that hasn't been submitted yet and UKG hasn't caught up (or picks up
+  hours in odd non-15-minute punch times). Monday–Friday still has to
+  balance exactly; only the weekend days are exempt from the check, both in
+  the "Submit for review" button's enabled state and on the server. Admin's
+  normal approve step is unaffected — a technician submits and admin
+  approves through the exact same flow either way, no separate action
+  needed for a weekend callout in an open week
+- **Hours fields keep the cursor where you left it and no fixed step
+  interval.** Every allocation edit re-renders the whole day grid live (to
+  keep balance pills/totals/remaining-hours current), which used to fight
+  with typing into an hours box mid-keystroke — losing focus, resetting the
+  page's scroll position, and (since these were HTML number inputs)
+  restricting values to quarter-hour steps and blocking the browser's own
+  cursor-selection API. Fixed by switching these to plain text inputs
+  (`inputmode="decimal"` for a numeric keyboard on mobile) with no step
+  restriction at all — a WOM charged only its share of overtime can be
+  something like 5h4m (5.07h), and there's no reason that should be hard to
+  type — plus a small focus-preservation mechanism in `techWeek.js` that
+  remembers which field (and exact cursor position) was focused before a
+  re-render and restores both afterward, so the page never jumps and typing
+  never gets interrupted. Clicking into a field also selects its whole
+  current value, so typing immediately overwrites it instead of inserting
+  wherever the cursor lands
+- **A WOM that's closed after being picked no longer looks like a live
+  selection.** A split row's WOM dropdown only ever listed *open* WOMs at
+  that location — if the WOM you'd already picked was later closed or
+  invoiced by someone else, it silently vanished from the list and the
+  `<select>` fell back to showing whatever open WOM happened to be listed
+  first, while the actual saved allocation still pointed at the closed one.
+  That mismatch was only surfaced at submit time, as a generic "WOM ...
+  is not open" error with no visual cue for which row caused it. Now the
+  stale WOM stays visible in its own row's dropdown (disabled, labeled
+  "closed — choose another"), with a red inline warning right under that
+  row, so the discrepancy is obvious and localized instead of a mystery
+  error after clicking Submit
+- Audit trail of logins, allocation saves, submissions, approvals,
+  rejections, unlocks, WOM status changes, home-location/employment-status
+  changes, technician creation, UKG hour entries, and file uploads/deletes
+- Every save/edit action shows a real error if it fails, rather than
+  silently appearing to succeed (a bug class found and fixed across the
+  onboarding checklist, device list, home-location field, WOM status
+  toggle, approve/reject/unlock, and file delete)
+- File attachments, stored in a real database + disk folder rather than a
+  mock:
+  - UKG timesheet screenshots and receipts/invoices — attached by a
+    technician to their own week (Attachments panel on the week screen)
+  - Work order documents/photos — attached by any technician or admin to a
+    WOM (Documents panel on admin's E&F Locations & WOM tab)
+  - Technician forms/certifications — admin-managed, attached to a
+    technician's record (admin's Technicians tab)
+- Mobile-friendly responsive layout
+- **Full GL line detail now includes Subledger (WOM) coding**, in both the
+  Meals report's and Spend Analysis's "click a line to see everything"
+  modal — previously the modal showed the Purchase Order field but silently
+  dropped the WOM-coding field next to it
+- **Spend Analysis: search by PO # or WOM #.** A search box overrides the
+  normal no-PO/no-WOM exclusion (which exists to hide the common case --
+  payroll, accruals, etc. -- from the default view) so the one specific
+  line someone's looking for isn't hidden by it. Matches against the
+  Purchase Order field or the Subledger (WOM) field
+- **Reconciliation dropped its "GL lines with no PO reference" section** --
+  it duplicated what Spend Analysis already shows and wasn't actionable
+  the way the unmatched-PO section (still there) is
+- **Cost Analysis's Estimated/Applied summary table gets a Toy Value
+  column** (Toyota PO value, synced from Smartsheet), next to Remaining
+  estimate
+- **Invoicing tab is split into two views.** WOMs genuinely missing a real
+  invoice #/batch # (nobody's invoiced Toyota yet) stay the primary,
+  always-visible list; WOMs that already have both but are only missing the
+  invoice document collapse into a secondary, collapsed-by-default list,
+  since that's a lower-urgency "someone needs to attach a file" gap rather
+  than an unbilled one. Clicking a row now opens the WOM profile's Overview
+  tab (where the billing checklist actually lives) instead of its Documents
+  tab
+- **Admin/RFM accounts can have multiple phone numbers and multiple iPad
+  #s**, with the same per-device IT-request tracking (cancel/transfer/etc.,
+  with a reference number) technicians' Devices tab already had -- backend
+  only so far, the Admin Accounts panel doesn't expose it yet
+- **Vendor Compliance checklist (Vendors &rarr; Onboarding &rarr;
+  Compliance Needed) is territory-scoped**, not shown identically to every
+  admin. A vendor's territory is derived from its own real Budget PO/WOM
+  activity (never a manually-set field), and a vendor can legitimately
+  belong to more than one. Filtering the topbar to a specific territory
+  narrows the list to vendors with real activity there, or -- for a
+  brand-new vendor with nothing matched to it yet -- to whoever created its
+  profile, until a real match gives it one. "All territories" (the default
+  for everyone) still shows the full list. The main Vendor Directory and
+  the territory dropdown itself stay unrestricted -- vendors are shared
+  company-wide, only the follow-up checklist narrows
+- **Fix: editing an existing vendor's JDE # never retroactively matched
+  already-imported POs.** The "link up this vendor's unmatched POs" check
+  only used to run when a vendor profile was first created -- adding or
+  correcting a JDE # on a vendor that already existed left matching Budget
+  PO Tracker rows stuck on "Needs Matching" forever, with nothing to
+  re-check them short of a future re-import touching that exact row again.
+  Now runs on every vendor save
+
+## Data model
+
+Mock seed data lives in `server/data/seed.js` and is loaded into
+`server/data/store.sqlite` the first time it's created (an empty
+`technicians` table is the signal to seed). Subsequent runs read/write that
+one file, so state persists across restarts — delete
+`server/data/store.sqlite` (and `server/data/uploads/` if you want uploaded
+files gone too) to reset to the seed.
+
+Locations are a first-class table: WOMs belong to a location (and
+optionally a total budget hours), technicians have a home location, and an
+allocation "split" row is either `ef` (general time, tied to a location),
+`wom` (tied to a specific WOM, which is itself tied to a location), or
+`timeoff` (vacation/sick/bereavement/holiday, no location). UKG hours are
+stored per technician/week/day, not one weekly lump — that's what makes the
+per-day balance check possible. `server/data/db.js` auto-detects and rebuilds
+these tables from the older flat schema if it finds one (safe at this stage
+since only mock data has ever been in them).
+
+**JDE accounting codes.** Each location carries its own real E&F Contract Job
+Number *and* WOM Job Number (both from the JDE location lookup table) and a
+Region label (e.g. "Southeast", "Region 1") used to match the location up
+against the monthly labor-report/financial file. E&F general time itself
+always posts to a single standard subsidiary/service code — `20920000` — the
+same at every location; that's a fixed constant (`EF_SUBSIDIARY_CODE` in
+`server/routes/locations.js`), not per-location data, and is surfaced to the
+client as `efSubsidiaryCode` on every location so it's visible without being
+editable. WOM projects are different: each WOM has its *own* subsidiary code
+that varies project to project, entered by an admin when the WOM is created
+or edited. Locations and WOM projects live on **separate top-level tabs** --
+**Locations** (its own nav section, not nested under WOM) for adding/editing
+a location's name, E&F Job Number, WOM Job Number, Region, and Territory;
+**WOM** (Smartsheet Connection + the WOM Projects list) for WOM records
+themselves, where the WOM add form and each WOM row's Edit button set/change
+the subsidiary code. These two used to share a single "Locations & WOM"
+tab/page; splitting them keeps "manage my physical sites" and "manage WOM
+projects/sync" as two separate day-to-day tasks instead of one long
+scrolling page covering both (`drawLocations`/`drawWoms` in
+`public/js/views/adminReview.js`, each with their own redraw rather than
+both sharing the old combined `drawWoms`).
+
+**Territory.** Every location also carries a Territory (Midwest, HQ, East,
+or West — `db.TERRITORIES`, `GET /api/locations/territories`), a label for
+now with no access-control scoping, laying groundwork for the whole roster
+being Midwest today to expand into other territories later without a big
+rewrite. It lives on `locations`, not on technicians/WOMs/tasks directly:
+a technician's territory comes from their home location, a WOM's from its
+own `locationCode`, and a task's from its `relatedLocationCode` — so
+tagging one location scopes everything already pointing at it, with
+nothing to backfill and nothing that can drift out of sync the way a
+separately-tagged copy could. Every location that existed before this
+feature backfills to Midwest. Three places read it:
+- **Roster** (`technicianProfile.js`) shows a Territory column (derived
+  from `homeLocationCode`) on both the main roster table and the Admin
+  Accounts table, plus a Territory filter dropdown next to the existing
+  Location filter.
+- **WOM Projects** (`adminReview.js` → `drawWoms`) shows a Territory badge
+  on each location row, and a Territory filter above the WOM list — hidden
+  entirely while only one territory is in use, so a single-territory shop
+  sees no new UI at all.
+- **Tasks** (`tasks.js`) adds a `related_location_code IN (SELECT code
+  FROM locations WHERE territory = ?)` clause to `listTasks` when a
+  `territory` filter is passed (`GET /api/tasks?territory=...`, admin-only
+  like the other cross-employee filters), with its own filter dropdown
+  that likewise only renders once more than one territory exists.
+
+A day's actual accounting code (Job Number + subsidiary code, e.g.
+`100110042963.20920000` for E&F or `100110007530.20520001` for a WOM) is
+computed and shown per allocation row when a technician's week is expanded
+on Weekly Review — an "Accounting Code" column next to Day/Allocation/Hours,
+so you can see exactly what a submitted day will post to without needing to
+cross-reference the WOM Status list separately. It shows `?` in place of
+whichever number (job number or subsidiary code) hasn't been entered yet, so
+a missing code is obvious rather than silently blank.
+
+**Task engine tables.** `tasks` (one row per task, every field the Priorities
+board reads/filters on -- see the task-engine feature bullet above for the
+full field list), `task_comments` (threaded notes on a task), `wom_status_history`
+(every meaningful WOM `status` change, kept separately from the
+tasks it drives so it survives independently of whatever task currently
+exists for that state), `wom_lifecycle_steps` (one row per completed
+checklist step per WOM -- `completed_at`/`completed_by`, the permanent
+paper trail behind the WOM lifecycle checklist), and `wom_sync_log` (one
+row per Smartsheet sync, backing the sync panel's persisted "Last sync"
+summary). None of this
+replaces or restructures any existing table -- `tasks.related_wom_code` etc.
+just reference the existing `woms`/`vendors`/`locations`/`technicians` rows
+by their existing keys.
+
+**Toyota PO tracking.** Each WOM can carry its own Toyota PO # and Toyota
+Rep contact (`woms.toyota_po_number`/`toyota_rep` -- new text columns,
+synced in from the live Smartsheet tracker the same way `toyota_po_value`
+already is, via `server/utils/smartsheetSync.js`'s column mapping), plus a
+manual Open/Closed status (`toyota_po_status` -- never synced, an admin
+sets this directly). All three are editable from the WOM profile's
+**Vendors & POs** tab, in a dedicated "Toyota PO" card
+(`renderWomVendorsPosTab` in `adminReview.js`), via a new
+`PATCH /api/woms/:code/toyota-po`. The leftover balance shown there is
+`toyotaPoValue - appliedPrice` (both already-existing fields) -- unless the
+WOM's applied cost has actually come in over its estimate once cost is
+applied, in which case it shows the Applied total in red as a "needs a new
+Toyota PO value" flag instead. That flag (`changeOrder` on `presentWom`,
+via `db.computeWomChangeOrder`) is the *same* condition that already drives
+the WOM lifecycle task's own change-order flag (`refreshWomLifecycleTask`)
+-- deliberately not a second, independently-set checkbox, so there's one
+source of truth instead of two that can drift apart.
+
+**Vendor Invoice History.** A read-only panel on the vendor profile's
+**Work & Costs** tab listing every GL line the Reconciliation tab's GL
+import has already matched to one of that vendor's POs (`db.
+getVendorInvoiceHistory`, `GET /api/admin/vendors/:id/invoice-history`) --
+invoice date (or GL date, when no invoice date came through on that line),
+invoice #, PO #, WOM #, and amount, newest first. No new data entry: this
+is purely a rollup of GL reconciliation that already happened, there so a
+quick glance answers "is this vendor still being used consistently."
+
+**WOM spreadsheet-style grid.** The WOM Projects tab's existing card list
+now has a Cards/Grid toggle (a `.pill-toggle-group` next to the existing
+Active/Closed one, `womViewMode` state in `adminReview.js`) -- Grid renders
+the same filtered WOM set as a dense, sortable `<table>` (Project Name,
+WOM #, Status, Location, Subsidiary, Maximo #, C&W PO #, Toyota PO #,
+Toyota PO Status, Est./Applied cost, Batch Date, Last Synced), click a
+column header to sort, click a row to open that WOM's profile. No new
+fetch or endpoint -- every column already rides on the existing
+`GET /api/woms` payload, plus one small batched query so the linked C&W
+PO # (from the separate `pos` table, joined by `wom_number`) comes along
+too without an N+1 per row. The grid is intentionally view/filter/sort
+only, not inline-editable -- the WOM profile stays the one place edits
+happen.
+
+## Where this stands
+
+- **Storage is real, deployment isn't.** The database and file storage are
+  no longer mock — they're the same engine and pattern you'd keep going
+  forward. What's still missing for real use by your team is *reachability*:
+  right now this only runs on whatever machine starts it, reachable at
+  `localhost:3000` on that machine only.
+- **Deployed on a $6/mo DigitalOcean droplet**, running as a systemd service
+  on an internal port (auto-restarts on crash or reboot), with Caddy in
+  front of it on 80/443 behind a basic firewall (only SSH + 80/443 open --
+  the app's own port is never opened, so it's unreachable except through
+  Caddy). See `scripts/deploy.sh` for first-time setup, and
+  `scripts/redeploy.sh` to pull + restart afterward — both are single-line
+  `curl | bash` commands so there's no multi-command line for a
+  copy/paste-mangling terminal to break:
+  ```
+  curl -fsSL https://raw.githubusercontent.com/Klee0120/Prototype/claude/labor-allocation-prototype-b0y12v/scripts/redeploy.sh | bash
+  ```
+  Static JS/CSS are served with `Cache-Control: no-store` (`server/app.js`)
+  specifically so a redeploy is guaranteed to show up on the next reload --
+  a small internal tool like this one isn't worth trading that guarantee for
+  the marginal bandwidth savings of letting browsers cache these files, and
+  a stale cached file after a deploy is a confusing, hard-to-diagnose "why
+  doesn't this look right yet" from the other end. Note this only covers
+  *files already fetched fresh on reload* -- a browser TAB left open from
+  before a redeploy keeps running whatever JS was already loaded into that
+  page's memory until it's actually reloaded (closing and reopening the tab,
+  or a plain refresh, both do it).
+- **Auth is real but the transport isn't encrypted yet.** Login issues a
+  genuine random session token (`server/data/db.js`'s `sessions` table); PINs
+  are hashed with scrypt, never stored or compared in plain text
+  (`server/utils/password.js`) -- there is deliberately no reversible copy
+  anywhere, so a stolen database yields only unusable hashes, never a real
+  PIN. (An earlier draft of this feature added a decryptable copy so admin
+  could look a PIN back up; that was reverted before it shipped, in favor of
+  a PIN *reset* instead -- see **Admin PIN reset** above -- since this login
+  also gates the compliance-sensitive vendor documents in "Vendor documents"
+  below, and a recoverable PIN would have weakened that.) Repeated wrong-PIN
+  attempts lock out for 15 minutes (`server/routes/auth.js`). What's still
+  missing: the site is served
+  over plain HTTP, so credentials and data travel unencrypted over the
+  network. Real HTTPS needs a domain name pointed at the droplet's IP (a
+  bare IP can't get a trusted certificate) — the domain itself is a separate
+  purchase/registration step still ahead, but the serving side is ready:
+  `scripts/deploy.sh` now puts Caddy in front of the app, and re-running it
+  with `DOMAIN=www.yourdomain.com` set (on the `bash` side of the `curl | bash`
+  pipe, not before `curl`) gets a free, auto-renewing Let's Encrypt cert and
+  an http→https redirect with no further manual cert work.
+- **A dead session used to fail silently.** If a session token the browser
+  still holds stops being valid server-side (it expired, or the token row
+  is simply gone), every tab that fetches data on load hit a 401, threw,
+  and left its content pane completely blank -- the header still showed
+  the logged-in name the whole time, since that's just cached `state.user`
+  from the original login, never re-checked. It looked exactly like a
+  crash, on every tab, with nothing in the UI explaining why (this is
+  exactly what running `journalctl`/`curl` end up ruling out one by one --
+  the server was never the problem, the session was). `api.js`'s
+  `request()`/`uploadFile()`/`fetchFileBlob()` now broadcast a
+  `window` `"laborapp:session-expired"` event on any 401 that happened
+  with a token attached (as opposed to an ordinary wrong-PIN 401 on the
+  login form itself, which never had a token to begin with) -- api.js
+  can't import `app.js` (the reverse import already exists), so a
+  `window` event is the decoupling instead of a circular one. `app.js`
+  listens once and, guarded so a second/third simultaneous 401 from a
+  page's other parallel calls doesn't re-fire it, clears the cached user
+  and bounces to the login screen with "Your session expired -- please
+  log in again." instead of a silent blank tab.
+- **Vendor documents (COI/W-9/ACH, which can carry bank routing/account
+  numbers and tax IDs) are already access-controlled at the application
+  layer** — `server/routes/files.js`'s `canRead`/`canWrite` refuse any
+  non-admin for `relatedType: "vendor"` outright (a technician can look up
+  a vendor's active/contact info via the separate `/api/vendors` endpoint,
+  but never sees or downloads its files), every file route requires a
+  valid session token, and there's no public/unauthenticated route that
+  serves uploaded files at all — nothing is reachable by just guessing a
+  URL. What that access control doesn't cover is the **network** it
+  travels over: see the HTTPS gap directly above. Until that's closed,
+  anyone positioned to intercept traffic between a browser and the droplet
+  (the same public wifi, a compromised router, etc.) could read a session
+  token or a downloaded file's bytes in transit, even though they still
+  couldn't just browse to it unauthenticated. Practically: **put a domain
+  in front of the droplet and get it a free Let's Encrypt certificate**
+  (e.g. via `certbot --nginx` once a reverse proxy is added, or a
+  DigitalOcean App Platform / Cloudflare tunnel in front of it) before
+  onboarding real ACH numbers — that one change closes the actual gap here.
+  Everything else (hashed PINs, session-based auth, admin-only file access)
+  is already in place and doesn't change with that migration.
+- **PINs are still short (4 digits).** Hashing protects them if the database
+  ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
+  rate-limit is what actually prevents brute-forcing it online. Worth moving
+  to longer PINs or real passwords before this holds anything sensitive.
+- **The Priorities tab's daily-focus goal numbers are fixed constants (10),
+  not admin-configurable.** `DAILY_GOAL_TARGET` in `adminReview.js` — the
+  suggestion text is generated from real backlog counts, but the "try
+  clearing 10 today" target itself is hardcoded, not a setting you can
+  change per admin or over time. A small settings form is the natural next
+  step if 10 turns out to be the wrong number for either category.
+- **The Schedule tab has no real Microsoft Teams/Outlook connection.** It
+  shows what's allocated in this app, not a technician's actual calendar --
+  so it can't yet prevent a real double-booking against a meeting or
+  commitment that only exists in Teams. Building that would need: an Azure
+  AD app registration (your Microsoft 365 admin's approval), Graph API
+  read access to calendars/shifts (delegated or application permissions,
+  whichever your IT prefers), and a decision on how to show "busy" time
+  from Teams without necessarily exposing what the appointment is about
+  (a free/busy overlay rather than pulling actual event titles/details is
+  usually the least-invasive way to do this). None of that is wired up —
+  today's grid is a same-system-visibility tool, not a real
+  availability check.
+- **Standard daily hours is stored but not used anywhere yet.** It's
+  plain reference data on the profile right now — a natural next step
+  would be using it to pre-fill the admin's UKG hours form (instead of
+  the current blank/last-saved default), but that's not wired up.
+- **Onboarding is a fixed checklist, not a template.** The 5 tasks are
+  hardcoded in `server/data/db.js` (`ONBOARDING_TASKS`); there's no UI yet
+  to add/remove/reorder tasks. Fine for a stable process, a real limitation
+  if the checklist needs to change often.
+- **Devices is a list plus a request log, not a full workflow.** It records
+  "this device is assigned to this person" and lets you log/track IT
+  vendor requests against it (e.g. a Calero cancellation, by type +
+  reference number, marked completed when resolved) — but there's still
+  no due-back date, no approval step, and no device inventory shared
+  across technicians (you can't see "who else has a Toyota laptop" across
+  the roster, only per-person).
+- **The OT calculation is a weekly aggregate, not day-by-day.** Hours over
+  40/week are OT, computed from the week's totals. The description this was
+  built from said OT applies "on the day the threshold is crossed," which
+  implies a chronological, day-sequential calculation (e.g. Monday's hours
+  count before Friday's) — that's not what's implemented. If OT ever needs
+  to land on a specific day rather than being a week-level total, this needs
+  revisiting.
+- **OT split across multiple WOMs is proportional, not prioritized.** The
+  rule "WOM before E&F" is implemented exactly. What's *not* specified
+  anywhere is which WOM if a technician worked OT hours across more than
+  one — this splits the OT proportionally by each WOM's share of the
+  week's WOM hours. If there's a real priority order (e.g. last-worked WOM
+  first), the calculation in `techWeek.js`'s `computeReceipt` needs that
+  rule instead.
+- **The receipt isn't persisted.** It's computed live in the browser from
+  that week's allocations every time the page renders — nothing is saved
+  to the database when a week is submitted/approved. If you need to look up
+  a specific week's exact Reg/OT numbers later without recomputing (e.g.
+  for JDE export), that needs a stored snapshot, not just a live calc.
+- **The Reg/OT math now exists in two places.** `public/js/views/techWeek.js`
+  has the browser copy (for the technician's own live receipt);
+  `server/utils/receipt.js` has a server copy (for the admin Overview
+  report, computed across every technician at once). They're deliberately
+  duplicated rather than shared, since one runs in the browser as an ES
+  module and the other in Node as CommonJS — if the OT rule ever changes,
+  both need updating together.
+- **Overview's flag threshold (3 OT hours not on a WOM) is a first guess,
+  not a rule you gave us.** It's easy to change
+  (`OT_NOT_ON_WOM_FLAG_THRESHOLD` in `server/routes/admin.js`) if 3 hours is
+  too sensitive or not sensitive enough in practice.
+- **OT Trends' "Rising/Falling/Steady" is a simple heuristic, not a
+  statistical trend line.** It compares the average of the first half of the
+  8-week window to the second half's average (more than half an hour apart
+  either way calls it rising/falling) — good enough to eyeball a pattern,
+  not a forecast. The window length is also a named constant
+  (`OT_TREND_WEEKS`) if 8 weeks isn't the right lookback.
+- **Overview doesn't (yet) replace the call-in tracking or the Smartsheet
+  before/after screenshot process.** It shows the same UKG screenshot and
+  receipt/invoice attachments the technician's own week already has,
+  plus the live Reg/OT numbers — it doesn't have fields for call-in
+  time, H&E, or a separate "before I made changes" snapshot the way the
+  Smartsheet log does. If that turns out to matter for the audit trail (not
+  just "what's the total" but "what did it look like before someone
+  touched it"), the natural next step is persisting a locked snapshot of
+  the receipt/allocations at approval time, rather than only ever showing
+  the live numbers.
+- **The technician edit window is hardcoded to Eastern Time.** Thursday
+  12am through Monday 12pm, in `America/New_York`
+  (`server/utils/week.js`'s `BUSINESS_TIMEZONE`) — picked because 3 of the
+  4 seeded locations are Eastern; Kansas City is Central, so its
+  technicians see the window open/close an hour later on their own clock.
+  If that's not acceptable, either change the constant (one timezone for
+  everyone) or the window needs to become per-location, which isn't built.
+- **The "gap" between windows is deliberate, not a bug.** Monday noon
+  through Wednesday night, no week is open for full allocation — the
+  just-finished week has already closed for processing, and the coming
+  week hasn't happened yet. A technician can still pre-book time off on
+  the coming week during that gap; there's just nothing to submit until
+  Thursday.
+- **The three-step admin checklist ("entered in UKG") is a flag, not a
+  fact-check.** Nothing verifies that the admin actually entered it into
+  the real UKG system — it's a manual confirmation (`weeks.ukg_confirmed_at`
+  in the database), the same way a paper checklist trusts whoever checks
+  the box. If that ever needs to be tied to something verifiable (e.g. a
+  UKG export file), that's a bigger integration, not a UI change.
+- **The WOM photo prompt is a one-time nudge, not enforcement.** It's
+  dismissible for the current visit (dismiss it and it won't reappear until
+  the page is reloaded) and fully skippable — nothing blocks Submit if no
+  photo is ever added. If photos ever need to be mandatory for certain WOMs,
+  that needs a real requirement check, not just a prompt.
+- **Expiring-forms flag is visual only, not a notification.** It shows up in
+  the Overview banner and on the form's own row whenever an admin happens to
+  load that screen — there's no email/text alert sent when a form actually
+  crosses its expiration date, and no daily digest. The warning window is a
+  named constant (`FORM_EXPIRY_WARNING_DAYS` in `server/routes/admin.js`,
+  currently 30 days) if that lead time needs to change. The email
+  infrastructure now exists (`server/utils/mailer.js`, see below) if this
+  ever needs a real email/SMS alert too — it just isn't wired up for it yet.
+- **Email notifications need SMTP credentials to actually send anything.**
+  Until then, `server/utils/mailer.js` just logs what it would have sent and
+  the technician only ever sees the in-app note — nothing breaks, nothing
+  silently lies about having emailed someone. To turn real email on, set
+  these environment variables before starting the app (e.g. in the
+  systemd service file, or a `.env` loaded by your process manager):
+  `SMTP_HOST`, `SMTP_PORT` (defaults to 587), `SMTP_USER`, `SMTP_PASS`, and
+  optionally `SMTP_FROM` (defaults to `SMTP_USER`). Any SMTP provider works
+  (a Microsoft 365/Google Workspace mailbox's SMTP settings, or a
+  transactional provider like SendGrid) — this app doesn't care which, it
+  just needs standard SMTP auth.
+- **Smartsheet connection: read-only pull that creates, promotes, and prices
+  WOMs from the external PSE tracker.** `server/utils/smartsheet.js` is a
+  thin, opt-in client (same no-crash-until-configured pattern as the mailer
+  above) for a one-way pull from a single Smartsheet sheet — the external
+  WOM/PSE project tracker. Set two environment variables before starting the
+  app: `SMARTSHEET_API_TOKEN` (a personal access token — in Smartsheet, click
+  your account icon → **Apps & Integrations** → **API Access** → **Generate
+  new access token**; it's shown once, so copy it immediately) and
+  `SMARTSHEET_SHEET_ID` (the numeric ID of the specific sheet — visible via
+  the sheet's own **File → Properties**, or by right-clicking the sheet tab).
+  **Never paste the access token into a chat, an email, or anywhere outside
+  the server's own environment** — treat it exactly like a password, since
+  anyone who has it can read (and, depending on the token's own permissions,
+  possibly edit) every sheet it can see. Set both on the server itself (the
+  systemd service file, or a `.env` your process manager loads), the same
+  way the SMTP credentials above are set, then restart the app.
+  The **E&F Locations & WOM tab** shows a "Smartsheet Connection" panel
+  with a **Preview data** button (the sheet's real column names and first 5
+  rows, useful for confirming the connection and checking column names) and
+  a **Sync WOMs from Smartsheet** button. Per the real PSE process (a
+  Smartsheet row exists from the initial request onward but doesn't get a
+  real WOM # until admin actually creates the WOM and issues the PO — steps
+  1–8 vs. step 9 onward), a sync no longer just matches existing WOMs — it
+  keeps every sheet row in step with this app's own record of it:
+  - A row whose **`WOM #`** column already has a real value creates (or
+    updates) an **open** WOM using that number as the code — a real job
+    exists and it can actually be billed to Toyota, so this is the only
+    status a technician can allocate hours against.
+  - A row with a blank or `0` WOM # but whose **`Date Requested`** column (or
+    however the sheet spells it — see below) has something in it creates a
+    **requested** WOM instead (code `PENDING-<smartsheet row id>`, e.g.
+    `PENDING-501`): RFM has asked Toyota to generate the WOM/PO, but there's
+    no real number yet, so nothing can be billed to Toyota for it — a
+    technician still can't allocate against it.
+  - A row with neither a WOM # nor a Date Requested yet creates a **pending**
+    WOM (same `PENDING-...` code scheme) — RFM hasn't asked Toyota for
+    anything yet.
+  - Both `pending` and `requested` are invisible to technicians (they fail
+    the same "must be open" check every other non-open WOM does when a
+    technician tries to allocate against it) and don't count toward the
+    admin Priorities badge. Only `pending` shows up in its own **"WOM
+    requests not yet sent to Toyota"** Priorities section — a `requested` one
+    doesn't need an RFM decision anymore, it's just waiting on Toyota, so it
+    only shows in the plain WOM list with its own status badge.
+  - Sync tracks each row by Smartsheet's own row id (not the WOM # cell), so
+    a `pending` row whose Date Requested gets filled in later is bumped to
+    `requested` in place (same code), and when either one's request is later
+    approved and gets a real WOM # assigned, the *same* WOM record is renamed
+    and promoted to `open` — it's never duplicated, and the old
+    `PENDING-...` code disappears. All of this happens automatically from
+    the sheet's own columns; nothing here is a manual status flip.
+  - A row that's already synced before just gets its `estimatedPrice` /
+    `appliedPrice` refreshed. A sync **never overwrites a status an admin
+    set by hand** here (e.g. `closed`) back to `open`, `requested`, or
+    `pending`.
+  A sync never writes anything back to Smartsheet — it only ever reads. Every
+  column is located by keyword (`findColumn` in `smartsheet.js`, tolerant of
+  the sheet's exact punctuation rather than a hardcoded literal string) — the
+  two dollar columns by "estimate"/"wom"/"$" or "applied"/"wom"/"$", the
+  description by "project"/"name", the requested-status column by
+  "date"/"requested" (matches the real tracker's own `Date Requested (Auto)`
+  column, filled in automatically there when RFM checks its `Order WOM/PO`
+  box), the Maximo work order # by "maximo", and the JDE subsidiary/service
+  code by "subsid"/"code" — deliberately the truncated root "subsid" rather
+  than "subsidiary", since the real tracker's own column is spelled
+  "Subsidary Code" (missing the second "i"); "subsid" matches both the
+  correct and the misspelled version, so a later fix to the sheet's spelling
+  wouldn't break the match either way (a real column on the tracker in its
+  own right — pulled in as-is, not derived from anything). The same
+  keyword approach pulls in the itemized breakdown behind Cost Analysis:
+  "estimate"/"labor"/"$", "estimate"/"contracted"/"$",
+  "applied"/"labor"/"$", "applied"/"contracted"/"$" — refreshed on every
+  sync same as the project-total estimate/applied columns, and left unset
+  (not zero) if the connected sheet doesn't have a given column. **Location
+  and vendor are the two exceptions**: the sheet only has a plain site name
+  ("Site Location") and a free-text "Vendor(s) Name/#/Phone" cell (e.g.
+  "Automated Solutions Group - 5883201"), neither with any notion of this
+  app's own location codes or vendor records, so both are matched by name
+  instead — location against `db.listLocations()`, vendor (name portion
+  only, before the first " - ") against `db.listVendors()`
+  (`matchVendorIdByName`) — an exact case-insensitive match first, then
+  tolerant of a shortened form either direction (the sheet often drops a
+  suffix, e.g. "NAPCK" for "NAPCK Georgetown"). No match means the site or
+  vendor likely doesn't exist here yet, so it's left null rather than
+  guessed at — and once either is matched once, a later sync never
+  overwrites it (in case that guess needs a manual correction). This
+  location match matters for billing, not just display: a WOM's own
+  accounting code is its location's **WOM Job Number** + that WOM's own
+  subsidiary code — a
+  completely different code from the same location's E&F Job Number, since
+  WOM work is Toyota-billed and E&F is this contract's own yearly budget
+  (see `accountingCode` in `adminReview.js`). If no column matches
+  "date"/"requested", every not-yet-open row just stays `pending` — sync
+  still works, it just can't tell `pending` and `requested` apart.
+  **Every other column on the tracker** — every estimate/applied line item
+  (labor, materials, contracted services, other direct costs, sales tax,
+  contingency), PO numbers, invoice/batch tracking, RFM/PSE approval flags,
+  whatever else is there — is kept too, verbatim, as one JSON blob
+  (`smartsheet_raw_data`) rather than a dedicated database column per field;
+  most of the ~75 columns on the real tracker will only ever matter for a
+  handful of WOMs, and the sheet gains new columns over time. Opening a WOM's
+  full profile (see **WOM Profile** below) surfaces a **"Source details"**
+  header action on any row a sync has touched, showing every column/value
+  pair from that row's own last sync — covers "I want to see every column"
+  without a schema change every time the sheet grows one. A WOM without a
+  Smartsheet match yet can still have
+  pricing hand-entered (`PATCH /api/woms/:code/pricing`) — a later sync
+  overwrites both fields once that WOM code is found there, since they're meant to
+  mirror Smartsheet once a match exists, not be independently maintained
+  here. **Admin-triggered for now, not on a schedule** — click "Sync WOMs
+  from Smartsheet" whenever you want the latest numbers; automatic periodic
+  syncing is a natural next step once this has been used successfully a few
+  times.
+- **SMS was considered but isn't built.** It needs a paid third-party
+  provider (e.g. Twilio) and a phone number on file for every technician —
+  a bigger decision than email, which most workplaces already have
+  infrastructure for. Easy to add later behind the same
+  `notification_pref` field (just another option alongside `email`) if it
+  turns out to matter more than email in practice.
+- **Vendor statuses are a simplified read on messy source data.** The
+  imported tracker's "Current Use Status" column was really free text with
+  ~50 slightly different phrasings of the same handful of states (typos,
+  inconsistent capitalization, etc.) — the import script normalizes that
+  into the three clean statuses the app actually uses, but the original
+  text is preserved per vendor (`rawStatusText`, shown under "Original
+  tracker status text" when editing) in case a normalization guess turns
+  out wrong and needs a human to double check it. "Forms Outdated" is only
+  ever set when the original text said so explicitly; there's no positive
+  "forms confirmed current" signal in the source data, so most vendors show
+  "Forms Unknown" until someone actually verifies and updates them.
+- **Vendor search/filtering is entirely client-side.** With ~300 vendors
+  that's instant either way, but if this list grows into the thousands,
+  the search would want to move server-side (SQL `LIKE`/status filtering
+  in `server/routes/vendors.js`) rather than shipping the whole table to
+  the browser on every visit.
+- **The technician's read-only Locations & WOM tab deliberately hides JDE
+  accounting codes.** It shows location name/region and WOM code/
+  description/location/status/budget — not E&F/WOM Job Numbers or
+  subsidiary codes, which are internal accounting data with no bearing on
+  a technician's own work. If that turns out to be wanted after all, it's
+  a small addition to `techHome.js`'s read-only rendering (the data is
+  already tech-readable via the same `/api/locations`/`/api/woms`
+  endpoints admin uses — this is a display choice, not a permission one).
+- **"Invoiced" as a WOM status was a judgment call, not a spec you gave
+  us.** The three-state Open/Invoiced/Closed lifecycle assumes a
+  technician's own "mark complete" action should still set a WOM straight
+  to Closed (unchanged from before) while Invoiced is purely an
+  admin-driven middle state for tracking billing progress independently.
+  If the intent was instead for tech-complete to land on Invoiced (pending
+  admin's own close-out), that's a one-line change in
+  `server/routes/woms.js`'s `/:code/complete` handler.
+- **Reports is storage only — there's no comparison logic yet.** It
+  saves the monthly file finance sends (WOM/Labor/Financial/GL, each in
+  its own section) so it's kept next to the timesheeting for that period;
+  nothing in the app reads its contents or checks it against tracked hours.
+  The real labor report (seen live use)
+  breaks hours down by employee and WOM/subledger into ST/OT/Holiday/
+  Sick/Vacation columns — close enough to what `computeReceipt` already
+  produces that a real reconciliation (export our numbers in the same
+  shape, or actually diff against a pasted-in report) is very buildable
+  once there's a settled target format to build against.
+- **Only Region and the E&F Job Number are tracked from the real JDE lookup
+  table, not the whole sheet.** The real table (per the Midwest region
+  screenshot) also has a PPS Contract Job Number, separate WMBE GMP/NON GMP
+  job numbers, a Toyota Reference Code, and address/city/state/zip per
+  location — none of that is captured yet since nothing in the app needs it
+  today. Region was added now specifically because it's what the monthly
+  labor report will need to be matched up against; the rest is a bigger
+  "site directory" feature to build only if/when it's actually needed for
+  reconciliation or reporting.
+
+## Folder structure
+
+```
+server/
+  app.js                Express app + route wiring (exported for tests)
+  index.js              Entry point: creates the app and listens
+  data/
+    seed.js             Mock seed data (technicians, WOMs, UKG hours, sample weeks)
+    db.js               SQLite schema, seeding, and all data accessors
+    store.sqlite         (generated) the actual database file — gitignored
+    uploads/              (generated) uploaded file contents — gitignored
+  middleware/auth.js     Verifies the x-session-token header against the sessions table
+  routes/
+    auth.js              POST /api/auth/login (rate-limited), POST /api/auth/logout
+    technicians.js        GET/PUT/POST week + allocations + submit (per-day validation),
+                              PUT schedule-wom (Schedule tab: one day's WOM entry, ignores the
+                              week's own edit lock/window entirely -- only the WOM's own open
+                              status still blocks it, and only that one day is ever touched),
+                              PUT weekend-allocations (Sat/Sun addendum on a locked week),
+                              POST accept-weekend-hours (admin-only: correct + accept in one step),
+                              POST report-punch-issue (tech or admin flags a day, optional note),
+                              POST resolve-punch-issue (admin-only: correct one day's hours +
+                              allocation and clear the flag, without unlocking the rest of the week)
+    woms.js               GET/POST/PATCH WOM list + status + :code/details (subsidiary code etc.),
+                              :code/pricing (hand-entered estimated/applied $, overwritten by a
+                              later Smartsheet sync), GET :code/lookup (WOM Lookup: all-time total
+                              hours + a per-technician breakdown, open to any logged-in user),
+                              POST :code/complete (tech-facing, also re-checks the WOM lifecycle
+                              checklist's auto-trigger steps -- see checkWomLifecycleAutoSteps),
+                              GET lifecycle/tasks (admin-only, role-filtered list of WOMs with an
+                              open lifecycle checklist task), POST :code/lifecycle/:stepKey
+                              (admin-only, completes one manual checklist step -- accepts
+                              toyotaEmail/sentAt on sent_to_toyota to record who a PSE was sent to
+                              and when, batchNumber/invoiceNumber on invoiced, which also flips the
+                              WOM's own status to invoiced -- audit-logged as
+                              WOM_LIFECYCLE_STEP_COMPLETED), GET cost-summary
+                              (admin-only, estimated-vs-applied totals plus the overquoted-on-labor
+                              and applied-no-PO lists behind the Cost Analysis tab),
+                              GET :code/history (admin-only, the wom_status_history rows behind
+                              the task engine's WOM-triggered tasks -- every status change with
+                              both real event time and detected-by-this-app time),
+                              DELETE :code (admin-only, blocked if hours are already allocated
+                              against it unless force is passed)
+    admin.js               Weekly review + Overview report, ot-trends (trailing-8-week OT
+                              pattern), UKG hours, pending-punch flag, UKG-confirmed checklist,
+                              roster, profile (basic info, onboarding, devices + IT requests,
+                              allocation history, expiring-forms list), approve/reject/unlock
+                              (works on submitted OR approved), weekend-addenda list +
+                              acknowledge-weekend, punch-issues list (tech-reported only),
+                              smartsheet/status (now includes lastSync, the persisted
+                              wom_sync_log row behind the sync panel's "Last sync: ..." line) +
+                              smartsheet/preview (read-only sheet preview),
+                              smartsheet/sync-woms (creates open WOMs from rows with a real
+                              WOM #, pending/requested WOMs from rows without one yet based on
+                              whether Date Requested is filled in, promotes a pending or requested
+                              WOM once its row gets a real WOM #, refreshes estimated/applied
+                              pricing/Maximo #/subsidiary code on every synced WOM, matches +
+                              fills in location by name, once, on any WOM missing one, and now
+                              also diffs the tasks table before/after to report + persist how
+                              many tasks that sync created/completed and how many workflow
+                              exceptions it flagged), technicians/bulk
+                              (paste-many technician creation, one generated PIN per row, per-row errors),
+                              POST technicians/:id/reset-pin (issues + returns a brand-new random PIN,
+                              audit-logged as PIN_RESET -- no way to read back the current one),
+                              DELETE technicians/:id (blocked if hours are allocated unless force is passed)
+    locations.js             GET (any user) / POST+PATCH (admin) locations, incl. E&F/WOM Job
+                              Numbers, Region, and the standard EF_SUBSIDIARY_CODE constant; DELETE
+                              (admin-only, blocked outright -- no force -- if still referenced by any
+                              technician/WOM/allocation)
+    audit.js                  Audit log
+    files.js                   Upload/list/download/delete attachments (week/wom/technician/labor_report),
+                                  incl. formType/expiresAt for tech_form uploads
+    vendors.js                  GET/POST/PATCH/DELETE vendor onboarding/compliance records (admin-only)
+    schedule.js                  GET /:month -- read-only WOM-only month calendar, by actual date (any logged-in
+                                     user), optional ?location=CODE filter, each entry carries its WOM's own
+                                     status/budget/pricing detail for click-to-view on the client
+    tasks.js                       GET / (?view=my|team|unassigned|overdue|waiting|exceptions|recurring|completed,
+                                       plus admin-only ?assignedTo/role/location/wom/vendor/category/dueDate/status
+                                       filters -- server resolves the viewer's own role/identity scope, see
+                                       rolesForViewer), GET /summary (dashboard tile counts), GET /:id (with
+                                       comments), POST / (manual creation -- a technician is force-assigned to
+                                       themselves), PATCH /:id (editing what/why a hand-added task is --
+                                       title/description/category/priority/due date/related WOM-vendor-employee;
+                                       an admin can edit any hand-added task, a non-admin only their own, never
+                                       an automated one), PATCH /:id/status, PATCH /:id/assign (admin-only),
+                                       POST /:id/comments -- see server/data/db.js's task-engine section
+                                       (createTask/upsertTaskBySourceKey/listTasks/etc.) for the actual writes
+  utils/
+    week.js                Mon–Sun week date helpers, business-timezone edit window
+                              (classifyWeekForTech / getOpenWeekMonday)
+    password.js             scrypt PIN hashing (hashPin/verifyPin) -- one-way only, no reversible copy
+    allocation.js            presentAllocation: translates a stored timeoff row's shape for API responses
+    receipt.js               Server-side copy of the Reg/OT computeReceipt calculation (admin Overview)
+    mailer.js                 Opt-in SMTP email (no-op until SMTP_* env vars are set) for the
+                                 "your hours are ready" notification
+    smartsheet.js              Opt-in, read-only Smartsheet client (no-op until
+                                  SMARTSHEET_API_TOKEN/SMARTSHEET_SHEET_ID are set) --
+                                  fetchSheet/fetchSimplifiedSheet/simplifySheet
+scripts/
+  deploy.sh               One-shot droplet setup: Node 22, app, systemd service, Caddy reverse
+                             proxy (HTTPS once DOMAIN is set), firewall
+  import-vendors.js         One-time/repeatable bulk import of vendor records from a JSON
+                               file into the live database (see the Vendors feature above)
+tests/
+  helpers.js              Spins up an isolated app instance per test file; logs in for real tokens
+  auth.test.js             Login, sessions, impersonation-is-blocked, rate limiting, logout
+  allocation.test.js       Hour validation, WOM gating, locking, Sat/Sun exempt from the
+                              UKG-match check at submit time, schedule-wom ignores the week
+                              lock (still rejects a closed WOM, day-scoped only, 403 for
+                              another technician)
+  admin.test.js             Approve / reject / unlock (incl. on a merely-submitted week),
+                              Overview report OT-flagging, ot-trends, UKG-confirmed checklist,
+                              pending-punch flag, weekend hours addendum (log without
+                              unlocking, no UKG-match required, admin adjust + acknowledge),
+                              accept-weekend-hours (admin-only correct + accept in one step,
+                              rejects with no pending addendum, rejects a weekday payload),
+                              punch issues (tech reports with a note, shows up in
+                              admin's punch-issues list, admin-only resolve corrects the
+                              day's hours + allocation and clears the flag without
+                              unlocking the rest of an approved week), short-hours flag
+                              (symmetric with OT, excluded from OT trends),
+                              missing-UKG list, report-gap months, admin account
+                              create/deactivate/self-deactivation-blocked/rename (logged to
+                              the audit trail, rejects an empty name, 404 unknown, 403 for a
+                              technician), PurelyHR verification (hasTimeOff, set/unset,
+                              cleared on edit, submitted/approved + time-off required)
+  weekWindow.test.js         Edit-window classification + PUT/POST enforcement (open/past/future/gap)
+  woms.test.js               WOM CRUD + authorization, WOM Lookup (all-time hours by
+                                 technician, 404 for an unknown WOM), subsidiary code,
+                                 location E&F/WOM Job Number/Region,
+                                 Smartsheet-reflected flag (set on close, cleared on reopen, admin-only),
+                                 cancelling a WOM blocks technician allocation same as any non-open status,
+                                 deleting a WOM (admin-only, 404 unknown, blocked with allocated hours
+                                 unless forced, force removes those allocations too), deleting a location
+                                 (admin-only, 404 unknown, blocked outright -- naming every technician/
+                                 WOM/allocation still pointing at it -- with no force option)
+  schedule.test.js               WOM-only month calendar: auth required, malformed-month rejected,
+                                    tech-visible, E&F/time-off excluded, correct calendar date,
+                                    inactive techs excluded, entries carry WOM detail for the
+                                    click-to-view panel, ?location= filter narrows to one site
+  roster.test.js              Basic info, onboarding, devices (incl. iPad + plan) + IT requests
+                                 (add/complete/edit), notification-pref, allocation history,
+                                 creating a technician (with an optional start date; malformed
+                                 date rejected), bulk-create technicians (admin-only, generated
+                                 PIN actually logs in, bad rows skipped with their own error, 400
+                                 if all rows fail),
+                                 admin PIN reset (new PIN logs in, old one no longer does, logged
+                                 to the audit trail, 403 for a technician, 404 for an unknown id),
+                                 deleting a technician (admin-only, 404 unknown, blocked with
+                                 allocated hours unless forced, force clears that history --
+                                 usedHours drops with it -- and never touches an admin account)
+  files.test.js                 Upload/list/download/delete authorization, labor_report admin-only,
+                                    tech_form type/expiration + admin expiring-forms list
+  vendors.test.js                 Vendor CRUD + authorization + audit logging
+  audit.test.js                   Audit log writes and admin-only read access
+  mailer.test.js                   Email is a safe no-op (not a crash) when SMTP isn't configured
+  smartsheet.test.js                 simplifySheet's column-id-to-title reshaping, findColumn's
+                                        keyword tolerance, safe 409 (not a crash) when Smartsheet
+                                        isn't configured, admin-only
+  smartsheetSync.test.js               WOM sync: a real-WOM# row creates an open WOM, a blank/"0"
+                                        WOM# row creates a pending WOM invisible to techs, its own
+                                        Date Requested column filling in later bumps it to requested
+                                        (still invisible to techs) automatically, a pending or
+                                        requested row later getting a real WOM# promotes it without
+                                        duplicating, re-syncing never reverts an admin's own status
+                                        change, Site Location/Subsidiary Code/Maximo # all sync in
+                                        (location matched by name, tolerant of a shortened form, left
+                                        null rather than guessed at if nothing matches), every column
+                                        from the row kept verbatim as smartsheetData, admin-only,
+                                        hand-entered pricing survives until a
+                                        real sync, a synced row's line number/Smartsheet link come
+                                        through and it enters the WOM lifecycle checklist with every
+                                        step still open
+  tasks.test.js               Task engine: manual creation (technician force-assigned to self,
+                                 only an admin can assign to someone else), status transitions
+                                 (start/complete timestamps), comments (own task only, empty
+                                 rejected), overdue/waiting/exceptions view filtering + computed
+                                 urgency, recurring tasks staying idempotent across repeated loads
+                                 within the same period (and not un-completing themselves), WOM-sync-
+                                 triggered workflow tasks getting a stable source key (re-syncing
+                                 never duplicates), and the Smartsheet sync route's task/exception
+                                 counters + persisted wom_sync_log last-sync summary; user-defined
+                                 recurring task templates (creation validation, today-vs-non-today
+                                 occurrence generation, no duplication across repeated reads,
+                                 completion persisting, dueTime validation, dueAt+dueTime combining);
+                                 editing a hand-added task (title/type/priority/due date/related
+                                 WOM/vendor/employee all changing, fields left out keeping their
+                                 prior value, an unknown WOM or bad priority rejected, clearing the
+                                 title rejected, a technician editing their own task but forbidden
+                                 from someone else's or from an automated WOM-workflow task, and
+                                 editing an unknown task 404ing). **WOM lifecycle checklist**: a
+                                 synced WOM gets exactly one persistent task assigned to whichever
+                                 role owns its first incomplete step; a hand-entered Maximo/PO #
+                                 auto-completes "Create WOM & PO" and moves the task's role forward
+                                 to the next step's owner; a technician putting the WOM on their
+                                 calendar auto-completes "Schedule vendor" (via the lazy catch-up on
+                                 the next task-list read, since there's no single write path for
+                                 every way an allocation gets created); invoicing (with batch #/
+                                 invoice # required) completes the last step, flips the WOM's own
+                                 status to invoiced, and completes the underlying task for good
+                                 (`reopenIfClosed: false`, so a later sync never reopens it); a
+                                 technician can't view WOM history or complete a lifecycle step.
+                                 **WOM lifecycle: Toyota email/date + cost summary**: the
+                                 sent_to_toyota step records who a PSE was sent to and when (visible
+                                 on the matching task), the cost-summary endpoint's totals across
+                                 every non-cancelled WOM plus its overquoted-on-labor and
+                                 applied-no-PO lists (technician forbidden), and a sync entering a
+                                 new WOM into the checklist reporting one task created.
+public/
+  index.html
+  css/styles.css
+  js/
+    app.js                Shell, routing, shared state
+    api.js                Fetch wrapper (+ multipart upload, blob download/fetchFileBlob)
+    modal.js               Shared pop-up dialog (openModal/closeModal) -- "add a new X" forms
+                              and the document viewer's large two-pane layout both use this
+    weekUtil.js            Client-side week date helpers
+    dateMask.js            Typeable MM/DD/YYYY date inputs (wireDateMaskInput,
+                              isoFromUs/usFromIso) used in place of native date pickers
+    views/
+      login.js
+      techHome.js            Technician's own tab shell: My Work (tasks.js) / My Week (techWeek.js) /
+                                Schedule / Locations & WOM (view-only) / My Documents (view-only)
+      techWeek.js           Technician weekly allocation screen, attachments, computeReceipt (Reg/OT)
+      adminReview.js         Admin review / Overview report / WOM docs / Vendors tracker / Labor
+                              Reports archive / audit / Tech Allocation switcher / Technicians tab entry /
+                              Priorities section (My Work via tasks.js, plus the existing Checklist)
+      tasks.js                The one reusable Priorities/My Work task board -- mounted from both
+                                adminReview.js and techHome.js; views, dashboard tiles, filters
+                                (admin only), manual task creation, and the task detail/comments panel
+                                all live here, not duplicated per role
+      technicianProfile.js    Team Roster (+ add technician) and tabbed employee profile
+      attachments.js          Shared attachments list + upload component + the document viewer
+                                  (View action -> openModal size:"large" -- inline PDF/image
+                                  preview, Previous/Next, Download/Delete)
+      womPhotoPrompt.js        Dismissible "add a photo?" nudge after submit / UKG-confirmed, reused
+                                  by both techWeek.js and adminReview.js
+```

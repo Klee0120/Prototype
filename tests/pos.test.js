@@ -1,0 +1,1733 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
+
+// PO <-> WOM link gap: the real PO Request Tracking export carries "E1 WOM
+// Job #" and "WOM Number" as two separate columns, so a PO can be coded as
+// WOM-type work in E1 without a WOM Number ever being recorded against it.
+// See server/data/db.js's poMissingWomLink/refreshPoWomLinkTask.
+test("PO Tracker: POs cut with WOM coding but no WOM # listed", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, e1WomJobNumber, womNumber, efJobNumber, ppsJobNumber, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, e1_wom_job_number, wom_number, ef_job_number, pps_job_number,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, e1WomJobNumber || null, womNumber || null, efJobNumber || null, ppsJobNumber || null, lifecycleStatus, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+  function insertLocation(code, name, womJobNumber) {
+    raw.prepare(`INSERT INTO locations (code, name, wom_job_number) VALUES (?, ?, ?)`).run(code, name, womJobNumber);
+  }
+
+  await t.test("listPos womLinkMissing filter finds only active POs with E1 WOM coding and no WOM #", () => {
+    const gapId = insertPo({ composite: "gap-1", poNumber: "PO50001", e1WomJobNumber: "100110033928", womNumber: null, lifecycleStatus: "active" });
+    insertPo({ composite: "fine-1", poNumber: "PO50002", e1WomJobNumber: "100110033929", womNumber: "WOM-9001", lifecycleStatus: "active" });
+    insertPo({ composite: "nonwom-1", poNumber: "PO50003", e1WomJobNumber: null, womNumber: null, lifecycleStatus: "active" });
+    // Same gap, but still Needs Organization -- shouldn't count as a gap worth flagging yet.
+    insertPo({ composite: "gap-needs-org", poNumber: "PO50004", e1WomJobNumber: "100110033930", womNumber: null, lifecycleStatus: "needs_organization" });
+
+    // Plain data filter, deliberately not lifecycle-scoped on its own -- the
+    // POs tab ANDs it with whichever subtab (Active/Needs Organization) is
+    // selected, same as the existing vendorUnmatched/regionUnassigned filters.
+    const missing = db.listPos({ womLinkMissing: true });
+    const ids = missing.map((p) => p.id);
+    assert.ok(ids.includes(gapId), "expected the active PO with E1 WOM coding and no WOM # to show up");
+    assert.ok(!missing.some((p) => p.poNumber === "PO50002"), "a PO with a WOM # recorded should not show up");
+    assert.ok(!missing.some((p) => p.poNumber === "PO50003"), "a PO with no E1 WOM coding at all should not show up");
+    assert.ok(missing.some((p) => p.poNumber === "PO50004"), "a needs_organization PO with the same gap should still show up in this plain data filter");
+
+    const activeOnly = db.listPos({ womLinkMissing: true, lifecycleStatus: "active" });
+    assert.ok(!activeOnly.some((p) => p.poNumber === "PO50004"), "combined with the Active subtab's own filter, the needs_organization PO drops out");
+  });
+
+  await t.test("refreshAllPoWomLinkTasks creates a task for an active PO with the gap, and skips a needs_organization one", async () => {
+    const gapId = insertPo({ composite: "gap-2", poNumber: "PO50010", e1WomJobNumber: "100110044000", womNumber: null, lifecycleStatus: "active" });
+    const needsOrgId = insertPo({ composite: "gap-needs-org-2", poNumber: "PO50011", e1WomJobNumber: "100110044001", womNumber: null, lifecycleStatus: "needs_organization" });
+
+    db.refreshAllPoWomLinkTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const task = res.body.find((tk) => tk.relatedPoId === gapId);
+    assert.ok(task, "expected a task linked to the gap PO");
+    assert.match(task.title, /PO50010/);
+    assert.equal(task.status, "open");
+
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === needsOrgId), "a needs_organization PO should not get a task yet");
+  });
+
+  await t.test("fixing the WOM # auto-completes the task on the next refresh", async () => {
+    const gapId = insertPo({ composite: "gap-3", poNumber: "PO50020", e1WomJobNumber: "100110055000", womNumber: null, lifecycleStatus: "active" });
+    db.refreshAllPoWomLinkTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === gapId && tk.status === "open"));
+
+    raw.prepare("UPDATE pos SET wom_number = ? WHERE id = ?").run("WOM-9010", gapId);
+    db.refreshAllPoWomLinkTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === gapId && tk.status === "open"), "task should no longer be open once the WOM # is filled in");
+  });
+
+  // WOM coding doesn't only show up in E1 WOM Job # -- a location's own WOM
+  // job number can just as easily get typed into the E&F or PPS Job # field
+  // instead, with no WOM Number recorded either way.
+  await t.test("a location's WOM job number typed into the E&F or PPS Job # field is flagged the same way", async () => {
+    insertLocation("WOMFIELD-A", "WOM Field Test Site A", "100110088000");
+
+    const efGapId = insertPo({ composite: "gap-ef-1", poNumber: "PO50030", efJobNumber: "100110088000", womNumber: null, lifecycleStatus: "active" });
+    const ppsGapId = insertPo({ composite: "gap-pps-1", poNumber: "PO50031", ppsJobNumber: "100110088000", womNumber: null, lifecycleStatus: "active" });
+
+    db.refreshAllPoWomLinkTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const efTask = res.body.find((tk) => tk.relatedPoId === efGapId);
+    const ppsTask = res.body.find((tk) => tk.relatedPoId === ppsGapId);
+    assert.ok(efTask, "expected a WOM-link task for the E&F-field case");
+    assert.match(efTask.description, /E&F Job #/);
+    assert.ok(ppsTask, "expected a WOM-link task for the PPS-field case");
+    assert.match(ppsTask.description, /PPS Job #/);
+
+    const missing = db.listPos({ womLinkMissing: true });
+    assert.ok(missing.some((p) => p.id === efGapId), "listPos filter should also catch the E&F-field case");
+    assert.ok(missing.some((p) => p.id === ppsGapId), "listPos filter should also catch the PPS-field case");
+  });
+
+  // Caught live: a location's Chart of Accounts data can carry the exact
+  // same job number under BOTH ef_job_number and wom_job_number (e.g. the
+  // site doesn't split E&F vs. WOM work into separate numbers). A PO coded
+  // against that number in its E&F field is genuinely E&F work -- it's
+  // still that location's real E&F job number, not a WOM number typed into
+  // the wrong column -- so it shouldn't get flagged as missing a WOM link.
+  await t.test("a location whose own E&F/PPS job number equals its WOM job number is not flagged as wrong-field", async () => {
+    raw.prepare(`INSERT INTO locations (code, name, ef_job_number, wom_job_number) VALUES (?, ?, ?, ?)`).run(
+      "SHARED-NUM", "Shared Job Number Site", "100110042972", "100110042972"
+    );
+    raw.prepare(`INSERT INTO locations (code, name, pps_job_number, wom_job_number) VALUES (?, ?, ?, ?)`).run(
+      "SHARED-NUM-PPS", "Shared Job Number Site (PPS)", "100110042973", "100110042973"
+    );
+
+    const efSharedId = insertPo({ composite: "shared-ef-1", poNumber: "PO50040", efJobNumber: "100110042972", womNumber: null, lifecycleStatus: "active" });
+    const ppsSharedId = insertPo({ composite: "shared-pps-1", poNumber: "PO50041", ppsJobNumber: "100110042973", womNumber: null, lifecycleStatus: "active" });
+
+    db.refreshAllPoWomLinkTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === efSharedId), "should not flag a PO whose E&F job # is also that location's own E&F job #, even though it matches wom_job_number too");
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === ppsSharedId), "should not flag a PO whose PPS job # is also that location's own PPS job #, even though it matches wom_job_number too");
+
+    const missing = db.listPos({ womLinkMissing: true });
+    assert.ok(!missing.some((p) => p.id === efSharedId), "listPos filter should also leave the E&F shared-number case alone");
+    assert.ok(!missing.some((p) => p.id === ppsSharedId), "listPos filter should also leave the PPS shared-number case alone");
+  });
+
+  // A lightweight, one-click "needs a reclass eventually" flag -- distinct
+  // from the full Flag a Finding form. Admin notices a gap on a PO (any
+  // reason, not just the WOM-link one above) and marks it for their running
+  // monthly list without detailing the From/To coding right away.
+  await t.test("flagging a PO for reclass logs a lightweight finding and shows up as an open flag", async () => {
+    const poId = insertPo({ composite: "flag-1", poNumber: "PO60001", e1WomJobNumber: "100110066000", womNumber: null, lifecycleStatus: "active" });
+
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(flagRes.status, 200);
+    assert.equal(flagRes.body.flaggedCount, 1);
+    assert.equal(flagRes.body.skippedCount, 0);
+    assert.match(flagRes.body.items[0].comments, /PO60001/);
+    assert.equal(flagRes.body.items[0].status, "flagged");
+    assert.equal(flagRes.body.items[0].toJobNumber, null, "the To side should be left blank for the admin to detail later");
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items?status=flagged", { userId: "ADMIN" });
+    assert.ok(itemsRes.body.some((i) => i.relatedPoId === poId));
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, true);
+  });
+
+  await t.test("flagging the same PO again while an open flag exists is a no-op", async () => {
+    const poId = insertPo({ composite: "flag-2", poNumber: "PO60002", e1WomJobNumber: "100110066001", womNumber: null, lifecycleStatus: "active" });
+
+    const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(first.body.flaggedCount, 1);
+
+    const second = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(second.body.flaggedCount, 0);
+    assert.equal(second.body.skippedCount, 1);
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    assert.equal(itemsRes.body.filter((i) => i.relatedPoId === poId).length, 1, "only one reclass item should exist for this PO");
+  });
+
+  await t.test("once the flagged item is marked confirmed_posted, the PO can be flagged again", async () => {
+    const poId = insertPo({ composite: "flag-3", poNumber: "PO60003", e1WomJobNumber: "100110066002", womNumber: null, lifecycleStatus: "active" });
+    const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    const itemId = first.body.items[0].id;
+
+    await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "confirmed_posted" } });
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, false, "a confirmed_posted flag should no longer count as open");
+
+    const second = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(second.body.flaggedCount, 1, "flagging again after the prior one is resolved should create a new entry");
+  });
+
+  // The unflag: a reclass someone looked at and decided isn't actually
+  // needed. The Reclasses list is a pin, not a history log, so dismissing
+  // deletes the row outright rather than keeping a Dismissed row around.
+  await t.test("dismissing a flagged item deletes it and frees the PO to be flagged again", async () => {
+    const poId = insertPo({ composite: "flag-4", poNumber: "PO60004", e1WomJobNumber: "100110066003", womNumber: null, lifecycleStatus: "active" });
+    const first = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    const itemId = first.body.items[0].id;
+
+    const dismissRes = await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "dismissed" } });
+    assert.equal(dismissRes.status, 200);
+    assert.equal(dismissRes.body.deleted, true);
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, false, "a dismissed flag should no longer count as open");
+
+    const second = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(second.body.flaggedCount, 1, "flagging again after dismissal should create a new entry");
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    assert.ok(!itemsRes.body.some((i) => i.id === itemId), "the dismissed item should be gone, not kept with a Dismissed status");
+  });
+
+  // The same undo as above, but the one-click version from the Budget PO
+  // Tracker itself -- selecting a flagged PO and unflagging it, the mirror
+  // image of flag-po, instead of going to the Reclasses tab and changing
+  // the status dropdown by hand.
+  await t.test("one-click unflag-po deletes the open flag without a trip to the Reclasses tab", async () => {
+    const poId = insertPo({ composite: "unflag-1", poNumber: "PO60005", e1WomJobNumber: "100110066004", womNumber: null, lifecycleStatus: "active" });
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    const itemId = flagRes.body.items[0].id;
+
+    const unflagRes = await server.call("POST", "/api/admin/reclasses/unflag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(unflagRes.status, 200);
+    assert.equal(unflagRes.body.unflaggedCount, 1);
+    assert.equal(unflagRes.body.skippedCount, 0);
+
+    const po = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(po.body.hasOpenReclassFlag, false);
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    assert.ok(!itemsRes.body.some((i) => i.id === itemId), "the item should be gone, not kept with a Dismissed status");
+  });
+
+  await t.test("unflag-po on a PO with no open flag is a no-op", async () => {
+    const poId = insertPo({ composite: "unflag-2", poNumber: "PO60006", e1WomJobNumber: "100110066005", womNumber: null, lifecycleStatus: "active" });
+
+    const res = await server.call("POST", "/api/admin/reclasses/unflag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.unflaggedCount, 0);
+    assert.equal(res.body.skippedCount, 1);
+  });
+
+  // A reclass getting confirmed posted means whatever it corrected also
+  // needs to be reflected in Smartsheet -- a separate manual step this app
+  // can't verify, so it tasks the PO's own Admin column (matched to a real
+  // admin account by name).
+  await t.test("confirming a reclass posted tasks the PO's own admin to update Smartsheet", async () => {
+    raw.prepare(`INSERT INTO pos (composite_key, po_number, admin_name, e1_wom_job_number, wom_number, lifecycle_status,
+      first_imported_at, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("ss-1", "PO70001", "Krista Lee", "100110077000", null, now, now, now, now);
+    const poRow = raw.prepare("SELECT id FROM pos WHERE po_number = ?").get("PO70001");
+
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poRow.id] } });
+    const itemId = flagRes.body.items[0].id;
+
+    await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "confirmed_posted" } });
+
+    // This PO also matches the WOM-link-gap condition (e1_wom_job_number
+    // set, wom_number blank), so it gets a *second*, unrelated task too
+    // ("Confirm WOM # for..."); disambiguate by workflowRule rather than
+    // just the PO number substring, which both titles contain.
+    const tasksRes = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasksRes.body.find((tk) => tk.workflowRule === "reclass_smartsheet" && tk.title.includes("PO70001"));
+    assert.ok(task, "expected a Smartsheet-update task for PO70001's reclass");
+    assert.equal(task.assignedTo, "ADMIN", "should be assigned to the admin account matching the PO's Admin column (Krista Lee)");
+    assert.match(task.title, /Update Smartsheet/);
+  });
+
+  await t.test("an unmatched Admin name still creates the task, unassigned, with the raw name kept for manual routing", async () => {
+    raw.prepare(`INSERT INTO pos (composite_key, po_number, admin_name, e1_wom_job_number, wom_number, lifecycle_status,
+      first_imported_at, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
+      .run("ss-2", "PO70002", "Someone Not In The System", "100110077002", null, now, now, now, now);
+    const poRow = raw.prepare("SELECT id FROM pos WHERE po_number = ?").get("PO70002");
+
+    const flagRes = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poRow.id] } });
+    const itemId = flagRes.body.items[0].id;
+
+    await server.call("PATCH", `/api/admin/reclasses/items/${itemId}`, { userId: "ADMIN", body: { status: "confirmed_posted" } });
+
+    const tasksRes = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasksRes.body.find((tk) => tk.workflowRule === "reclass_smartsheet" && tk.title.includes("PO70002"));
+    assert.ok(task, "expected the task to still be created even with no admin match");
+    assert.equal(task.assignedTo, null);
+    assert.match(task.description, /Someone Not In The System/);
+  });
+
+  await t.test("bulk-flagging multiple POs at once (the 4-row filtered-list use case)", async () => {
+    const ids = [
+      insertPo({ composite: "bulk-1", poNumber: "PO60010", e1WomJobNumber: "100110066010", womNumber: null, lifecycleStatus: "active" }),
+      insertPo({ composite: "bulk-2", poNumber: "PO60011", e1WomJobNumber: "100110066011", womNumber: null, lifecycleStatus: "active" }),
+      insertPo({ composite: "bulk-3", poNumber: "PO60012", e1WomJobNumber: "100110066012", womNumber: null, lifecycleStatus: "active" }),
+      insertPo({ composite: "bulk-4", poNumber: "PO60013", e1WomJobNumber: "100110066013", womNumber: null, lifecycleStatus: "active" }),
+    ];
+
+    const res = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: ids } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.flaggedCount, 4);
+  });
+
+  // The flagged item needs to carry who to loop in -- the PO Tracker's own
+  // Admin column for the PO this reclass traces back to -- so the flagged
+  // list itself is a usable "potential reclass" worklist, not just coding
+  // with no owner attached.
+  await t.test("flagging a PO for reclass auto-fills the admin name from the PO's own Admin column", async () => {
+    const poId = insertPo({ composite: "admin-1", poNumber: "PO70001", e1WomJobNumber: "100110070001", womNumber: null, lifecycleStatus: "active" });
+    raw.prepare("UPDATE pos SET admin_name = ? WHERE id = ?").run("Jordan Smith", poId);
+
+    const res = await server.call("POST", "/api/admin/reclasses/flag-po", { userId: "ADMIN", body: { poIds: [poId] } });
+    assert.equal(res.body.items[0].adminName, "Jordan Smith");
+
+    const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+    const item = itemsRes.body.find((i) => i.relatedPoId === poId);
+    assert.equal(item.adminName, "Jordan Smith");
+  });
+
+  await t.test("flagging by WOM # (no direct PO link) still resolves the admin name via the tracker's wom_number field", async () => {
+    const poId = insertPo({ composite: "admin-2", poNumber: "PO70002", e1WomJobNumber: "100110070002", womNumber: "WOM-7002", lifecycleStatus: "active" });
+    raw.prepare("UPDATE pos SET admin_name = ? WHERE id = ?").run("Alex Rivera", poId);
+
+    const res = await server.call("POST", "/api/admin/reclasses/items", {
+      userId: "ADMIN",
+      body: { fromWomNumber: "WOM-7002", fromAmount: 250, comments: "Noticed on search" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.adminName, "Alex Rivera", "should resolve via the WOM # even with no relatedPoId set");
+  });
+
+  raw.close();
+});
+
+// "Subsidiary" and "PPS Subsidiary" are two separate columns on the real
+// sheet, but a given row only ever has one filled in -- both mean the exact
+// same thing (confirmed directly), so the import needs to read whichever
+// one is actually populated into the single `subsidiary` field used
+// everywhere else in the app.
+test("PO Tracker import: Subsidiary and PPS Subsidiary coalesce into one field", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+  const rows = [
+    headers,
+    // Row with "Subsidiary" filled, "PPS Subsidiary" blank.
+    ["2026-01-01", "Normal subsidiary row", "Jane Doe", "PO90001", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    // Row with "PPS Subsidiary" filled, "Subsidiary" blank -- the gap this fixes.
+    ["2026-01-02", "PPS subsidiary row", "John Smith", "PO90002", null, 200, null, "Open", "Vendor B", "1002", null, null, null, null, null, null, null, "200 Janitorial", "Krista Lee", null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90001", { userId: "ADMIN" });
+  const po1 = listRes.body.find((p) => p.poNumber === "PO90001");
+  assert.ok(po1, "expected PO90001 to have imported");
+  assert.equal(po1.subsidiary, "100 Primary");
+
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90002", { userId: "ADMIN" });
+  const po2 = listRes2.body.find((p) => p.poNumber === "PO90002");
+  assert.ok(po2, "expected PO90002 to have imported");
+  assert.equal(po2.subsidiary, "200 Janitorial", "PPS Subsidiary should fill the subsidiary field when Subsidiary itself is blank");
+});
+
+// Budget PO Tracker's own subsidiary/object_code fields can drift out of
+// date once the real GL activity posts against a PO (see
+// refreshPoCodingDriftTask) -- these checkboxes surface exactly the same
+// GL-vs-PO comparison, filterable directly on the tracker so Krista can
+// pull up and correct the drifted records without going through GL
+// Reconciliation.
+test("PO Tracker: Subsidiary/Object code mismatch filters", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  const poId = raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, subsidiary, object_code, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run("checkbox-drift-1", "PO85001", "100 Primary", "22067000", "active", now, now, now, now).lastInsertRowid;
+  const cleanPoId = raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, subsidiary, object_code, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run("checkbox-drift-2", "PO85002", "100 Primary", "22067000", "active", now, now, now, now).lastInsertRowid;
+
+  // One GL line against each PO: the first disagrees with the PO on both
+  // subsidiary and object code, the second matches on both.
+  raw
+    .prepare(
+      `INSERT INTO gl_entries (subsidiary, object_account_code, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("200 Janitorial", "99999000", Number(poId), 1, 1, now);
+  raw
+    .prepare(
+      `INSERT INTO gl_entries (subsidiary, object_account_code, matched_po_id, subsidiary_mismatch, object_code_mismatch, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("100 Primary", "22067000", Number(cleanPoId), 0, 0, now);
+
+  const subsidiaryMismatches = db.listPos({ subsidiaryMismatch: true });
+  assert.ok(subsidiaryMismatches.some((p) => p.id === Number(poId)), "the drifted PO should show up under the subsidiary-mismatch filter");
+  assert.ok(!subsidiaryMismatches.some((p) => p.id === Number(cleanPoId)), "the clean PO should not show up");
+
+  const objectCodeMismatches = db.listPos({ objectCodeMismatch: true });
+  assert.ok(objectCodeMismatches.some((p) => p.id === Number(poId)), "the drifted PO should show up under the object-code-mismatch filter");
+  assert.ok(!objectCodeMismatches.some((p) => p.id === Number(cleanPoId)), "the clean PO should not show up");
+
+  const viaRoute = await server.call("GET", "/api/admin/pos?subsidiaryMismatch=true&objectCodeMismatch=true", { userId: "ADMIN" });
+  assert.equal(viaRoute.status, 200);
+  assert.ok(viaRoute.body.some((p) => p.id === Number(poId)), "the route should pass the query params through to the same filter");
+
+  raw.close();
+});
+
+// "Vendor Number" and "Vendor ID" are two separate columns some rows on the
+// real sheet use for the same identifier -- confirmed directly after a real
+// import left a couple of vendors stuck on "Needs matching" despite already
+// having a profile on file, because those specific rows had "Vendor ID"
+// filled in while "Vendor Number" was blank. Same coalesce pattern as
+// Subsidiary/PPS Subsidiary just above.
+test("PO Tracker import: Vendor Number and Vendor ID coalesce into one field", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Slone Plumbing Inc", jdeVendorNumber: "5172733" },
+  });
+  assert.equal(vendorRes.status, 201);
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "Vendor ID", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+  const rows = [
+    headers,
+    // Row with "Vendor Number" filled, "Vendor ID" blank -- the common case.
+    ["2026-01-01", "Normal vendor number row", "Jane Doe", "PO90010", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    // Row with "Vendor ID" filled, "Vendor Number" blank -- the gap this fixes.
+    ["2026-01-02", "prep sink in kitchen is clogged", "David Stayton", "PO90011", null, 100, null, "Open", "Slone Plumbing", null, "5172733", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90011", { userId: "ADMIN" });
+  const po = listRes.body.find((p) => p.poNumber === "PO90011");
+  assert.ok(po, "expected PO90011 to have imported");
+  assert.equal(po.vendorNumber, "5172733", "Vendor ID should fill vendorNumber when Vendor Number itself is blank");
+  assert.equal(po.vendorLinkStatus, "matched", "should auto-match the existing vendor profile by JDE #");
+});
+
+// A PO whose E&F Job Number doesn't match any location should still get a
+// location when its WOM # points at a WOM that already has one on file --
+// previously the only way a PO got a location at all was the E&F match,
+// which meant any PO with a missing/unmatched E&F # stayed permanently
+// unlocated even with a perfectly good WOM # (and real location) sitting
+// right there on the same row.
+test("PO Tracker import: falls back to the linked WOM's location when E&F Job Number doesn't match", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+  const rows = [
+    headers,
+    // No E&F match, but WOM-4471 (seeded, locationCode PRINCETON) is on file.
+    ["2026-01-01", "WOM fallback row", "Jane Doe", "PO90020", "NOT-A-REAL-JOB-NUMBER", 100, null, "Open", "Vendor A", "1001", null, null, "WOM-4471", null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    // No E&F match, and this WOM # doesn't exist at all -- should stay unlocated, not error.
+    ["2026-01-02", "No WOM on file row", "John Smith", "PO90021", null, 200, null, "Open", "Vendor B", "1002", null, null, "WOM-NOPE-999", null, null, null, null, "200 Janitorial", "Krista Lee", null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90020", { userId: "ADMIN" });
+  const po1 = listRes.body.find((p) => p.poNumber === "PO90020");
+  assert.ok(po1, "expected PO90020 to have imported");
+  assert.equal(po1.locationCode, "PRINCETON", "should fall back to the linked WOM's own location");
+
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90021", { userId: "ADMIN" });
+  const po2 = listRes2.body.find((p) => p.poNumber === "PO90021");
+  assert.ok(po2, "expected PO90021 to have imported");
+  assert.equal(po2.locationCode, null, "a WOM # that doesn't exist on file has nothing to fall back to -- stays unlocated, not an error");
+});
+
+// Re-importing never overwrites a location already resolved some other way
+// (a manual location-tag, an earlier E&F match, or an earlier WOM
+// fallback) -- COALESCE(location_code, ?) applies to the WOM fallback
+// exactly the same as it already does to the E&F match.
+test("PO Tracker import: re-import never overwrites an already-resolved location via the WOM fallback", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  function buildBuffer(womNumber) {
+    const headers = [
+      "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+      "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+      "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+      "Admin", "Urgent", "Urgent Reason/Notes",
+    ];
+    const rows = [
+      headers,
+      ["2026-01-01", "Re-import row", "Jane Doe", "PO90022", null, 100, null, "Open", "Vendor A", "1001", null, null, womNumber, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buildBuffer("WOM-4471"),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body));
+  const afterFirst = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90022", { userId: "ADMIN" });
+  assert.equal(afterFirst.body.find((p) => p.poNumber === "PO90022").locationCode, "PRINCETON");
+
+  // Re-import the same PO, now pointing at a different WOM (WOM-4502, also
+  // seeded at PRINCETON -- same location here, so cross-check with a
+  // second WOM at a different location next).
+  const secondImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-tracker.xlsx",
+    fileContent: buildBuffer("WOM-4502"),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(secondImport.status, 200, JSON.stringify(secondImport.body));
+  const afterSecond = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=PO90022", { userId: "ADMIN" });
+  assert.equal(
+    afterSecond.body.find((p) => p.poNumber === "PO90022").locationCode,
+    "PRINCETON",
+    "location_code was already resolved on the first import -- COALESCE keeps it, even though the WOM # on the row changed"
+  );
+});
+
+// A PO whose vendor_number doesn't match any vendor profile on file (see
+// listUnregisteredPoVendors) should task the admin who owns that PO to
+// create one -- one task per vendor #, even if several POs share it.
+test("Task Manager: unregistered PO vendor -> create vendor profile task", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, vendorNumber, vendorName, adminName, amount }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, vendor_number, vendor_name, admin_name, po_amount,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, vendorNumber, vendorName, adminName, amount, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await t.test("creates one task per unregistered vendor #, routed to the PO's admin when it matches a real account", async () => {
+    insertPo({ composite: "unreg-1", poNumber: "PO70001", vendorNumber: "V9001", vendorName: "Acme Fire & Safety", adminName: "Krista Lee", amount: 500 });
+    insertPo({ composite: "unreg-2", poNumber: "PO70002", vendorNumber: "V9001", vendorName: "Acme Fire & Safety", adminName: "Krista Lee", amount: 750 });
+
+    db.refreshAllUnregisteredVendorTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const tasks = res.body.filter((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9001");
+    assert.equal(tasks.length, 1, "two POs sharing the same unregistered vendor # should collapse into one task");
+    assert.match(tasks[0].title, /Acme Fire & Safety/);
+    assert.match(tasks[0].title, /V9001/);
+    assert.equal(tasks[0].assignedTo, "ADMIN", "should route to Krista Lee's admin account by name match");
+    assert.match(tasks[0].description, /2 Budget POs/);
+  });
+
+  await t.test("an admin_name that doesn't match any account creates an unassigned task with the raw name kept for manual routing", async () => {
+    insertPo({ composite: "unreg-3", poNumber: "PO70010", vendorNumber: "V9002", vendorName: "Beta Mechanical", adminName: "Nobody Real", amount: 300 });
+
+    db.refreshAllUnregisteredVendorTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9002");
+    assert.ok(task);
+    assert.equal(task.assignedTo, null);
+    assert.match(task.description, /Nobody Real/);
+  });
+
+  await t.test("creating the vendor profile closes the task on the next refresh", async () => {
+    insertPo({ composite: "unreg-4", poNumber: "PO70020", vendorNumber: "V9003", vendorName: "Gamma Electric", adminName: "Krista Lee", amount: 900 });
+    db.refreshAllUnregisteredVendorTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9003" && tk.status === "open"));
+
+    const vendorRes = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Gamma Electric", jdeVendorNumber: "V9003" },
+    });
+    assert.equal(vendorRes.status, 201, JSON.stringify(vendorRes.body));
+
+    db.refreshAllUnregisteredVendorTasks();
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(
+      !res.body.some((tk) => tk.category === "po_vendor_unregistered" && tk.sourceRecordId === "V9003" && tk.status === "open"),
+      "task should auto-complete once a matching vendor profile exists"
+    );
+  });
+
+  // The retroactive match only used to run on vendor creation -- a vendor
+  // that already existed (no JDE # yet, or the wrong one) and later got its
+  // JDE # added/corrected through a plain edit left already-imported POs
+  // stuck on "Needs Matching" forever, with nothing to re-check them short
+  // of a future re-import happening to touch that exact row again.
+  await t.test("adding a JDE # to an EXISTING vendor profile (not creating a new one) also retroactively matches", async () => {
+    insertPo({ composite: "unreg-5", poNumber: "PO70030", vendorNumber: "V9004", vendorName: "Delta Plumbing", adminName: "Krista Lee", amount: 400 });
+
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Delta Plumbing" } });
+    assert.equal(vendorRes.body.jdeVendorNumber, null, "vendor created without a JDE # yet, same as a pre-existing profile");
+
+    let po = await server.call("GET", `/api/admin/pos?search=Delta`, { userId: "ADMIN" });
+    assert.equal(po.body.find((p) => p.vendorNumber === "V9004").vendorLinkStatus, "needs_matching");
+
+    const editRes = await server.call("PATCH", `/api/admin/vendors/${vendorRes.body.id}`, {
+      userId: "ADMIN",
+      body: { name: "Delta Plumbing", jdeVendorNumber: "V9004" },
+    });
+    assert.equal(editRes.status, 200);
+
+    po = await server.call("GET", `/api/admin/pos?search=Delta`, { userId: "ADMIN" });
+    const matched = po.body.find((p) => p.vendorNumber === "V9004");
+    assert.equal(matched.vendorLinkStatus, "matched", "editing the vendor's JDE # should retroactively link the already-imported PO");
+    assert.equal(matched.vendorId, vendorRes.body.id);
+  });
+
+  raw.close();
+});
+
+// A GL posting against a PO whose object code or subsidiary doesn't match
+// what's on file for that PO (gl_entries.subsidiary_mismatch/object_code_mismatch,
+// computed at GL import time) should task the PO's admin to correct the
+// Smartsheet coding -- the GL posting is the latest real-world truth.
+test("Task Manager: PO/GL coding drift -> update Smartsheet coding task", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, objectCode, subsidiary, adminName }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, object_code, subsidiary, admin_name,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, objectCode, subsidiary, adminName, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  function insertGlEntry({ poId, objectAccount, subsidiary, subsidiaryMismatch, objectCodeMismatch, glDate }) {
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (matched_po_id, object_account, subsidiary, subsidiary_mismatch, object_code_mismatch, gl_date, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(poId, objectAccount, subsidiary, subsidiaryMismatch, objectCodeMismatch, glDate, now);
+  }
+
+  await t.test("a mismatched GL posting tasks the PO's admin, naming what differs", async () => {
+    const poId = insertPo({ composite: "drift-1", poNumber: "PO80001", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Krista Lee" });
+    insertGlEntry({ poId, objectAccount: "22099000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 1, glDate: "2026-01-15" });
+
+    db.refreshAllPoCodingDriftTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a coding-drift task for this PO");
+    assert.match(task.title, /PO80001/);
+    assert.match(task.description, /object code/);
+    assert.match(task.description, /22099000/);
+    assert.match(task.description, /22067000/);
+    assert.equal(task.assignedTo, "ADMIN");
+  });
+
+  await t.test("a PO with no mismatched GL line gets no task", async () => {
+    const poId = insertPo({ composite: "drift-2", poNumber: "PO80002", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Krista Lee" });
+    insertGlEntry({ poId, objectAccount: "22067000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 0, glDate: "2026-01-15" });
+
+    db.refreshAllPoCodingDriftTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("correcting the PO's coding auto-completes the task on the next refresh", async () => {
+    const poId = insertPo({ composite: "drift-3", poNumber: "PO80003", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Krista Lee" });
+    insertGlEntry({ poId, objectAccount: "22099000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 1, glDate: "2026-01-15" });
+    db.refreshAllPoCodingDriftTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"));
+
+    raw.prepare("UPDATE gl_entries SET object_code_mismatch = 0 WHERE matched_po_id = ?").run(poId);
+    db.refreshAllPoCodingDriftTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"), "task should auto-complete once the GL line no longer mismatches");
+  });
+
+  await t.test("an admin_name that doesn't match any account routes unassigned with the raw name kept", async () => {
+    const poId = insertPo({ composite: "drift-4", poNumber: "PO80004", objectCode: "22067000", subsidiary: "100 Primary", adminName: "Nobody Real" });
+    insertGlEntry({ poId, objectAccount: "22099000", subsidiary: "100 Primary", subsidiaryMismatch: 0, objectCodeMismatch: 1, glDate: "2026-01-15" });
+
+    db.refreshAllPoCodingDriftTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task);
+    assert.equal(task.assignedTo, null);
+    assert.match(task.description, /Nobody Real/);
+  });
+
+  raw.close();
+});
+
+// Replaces the old bare "assign a region" shortcut: a PO with no location
+// match should get a real Location tagged with its own E&F job #, not a
+// region typed directly onto the PO record -- see db.js's tagLocationForPo.
+test("PO Tracker: tag a location with a PO's E&F job # (replaces the old region dropdown)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, efJobNumber, vendorId }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, ef_job_number, vendor_id,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, efJobNumber, vendorId || null, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await t.test("tagging an existing location resolves this PO and every other PO sharing the job #", async () => {
+    const locRes = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "TAGTEST1", name: "Tag Test Site", territory: "Midwest" },
+    });
+    assert.equal(locRes.status, 201);
+
+    const poId1 = insertPo({ composite: "tag-1a", poNumber: "PO91001", efJobNumber: "900000001" });
+    const poId2 = insertPo({ composite: "tag-1b", poNumber: "PO91002", efJobNumber: "900000001" });
+
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId1}/location-tag`, {
+      userId: "ADMIN",
+      body: { locationCode: "TAGTEST1" },
+    });
+    assert.equal(tagRes.status, 200, JSON.stringify(tagRes.body));
+    assert.equal(tagRes.body.locationCode, "TAGTEST1");
+    assert.equal(tagRes.body.region, "Midwest");
+
+    const po2 = await server.call("GET", `/api/admin/pos/${poId2}`, { userId: "ADMIN" });
+    assert.equal(po2.body.locationCode, "TAGTEST1", "a second PO sharing the same job # should resolve too, without being tagged itself");
+  });
+
+  await t.test("tagging an existing location with a matched vendor and real PO # auto-activates it", async () => {
+    const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Tag Test Vendor" } });
+    const poId = insertPo({ composite: "tag-2", poNumber: "91010", efJobNumber: "900000002", vendorId: vendorRes.body.id });
+    await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TAGTEST2", name: "Tag Test Site 2", territory: "Midwest" } });
+
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST2" } });
+    assert.equal(tagRes.body.lifecycleStatus, "active", "PO #, location, and vendor all now matched -- should auto-activate");
+  });
+
+  await t.test("creating a new location inline tags and resolves in one step", async () => {
+    const poId = insertPo({ composite: "tag-3", poNumber: "PO91020", efJobNumber: "900000003" });
+
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, {
+      userId: "ADMIN",
+      body: { newLocation: { code: "TAGTEST3", name: "Brand New Site", territory: "Southeast" } },
+    });
+    assert.equal(tagRes.status, 200, JSON.stringify(tagRes.body));
+    assert.equal(tagRes.body.locationCode, "TAGTEST3");
+    assert.equal(tagRes.body.region, "Southeast");
+
+    const locRes = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const created = locRes.body.find((l) => l.code === "TAGTEST3");
+    assert.ok(created);
+    assert.equal(created.efJobNumber, "900000003");
+  });
+
+  await t.test("creating a new location inline with no territory is rejected", async () => {
+    const poId = insertPo({ composite: "tag-3b", poNumber: "PO91025", efJobNumber: "900000004" });
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, {
+      userId: "ADMIN",
+      body: { newLocation: { code: "TAGTEST3B", name: "No Territory Site" } },
+    });
+    assert.equal(tagRes.status, 400);
+    assert.match(tagRes.body.error, /territory/i);
+
+    const locRes = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    assert.ok(!locRes.body.some((l) => l.code === "TAGTEST3B"), "nothing should have been created");
+  });
+
+  await t.test("a PO with no E&F job # on file can't be tagged", async () => {
+    const poId = insertPo({ composite: "tag-4", poNumber: "PO91030", efJobNumber: null });
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST1" } });
+    assert.equal(tagRes.status, 400);
+    assert.match(tagRes.body.error, /no E&F Contract Job #/);
+  });
+
+  await t.test("tagging a location that's already tied to a different job # is rejected", async () => {
+    await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "TAGTEST5", name: "Already Tagged Site", efJobNumber: "900000005", territory: "Midwest" },
+    });
+    const poId = insertPo({ composite: "tag-5", poNumber: "PO91040", efJobNumber: "900000099" });
+    const tagRes = await server.call("PATCH", `/api/admin/pos/${poId}/location-tag`, { userId: "ADMIN", body: { locationCode: "TAGTEST5" } });
+    assert.equal(tagRes.status, 400);
+    assert.match(tagRes.body.error, /already tagged/);
+  });
+
+  await t.test("the old bare region routes are gone", async () => {
+    const poId = insertPo({ composite: "tag-6", poNumber: "PO91050", efJobNumber: "900000006" });
+    const res = await server.call("PATCH", `/api/admin/pos/${poId}/region`, { userId: "ADMIN", body: { region: "Midwest" } });
+    assert.equal(res.status, 404);
+    const bulkRes = await server.call("POST", "/api/admin/pos/bulk/assign-region", { userId: "ADMIN", body: { ids: [poId], region: "Midwest" } });
+    assert.equal(bulkRes.status, 404);
+  });
+
+  raw.close();
+});
+
+// A PO's territory -- the Budget PO Tracker's own Admin column is a more
+// reliable signal than its own location match (every row has an admin
+// name; the location match often doesn't resolve), so a PO's territory
+// comes from the matched admin's home location first, falling back to the
+// PO's own location only when the admin name doesn't match a real account.
+// See server/data/db.js's poTerritory.
+test("PO Tracker: a PO's territory comes from its admin, falling back to its own location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, poNumber, adminName, locationCode }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, admin_name, location_code,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, adminName || null, locationCode || null, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TERRTEST-EAST", name: "East HQ Site", territory: "East" } });
+  await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TERRTEST-WEST", name: "West Depot", territory: "West" } });
+
+  await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN1", name: "Pat Eastward", pin: "1234" } });
+  await server.call("PATCH", "/api/admin/admins/TERRADMIN1/basic-info", { userId: "ADMIN", body: { homeLocationCode: "TERRTEST-EAST" } });
+
+  await t.test("a matched admin's territory wins even when the PO's own location disagrees", async () => {
+    const poId = insertPo({ composite: "terr-1", poNumber: "PO92001", adminName: "Pat Eastward", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "East");
+  });
+
+  await t.test("falls back to the PO's own location when the admin name doesn't match a real account", async () => {
+    const poId = insertPo({ composite: "terr-2", poNumber: "PO92002", adminName: "Nobody Real", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "West");
+  });
+
+  await t.test("falls back to the PO's own location when there's no admin name at all", async () => {
+    const poId = insertPo({ composite: "terr-3", poNumber: "PO92003", adminName: null, locationCode: "TERRTEST-EAST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "East");
+  });
+
+  await t.test("territory is null when neither the admin nor the location resolve one", async () => {
+    const poId = insertPo({ composite: "terr-4", poNumber: "PO92004", adminName: "Nobody Real", locationCode: null });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, null);
+  });
+
+  await t.test("a matched admin with no home location on file falls back to the PO's own location", async () => {
+    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN2", name: "No Home Set", pin: "1234" } });
+    const poId = insertPo({ composite: "terr-5", poNumber: "PO92005", adminName: "No Home Set", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "West");
+  });
+
+  await t.test("a terminated admin's name no longer drives territory -- falls back to the PO's own location", async () => {
+    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN3", name: "Gone Fromhere", pin: "1234" } });
+    await server.call("PATCH", "/api/admin/admins/TERRADMIN3/basic-info", { userId: "ADMIN", body: { homeLocationCode: "TERRTEST-EAST" } });
+    await server.call("PATCH", "/api/admin/admins/TERRADMIN3/employment-status", { userId: "ADMIN", body: { status: "terminated" } });
+
+    const poId = insertPo({ composite: "terr-6", poNumber: "PO92006", adminName: "Gone Fromhere", locationCode: "TERRTEST-WEST" });
+    const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
+    assert.equal(res.body.territory, "West");
+    assert.equal(res.body.adminMatched, false);
+  });
+
+  await t.test("adminMatched is true only for a name matching a currently-active admin", async () => {
+    const matched = insertPo({ composite: "terr-7", poNumber: "PO92007", adminName: "Pat Eastward", locationCode: "TERRTEST-WEST" });
+    const unmatched = insertPo({ composite: "terr-8", poNumber: "PO92008", adminName: "Nobody Real", locationCode: "TERRTEST-WEST" });
+    const matchedRes = await server.call("GET", `/api/admin/pos/${matched}`, { userId: "ADMIN" });
+    const unmatchedRes = await server.call("GET", `/api/admin/pos/${unmatched}`, { userId: "ADMIN" });
+    assert.equal(matchedRes.body.adminMatched, true);
+    assert.equal(unmatchedRes.body.adminMatched, false);
+  });
+
+  await t.test("adminUnmatched filter lists POs whose admin name isn't a currently-active admin, including terminated ones", async () => {
+    const res = await server.call("GET", "/api/admin/pos?adminUnmatched=true", { userId: "ADMIN" });
+    const composites = res.body.map((p) => p.id);
+    const unmatchedRow = await server.call("GET", `/api/admin/pos`, { userId: "ADMIN" });
+    const byComposite = (name) => unmatchedRow.body.find((p) => p.adminName === name);
+
+    assert.ok(composites.includes(byComposite("Gone Fromhere").id), "terminated admin's PO should appear");
+    assert.ok(composites.includes(byComposite("Nobody Real").id), "unknown admin name's PO should appear");
+    assert.ok(!composites.includes(byComposite("Pat Eastward").id), "active matched admin's PO should not appear");
+  });
+
+  raw.close();
+});
+
+// A location carries three different JDE job numbers (E&F, PPS, E1 WOM) --
+// the Budget PO Tracker's "E&F Job #" and "PPS Job #" columns should each
+// carry the matching type. See server/data/db.js's
+// poJobNumberTypeMismatch/refreshPoJobNumberTypeMismatchTask.
+test("Task Manager: PO job-number type mismatch (PPS number in the E&F field, or vice versa)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertLocation({ code, name, efJobNumber, ppsJobNumber }) {
+    raw
+      .prepare(`INSERT INTO locations (code, name, ef_job_number, pps_job_number) VALUES (?, ?, ?, ?)`)
+      .run(code, name, efJobNumber || null, ppsJobNumber || null);
+  }
+
+  function insertPo({ composite, poNumber, efJobNumber, ppsJobNumber, adminName, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, ef_job_number, pps_job_number, admin_name,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, efJobNumber || null, ppsJobNumber || null, adminName || null, lifecycleStatus || "active", now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  insertLocation({ code: "JNT-A", name: "Job Number Test Site A", efJobNumber: "100110070001", ppsJobNumber: "100110070002" });
+
+  await t.test("a location's PPS number typed into the PO's E&F Job # field is flagged", async () => {
+    const poId = insertPo({ composite: "jnt-1", poNumber: "PO90001", efJobNumber: "100110070002", adminName: "Krista Lee" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a job-number-type-mismatch task");
+    assert.match(task.title, /PO90001/);
+    assert.match(task.description, /E&F Job #/);
+    assert.match(task.description, /Job Number Test Site A/);
+    assert.equal(task.assignedTo, "ADMIN");
+  });
+
+  await t.test("a location's E&F number typed into the PO's PPS Job # field is flagged", async () => {
+    const poId = insertPo({ composite: "jnt-2", poNumber: "PO90002", ppsJobNumber: "100110070001", adminName: "Krista Lee" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a job-number-type-mismatch task");
+    assert.match(task.description, /PPS Job #/);
+  });
+
+  await t.test("the correct job number in the correct field gets no task", async () => {
+    const poId = insertPo({ composite: "jnt-3", poNumber: "PO90003", efJobNumber: "100110070001" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("a job number that doesn't belong to any location at all is not this check's job", async () => {
+    const poId = insertPo({ composite: "jnt-4", poNumber: "PO90004", efJobNumber: "999999999999" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId), "an unmatched-anywhere number is a different gap, not a wrong-type one");
+  });
+
+  await t.test("a needs_organization PO with the same wrong-type number gets no task yet", async () => {
+    const poId = insertPo({ composite: "jnt-5", poNumber: "PO90005", efJobNumber: "100110070002", lifecycleStatus: "needs_organization" });
+
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("correcting the field auto-completes the task on the next refresh", async () => {
+    const poId = insertPo({ composite: "jnt-6", poNumber: "PO90006", efJobNumber: "100110070002" });
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"));
+
+    raw.prepare("UPDATE pos SET ef_job_number = ? WHERE id = ?").run("100110070001", poId);
+    db.refreshAllPoJobNumberTypeMismatchTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"), "task should auto-complete once the field is corrected");
+  });
+
+  raw.close();
+});
+
+// A PO's WOM # should belong to the same location the PO itself is coded
+// to -- the WOM's own Smartsheet-synced location_code is the source of
+// truth. See server/data/db.js's
+// poWomLocationMismatch/refreshPoWomLocationMismatchTask.
+test("Task Manager: PO coded to one location but referencing a WOM synced to a different one", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  function insertLocation(code, name) {
+    raw.prepare(`INSERT INTO locations (code, name) VALUES (?, ?)`).run(code, name);
+  }
+  function insertWom(code, locationCode) {
+    raw.prepare(`INSERT INTO woms (code, description, status, location_code) VALUES (?, 'Test WOM', 'open', ?)`).run(code, locationCode);
+  }
+  function insertPo({ composite, poNumber, womNumber, locationCode, adminName, lifecycleStatus }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, wom_number, location_code, admin_name,
+         lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(composite, poNumber, womNumber || null, locationCode || null, adminName || null, lifecycleStatus || "active", now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  insertLocation("WLT-B", "WOM Location Test Site B");
+  insertLocation("WLT-C", "WOM Location Test Site C");
+  insertWom("WOM-7001", "WLT-C");
+
+  await t.test("a PO coded to a different location than its WOM's synced location is flagged", async () => {
+    const poId = insertPo({ composite: "wlt-1", poNumber: "PO91001", womNumber: "WOM-7001", locationCode: "WLT-B", adminName: "Krista Lee" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = res.body.find((tk) => tk.relatedPoId === poId);
+    assert.ok(task, "expected a WOM-location-mismatch task");
+    assert.match(task.title, /WOM-7001/);
+    assert.match(task.title, /PO91001/);
+    assert.match(task.description, /WLT-B/);
+    assert.match(task.description, /WLT-C/);
+    assert.equal(task.assignedTo, "ADMIN");
+  });
+
+  await t.test("a PO coded to the same location its WOM is synced to gets no task", async () => {
+    const poId = insertPo({ composite: "wlt-2", poNumber: "PO91002", womNumber: "WOM-7001", locationCode: "WLT-C" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("a WOM # that doesn't match any real WOM record gets no task", async () => {
+    const poId = insertPo({ composite: "wlt-3", poNumber: "PO91003", womNumber: "WOM-NOTREAL", locationCode: "WLT-B" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("a needs_organization PO with the same mismatch gets no task yet", async () => {
+    const poId = insertPo({ composite: "wlt-4", poNumber: "PO91004", womNumber: "WOM-7001", locationCode: "WLT-B", lifecycleStatus: "needs_organization" });
+
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    const res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId));
+  });
+
+  await t.test("correcting the PO's location auto-completes the task on the next refresh", async () => {
+    const poId = insertPo({ composite: "wlt-5", poNumber: "PO91005", womNumber: "WOM-7001", locationCode: "WLT-B" });
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    let res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"));
+
+    raw.prepare("UPDATE pos SET location_code = ? WHERE id = ?").run("WLT-C", poId);
+    db.refreshAllPoWomLocationMismatchTasks();
+
+    res = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    assert.ok(!res.body.some((tk) => tk.relatedPoId === poId && tk.status === "open"), "task should auto-complete once the location matches the WOM's synced location");
+  });
+
+  raw.close();
+});
+
+// po_number_key is UNIQUE (the real identity a PO # promotes a record to,
+// see the pos table comment / computePoMatchKeys) -- the real sheet
+// genuinely has two different requests sharing the same PO # (a PO
+// covering more than one line item, or a plain data-entry duplicate;
+// confirmed directly against a real export). This used to crash the whole
+// import with "UNIQUE constraint failed: pos.po_number_key" the moment a
+// re-import tried to promote both rows to the same key at once. Krista's
+// call: those aren't two tracker records that happen to share a PO #,
+// they're one PO with one combined dollar total -- see runPoImport's
+// group-by-po_number_key handling.
+test("PO Tracker import: two rows sharing the same PO # combine into one record with a summed total", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  // First import: both rows have no PO # yet -- land in needs_organization
+  // under their own distinct composite keys (different requestors and
+  // descriptions, like the real "door #26" vs. a second visit example).
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-dup-1.xlsx",
+    fileContent: buildBuffer([
+      ["2026-01-01", "Emergency repairs for Dock door #26", "Shane Fitzpatrick", null, null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+      ["2026-01-02", "Dock door #26 repair, second visit", "Derrick Hazel", null, null, 200, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body));
+  assert.equal(firstImport.body.createdCount, 2);
+
+  // Re-import: same line positions/requestors (so line_number matches each
+  // row back to its own existing record), but now BOTH carry the identical
+  // real PO # -- same PO # means computePoMatchKeys produces the identical
+  // po_number_key for both. The second one to promote would have collided
+  // and aborted the whole import before this fix; now the two combine into
+  // one record instead.
+  const secondImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-dup-2.xlsx",
+    fileContent: buildBuffer([
+      ["2026-01-01", "Emergency repairs for Dock door #26", "Shane Fitzpatrick", "10031034", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+      ["2026-01-02", "Dock door #26 repair, second visit", "Derrick Hazel", "10031034", null, 200, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(secondImport.status, 200, JSON.stringify(secondImport.body), "the whole import should succeed, not abort on the duplicate PO #");
+  assert.equal(secondImport.body.mergedIntoExistingCount, 1, "the duplicate should be surfaced as a merge, not silently swallowed");
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Dock+door", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1, "the two lines should now be ONE combined record, not two");
+  const combined = listRes.body[0];
+  assert.equal(combined.poNumber, "10031034");
+  assert.equal(combined.poAmount, 300, "the two amounts should be summed into one total");
+  assert.ok(
+    combined.description.includes("Dock door #26") && combined.description.includes("second visit"),
+    "both lines' descriptions should be preserved, not one overwriting the other"
+  );
+
+  // A third import of the exact same file should be stable -- the combined
+  // total is recomputed fresh from what's currently in the sheet every
+  // time, not added on top of the already-combined total, so repeating the
+  // same import never doubles it.
+  const thirdImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-dup-3.xlsx",
+    fileContent: buildBuffer([
+      ["2026-01-01", "Emergency repairs for Dock door #26", "Shane Fitzpatrick", "10031034", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+      ["2026-01-02", "Dock door #26 repair, second visit", "Derrick Hazel", "10031034", null, 200, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(thirdImport.status, 200, JSON.stringify(thirdImport.body));
+  assert.equal(thirdImport.body.unchangedCount, 1, "stable across repeated re-imports, not doubling the total or duplicating rows");
+
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Dock+door", { userId: "ADMIN" });
+  assert.equal(listRes2.body.length, 1);
+  assert.equal(listRes2.body[0].poAmount, 300, "the total should not have doubled on the repeated import");
+});
+
+// composite_key is ALSO UNIQUE, and two rows with no PO # yet can genuinely
+// share the exact same requestor/date/description (a straight duplicate
+// line, or two visits logged before either was PO'd). The matching above
+// (line_number/composite_key lookups) has to see each row's writes as it
+// goes for this to land on one record instead of racing to INSERT the same
+// composite_key twice -- a real regression caught live, where a sheet with
+// identical rows crashed the whole import the same way the PO # case did.
+test("PO Tracker import: two rows with no PO # yet but identical requestor/date/description don't crash the import", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const sameRow = ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", null, null, 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null];
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-composite-dup-1.xlsx",
+    fileContent: buildBuffer([sameRow, sameRow]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body), "the import should succeed, not abort on the duplicate composite_key");
+  assert.equal(firstImport.body.createdCount, 1, "two identical rows should land on one record, not race to create two");
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].poAmount, 1350, "an exact duplicate line isn't a combine case -- it's the same record, amount unchanged");
+
+  // Re-import should be stable too.
+  const secondImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-composite-dup-2.xlsx",
+    fileContent: buildBuffer([sameRow, sameRow]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(secondImport.status, 200, JSON.stringify(secondImport.body));
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes2.body.length, 1, "still one record after a second identical import");
+});
+
+// Caught live on Krista's real 825-PO file: one row carries a real PO #
+// (deferred to the po_number_key group pass, see runPoImport) while
+// ANOTHER row with no PO # yet, but the exact same requestor/date/
+// description, gets written immediately ahead of it in the same import.
+// The group pass used to only trust the match it found while first
+// scanning the file -- before that other row existed on file yet -- so its
+// own INSERT then collided with the composite_key that row had just
+// claimed. It has to re-check for a match right before it writes, not just
+// once up front.
+test("PO Tracker import: a PO'd row and a not-yet-PO'd row for the same request don't crash on composite_key", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  // Row 1 carries a real PO # and gets deferred to the group pass. Row 2
+  // has no PO # yet but the identical requestor/date/description, and
+  // (being a single) gets written to the database immediately -- before
+  // row 1's deferred group is ever processed.
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-cross-dup-1.xlsx",
+    fileContent: buildBuffer([
+      ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", "10070939", null, 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null],
+      ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", null, null, 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body), "the import should succeed, not abort on the composite_key collision");
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1, "the two lines are the same request and should land on one record");
+  assert.equal(listRes.body[0].poNumber, "10070939");
+  assert.equal(listRes.body[0].poAmount, 1350, "not a combine case -- same request, amount unchanged");
+});
+
+// Krista's own Chart of Accounts: each location lists ONE of a PPS, WOM, or
+// E&F job number, never all three -- but the tracker sheet's "E&F Contract
+// Job #" column doesn't always carry an actual E&F number; it sometimes has
+// whichever job number that site actually tracks under, PPS or WOM
+// included. Matching that column against locations.ef_job_number alone
+// left the location (and everything that follows from it -- auto-move to
+// Active) blank for every PO at a PPS- or WOM-coded site, even with a real
+// job number sitting right there in the column.
+test("PO Tracker import: a PPS/WOM job number in the E&F column still matches the location, and auto-activates once the vendor matches too", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  // This site's Chart of Accounts entry only has a PPS Contract Job
+  // Number on file -- no E&F number at all.
+  raw
+    .prepare(`INSERT INTO locations (code, name, pps_job_number, territory) VALUES (?, ?, ?, ?)`)
+    .run("TLS-GEO", "TLS Georgetown", "70070939", "Midwest");
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "VULCAN FIRE SYSTEMS INC", jdeVendorNumber: "3330" },
+  });
+  assert.equal(vendorRes.status, 201);
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-pps-as-ef.xlsx",
+    fileContent: buildBuffer([
+      // The PPS job number is in the "E&F Contract Job #" column -- the
+      // real-world pattern this is covering.
+      ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", "10070939", "70070939\tTLS Georgetown", 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=active&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1, "should have matched location + vendor and auto-moved to Active, not sat in Needs Organization");
+  assert.equal(listRes.body[0].locationCode, "TLS-GEO");
+  assert.equal(listRes.body[0].lifecycleStatus, "active");
+});
+
+// Not every row in the real sheet has an Admin filled in. When it's blank,
+// runPoImport now fills it from the matched location's territory -- the
+// same active RFM the GL Reconciliation "missing from tracker" export
+// already fills in (see findAdminForTerritory) -- instead of leaving the
+// PO looking unowned.
+test("PO Tracker import: a blank Admin column auto-fills from the matched location's territory", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const db = require("../server/data/db");
+
+  db.createLocation("TLS-GEO2", "TLS Georgetown 2", "70070940", "Midwest", null, "Midwest", null);
+  db.createAdmin({ id: "RFM-MW", name: "Dana Rivera", pin: "1234", homeLocationCode: "TLS-GEO2" });
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-admin-autofill.xlsx",
+    fileContent: buildBuffer([
+      // Admin column (index 18) left blank.
+      ["2026-10-01", "Roof leak repair", "Jason Clark", null, "70070940\tTLS Georgetown 2", 500, null, "Open", "Some Vendor", null, null, null, null, null, null, null, "100 Primary", null, null, null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Roof+leak", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].locationCode, "TLS-GEO2");
+  assert.equal(listRes.body[0].adminName, "Dana Rivera", "blank Admin should auto-fill from the matched location's territory");
+
+  // A row that DOES have its own Admin filled in should never be overridden.
+  const importRes2 = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-admin-autofill-2.xlsx",
+    fileContent: buildBuffer([
+      ["2026-10-02", "Second site visit", "Jason Clark", null, "70070940\tTLS Georgetown 2", 600, null, "Open", "Some Vendor", null, null, null, null, null, null, null, "100 Primary", null, "Someone Else", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes2.status, 200, JSON.stringify(importRes2.body));
+  const listRes2 = await server.call("GET", "/api/admin/pos?search=Second+site", { userId: "ADMIN" });
+  assert.equal(listRes2.body[0].adminName, "Someone Else", "an Admin already in the sheet should never be overwritten by the territory fill");
+});
+
+// Caught live: the Vendor Number column is sometimes left blank while the
+// JDE Vendor # is written as a trailing " - <number>" suffix on the Vendor
+// Name text instead ("Vertiv - 1464077", "McCormick - 4786901", etc.) --
+// every one of these had a real Vendor Directory profile under that exact
+// number, just never picked up because the dedicated column was empty.
+test("PO Tracker import: a vendor # embedded in the Vendor Name text still matches, when Vendor Number is blank", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Vertiv", jdeVendorNumber: "1464077" },
+  });
+  assert.equal(vendorRes.status, 201);
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-vendor-in-name.xlsx",
+    fileContent: buildBuffer([
+      // Vendor Number column (index 9) left blank -- the number is only in
+      // the Vendor Name text.
+      ["2026-10-05", "Semi Annual ups and battery pm work", "Phillip Bush", "10071605", null, 10040.80, null, "Open", "Vertiv - 1464077", null, null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Semi+Annual", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].vendorNumber, "1464077", "the number should be pulled out and saved onto the record");
+  assert.equal(listRes.body[0].vendorLinkedName, "Vertiv");
+});
+
+// Caught live: the PPS Job Number / E1 WOM Job # columns carry the same
+// "job number + location name" combined cell format as E&F Contract Job #
+// does -- a real E1 WOM Job # cell read "100110033928 - TEMA Georgetown".
+// Only E&F's own column was ever split apart before matching; PPS/WOM were
+// compared as the whole combined string and never matched anything.
+test("PO Tracker import: a PPS/WOM job number cell combined with a location name still matches the location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw
+    .prepare(`INSERT INTO locations (code, name, wom_job_number, territory) VALUES (?, ?, ?, ?)`)
+    .run("TEMA-GEO", "TEMA Georgetown", "100110033928", "Midwest");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-wom-combined-cell.xlsx",
+    fileContent: buildBuffer([
+      // E&F and PPS blank; E1 WOM Job # (index 11) carries "number - name".
+      ["2026-09-28", "Light Pole #2 Replaced", "Logan Pearl", "2000092082", null, 5000, null, "Pending Vendor Invoice", null, null, null, "100110033928 - TEMA Georgetown", "20700089", null, null, "605350 Subcontracting Non Recuring", null, null, "Krista Lee", "Yes", "Need PO to dispatch for light pole knocked over"],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Light+Pole", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].locationCode, "TEMA-GEO");
+  assert.equal(listRes.body[0].territory, "Midwest");
+});
+
+// Caught live: a PPS/E1 WOM Job # cell combined with a location name isn't
+// always dash-separated -- a real PPS Job Number cell read "100110000656
+// New York ROE", just the number and the name with a single space between
+// them, no dash at all. The dash-only split left this cell's whole string
+// ("100110000656 New York ROE") being compared against locations' job
+// numbers, which never matched anything.
+test("PO Tracker import: a PPS/WOM job number cell combined with a location name (no dash) still matches the location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw
+    .prepare(`INSERT INTO locations (code, name, pps_job_number, territory) VALUES (?, ?, ?, ?)`)
+    .run("NY-ROE", "New York ROE", "100110000656", "East");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-pps-combined-cell-no-dash.xlsx",
+    fileContent: buildBuffer([
+      // E&F blank; PPS Job Number (index 10) carries "number name" with no dash.
+      ["2026-09-28", "Valcourt roof repair", "Logan Pearl", null, null, 3500, null, null, "Valcourt", "Valcourt", "100110000656 New York ROE", null, null, null, null, "605300 Subcontracting Non Recuring", null, null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Valcourt+roof", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].locationCode, "NY-ROE");
+  assert.equal(listRes.body[0].territory, "East");
+});
+
+// Cancelled/Duplicate-status POs are void -- they were never going to need
+// a real vendor/location match, so Krista asked for them hidden from the
+// tracker by default rather than burying the records that actually do.
+test("Budget PO Tracker: Cancelled/Duplicate-status POs are hidden by default, shown with the opt-in checkbox", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+  const now = new Date().toISOString();
+
+  function insertPo({ composite, description, status }) {
+    raw
+      .prepare(
+        `INSERT INTO pos (composite_key, description, status, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+      )
+      .run(composite, description, status, now, now, now, now);
+  }
+
+  insertPo({ composite: "cd-1", description: "Elevator Maintenance servicing", status: "Cancelled" });
+  insertPo({ composite: "cd-2", description: "A/B Water Line Repair", status: "Duplicate" });
+  insertPo({ composite: "cd-3", description: "Normal open request", status: "Open" });
+
+  const hidden = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization", { userId: "ADMIN" });
+  const hiddenDescriptions = hidden.body.map((p) => p.description);
+  assert.ok(!hiddenDescriptions.includes("Elevator Maintenance servicing"), "Cancelled should be hidden by default");
+  assert.ok(!hiddenDescriptions.includes("A/B Water Line Repair"), "Duplicate should be hidden by default");
+  assert.ok(hiddenDescriptions.includes("Normal open request"), "a normal Open-status PO should still show");
+
+  const shown = await server.call(
+    "GET",
+    "/api/admin/pos?lifecycleStatus=needs_organization&includeCancelledDuplicate=true",
+    { userId: "ADMIN" }
+  );
+  const shownDescriptions = shown.body.map((p) => p.description);
+  assert.ok(shownDescriptions.includes("Elevator Maintenance servicing"), "checking the box should reveal Cancelled");
+  assert.ok(shownDescriptions.includes("A/B Water Line Repair"), "checking the box should reveal Duplicate");
+  assert.ok(shownDescriptions.includes("Normal open request"));
+});
+
+// Caught live: "Bill Spade Electric, Heating, & Cooling" showed up on two
+// separate PO rows, neither with a Vendor Number anywhere (not the
+// dedicated column, not embedded in the name) -- confirming the vendor
+// manually on one left the other sitting on "Needs Matching" forever,
+// since nothing auto-links by name alone. Manually confirming a vendor
+// for one PO should also pick up any sibling PO with the exact same
+// Vendor Name and no Vendor # of its own to go on.
+test("Budget PO Tracker: manually confirming a vendor also links sibling POs sharing the same Vendor Name with no Vendor #", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+  const now = new Date().toISOString();
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Bill Spade Electric, Heating, & Cooling", jdeVendorNumber: "9912345" },
+  });
+  assert.equal(vendorRes.status, 201);
+  const vendorId = vendorRes.body.id;
+
+  function insertPo({ composite, description, vendorName, vendorNumber }) {
+    const result = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, description, vendor_name, vendor_number, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+      )
+      .run(composite, description, vendorName, vendorNumber || null, now, now, now, now);
+    return Number(result.lastInsertRowid);
+  }
+
+  const poId1 = insertPo({ composite: "bs-1", description: "RTU 13 not heating", vendorName: "Bill Spade Electric, Heating, & Cooling" });
+  const poId2 = insertPo({ composite: "bs-2", description: "RTU 14 is not working", vendorName: "Bill Spade Electric, Heating, & Cooling" });
+  // A third, unrelated PO that just happens to also have no Vendor Number
+  // but a totally different name -- must never get swept in.
+  const poId3 = insertPo({ composite: "bs-3", description: "Unrelated request", vendorName: "Some Other Vendor" });
+  // A fourth PO with the SAME name but its OWN (different, unmatched)
+  // Vendor Number -- must be left alone, since that could be a genuinely
+  // different vendor that just shares the name.
+  const poId4 = insertPo({ composite: "bs-4", description: "Different numbered one", vendorName: "Bill Spade Electric, Heating, & Cooling", vendorNumber: "4455667" });
+
+  const confirmRes = await server.call("PATCH", `/api/admin/pos/${poId1}/vendor`, { userId: "ADMIN", body: { vendorId } });
+  assert.equal(confirmRes.status, 200);
+  assert.equal(confirmRes.body.propagatedCount, 1, "should have propagated to exactly the one sibling with no Vendor #");
+
+  const po1 = await server.call("GET", `/api/admin/pos/${poId1}`, { userId: "ADMIN" });
+  const po2 = await server.call("GET", `/api/admin/pos/${poId2}`, { userId: "ADMIN" });
+  const po3 = await server.call("GET", `/api/admin/pos/${poId3}`, { userId: "ADMIN" });
+  const po4 = await server.call("GET", `/api/admin/pos/${poId4}`, { userId: "ADMIN" });
+  assert.equal(po1.body.vendorId, vendorId);
+  assert.equal(po2.body.vendorId, vendorId, "sibling with the same name and no Vendor # should have linked too");
+  assert.equal(po3.body.vendorId, null, "a different-named PO should never be swept in");
+  assert.equal(po4.body.vendorId, null, "a PO with its own (different) Vendor # should be left for its own matching");
+});
