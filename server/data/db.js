@@ -890,6 +890,22 @@ db.exec(
    AND (ef_job_number IS NOT NULL OR pps_job_number IS NOT NULL OR e1_wom_job_number IS NOT NULL)`
 );
 
+// Same catch-up for Admin -- runPoImport only fills a blank Admin from the
+// matched location's territory (see findAdminForTerritory, defined below
+// -- hoisted, so callable here) going forward, on the next import that
+// touches each row. This fixes every PO already on file that's sitting
+// blank only because it was imported before that fill existed, or because
+// the location backfill just above only just gave it a location to derive
+// a territory from.
+db.exec(
+  `UPDATE pos SET admin_name = (
+      SELECT t.name FROM technicians t JOIN locations l ON l.code = t.home_location_code
+      WHERE t.role = 'admin' AND t.employment_status = 'active' AND l.territory = (SELECT territory FROM locations WHERE code = pos.location_code)
+      ORDER BY t.name LIMIT 1
+    )
+   WHERE (admin_name IS NULL OR admin_name = '') AND location_code IS NOT NULL`
+);
+
 // Auto-activation (see isPoFullyResolved/maybeAutoActivatePo, defined
 // below -- hoisted, so callable here) only runs from the import/manual-
 // tagging paths that just changed one of its three conditions -- a PO
@@ -7853,6 +7869,17 @@ function runPoImport(rows, importedBy, { dryRun }) {
         if (linkedWom && linkedWom.location_code) matchedLocation = findLocation(linkedWom.location_code);
       }
       const matchedVendor = row.vendorNumber ? findVendorByNumber(row.vendorNumber) : null;
+
+      // Admin isn't on every row in the real sheet -- when it's blank,
+      // fill it from the matched location's territory (the same active
+      // RFM the GL Reconciliation "missing from tracker" export already
+      // fills in, see findAdminForTerritory), rather than leaving it
+      // blank and making this PO look unowned. Never overwrites a name
+      // Krista actually put in the sheet.
+      if (!row.adminName && matchedLocation && matchedLocation.territory) {
+        const territoryAdmin = findAdminForTerritory(matchedLocation.territory);
+        if (territoryAdmin) row.adminName = territoryAdmin.name;
+      }
 
       const entry = { row, lineNumber, existing, efJobNumber, matchedLocation, matchedVendor };
       if (poNumberKey) {

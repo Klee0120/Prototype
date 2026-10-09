@@ -1402,3 +1402,63 @@ test("PO Tracker import: a PPS/WOM job number in the E&F column still matches th
   assert.equal(listRes.body[0].locationCode, "TLS-GEO");
   assert.equal(listRes.body[0].lifecycleStatus, "active");
 });
+
+// Not every row in the real sheet has an Admin filled in. When it's blank,
+// runPoImport now fills it from the matched location's territory -- the
+// same active RFM the GL Reconciliation "missing from tracker" export
+// already fills in (see findAdminForTerritory) -- instead of leaving the
+// PO looking unowned.
+test("PO Tracker import: a blank Admin column auto-fills from the matched location's territory", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const db = require("../server/data/db");
+
+  db.createLocation("TLS-GEO2", "TLS Georgetown 2", "70070940", "Midwest", null, "Midwest", null);
+  db.createAdmin({ id: "RFM-MW", name: "Dana Rivera", pin: "1234", homeLocationCode: "TLS-GEO2" });
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-admin-autofill.xlsx",
+    fileContent: buildBuffer([
+      // Admin column (index 18) left blank.
+      ["2026-10-01", "Roof leak repair", "Jason Clark", null, "70070940\tTLS Georgetown 2", 500, null, "Open", "Some Vendor", null, null, null, null, null, null, null, "100 Primary", null, null, null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Roof+leak", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].locationCode, "TLS-GEO2");
+  assert.equal(listRes.body[0].adminName, "Dana Rivera", "blank Admin should auto-fill from the matched location's territory");
+
+  // A row that DOES have its own Admin filled in should never be overridden.
+  const importRes2 = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-admin-autofill-2.xlsx",
+    fileContent: buildBuffer([
+      ["2026-10-02", "Second site visit", "Jason Clark", null, "70070940\tTLS Georgetown 2", 600, null, "Open", "Some Vendor", null, null, null, null, null, null, null, "100 Primary", null, "Someone Else", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes2.status, 200, JSON.stringify(importRes2.body));
+  const listRes2 = await server.call("GET", "/api/admin/pos?search=Second+site", { userId: "ADMIN" });
+  assert.equal(listRes2.body[0].adminName, "Someone Else", "an Admin already in the sheet should never be overwritten by the territory fill");
+});
