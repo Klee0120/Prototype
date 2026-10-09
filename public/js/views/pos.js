@@ -698,7 +698,23 @@ export async function renderPos(container, { openPoId } = {}) {
     try {
       [po, tasks] = await Promise.all([api.get(`/api/admin/pos/${detailId}`), api.get(`/api/admin/pos/${detailId}/tasks`)]);
     } catch (err) {
-      container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      // A PO link/bookmark can outlive the record it points to -- most
+      // often because a later import combined it into another record that
+      // shared its PO # (see runPoImport's group-by-po_number_key
+      // handling), which removes the old id for good. Give a way back to
+      // the list instead of leaving the page on a dead end with nothing
+      // but a raw error.
+      const notFound = err.status === 404;
+      container.innerHTML = `
+        <button type="button" class="btn btn-link po-back-btn">&larr; Budget PO Tracker</button>
+        <p class="attachments-error">
+          ${notFound ? "This PO record no longer exists -- it may have been combined into another record during a later import." : escapeHtml(err.message)}
+        </p>
+      `;
+      container.querySelector(".po-back-btn").addEventListener("click", () => {
+        detailId = null;
+        draw();
+      });
       return;
     }
 
