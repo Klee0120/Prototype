@@ -872,95 +872,20 @@ if (!hasColumn("locations", "pps_job_number")) {
 }
 
 // Checks a job number against all three of a location's own job-number
-// columns at once -- declared here (not down by findLocationByJobNumber's
-// own definition, where this statement used to live) because the
-// startup backfill just below is the first thing in the file that calls
-// it; a plain `function` is hoisted, but this `const` is not, and calling
-// it before this line was ever reached crashed the whole server on boot
-// with "Cannot access 'findLocationByJobNumberStmt' before initialization"
-// -- caught live. See findLocationByJobNumber's own comment for what this
-// is actually for.
+// columns at once. Declared here, early, rather than down by
+// findLocationByJobNumber's own definition where it used to live --
+// the matched_location_source migration a bit further down this file
+// calls that function directly at the top level (not from inside another
+// function), so its own `const` dependency has to already be initialized
+// by the time execution reaches it. A `function` declaration is hoisted
+// and safe to call from anywhere; this `const` is not -- caught live in
+// production as "Cannot access 'findLocationByJobNumberStmt' before
+// initialization", crashing the server on every single boot.
 const findLocationByJobNumberStmt = db.prepare("SELECT * FROM locations WHERE ef_job_number = ? OR pps_job_number = ? OR wom_job_number = ?");
 
-// One-time catch-up for POs that already exist with no location_code, now
-// that all three of a location's job-number columns are on file -- a PO's
-// E&F/PPS/WOM job number is matched against all three, not just the
-// matching one, since the real sheet's "E&F Contract Job #" column
-// sometimes actually carries a PPS or WOM job number instead (same root
-// cause as GL Reconciliation's own job-number matching: Krista's source
-// data doesn't keep these three cleanly separated -- each location lists
-// only one of the three on its Chart of Accounts entry, not all three).
-// Done in JS, not a plain SQL UPDATE, because PPS Job Number and E1 WOM
-// Job # are stored exactly as the sheet had them -- a job number AND a
-// location name in one cell (confirmed directly: "100110033928 - TEMA
-// Georgetown") -- and need the same parseJobNumberCell split runPoImport
-// itself uses (see its matchedLocation comment) before they're worth
-// comparing against anything. runPoImport's own widened match only
-// applies going forward, on the next import that touches each row -- this
-// fixes the backlog immediately on deploy instead of waiting on that.
-// Idempotent (only rows still missing a location match this query), so
-// safe to run on every server start.
-for (const po of db
-  .prepare("SELECT id, ef_job_number, pps_job_number, e1_wom_job_number FROM pos WHERE location_code IS NULL OR location_code = ''")
-  .all()) {
-  const efJobNumber = parseJobNumberCell(po.ef_job_number);
-  const location =
-    (efJobNumber && findLocationByJobNumber(efJobNumber)) ||
-    (po.pps_job_number && findLocationByJobNumber(parseJobNumberCell(po.pps_job_number))) ||
-    (po.e1_wom_job_number && findLocationByJobNumber(parseJobNumberCell(po.e1_wom_job_number))) ||
-    null;
-  if (location) db.prepare("UPDATE pos SET location_code = ? WHERE id = ?").run(location.code, po.id);
-}
-
-// Same catch-up for Admin -- runPoImport only fills a blank Admin from the
-// matched location's territory (see findAdminForTerritory, defined below
-// -- hoisted, so callable here) going forward, on the next import that
-// touches each row. This fixes every PO already on file that's sitting
-// blank only because it was imported before that fill existed, or because
-// the location backfill just above only just gave it a location to derive
-// a territory from.
-db.exec(
-  `UPDATE pos SET admin_name = (
-      SELECT t.name FROM technicians t JOIN locations l ON l.code = t.home_location_code
-      WHERE t.role = 'admin' AND t.employment_status = 'active' AND l.territory = (SELECT territory FROM locations WHERE code = pos.location_code)
-      ORDER BY t.name LIMIT 1
-    )
-   WHERE (admin_name IS NULL OR admin_name = '') AND location_code IS NOT NULL`
-);
-
-// Auto-activation (see isPoFullyResolved/maybeAutoActivatePo, defined
-// below -- hoisted, so callable here) only runs from the import/manual-
-// tagging paths that just changed one of its three conditions -- a PO
-// sitting in Needs Organization only because the backfill just above
-// finally gave it a location never gets that check run against it on its
-// own. Catch it up right now, same as the backfill itself, so nothing
-// sits waiting on a vendor it already has, just because the location fix
-// landed in a later deploy than the PO's own last import.
-for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'needs_organization'").all()) {
-  maybeAutoActivatePo(row.id);
-}
-
-// Same catch-up for vendor matching: a PO whose Vendor Number column was
-// blank but whose Vendor Name carries the JDE # as a trailing suffix (see
-// extractVendorNumberFromName, defined below -- hoisted, so callable
-// here) only gets that filled in and matched on the next import that
-// touches the row. Fills vendor_number from the name and links the
-// vendor right now for every PO already on file still sitting unmatched,
-// instead of waiting on a re-import. Naturally one-time: once
-// vendor_number is filled, a PO stops matching this query's WHERE clause
-// on the next server start. A vendor added to the Directory AFTER this
-// runs still links up later through the normal path (see
-// linkUnmatchedPosForVendor), since vendor_number is on the record either
-// way by the time that happens.
-for (const po of db
-  .prepare("SELECT id, vendor_name FROM pos WHERE vendor_id IS NULL AND (vendor_number IS NULL OR vendor_number = '')")
-  .all()) {
-  const extracted = extractVendorNumberFromName(po.vendor_name);
-  if (!extracted) continue;
-  db.prepare("UPDATE pos SET vendor_number = ?, updated_at = ? WHERE id = ?").run(extracted, new Date().toISOString(), po.id);
-  const vendor = findVendorByNumber(extracted);
-  if (vendor) confirmPoVendor(po.id, vendor.id);
-}
+// The PO location/admin/vendor startup catch-ups that used to live here
+// were moved to the very end of this file, right before module.exports --
+// see the comment there for why.
 
 if (!hasColumn("woms", "subsidiary_code")) {
   db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
@@ -11085,6 +11010,100 @@ function listApprovedTimeOffForMonth(monthIso) {
     }
   }
   return byDate;
+}
+
+// The PO location/admin/vendor-matching startup catch-ups below are
+// placed here, at the very end of the file, deliberately -- NOT up by the
+// other migrations near the top, where they were caught live crashing the
+// server on every single boot. They call functions (findLocationByJobNumber,
+// maybeAutoActivatePo, extractVendorNumberFromName, findVendorByNumber,
+// confirmPoVendor) whose own `const`-declared dependencies sit elsewhere
+// in this file; a `function` declaration is hoisted and safe to call from
+// anywhere, but reaching into one of THOSE functions before its own
+// `const` dependency's declaration line has actually executed throws
+// "Cannot access '<name>' before initialization" -- caught twice in
+// production (findLocationByJobNumberStmt, then VENDOR_COI_FIELDS) before
+// landing here for good. By this point in the file every top-level
+// `const` and `function` anywhere above has already run, so nothing
+// these catch-ups call can ever hit that trap again, regardless of what
+// it happens to depend on.
+
+// One-time catch-up for POs that already exist with no location_code, now
+// that all three of a location's job-number columns are on file -- a PO's
+// E&F/PPS/WOM job number is matched against all three, not just the
+// matching one, since the real sheet's "E&F Contract Job #" column
+// sometimes actually carries a PPS or WOM job number instead (same root
+// cause as GL Reconciliation's own job-number matching: Krista's source
+// data doesn't keep these three cleanly separated -- each location lists
+// only one of the three on its Chart of Accounts entry, not all three).
+// Done in JS, not a plain SQL UPDATE, because PPS Job Number and E1 WOM
+// Job # are stored exactly as the sheet had them -- a job number AND a
+// location name in one cell (confirmed directly: "100110033928 - TEMA
+// Georgetown") -- and need the same parseJobNumberCell split runPoImport
+// itself uses (see its matchedLocation comment) before they're worth
+// comparing against anything. runPoImport's own widened match only
+// applies going forward, on the next import that touches each row -- this
+// fixes the backlog immediately on deploy instead of waiting on that.
+// Idempotent (only rows still missing a location match this query), so
+// safe to run on every server start.
+for (const po of db
+  .prepare("SELECT id, ef_job_number, pps_job_number, e1_wom_job_number FROM pos WHERE location_code IS NULL OR location_code = ''")
+  .all()) {
+  const efJobNumber = parseJobNumberCell(po.ef_job_number);
+  const location =
+    (efJobNumber && findLocationByJobNumber(efJobNumber)) ||
+    (po.pps_job_number && findLocationByJobNumber(parseJobNumberCell(po.pps_job_number))) ||
+    (po.e1_wom_job_number && findLocationByJobNumber(parseJobNumberCell(po.e1_wom_job_number))) ||
+    null;
+  if (location) db.prepare("UPDATE pos SET location_code = ? WHERE id = ?").run(location.code, po.id);
+}
+
+// Same catch-up for Admin -- runPoImport only fills a blank Admin from the
+// matched location's territory (see findAdminForTerritory) going forward,
+// on the next import that touches each row. This fixes every PO already
+// on file that's sitting blank only because it was imported before that
+// fill existed, or because the location backfill just above only just
+// gave it a location to derive a territory from.
+db.exec(
+  `UPDATE pos SET admin_name = (
+      SELECT t.name FROM technicians t JOIN locations l ON l.code = t.home_location_code
+      WHERE t.role = 'admin' AND t.employment_status = 'active' AND l.territory = (SELECT territory FROM locations WHERE code = pos.location_code)
+      ORDER BY t.name LIMIT 1
+    )
+   WHERE (admin_name IS NULL OR admin_name = '') AND location_code IS NOT NULL`
+);
+
+// Auto-activation (see isPoFullyResolved/maybeAutoActivatePo) only runs
+// from the import/manual-tagging paths that just changed one of its three
+// conditions -- a PO sitting in Needs Organization only because the
+// backfill just above finally gave it a location never gets that check
+// run against it on its own. Catch it up right now, same as the backfill
+// itself, so nothing sits waiting on a vendor it already has, just
+// because the location fix landed in a later deploy than the PO's own
+// last import.
+for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'needs_organization'").all()) {
+  maybeAutoActivatePo(row.id);
+}
+
+// Same catch-up for vendor matching: a PO whose Vendor Number column was
+// blank but whose Vendor Name carries the JDE # as a trailing suffix (see
+// extractVendorNumberFromName) only gets that filled in and matched on
+// the next import that touches the row. Fills vendor_number from the name
+// and links the vendor right now for every PO already on file still
+// sitting unmatched, instead of waiting on a re-import. Naturally
+// one-time: once vendor_number is filled, a PO stops matching this
+// query's WHERE clause on the next server start. A vendor added to the
+// Directory AFTER this runs still links up later through the normal path
+// (see linkUnmatchedPosForVendor), since vendor_number is on the record
+// either way by the time that happens.
+for (const po of db
+  .prepare("SELECT id, vendor_name FROM pos WHERE vendor_id IS NULL AND (vendor_number IS NULL OR vendor_number = '')")
+  .all()) {
+  const extracted = extractVendorNumberFromName(po.vendor_name);
+  if (!extracted) continue;
+  db.prepare("UPDATE pos SET vendor_number = ?, updated_at = ? WHERE id = ?").run(extracted, new Date().toISOString(), po.id);
+  const vendor = findVendorByNumber(extracted);
+  if (vendor) confirmPoVendor(po.id, vendor.id);
 }
 
 module.exports = {
