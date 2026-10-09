@@ -1238,3 +1238,57 @@ test("PO Tracker import: two rows sharing the same PO # combine into one record 
   assert.equal(listRes2.body.length, 1);
   assert.equal(listRes2.body[0].poAmount, 300, "the total should not have doubled on the repeated import");
 });
+
+// composite_key is ALSO UNIQUE, and two rows with no PO # yet can genuinely
+// share the exact same requestor/date/description (a straight duplicate
+// line, or two visits logged before either was PO'd). The matching above
+// (line_number/composite_key lookups) has to see each row's writes as it
+// goes for this to land on one record instead of racing to INSERT the same
+// composite_key twice -- a real regression caught live, where a sheet with
+// identical rows crashed the whole import the same way the PO # case did.
+test("PO Tracker import: two rows with no PO # yet but identical requestor/date/description don't crash the import", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const sameRow = ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", null, null, 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null];
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-composite-dup-1.xlsx",
+    fileContent: buildBuffer([sameRow, sameRow]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body), "the import should succeed, not abort on the duplicate composite_key");
+  assert.equal(firstImport.body.createdCount, 1, "two identical rows should land on one record, not race to create two");
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].poAmount, 1350, "an exact duplicate line isn't a combine case -- it's the same record, amount unchanged");
+
+  // Re-import should be stable too.
+  const secondImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-composite-dup-2.xlsx",
+    fileContent: buildBuffer([sameRow, sameRow]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(secondImport.status, 200, JSON.stringify(secondImport.body));
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes2.body.length, 1, "still one record after a second identical import");
+});

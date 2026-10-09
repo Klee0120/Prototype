@@ -7751,7 +7751,6 @@ function runPoImport(rows, importedBy, { dryRun }) {
     // row-by-row write. Rows with no PO # yet never collide on
     // po_number_key, so they're written immediately, same as always.
     const groups = new Map();
-    const singles = [];
 
     for (const row of rows) {
       const poNumberRaw = row.poNumber == null ? "" : String(row.poNumber).trim();
@@ -7798,20 +7797,30 @@ function runPoImport(rows, importedBy, { dryRun }) {
 
       const entry = { row, lineNumber, existing, efJobNumber, matchedLocation, matchedVendor };
       if (poNumberKey) {
+        // Deferred to the group pass below, which needs to see every entry
+        // sharing this PO # before it can compute one combined record for
+        // all of them -- see that pass for why.
         if (!groups.has(poNumberKey)) groups.set(poNumberKey, []);
         groups.get(poNumberKey).push(entry);
-      } else {
-        singles.push(entry);
+        continue;
       }
-    }
 
-    for (const entry of singles) {
+      // Written immediately, in sheet order, same as every row used to be
+      // -- this is what lets the composite_key lookup above see a sibling
+      // row from earlier in THIS SAME import. Two rows with no PO # yet
+      // but an identical requestor/date/description (a genuine duplicate
+      // entry, or two visits logged before either was PO'd) are meant to
+      // land on the same record rather than each trying to claim that
+      // composite_key for itself -- deferring this write the way the
+      // po_number_key groups below are deferred would reintroduce the
+      // exact "UNIQUE constraint failed" crash this whole redesign was
+      // meant to fix, just on composite_key instead of po_number_key.
       const result = writePoRecord(
-        entry.existing,
+        existing,
         entry,
         null,
-        entry.row.description,
-        entry.row.poAmount == null ? null : entry.row.poAmount,
+        row.description,
+        row.poAmount == null ? null : row.poAmount,
         importedBy,
         now
       );
