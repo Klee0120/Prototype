@@ -1462,3 +1462,100 @@ test("PO Tracker import: a blank Admin column auto-fills from the matched locati
   const listRes2 = await server.call("GET", "/api/admin/pos?search=Second+site", { userId: "ADMIN" });
   assert.equal(listRes2.body[0].adminName, "Someone Else", "an Admin already in the sheet should never be overwritten by the territory fill");
 });
+
+// Caught live: the Vendor Number column is sometimes left blank while the
+// JDE Vendor # is written as a trailing " - <number>" suffix on the Vendor
+// Name text instead ("Vertiv - 1464077", "McCormick - 4786901", etc.) --
+// every one of these had a real Vendor Directory profile under that exact
+// number, just never picked up because the dedicated column was empty.
+test("PO Tracker import: a vendor # embedded in the Vendor Name text still matches, when Vendor Number is blank", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Vertiv", jdeVendorNumber: "1464077" },
+  });
+  assert.equal(vendorRes.status, 201);
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-vendor-in-name.xlsx",
+    fileContent: buildBuffer([
+      // Vendor Number column (index 9) left blank -- the number is only in
+      // the Vendor Name text.
+      ["2026-10-05", "Semi Annual ups and battery pm work", "Phillip Bush", "10071605", null, 10040.80, null, "Open", "Vertiv - 1464077", null, null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Semi+Annual", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].vendorNumber, "1464077", "the number should be pulled out and saved onto the record");
+  assert.equal(listRes.body[0].vendorLinkedName, "Vertiv");
+});
+
+// Caught live: the PPS Job Number / E1 WOM Job # columns carry the same
+// "job number + location name" combined cell format as E&F Contract Job #
+// does -- a real E1 WOM Job # cell read "100110033928 - TEMA Georgetown".
+// Only E&F's own column was ever split apart before matching; PPS/WOM were
+// compared as the whole combined string and never matched anything.
+test("PO Tracker import: a PPS/WOM job number cell combined with a location name still matches the location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw
+    .prepare(`INSERT INTO locations (code, name, wom_job_number, territory) VALUES (?, ?, ?, ?)`)
+    .run("TEMA-GEO", "TEMA Georgetown", "100110033928", "Midwest");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-wom-combined-cell.xlsx",
+    fileContent: buildBuffer([
+      // E&F and PPS blank; E1 WOM Job # (index 11) carries "number - name".
+      ["2026-09-28", "Light Pole #2 Replaced", "Logan Pearl", "2000092082", null, 5000, null, "Pending Vendor Invoice", null, null, null, "100110033928 - TEMA Georgetown", "20700089", null, null, "605350 Subcontracting Non Recuring", null, null, "Krista Lee", "Yes", "Need PO to dispatch for light pole knocked over"],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?search=Light+Pole", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1);
+  assert.equal(listRes.body[0].locationCode, "TEMA-GEO");
+  assert.equal(listRes.body[0].territory, "Midwest");
+});

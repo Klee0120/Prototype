@@ -671,6 +671,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_allocations_tech_week ON allocations(tech_id, week_monday);
 `);
 
+// One-time cleanup for any vendor's JDE Vendor # saved with a stray
+// leading/trailing space before createVendor/updateVendor started
+// trimming it (see cleanJdeVendorNumber) -- invisible in the UI, but it
+// silently breaks findVendorByNumber's exact-text match, leaving every PO
+// for that vendor stuck on "Needs Matching" even with the right number
+// sitting right there on both records. Idempotent (only touches rows that
+// still need it), so safe to run on every server start.
+db.exec(`UPDATE vendors SET jde_vendor_number = TRIM(jde_vendor_number) WHERE jde_vendor_number != TRIM(jde_vendor_number)`);
+
 // One-time catch-up for POs that already exist with no location_code --
 // runPoImport's own WOM-location fallback (see its matchedLocation
 // comment) only applies going forward, on the next import that touches
@@ -870,25 +879,27 @@ if (!hasColumn("locations", "pps_job_number")) {
 // cause as GL Reconciliation's own job-number matching: Krista's source
 // data doesn't keep these three cleanly separated -- each location lists
 // only one of the three on its Chart of Accounts entry, not all three).
-// runPoImport's own widened match (see its matchedLocation comment) only
+// Done in JS, not a plain SQL UPDATE, because PPS Job Number and E1 WOM
+// Job # are stored exactly as the sheet had them -- a job number AND a
+// location name in one cell (confirmed directly: "100110033928 - TEMA
+// Georgetown") -- and need the same parseJobNumberCell split runPoImport
+// itself uses (see its matchedLocation comment) before they're worth
+// comparing against anything. runPoImport's own widened match only
 // applies going forward, on the next import that touches each row -- this
-// fixes the backlog immediately on deploy instead of waiting on that. No
-// hasColumn marker to gate this one-time-only, since it doesn't add a
-// column -- it's simply idempotent (the WHERE clause only ever matches
-// rows still blank), so running it again on every server start is
-// harmless and cheap at this table's size.
-db.exec(
-  `UPDATE pos SET location_code = COALESCE(
-      (SELECT l.code FROM locations l WHERE pos.ef_job_number IS NOT NULL AND pos.ef_job_number != ''
-        AND (l.ef_job_number = pos.ef_job_number OR l.pps_job_number = pos.ef_job_number OR l.wom_job_number = pos.ef_job_number) LIMIT 1),
-      (SELECT l.code FROM locations l WHERE pos.pps_job_number IS NOT NULL AND pos.pps_job_number != ''
-        AND (l.ef_job_number = pos.pps_job_number OR l.pps_job_number = pos.pps_job_number OR l.wom_job_number = pos.pps_job_number) LIMIT 1),
-      (SELECT l.code FROM locations l WHERE pos.e1_wom_job_number IS NOT NULL AND pos.e1_wom_job_number != ''
-        AND (l.ef_job_number = pos.e1_wom_job_number OR l.pps_job_number = pos.e1_wom_job_number OR l.wom_job_number = pos.e1_wom_job_number) LIMIT 1)
-    )
-   WHERE (location_code IS NULL OR location_code = '')
-   AND (ef_job_number IS NOT NULL OR pps_job_number IS NOT NULL OR e1_wom_job_number IS NOT NULL)`
-);
+// fixes the backlog immediately on deploy instead of waiting on that.
+// Idempotent (only rows still missing a location match this query), so
+// safe to run on every server start.
+for (const po of db
+  .prepare("SELECT id, ef_job_number, pps_job_number, e1_wom_job_number FROM pos WHERE location_code IS NULL OR location_code = ''")
+  .all()) {
+  const efJobNumber = parseJobNumberCell(po.ef_job_number);
+  const location =
+    (efJobNumber && findLocationByJobNumber(efJobNumber)) ||
+    (po.pps_job_number && findLocationByJobNumber(parseJobNumberCell(po.pps_job_number))) ||
+    (po.e1_wom_job_number && findLocationByJobNumber(parseJobNumberCell(po.e1_wom_job_number))) ||
+    null;
+  if (location) db.prepare("UPDATE pos SET location_code = ? WHERE id = ?").run(location.code, po.id);
+}
 
 // Same catch-up for Admin -- runPoImport only fills a blank Admin from the
 // matched location's territory (see findAdminForTerritory, defined below
@@ -916,6 +927,28 @@ db.exec(
 // landed in a later deploy than the PO's own last import.
 for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'needs_organization'").all()) {
   maybeAutoActivatePo(row.id);
+}
+
+// Same catch-up for vendor matching: a PO whose Vendor Number column was
+// blank but whose Vendor Name carries the JDE # as a trailing suffix (see
+// extractVendorNumberFromName, defined below -- hoisted, so callable
+// here) only gets that filled in and matched on the next import that
+// touches the row. Fills vendor_number from the name and links the
+// vendor right now for every PO already on file still sitting unmatched,
+// instead of waiting on a re-import. Naturally one-time: once
+// vendor_number is filled, a PO stops matching this query's WHERE clause
+// on the next server start. A vendor added to the Directory AFTER this
+// runs still links up later through the normal path (see
+// linkUnmatchedPosForVendor), since vendor_number is on the record either
+// way by the time that happens.
+for (const po of db
+  .prepare("SELECT id, vendor_name FROM pos WHERE vendor_id IS NULL AND (vendor_number IS NULL OR vendor_number = '')")
+  .all()) {
+  const extracted = extractVendorNumberFromName(po.vendor_name);
+  if (!extracted) continue;
+  db.prepare("UPDATE pos SET vendor_number = ?, updated_at = ? WHERE id = ?").run(extracted, new Date().toISOString(), po.id);
+  const vendor = findVendorByNumber(extracted);
+  if (vendor) confirmPoVendor(po.id, vendor.id);
 }
 
 if (!hasColumn("woms", "subsidiary_code")) {
@@ -2688,6 +2721,16 @@ function getVendorTerritories(vendorId) {
   return rows.map((r) => r.territory).filter(Boolean).sort();
 }
 
+// A stray leading/trailing space typed or pasted into this field is
+// invisible in the UI but breaks the exact-text match findVendorByNumber
+// (and PO-import matching) relies on -- trimmed on every write so the
+// stored value is always clean, not just whatever was typed.
+function cleanJdeVendorNumber(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  return trimmed === "" ? null : trimmed;
+}
+
 function createVendor(fields) {
   const now = new Date().toISOString();
   const coiLimits = fields.coiLimits || {};
@@ -2724,7 +2767,7 @@ function createVendor(fields) {
   ];
   const values = [
     fields.name,
-    fields.jdeVendorNumber || null,
+    cleanJdeVendorNumber(fields.jdeVendorNumber),
     fields.cwStatus || "unknown",
     fields.toyotaStatus || "unknown",
     fields.formsStatus || "unknown",
@@ -2805,7 +2848,7 @@ function updateVendor(id, fields) {
      WHERE id = ?`
   ).run(
     fields.name,
-    fields.jdeVendorNumber || null,
+    cleanJdeVendorNumber(fields.jdeVendorNumber),
     fields.cwStatus || "unknown",
     fields.toyotaStatus || "unknown",
     fields.formsStatus || "unknown",
@@ -7366,14 +7409,17 @@ function computePoMatchKeys({ poNumber, requestor, dateRequested, description })
   return { compositeKey, poNumberKey };
 }
 
-// The "E&F Contract Job #" column in the source sheet carries the job
-// number and the location's own name together, tab-separated (e.g.
-// "100110042966\tCincinnati ROB") -- these are the exact job numbers
-// already on file in this app's own locations table. Returns just the
-// numeric job number part, or null for a blank/placeholder cell ("-").
-function parseEfJobNumber(raw) {
+// The source sheet's "E&F Contract Job #", "PPS Job Number", and "E1 WOM
+// Job #" columns all carry the job number and the location's own name
+// together in one cell, not just E&F -- tab-separated on some rows (e.g.
+// "100110042966\tCincinnati ROB"), a literal " - " on others (confirmed
+// directly on a real E1 WOM Job # cell: "100110033928 - TEMA Georgetown")
+// -- these are the exact job numbers already on file in this app's own
+// locations table. Returns just the leading numeric job number part, or
+// null for a blank/placeholder cell ("-").
+function parseJobNumberCell(raw) {
   if (!raw) return null;
-  const first = String(raw).split(/[\t\n]/)[0].trim();
+  const first = String(raw).split(/[\t\n]| - /)[0].trim();
   if (!first || first === "-") return null;
   return first;
 }
@@ -7401,14 +7447,36 @@ function findLocationByJobNumber(businessUnit) {
   return findLocationByJobNumberStmt.get(businessUnit, businessUnit, businessUnit);
 }
 
+// The sheet's "Vendor Number" column is sometimes left blank while the
+// JDE Vendor # is written as a trailing " - <number>" suffix on the
+// Vendor Name text instead (confirmed directly: "Vertiv - 1464077",
+// "McCormick - 4786901", "Seco Electric - 5202533" -- every one of these
+// had a real Vendor Directory profile under that exact number, just never
+// picked up because the dedicated column was empty). Only the LAST
+// dash-number pair counts, so a name with its own internal dashes (e.g.
+// "Thomas Seth Martin - NYK Mechanical - 6171282") still resolves to just
+// the trailing JDE #, not an earlier word fragment.
+function extractVendorNumberFromName(vendorName) {
+  if (!vendorName) return null;
+  const match = String(vendorName).trim().match(/-\s*(\d{4,})\s*$/);
+  return match ? match[1] : null;
+}
+
 // Vendor Number in the source sheet lines up with this app's own JDE
 // Vendor # -- the only thing ever allowed to auto-link a vendor (never the
-// vendor name, which is preserved as free text and can collide across
-// unrelated vendors).
+// vendor name text itself, which is preserved as free text and can
+// collide across unrelated vendors -- see extractVendorNumberFromName for
+// the one exception, a number embedded IN that text, still matched as a
+// number, never as a name).
 function findVendorByNumber(vendorNumber) {
   const trimmed = String(vendorNumber == null ? "" : vendorNumber).trim();
   if (!trimmed) return null;
-  return db.prepare("SELECT id FROM vendors WHERE jde_vendor_number = ?").get(trimmed);
+  // TRIM() on the stored side too -- createVendor/updateVendor clean this
+  // field on write (cleanJdeVendorNumber) and a startup backfill cleans up
+  // anything written before that, but this is the one spot a stray space
+  // silently breaks every PO import's vendor match, so it's worth the
+  // belt-and-suspenders.
+  return db.prepare("SELECT id, name FROM vendors WHERE TRIM(jde_vendor_number) = ?").get(trimmed);
 }
 
 // The fields derivable straight from a PO row, with no further queries --
@@ -7846,7 +7914,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
       // instead of falling through to the composite-key lookup below.
       const existing = findExistingPo(row, lineNumber, compositeKey);
 
-      const efJobNumber = parseEfJobNumber(row.efJobNumberRaw);
+      const efJobNumber = parseJobNumberCell(row.efJobNumberRaw);
       // Tried against all three of a location's job-number columns, not
       // just E&F -- the real sheet's "E&F Contract Job #" column sometimes
       // actually carries a PPS or WOM job number instead (confirmed on GL
@@ -7854,10 +7922,16 @@ function runPoImport(rows, importedBy, { dryRun }) {
       // data doesn't keep these three cleanly separated). Matching E&F-only
       // left a PO's location blank whenever that happened, even though the
       // job number on the row was perfectly real and on file -- just filed
-      // under a different one of the three columns than expected.
+      // under a different one of the three columns than expected. PPS Job
+      // Number and E1 WOM Job # need the same parseJobNumberCell split as
+      // E&F, not a plain trim -- confirmed directly against a real PO
+      // whose E1 WOM Job # was "100110033928 - TEMA Georgetown" (the exact
+      // same job-number-plus-location-name format E&F uses, just on a
+      // different column); a plain trim left the whole string intact and
+      // never matched anything.
       let matchedLocation = efJobNumber ? findLocationByJobNumber(efJobNumber) : null;
-      if (!matchedLocation && row.ppsJobNumber) matchedLocation = findLocationByJobNumber(String(row.ppsJobNumber).trim());
-      if (!matchedLocation && row.e1WomJobNumber) matchedLocation = findLocationByJobNumber(String(row.e1WomJobNumber).trim());
+      if (!matchedLocation && row.ppsJobNumber) matchedLocation = findLocationByJobNumber(parseJobNumberCell(row.ppsJobNumber));
+      if (!matchedLocation && row.e1WomJobNumber) matchedLocation = findLocationByJobNumber(parseJobNumberCell(row.e1WomJobNumber));
       // Still nothing -- fall back to the location already on the WOM this
       // PO is linked to (its own Smartsheet-synced project location),
       // rather than leaving location_code blank. A PO linked to a real WOM
@@ -7867,6 +7941,18 @@ function runPoImport(rows, importedBy, { dryRun }) {
       if (!matchedLocation && row.womNumber) {
         const linkedWom = db.prepare("SELECT location_code FROM woms WHERE code = ?").get(String(row.womNumber).trim());
         if (linkedWom && linkedWom.location_code) matchedLocation = findLocation(linkedWom.location_code);
+      }
+      // When the Vendor Number column itself is blank, fall back to a
+      // number embedded in the Vendor Name text (see
+      // extractVendorNumberFromName) -- never overwrites a real Vendor
+      // Number column value. Filled onto the row itself, not just used
+      // locally, so it's on the record the same way a typed-in Vendor
+      // Number would be: both for matching right now, and so a vendor
+      // added to the Directory later still retroactively links up (see
+      // linkUnmatchedPosForVendor).
+      if (!row.vendorNumber) {
+        const extractedVendorNumber = extractVendorNumberFromName(row.vendorName);
+        if (extractedVendorNumber) row.vendorNumber = extractedVendorNumber;
       }
       const matchedVendor = row.vendorNumber ? findVendorByNumber(row.vendorNumber) : null;
 
