@@ -861,6 +861,47 @@ if (!hasColumn("locations", "wom_job_number")) {
 if (!hasColumn("locations", "pps_job_number")) {
   db.exec("ALTER TABLE locations ADD COLUMN pps_job_number TEXT");
 }
+
+// One-time catch-up for POs that already exist with no location_code, now
+// that all three of a location's job-number columns are on file -- a PO's
+// E&F/PPS/WOM job number is matched against all three, not just the
+// matching one, since the real sheet's "E&F Contract Job #" column
+// sometimes actually carries a PPS or WOM job number instead (same root
+// cause as GL Reconciliation's own job-number matching: Krista's source
+// data doesn't keep these three cleanly separated -- each location lists
+// only one of the three on its Chart of Accounts entry, not all three).
+// runPoImport's own widened match (see its matchedLocation comment) only
+// applies going forward, on the next import that touches each row -- this
+// fixes the backlog immediately on deploy instead of waiting on that. No
+// hasColumn marker to gate this one-time-only, since it doesn't add a
+// column -- it's simply idempotent (the WHERE clause only ever matches
+// rows still blank), so running it again on every server start is
+// harmless and cheap at this table's size.
+db.exec(
+  `UPDATE pos SET location_code = COALESCE(
+      (SELECT l.code FROM locations l WHERE pos.ef_job_number IS NOT NULL AND pos.ef_job_number != ''
+        AND (l.ef_job_number = pos.ef_job_number OR l.pps_job_number = pos.ef_job_number OR l.wom_job_number = pos.ef_job_number) LIMIT 1),
+      (SELECT l.code FROM locations l WHERE pos.pps_job_number IS NOT NULL AND pos.pps_job_number != ''
+        AND (l.ef_job_number = pos.pps_job_number OR l.pps_job_number = pos.pps_job_number OR l.wom_job_number = pos.pps_job_number) LIMIT 1),
+      (SELECT l.code FROM locations l WHERE pos.e1_wom_job_number IS NOT NULL AND pos.e1_wom_job_number != ''
+        AND (l.ef_job_number = pos.e1_wom_job_number OR l.pps_job_number = pos.e1_wom_job_number OR l.wom_job_number = pos.e1_wom_job_number) LIMIT 1)
+    )
+   WHERE (location_code IS NULL OR location_code = '')
+   AND (ef_job_number IS NOT NULL OR pps_job_number IS NOT NULL OR e1_wom_job_number IS NOT NULL)`
+);
+
+// Auto-activation (see isPoFullyResolved/maybeAutoActivatePo, defined
+// below -- hoisted, so callable here) only runs from the import/manual-
+// tagging paths that just changed one of its three conditions -- a PO
+// sitting in Needs Organization only because the backfill just above
+// finally gave it a location never gets that check run against it on its
+// own. Catch it up right now, same as the backfill itself, so nothing
+// sits waiting on a vendor it already has, just because the location fix
+// landed in a later deploy than the PO's own last import.
+for (const row of db.prepare("SELECT id FROM pos WHERE lifecycle_status = 'needs_organization'").all()) {
+  maybeAutoActivatePo(row.id);
+}
+
 if (!hasColumn("woms", "subsidiary_code")) {
   db.exec("ALTER TABLE woms ADD COLUMN subsidiary_code TEXT");
 }
@@ -7790,13 +7831,23 @@ function runPoImport(rows, importedBy, { dryRun }) {
       const existing = findExistingPo(row, lineNumber, compositeKey);
 
       const efJobNumber = parseEfJobNumber(row.efJobNumberRaw);
-      let matchedLocation = efJobNumber ? findLocationByEfJobNumber(efJobNumber) : null;
-      // No E&F Job Number match -- fall back to the location already on the
-      // WOM this PO is linked to (its own Smartsheet-synced project
-      // location), rather than leaving location_code blank. A PO linked to
-      // a real WOM almost always belongs at that WOM's location; the E&F
-      // match stays tried first since it's the more precise, PO-specific
-      // signal when it's actually there.
+      // Tried against all three of a location's job-number columns, not
+      // just E&F -- the real sheet's "E&F Contract Job #" column sometimes
+      // actually carries a PPS or WOM job number instead (confirmed on GL
+      // Reconciliation's own matching, same root cause: Krista's source
+      // data doesn't keep these three cleanly separated). Matching E&F-only
+      // left a PO's location blank whenever that happened, even though the
+      // job number on the row was perfectly real and on file -- just filed
+      // under a different one of the three columns than expected.
+      let matchedLocation = efJobNumber ? findLocationByJobNumber(efJobNumber) : null;
+      if (!matchedLocation && row.ppsJobNumber) matchedLocation = findLocationByJobNumber(String(row.ppsJobNumber).trim());
+      if (!matchedLocation && row.e1WomJobNumber) matchedLocation = findLocationByJobNumber(String(row.e1WomJobNumber).trim());
+      // Still nothing -- fall back to the location already on the WOM this
+      // PO is linked to (its own Smartsheet-synced project location),
+      // rather than leaving location_code blank. A PO linked to a real WOM
+      // almost always belongs at that WOM's location; the job-number
+      // matches stay tried first since they're the more precise,
+      // PO-specific signal when one of them is actually there.
       if (!matchedLocation && row.womNumber) {
         const linkedWom = db.prepare("SELECT location_code FROM woms WHERE code = ?").get(String(row.womNumber).trim());
         if (linkedWom && linkedWom.location_code) matchedLocation = findLocation(linkedWom.location_code);

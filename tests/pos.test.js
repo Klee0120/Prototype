@@ -1342,3 +1342,63 @@ test("PO Tracker import: a PO'd row and a not-yet-PO'd row for the same request 
   assert.equal(listRes.body[0].poNumber, "10070939");
   assert.equal(listRes.body[0].poAmount, 1350, "not a combine case -- same request, amount unchanged");
 });
+
+// Krista's own Chart of Accounts: each location lists ONE of a PPS, WOM, or
+// E&F job number, never all three -- but the tracker sheet's "E&F Contract
+// Job #" column doesn't always carry an actual E&F number; it sometimes has
+// whichever job number that site actually tracks under, PPS or WOM
+// included. Matching that column against locations.ef_job_number alone
+// left the location (and everything that follows from it -- auto-move to
+// Active) blank for every PO at a PPS- or WOM-coded site, even with a real
+// job number sitting right there in the column.
+test("PO Tracker import: a PPS/WOM job number in the E&F column still matches the location, and auto-activates once the vendor matches too", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  // This site's Chart of Accounts entry only has a PPS Contract Job
+  // Number on file -- no E&F number at all.
+  raw
+    .prepare(`INSERT INTO locations (code, name, pps_job_number, territory) VALUES (?, ?, ?, ?)`)
+    .run("TLS-GEO", "TLS Georgetown", "70070939", "Midwest");
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "VULCAN FIRE SYSTEMS INC", jdeVendorNumber: "3330" },
+  });
+  assert.equal(vendorRes.status, 201);
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  const importRes = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-pps-as-ef.xlsx",
+    fileContent: buildBuffer([
+      // The PPS job number is in the "E&F Contract Job #" column -- the
+      // real-world pattern this is covering.
+      ["2026-10-01", "Chemical fire suppression checks", "Jason Clark", "10070939", "70070939\tTLS Georgetown", 1350, null, "Open", "VULCAN FIRE SYSTEMS INC", "3330", null, null, null, null, null, null, "TLS Georgetown", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 200, JSON.stringify(importRes.body));
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=active&search=Chemical+fire", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1, "should have matched location + vendor and auto-moved to Active, not sat in Needs Organization");
+  assert.equal(listRes.body[0].locationCode, "TLS-GEO");
+  assert.equal(listRes.body[0].lifecycleStatus, "active");
+});
