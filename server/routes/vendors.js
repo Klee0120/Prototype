@@ -211,6 +211,16 @@ router.get("/:id/po-gl-rollup", (req, res) => {
   res.json(db.getVendorPoGlRollup(vendor.id));
 });
 
+// Every GL line reconciled (via the Reconciliation tab's GL import) to one
+// of this vendor's POs -- a read-only history of real billing activity, so
+// it's easy to see at a glance whether this vendor is still being used
+// consistently. See db.getVendorInvoiceHistory.
+router.get("/:id/invoice-history", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.getVendorInvoiceHistory(vendor.id));
+});
+
 // Onboarding/compliance case log (e.g. a ServiceEdge COI Case, Toyota
 // Onboarding Case, Payment Details Case) -- same request-type +
 // reference-number pattern as a technician's device IT requests, but with

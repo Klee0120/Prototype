@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
 
 test("woms: open/closed status management", async (t) => {
   const server = await startServer();
@@ -778,5 +779,122 @@ test("WOM profile: gl-links and tasks routes", async (t) => {
     assert.equal(entry.previousValue, "open");
     assert.equal(entry.changedByName, "Krista Lee");
     assert.equal(entry.source, "manual");
+  });
+});
+
+test("woms: Toyota PO tracking (number/rep/status) and the change-order flag", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("setup: a plain WOM", async () => {
+    const res = await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "TOY-PO-1", description: "Toyota PO test job" } });
+    assert.equal(res.status, 201);
+  });
+
+  await t.test("a new WOM defaults to no Toyota PO info and status open", async () => {
+    const res = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const wom = res.body.find((w) => w.code === "TOY-PO-1");
+    assert.equal(wom.toyotaPoNumber, null);
+    assert.equal(wom.toyotaRep, null);
+    assert.equal(wom.toyotaPoStatus, "open");
+    assert.equal(wom.changeOrder, false);
+  });
+
+  await t.test("a technician cannot update Toyota PO info", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/toyota-po", { userId: "T1001", body: { toyotaPoNumber: "999" } });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("admin can set Toyota PO # and Toyota Rep independently", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/toyota-po", {
+      userId: "ADMIN",
+      body: { toyotaPoNumber: "4519667697", toyotaRep: "jane.rep@toyota.example" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.toyotaPoNumber, "4519667697");
+    assert.equal(res.body.toyotaRep, "jane.rep@toyota.example");
+    assert.equal(res.body.toyotaPoStatus, "open", "status untouched by this call");
+  });
+
+  await t.test("admin can flip Toyota PO status to closed", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/toyota-po", { userId: "ADMIN", body: { toyotaPoStatus: "closed" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.toyotaPoStatus, "closed");
+    assert.equal(res.body.toyotaPoNumber, "4519667697", "number/rep untouched by this call");
+  });
+
+  await t.test("an invalid Toyota PO status is rejected", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/toyota-po", { userId: "ADMIN", body: { toyotaPoStatus: "pending" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("the Toyota PO route 404s for an unknown WOM", async () => {
+    const res = await server.call("PATCH", "/api/woms/NOPE/toyota-po", { userId: "ADMIN", body: { toyotaPoNumber: "1" } });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("changeOrder is false once cost is applied but within estimate", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
+    assert.equal(res.status, 200);
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const wom = list.body.find((w) => w.code === "TOY-PO-1");
+    assert.equal(wom.changeOrder, false);
+  });
+
+  await t.test("changeOrder flips true once applied cost exceeds estimate -- same condition driving the lifecycle task's own change-order flag", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1400 } });
+    assert.equal(res.status, 200);
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const wom = list.body.find((w) => w.code === "TOY-PO-1");
+    assert.equal(wom.changeOrder, true);
+
+    const tasks = await server.call("GET", "/api/tasks?view=team", { userId: "ADMIN" });
+    const task = tasks.body.find((t2) => t2.sourceKey === "WOM-TOY-PO-1-LIFECYCLE");
+    assert.equal(task.isChangeOrder, true, "db.computeWomChangeOrder must agree with the task's own derivation");
+  });
+
+  await t.test("changeOrder clears itself once a correction brings applied back in line", async () => {
+    const res = await server.call("PATCH", "/api/woms/TOY-PO-1/pricing", { userId: "ADMIN", body: { estimatedPrice: 1000, appliedPrice: 1000 } });
+    assert.equal(res.status, 200);
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const wom = list.body.find((w) => w.code === "TOY-PO-1");
+    assert.equal(wom.changeOrder, false);
+  });
+});
+
+test("woms: linked C&W PO # from the Budget PO Tracker surfaces as poNumber", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a WOM with no linked PO has poNumber null", async () => {
+    const res = await server.call("POST", "/api/woms", { userId: "ADMIN", body: { code: "PO-LINK-1", description: "No PO yet" } });
+    assert.equal(res.status, 201);
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    assert.equal(list.body.find((w) => w.code === "PO-LINK-1").poNumber, null);
+  });
+
+  await t.test("a PO row linked by wom_number surfaces as poNumber on the WOM", async () => {
+    const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const now = new Date().toISOString();
+    raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, wom_number, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("po-link-test-1", "1004589", "PO-LINK-1", now, now, now, now);
+    raw.close();
+
+    const list = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    assert.equal(list.body.find((w) => w.code === "PO-LINK-1").poNumber, "1004589");
+
+    // findWom's single-record path (not just listWoms' batch path) also
+    // needs to carry poNumber -- exercised via any route that responds with
+    // presentWom(db.findWom(...)), like this no-op Toyota PO PATCH.
+    const single = await server.call("PATCH", "/api/woms/PO-LINK-1/toyota-po", { userId: "ADMIN", body: {} });
+    assert.equal(single.status, 200);
+    assert.equal(single.body.poNumber, "1004589");
   });
 });

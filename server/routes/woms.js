@@ -117,6 +117,20 @@ function presentWom(w) {
     // for) and appliedPrice (what's actually been posted), so Cost Analysis
     // can compare applied cost against what Toyota actually approved.
     toyotaPoValue: w.toyota_po_value,
+    // The Toyota PO document itself (number/contact/open-closed status),
+    // as opposed to toyotaPoValue above which is just the dollar amount --
+    // see the woms.toyota_po_number migration comment in db.js. changeOrder
+    // mirrors the same condition that drives this WOM's lifecycle task's
+    // change-order flag (db.computeWomChangeOrder) -- when true, the
+    // profile shows the Applied total in red instead of a leftover balance,
+    // since Toyota's approved amount needs a new value.
+    toyotaPoNumber: w.toyota_po_number,
+    toyotaRep: w.toyota_rep,
+    toyotaPoStatus: w.toyota_po_status,
+    changeOrder: db.computeWomChangeOrder(w),
+    // The linked C&W PO # from the Budget PO Tracker (pos.wom_number), for
+    // the WOM grid view -- null if this WOM has no PO on file yet.
+    poNumber: w.poNumber || null,
     vendorId: w.vendor_id,
     vendorName: w.vendor_id ? (db.findVendor(w.vendor_id) || {}).name || null : null,
     // The WOM lifecycle checklist -- every step, in order, with its
@@ -347,6 +361,21 @@ router.patch("/:code/details", requireAuth, requireAdmin, (req, res) => {
   // step the same as one arriving via sync.
   db.checkWomLifecycleAutoSteps(wom.code);
   db.addAudit(req.user.id, "WOM_UPDATED", `${req.user.name} updated WOM ${wom.code}`);
+  res.json(presentWom(db.findWom(wom.code)));
+});
+
+// The Toyota PO itself -- number, contact, and open/closed status. Number
+// and rep also arrive via Smartsheet sync (overwritten on the next sync
+// that finds those columns); status is manual-only, never synced.
+router.patch("/:code/toyota-po", requireAuth, requireAdmin, (req, res) => {
+  const { toyotaPoNumber, toyotaRep, toyotaPoStatus } = req.body || {};
+  if (toyotaPoStatus !== undefined && !db.TOYOTA_PO_STATUSES.includes(toyotaPoStatus)) {
+    return res.status(400).json({ error: `toyotaPoStatus must be one of: ${db.TOYOTA_PO_STATUSES.join(", ")}` });
+  }
+  const wom = db.setWomToyotaPo(req.params.code, { toyotaPoNumber, toyotaRep, toyotaPoStatus });
+  if (!wom) return res.status(404).json({ error: "WOM not found" });
+
+  db.addAudit(req.user.id, "WOM_UPDATED", `${req.user.name} updated Toyota PO info for ${wom.code}`);
   res.json(presentWom(db.findWom(wom.code)));
 });
 

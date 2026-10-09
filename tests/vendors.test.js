@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
 
 test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) => {
   const server = await startServer();
@@ -994,5 +995,97 @@ test("vendors: blank_invoice is an accepted upload category (files.js whitelist 
     });
     assert.equal(res.status, 201);
     assert.equal(res.body.category, "blank_invoice");
+  });
+});
+
+test("vendors: Invoice History rolls up reconciled GL lines by vendor", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  let vendorId;
+
+  await t.test("setup: a vendor", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Invoice History Co" } });
+    assert.equal(res.status, 201);
+    vendorId = res.body.id;
+  });
+
+  await t.test("a technician cannot read invoice history", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/invoice-history`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("404s for an unknown vendor", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/999999/invoice-history", { userId: "ADMIN" });
+    assert.equal(res.status, 404);
+  });
+
+  await t.test("empty before any GL activity is reconciled to this vendor", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/invoice-history`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, []);
+  });
+
+  await t.test("a GL line matched to this vendor's PO shows up, even without an invoice date", async () => {
+    const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const now = new Date().toISOString();
+    const poResult = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, wom_number, vendor_id, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("invoice-history-po-1", "1005001", "WOM-IH-1", vendorId, now, now, now, now);
+    const poId = Number(poResult.lastInsertRowid);
+    // No invoice_date on this line -- still real evidence of a GL hit against this vendor.
+    raw.prepare("INSERT INTO gl_entries (matched_po_id, amount, gl_date, created_at) VALUES (?, ?, ?, ?)").run(poId, 275.5, "2026-09-10", now);
+    raw.close();
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/invoice-history`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 1);
+    assert.equal(res.body[0].amount, 275.5);
+    assert.equal(res.body[0].invoiceDate, null);
+    assert.equal(res.body[0].glDate, "2026-09-10");
+    assert.equal(res.body[0].poNumber, "1005001");
+    assert.equal(res.body[0].womNumber, "WOM-IH-1");
+  });
+
+  await t.test("a later-dated invoice line sorts first (newest first, invoice date preferred over GL date)", async () => {
+    const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const now = new Date().toISOString();
+    const poResult = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, wom_number, vendor_id, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("invoice-history-po-2", "1005002", "WOM-IH-2", vendorId, now, now, now, now);
+    const poId = Number(poResult.lastInsertRowid);
+    raw
+      .prepare("INSERT INTO gl_entries (matched_po_id, amount, gl_date, invoice_date, supplier_invoice_number, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(poId, 500, "2026-09-10", "2026-10-01", "INV-9001", now);
+    raw.close();
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/invoice-history`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 2);
+    assert.equal(res.body[0].supplierInvoiceNumber, "INV-9001", "the Oct 1 invoice date sorts ahead of the Sep 10 GL-date-only line");
+    assert.equal(res.body[0].poNumber, "1005002");
+  });
+
+  await t.test("a GL line matched to a different vendor's PO never appears here", async () => {
+    const other = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Other Vendor Co" } });
+    const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const now = new Date().toISOString();
+    const poResult = raw
+      .prepare(
+        `INSERT INTO pos (composite_key, po_number, vendor_id, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run("invoice-history-po-other", "1005003", other.body.id, now, now, now, now);
+    const poId = Number(poResult.lastInsertRowid);
+    raw.prepare("INSERT INTO gl_entries (matched_po_id, amount, gl_date, created_at) VALUES (?, ?, ?, ?)").run(poId, 999, "2026-09-10", now);
+    raw.close();
+
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/invoice-history`, { userId: "ADMIN" });
+    assert.equal(res.body.length, 2, "still just this vendor's two lines -- the other vendor's GL hit is excluded");
   });
 });

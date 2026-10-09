@@ -3995,6 +3995,69 @@ button.vendor-preferred-star:hover {
 .wom-task-list {
   margin-top: 16px;
 }
+.wom-toyota-po-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+.wom-toyota-po-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 160px;
+}
+.wom-toyota-po-form input[type="text"] {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+.wom-toyota-po-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.wom-toyota-po-status-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.wom-toyota-po-status-select {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+}
+.wom-toyota-po-balance {
+  font-size: 14px;
+  font-weight: 600;
+}
+.wom-toyota-po-balance.danger {
+  color: var(--danger);
+}
+.wom-list-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.wom-grid-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.wom-grid-table tbody tr.wom-grid-row {
+  cursor: pointer;
+}
+.wom-grid-table tbody tr.wom-grid-row:hover {
+  background: var(--neutral-bg);
+}
 .vendor-remark {
   border-bottom: 1px dashed var(--border);
   padding-bottom: 10px;

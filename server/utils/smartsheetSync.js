@@ -126,6 +126,13 @@ async function runSmartsheetSync({ actorId, actorName }) {
     reclassAmountRequested: smartsheet.findColumn(sheet.columns, ["reclass", "amount"]),
     reclassSubmitted: smartsheet.findColumn(sheet.columns, ["reclass", "submitted"]),
     reclassToRaw: smartsheet.findColumn(sheet.columns, ["reclass", "to"]),
+    // The Toyota PO document's own number and the Toyota contact tied to
+    // it -- distinct from toyotaPoValue above, which is just the dollar
+    // amount ("TOY Value"). "toyota"+"po" is specific enough on its own:
+    // the real tracker's other PO-ish columns ("TOY PO Final", "PO #",
+    // "C&W PO #") never contain the full word "Toyota".
+    toyotaPoNumber: smartsheet.findColumn(sheet.columns, ["toyota", "po"]),
+    toyotaRep: smartsheet.findColumn(sheet.columns, ["toyota", "rep"]),
   };
   // Snapshot every task's status before the sync so the diff afterward
   // can say how many of the resulting task-engine writes were this sync's

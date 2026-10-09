@@ -1942,6 +1942,47 @@ replaces or restructures any existing table -- `tasks.related_wom_code` etc.
 just reference the existing `woms`/`vendors`/`locations`/`technicians` rows
 by their existing keys.
 
+**Toyota PO tracking.** Each WOM can carry its own Toyota PO # and Toyota
+Rep contact (`woms.toyota_po_number`/`toyota_rep` -- new text columns,
+synced in from the live Smartsheet tracker the same way `toyota_po_value`
+already is, via `server/utils/smartsheetSync.js`'s column mapping), plus a
+manual Open/Closed status (`toyota_po_status` -- never synced, an admin
+sets this directly). All three are editable from the WOM profile's
+**Vendors & POs** tab, in a dedicated "Toyota PO" card
+(`renderWomVendorsPosTab` in `adminReview.js`), via a new
+`PATCH /api/woms/:code/toyota-po`. The leftover balance shown there is
+`toyotaPoValue - appliedPrice` (both already-existing fields) -- unless the
+WOM's applied cost has actually come in over its estimate once cost is
+applied, in which case it shows the Applied total in red as a "needs a new
+Toyota PO value" flag instead. That flag (`changeOrder` on `presentWom`,
+via `db.computeWomChangeOrder`) is the *same* condition that already drives
+the WOM lifecycle task's own change-order flag (`refreshWomLifecycleTask`)
+-- deliberately not a second, independently-set checkbox, so there's one
+source of truth instead of two that can drift apart.
+
+**Vendor Invoice History.** A read-only panel on the vendor profile's
+**Work & Costs** tab listing every GL line the Reconciliation tab's GL
+import has already matched to one of that vendor's POs (`db.
+getVendorInvoiceHistory`, `GET /api/admin/vendors/:id/invoice-history`) --
+invoice date (or GL date, when no invoice date came through on that line),
+invoice #, PO #, WOM #, and amount, newest first. No new data entry: this
+is purely a rollup of GL reconciliation that already happened, there so a
+quick glance answers "is this vendor still being used consistently."
+
+**WOM spreadsheet-style grid.** The WOM Projects tab's existing card list
+now has a Cards/Grid toggle (a `.pill-toggle-group` next to the existing
+Active/Closed one, `womViewMode` state in `adminReview.js`) -- Grid renders
+the same filtered WOM set as a dense, sortable `<table>` (Project Name,
+WOM #, Status, Location, Subsidiary, Maximo #, C&W PO #, Toyota PO #,
+Toyota PO Status, Est./Applied cost, Batch Date, Last Synced), click a
+column header to sort, click a row to open that WOM's profile. No new
+fetch or endpoint -- every column already rides on the existing
+`GET /api/woms` payload, plus one small batched query so the linked C&W
+PO # (from the separate `pos` table, joined by `wom_number`) comes along
+too without an N+1 per row. The grid is intentionally view/filter/sort
+only, not inline-editable -- the WOM profile stays the one place edits
+happen.
+
 ## Where this stands
 
 - **Storage is real, deployment isn't.** The database and file storage are

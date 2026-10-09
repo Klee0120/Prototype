@@ -956,6 +956,16 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_woms_vendor_id ON woms(vendor_id)");
 if (!hasColumn("woms", "toyota_po_value")) {
   db.exec("ALTER TABLE woms ADD COLUMN toyota_po_value REAL");
 }
+// The Toyota PO document itself -- its number, the Toyota contact tied to
+// it, and whether it's still open -- as opposed to toyota_po_value above,
+// which is just the dollar amount. Status is a manual field (never synced
+// from Smartsheet -- that sheet has no equivalent column), defaulting to
+// "open" since that's the status of a brand new PO.
+if (!hasColumn("woms", "toyota_po_number")) {
+  db.exec("ALTER TABLE woms ADD COLUMN toyota_po_number TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN toyota_rep TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN toyota_po_status TEXT NOT NULL DEFAULT 'open'");
+}
 // The tracker itemizes estimate/applied cost into six categories, not just
 // labor and contracted services -- materials, other direct costs, sales
 // tax, and contingency each get their own estimate/applied pair too (all
@@ -2538,6 +2548,30 @@ function getVendorPoGlRollup(vendorId) {
   return { poOpenTotal: round(poOpenTotal), poOpenCount, glAppliedTotal: round(glAppliedTotal), glAppliedPoCount };
 }
 
+// Read-only "previously invoiced" record for a vendor -- every GL line
+// that's actually been reconciled (matched_po_id set, via the
+// Reconciliation tab's GL import) to one of this vendor's POs, newest
+// first. Nothing new to enter here -- that matching already happened; this
+// just rolls the real GL hits up by vendor so Krista can see at a glance
+// whether a vendor is still being used consistently, without having to
+// hunt through Reconciliation for it. Not gated on invoice_date being
+// populated -- a matched GL line is itself evidence the vendor was paid,
+// even when the GL import didn't carry a supplier invoice date for that
+// particular line; invoiceDate is just shown when it's there, falling back
+// to the GL posting date (glDate) for sorting/display otherwise.
+function getVendorInvoiceHistory(vendorId) {
+  return db
+    .prepare(
+      `SELECT g.invoice_date AS invoiceDate, g.gl_date AS glDate, g.supplier_invoice_number AS supplierInvoiceNumber,
+              g.amount, p.wom_number AS womNumber, p.po_number AS poNumber
+       FROM gl_entries g
+       JOIN pos p ON p.id = g.matched_po_id
+       WHERE p.vendor_id = ?
+       ORDER BY COALESCE(g.invoice_date, g.gl_date) DESC`
+    )
+    .all(vendorId);
+}
+
 function getVendorTerritories(vendorId) {
   const rows = db
     .prepare(
@@ -4082,15 +4116,30 @@ function listWoms() {
   for (const r of db.prepare("SELECT wom_code AS womCode, COALESCE(SUM(hours), 0) AS total FROM allocations GROUP BY wom_code").all()) {
     usedHours.set(r.womCode, r.total);
   }
+  // The WOM's linked C&W PO # lives on the separate pos table (one or more
+  // POs per WOM, via pos.wom_number), not a flat column here -- batched
+  // once for the whole list (same reasoning as usedHours above) rather than
+  // one query per WOM, which the spreadsheet-style grid view would
+  // otherwise trigger on every page load.
+  const poByWom = new Map();
+  for (const r of db
+    .prepare("SELECT wom_number AS womCode, po_number AS poNumber FROM pos WHERE wom_number IS NOT NULL GROUP BY wom_number")
+    .all()) {
+    poByWom.set(r.womCode, r.poNumber);
+  }
   return woms.map((wom) => {
-    if (wom.budget_hours == null) return { ...wom, usedHours: null, remainingHours: null };
+    const poNumber = poByWom.get(wom.code) || null;
+    if (wom.budget_hours == null) return { ...wom, usedHours: null, remainingHours: null, poNumber };
     const total = usedHours.get(wom.code) || 0;
-    return { ...wom, usedHours: total, remainingHours: round2(wom.budget_hours - total) };
+    return { ...wom, usedHours: total, remainingHours: round2(wom.budget_hours - total), poNumber };
   });
 }
 
 function findWom(code) {
-  return womWithRemaining(db.prepare("SELECT * FROM woms WHERE code = ?").get(code));
+  const wom = womWithRemaining(db.prepare("SELECT * FROM woms WHERE code = ?").get(code));
+  if (!wom) return wom;
+  const poRow = db.prepare("SELECT po_number AS poNumber FROM pos WHERE wom_number = ? ORDER BY id DESC LIMIT 1").get(code);
+  return { ...wom, poNumber: poRow ? poRow.poNumber : null };
 }
 
 // Whether an actual invoice file is attached here -- the one requirement
@@ -4279,6 +4328,24 @@ function deleteWom(code, { force = false } = {}) {
 // complete" action, which only ever sets "closed" directly.
 const WOM_STATUSES = ["pending", "requested", "open", "invoiced", "cancelled", "closed"];
 
+// The Toyota PO itself (as opposed to the WOM's own status above) -- open
+// while it's still available to draw against, closed once it's fully spent
+// or Toyota has ended it. A manual field an admin sets directly; nothing
+// here derives it automatically.
+const TOYOTA_PO_STATUSES = ["open", "closed"];
+
+// A WOM's applied cost has come in over what Toyota actually approved
+// (toyota_po_value) once real cost is in, not just an in-progress estimate
+// -- Toyota needs to sign off on the difference. Mirrors the change-order
+// condition refreshWomLifecycleTask computes for its own task/RFM workflow
+// (same cost_applied-done-and-applied-over-estimate logic), factored out
+// here so both that workflow and the Toyota PO leftover display (see
+// routes/woms.js's presentWom) stay in sync off one source of truth.
+function computeWomChangeOrder(w) {
+  const costAppliedDone = Boolean(getWomLifecycleSteps(w.code).find((s) => s.key === "cost_applied" && s.completedAt));
+  return costAppliedDone && w.applied_price != null && w.estimated_price != null && w.applied_price > w.estimated_price;
+}
+
 function setWomStatus(code, status, { changedBy, source } = {}) {
   const existing = findWom(code);
   if (!existing) return null;
@@ -4426,9 +4493,10 @@ function refreshWomLifecycleTask(code) {
   // this needs eyes on it same as an unsent PSE does. Purely derived from
   // the WOM's current numbers every time this runs, so it clears itself
   // automatically if a correction brings the applied price back in line.
-  const costAppliedDone = Boolean(steps.find((s) => s.key === "cost_applied").completedAt);
-  const changeOrder =
-    costAppliedDone && wom.applied_price != null && wom.estimated_price != null && wom.applied_price > wom.estimated_price;
+  // (computeWomChangeOrder re-fetches steps itself -- fine here, this isn't
+  // a hot path -- and is the same source of truth the Toyota PO leftover
+  // display on the WOM profile reads off of.)
+  const changeOrder = computeWomChangeOrder(wom);
   // Money's already gone out (any cost applied at all, not just the
   // contracted-services portion -- a vendor-only job may never have an
   // itemized breakdown on file, only the aggregate), but there's still no
@@ -6031,6 +6099,24 @@ function setWomPricing(code, { estimatedPrice, appliedPrice } = {}) {
   return findWom(code);
 }
 
+// The Toyota PO document itself -- number, contact, and open/closed status
+// -- each settable independently, same optional-field shape as
+// setWomDetails. Status defaults to "open" at the DB level (see the
+// migration above), so an admin only ever flips it to "closed" by hand.
+function setWomToyotaPo(code, { toyotaPoNumber, toyotaRep, toyotaPoStatus } = {}) {
+  if (!findWom(code)) return null;
+  if (toyotaPoNumber !== undefined) {
+    db.prepare("UPDATE woms SET toyota_po_number = ? WHERE code = ?").run(toyotaPoNumber || null, code);
+  }
+  if (toyotaRep !== undefined) {
+    db.prepare("UPDATE woms SET toyota_rep = ? WHERE code = ?").run(toyotaRep || null, code);
+  }
+  if (toyotaPoStatus !== undefined) {
+    db.prepare("UPDATE woms SET toyota_po_status = ? WHERE code = ?").run(toyotaPoStatus, code);
+  }
+  return findWom(code);
+}
+
 function parseDollarAmount(raw) {
   if (raw == null) return null;
   const cleaned = String(raw).replace(/[$,]/g, "").trim();
@@ -6208,6 +6294,12 @@ const WOM_SOURCE_FIELDS = [
   { dbColumn: "source_reclass_amount_requested", jsField: "reclassAmountRequested", diffLabel: "reclass amount requested" },
   { dbColumn: "source_reclass_submitted", jsField: "reclassSubmitted", diffLabel: null },
   { dbColumn: "source_reclass_to_raw", jsField: "reclassToRaw", diffLabel: null },
+  // The Toyota PO document's number and contact -- see the
+  // woms.toyota_po_number migration comment. toyota_po_status is
+  // deliberately NOT here: it's a manual-only field, nothing in the sheet
+  // corresponds to it, so a sync must never touch it.
+  { dbColumn: "toyota_po_number", jsField: "toyotaPoNumber", diffLabel: "Toyota PO #" },
+  { dbColumn: "toyota_rep", jsField: "toyotaRep", diffLabel: "Toyota Rep" },
 ];
 
 // The 6 billing-checklist sub-steps, specifically -- a subset of
@@ -6308,6 +6400,7 @@ function syncWomsFromSheetRows(rows, columns) {
   const { billingRefNumber: billingRefNumberColumn } = columns;
   const { workCompletedDate: workCompletedDateColumn, batchDate: batchDateColumn } = columns;
   const { reclassAmountRequested: reclassAmountRequestedColumn, reclassSubmitted: reclassSubmittedColumn, reclassToRaw: reclassToColumn } = columns;
+  const { toyotaPoNumber: toyotaPoNumberColumn, toyotaRep: toyotaRepColumn } = columns;
   // The Smartsheet column title for each breakdown category, resolved once
   // up front -- looked up by row below, not re-resolved every row.
   const breakdownColumnTitles = WOM_COST_BREAKDOWN_FIELDS.map((f) => columns[f.jsField]);
@@ -6380,6 +6473,8 @@ function syncWomsFromSheetRows(rows, columns) {
       (reclassSubmittedColumn && row[reclassSubmittedColumn] != null && String(row[reclassSubmittedColumn]).trim()) || null;
     const reclassSubmitted = parseWorkCompletedFlag(reclassSubmittedRaw);
     const reclassToRaw = (reclassToColumn && row[reclassToColumn] != null && String(row[reclassToColumn]).trim()) || null;
+    const toyotaPoNumber = (toyotaPoNumberColumn && row[toyotaPoNumberColumn] && String(row[toyotaPoNumberColumn]).trim()) || null;
+    const toyotaRep = (toyotaRepColumn && row[toyotaRepColumn] && String(row[toyotaRepColumn]).trim()) || null;
     const sourceFields = {
       sourceStatusRaw,
       sourceWorkCompletedRaw,
@@ -6392,6 +6487,8 @@ function syncWomsFromSheetRows(rows, columns) {
       reclassAmountRequested,
       reclassSubmitted,
       reclassToRaw,
+      toyotaPoNumber,
+      toyotaRep,
       ...billingFields,
     };
     const sourceParams = WOM_SOURCE_FIELDS.map((f) => sourceFields[f.jsField]);
@@ -10392,6 +10489,7 @@ module.exports = {
   findVendorByNumber,
   getVendorTerritories,
   getVendorPoGlRollup,
+  getVendorInvoiceHistory,
   createVendor,
   updateVendor,
   deleteVendor,
@@ -10473,6 +10571,9 @@ module.exports = {
   deleteWom,
   WOM_STATUSES,
   setWomStatus,
+  TOYOTA_PO_STATUSES,
+  computeWomChangeOrder,
+  setWomToyotaPo,
   getPseReviewerId,
   setPseReviewer,
   WOM_LIFECYCLE_STEPS,

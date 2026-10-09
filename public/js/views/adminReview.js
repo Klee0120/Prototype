@@ -61,6 +61,12 @@ const WOM_STATUS_LABELS = {
   closed: "Closed",
 };
 
+// The Toyota PO document itself -- open while still available to draw
+// against, closed once fully spent or ended by Toyota. Manual-only, unlike
+// WOM_STATUSES above (which syncs in automatically for pending/requested).
+const TOYOTA_PO_STATUSES = ["open", "closed"];
+const TOYOTA_PO_STATUS_LABELS = { open: "Open", closed: "Closed" };
+
 const VENDOR_STATUS_BADGE_CLASS = {
   active: "approved",
   approved: "approved",
@@ -222,6 +228,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   let womLocationFilter = ""; // "" = all locations
   let womStatusFilter = ""; // "" = all statuses
   let womSearchQuery = "";
+  // "cards" (the default, one card per WOM) vs "grid" -- a dense sortable
+  // table of the same filtered WOM set, for scanning/filtering across many
+  // WOMs at once instead of one at a time. Same data, same filters above;
+  // this only changes how the result renders. See WOM_GRID_COLUMNS.
+  let womViewMode = "cards";
+  let womGridSortKey = null;
+  let womGridSortDir = "asc";
   // Financials -> Cost Analysis: which review category's table is showing
   // below the tile strip, plus that table's own location/search filters and
   // sort state. null costCategoryKey means "not drawn yet" -- drawCostAnalysis
@@ -2192,15 +2205,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   async function renderVendorCostsTab(host, v) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
-    let woms, pos, poGlRollup;
+    let woms, pos, poGlRollup, invoiceHistory;
     try {
-      [woms, pos, poGlRollup] = await Promise.all([
+      [woms, pos, poGlRollup, invoiceHistory] = await Promise.all([
         api.get("/api/woms").then((all) => all.filter((w) => w.vendorId === v.id)),
         // Only Active POs ever surface here -- a Needs Organization record
         // is only visible through the POs tab itself until it's moved to
         // Active, same rule as Task Manager.
         api.get(`/api/admin/pos?${new URLSearchParams({ vendorId: v.id, lifecycleStatus: "active" })}`),
         api.get(`/api/admin/vendors/${v.id}/po-gl-rollup`),
+        api.get(`/api/admin/vendors/${v.id}/invoice-history`),
       ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -2227,6 +2241,31 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="review-list" id="vendor-cost-wom-list"></div>
       <h4>Budget POs (${pos.length})</h4>
       <div class="review-list" id="vendor-cost-po-list"></div>
+      <h4>Invoice History (${invoiceHistory.length})</h4>
+      <p class="review-checklist-hint">
+        Every GL line reconciled to one of this vendor's POs (Financials &rarr; Reconciliation) -- reference only,
+        a quick read on whether this vendor is still being used consistently.
+      </p>
+      ${
+        invoiceHistory.length === 0
+          ? `<p class="empty-note">No reconciled GL activity for this vendor yet.</p>`
+          : `<table class="detail-table">
+              <thead><tr><th>Invoice Date</th><th>Invoice #</th><th>PO #</th><th>WOM #</th><th>Amount</th></tr></thead>
+              <tbody>
+                ${invoiceHistory
+                  .map(
+                    (i) => `<tr>
+                  <td>${i.invoiceDate ? new Date(i.invoiceDate).toLocaleDateString() : i.glDate ? new Date(i.glDate).toLocaleDateString() : "—"}</td>
+                  <td>${i.supplierInvoiceNumber ? escapeHtml(i.supplierInvoiceNumber) : "—"}</td>
+                  <td>${i.poNumber ? escapeHtml(i.poNumber) : "—"}</td>
+                  <td>${i.womNumber ? escapeHtml(i.womNumber) : "—"}</td>
+                  <td>$${formatMoney(i.amount || 0)}</td>
+                </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>`
+      }
     `;
     const list = host.querySelector("#vendor-cost-wom-list");
     if (woms.length === 0) {
@@ -4520,9 +4559,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </select>
       </div>
 
-      <div class="pill-toggle-group">
-        <button type="button" class="pill-toggle-btn ${womGroupFilter === "active" ? "active" : ""}" data-group="active">Active</button>
-        <button type="button" class="pill-toggle-btn ${womGroupFilter === "closed" ? "active" : ""}" data-group="closed">Closed</button>
+      <div class="wom-list-controls">
+        <div class="pill-toggle-group">
+          <button type="button" class="pill-toggle-btn ${womGroupFilter === "active" ? "active" : ""}" data-group="active">Active</button>
+          <button type="button" class="pill-toggle-btn ${womGroupFilter === "closed" ? "active" : ""}" data-group="closed">Closed</button>
+        </div>
+        <div class="pill-toggle-group">
+          <button type="button" class="pill-toggle-btn ${womViewMode === "cards" ? "active" : ""}" data-view="cards">Cards</button>
+          <button type="button" class="pill-toggle-btn ${womViewMode === "grid" ? "active" : ""}" data-view="grid">Grid</button>
+        </div>
       </div>
 
       <div class="review-list" id="wom-list"></div>
@@ -4541,13 +4586,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       ? statusFiltered.filter((w) => w.description.toLowerCase().includes(query) || w.code.toLowerCase().includes(query))
       : statusFiltered;
 
-    const list = content.querySelector("#wom-list");
-    for (const w of woms) {
-      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
-    }
-    if (woms.length === 0) {
-      list.innerHTML = `<p class="empty-note">No WOM projects match these filters.</p>`;
-    }
+    await populateWomList(content.querySelector("#wom-list"), woms, content, locationByCode, locations);
+
+    content.querySelectorAll(".wom-list-controls .pill-toggle-group")[1].querySelectorAll(".pill-toggle-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        womViewMode = btn.dataset.view;
+        drawWoms(content);
+      });
+    });
 
     if (!content.dataset.rowMenuBound) {
       content.dataset.rowMenuBound = "1";
@@ -4595,13 +4641,24 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       ? statusFiltered.filter((w) => w.description.toLowerCase().includes(query) || w.code.toLowerCase().includes(query))
       : statusFiltered;
 
-    const list = content.querySelector("#wom-list");
+    await populateWomList(content.querySelector("#wom-list"), woms, content, locationByCode, locations);
+  }
+
+  // Fills #wom-list with either the card list or the grid, per womViewMode
+  // -- shared by drawWoms (full redraw) and refreshWomList (search-box
+  // redraw) so the two view modes don't need their own copy of this.
+  async function populateWomList(list, woms, content, locationByCode, locations) {
     list.innerHTML = "";
-    for (const w of woms) {
-      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
-    }
     if (woms.length === 0) {
       list.innerHTML = `<p class="empty-note">No WOM projects match these filters.</p>`;
+      return;
+    }
+    if (womViewMode === "grid") {
+      renderWomGrid(list, woms, locationByCode);
+      return;
+    }
+    for (const w of woms) {
+      list.appendChild(await renderWomRow(w, content, locationByCode, locations));
     }
   }
 
@@ -4806,7 +4863,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const body = content.querySelector(".wom-profile-body");
     if (womProfileTab === "documents") await renderWomDocumentsTab(body, w);
     else if (womProfileTab === "tasks") await renderWomTasksTab(body, w);
-    else if (womProfileTab === "vendorspos") await renderWomVendorsPosTab(body, w);
+    else if (womProfileTab === "vendorspos") await renderWomVendorsPosTab(body, w, content);
     else if (womProfileTab === "financials") await renderWomFinancialsTab(body, w);
     else if (womProfileTab === "activity") await renderWomActivityTab(body, w);
     else await renderWomOverviewTab(body, w, content, locationByCode, locations);
@@ -4818,7 +4875,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // a fabricated profile. An admin-name-style vendor string on a PO that
   // never resolved to a real vendor profile shows as "Needs matching" text,
   // same as the PO Tracker's own vendor column.
-  async function renderWomVendorsPosTab(host, w) {
+  async function renderWomVendorsPosTab(host, w, content) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
     let pos;
     try {
@@ -4860,10 +4917,64 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <h4>Budget POs (${pos.length})</h4>
         <div class="review-list wom-po-list"></div>
       </div>
+      <div class="vendor-overview-card">
+        <div class="wom-overview-card-header">
+          <h4>Toyota PO</h4>
+          <span class="wom-overview-card-header-note" title="The real Toyota-approved PO -- its number, contact, and open/closed status. Separate from Estimated/Applied cost above.">&#9432;</span>
+        </div>
+        <form class="wom-toyota-po-form">
+          <label>Toyota PO #
+            <input type="text" name="toyotaPoNumber" value="${escapeHtml(w.toyotaPoNumber || "")}" placeholder="e.g. 4519667697" />
+          </label>
+          <label>Toyota Rep
+            <input type="text" name="toyotaRep" value="${escapeHtml(w.toyotaRep || "")}" placeholder="name or email" />
+          </label>
+          <button type="submit" class="btn btn-secondary">Save</button>
+        </form>
+        <div class="wom-toyota-po-status-row">
+          <span class="wom-toyota-po-status-label">Status</span>
+          <select class="wom-toyota-po-status-select">
+            ${TOYOTA_PO_STATUSES.map(
+              (s) => `<option value="${s}" ${w.toyotaPoStatus === s ? "selected" : ""}>${TOYOTA_PO_STATUS_LABELS[s]}</option>`
+            ).join("")}
+          </select>
+        </div>
+        ${
+          w.changeOrder
+            ? `<p class="wom-toyota-po-balance danger">Applied: $${formatMoney(w.appliedPrice || 0)} &mdash; needs a new Toyota PO value</p>`
+            : w.toyotaPoValue != null
+              ? `<p class="wom-toyota-po-balance">Leftover: $${formatMoney(w.toyotaPoValue - (w.appliedPrice || 0))}</p>`
+              : `<p class="empty-note">No Toyota PO value on file yet.</p>`
+        }
+      </div>
     `;
 
     host.querySelectorAll(".wom-vendor-chip").forEach((btn) => {
       btn.addEventListener("click", () => openVendorProfile(Number(btn.dataset.vendorId)));
+    });
+
+    host.querySelector(".wom-toyota-po-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = new FormData(e.target);
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(w.code)}/toyota-po`, {
+          toyotaPoNumber: form.get("toyotaPoNumber").trim(),
+          toyotaRep: form.get("toyotaRep").trim(),
+        });
+        await drawWoms(content);
+      } catch (err) {
+        window.alert(`Could not update ${w.code}: ${err.message}`);
+      }
+    });
+    host.querySelector(".wom-toyota-po-status-select").addEventListener("change", async (e) => {
+      const nextStatus = e.target.value;
+      try {
+        await api.patch(`/api/woms/${encodeURIComponent(w.code)}/toyota-po`, { toyotaPoStatus: nextStatus });
+        await drawWoms(content);
+      } catch (err) {
+        window.alert(`Could not update ${w.code}: ${err.message}`);
+        e.target.value = w.toyotaPoStatus;
+      }
     });
 
     const poList = host.querySelector(".wom-po-list");
@@ -5334,6 +5445,101 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       } catch (err) {
         msg.textContent = err.message;
       }
+    });
+  }
+
+  // The spreadsheet-style grid's column set -- view/filter/sort only (no
+  // inline editing; a row click opens the same WOM profile the "Open
+  // project" card button does, which stays the one place edits happen).
+  // get() pulls the raw value used both for display and for sorting;
+  // display formatting happens separately in renderWomGridCell so sorting
+  // compares real values (numbers, timestamps), not formatted strings.
+  const WOM_GRID_COLUMNS = [
+    { key: "description", label: "Project Name", type: "text", get: (w) => w.description || "" },
+    { key: "code", label: "WOM #", type: "text", get: (w) => w.code || "" },
+    { key: "status", label: "Status", type: "text", get: (w) => WOM_STATUS_LABELS[w.status] || w.status || "" },
+    { key: "location", label: "Location", type: "text", get: (w, ctx) => (ctx.locationByCode[w.locationCode] || {}).name || "" },
+    { key: "subsidiaryCode", label: "Subsidiary", type: "text", get: (w) => w.subsidiaryCode || "" },
+    { key: "maximoNumber", label: "Maximo #", type: "text", get: (w) => w.maximoNumber || "" },
+    { key: "poNumber", label: "C&W PO #", type: "text", get: (w) => w.poNumber || "" },
+    { key: "toyotaPoNumber", label: "Toyota PO #", type: "text", get: (w) => w.toyotaPoNumber || "" },
+    {
+      key: "toyotaPoStatus",
+      label: "Toyota PO Status",
+      type: "text",
+      get: (w) => (w.toyotaPoNumber ? TOYOTA_PO_STATUS_LABELS[w.toyotaPoStatus] || w.toyotaPoStatus : ""),
+    },
+    { key: "estimatedPrice", label: "Est. cost", type: "number", get: (w) => w.estimatedPrice },
+    { key: "appliedPrice", label: "Applied cost", type: "number", get: (w) => w.appliedPrice },
+    { key: "batchDate", label: "Batch Date", type: "text", get: (w) => w.batchDate || "" },
+    { key: "smartsheetSyncedAt", label: "Last Synced", type: "date", get: (w) => w.smartsheetSyncedAt },
+  ];
+
+  function womGridSortArrow(key) {
+    if (womGridSortKey !== key) return "";
+    return womGridSortDir === "asc" ? " ▲" : " ▼";
+  }
+
+  function compareWomGridValues(a, b, type) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1; // nulls always sort last, regardless of direction
+    if (b == null) return -1;
+    if (type === "number") return a - b;
+    if (type === "date") return new Date(a).getTime() - new Date(b).getTime();
+    return String(a).localeCompare(String(b));
+  }
+
+  function renderWomGridCell(col, value) {
+    if (value == null || value === "") return "—";
+    if (col.type === "number") return `$${formatMoney(value)}`;
+    if (col.type === "date") return new Date(value).toLocaleDateString();
+    return escapeHtml(String(value));
+  }
+
+  function renderWomGrid(list, woms, locationByCode) {
+    const ctx = { locationByCode };
+    const col = WOM_GRID_COLUMNS.find((c) => c.key === womGridSortKey);
+    const sorted = col
+      ? [...woms].sort((a, b) => {
+          const cmp = compareWomGridValues(col.get(a, ctx), col.get(b, ctx), col.type);
+          return womGridSortDir === "asc" ? cmp : -cmp;
+        })
+      : woms;
+
+    list.innerHTML = `
+      <table class="detail-table wom-grid-table">
+        <thead>
+          <tr>
+            ${WOM_GRID_COLUMNS.map((c) => `<th class="sortable" data-sort="${c.key}">${escapeHtml(c.label)}${womGridSortArrow(c.key)}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted
+            .map(
+              (w) => `
+            <tr class="wom-grid-row" data-code="${escapeHtml(w.code)}">
+              ${WOM_GRID_COLUMNS.map((c) => `<td>${renderWomGridCell(c, c.get(w, ctx))}</td>`).join("")}
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+
+    list.querySelectorAll(".wom-grid-table th.sortable").forEach((th) => {
+      th.addEventListener("click", () => {
+        const key = th.dataset.sort;
+        if (womGridSortKey === key) {
+          womGridSortDir = womGridSortDir === "asc" ? "desc" : "asc";
+        } else {
+          womGridSortKey = key;
+          womGridSortDir = key === "estimatedPrice" || key === "appliedPrice" || key === "smartsheetSyncedAt" ? "desc" : "asc";
+        }
+        renderWomGrid(list, woms, locationByCode);
+      });
+    });
+    list.querySelectorAll(".wom-grid-row").forEach((row) => {
+      row.addEventListener("click", () => openWomProfile(row.dataset.code));
     });
   }
 
