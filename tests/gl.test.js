@@ -515,6 +515,9 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
   raw
     .prepare("INSERT INTO locations (code, name, ef_job_number, wom_job_number, territory) VALUES (?, ?, ?, ?, ?)")
     .run("MFT-1", "Mock Facility Test", "100110099000", "100110099999", "East");
+  raw
+    .prepare("INSERT INTO locations (code, name, ef_job_number, pps_job_number, territory) VALUES (?, ?, ?, ?, ?)")
+    .run("MFT-2", "Mock PPS Site", "100110077000", "100110077777", "East");
   db.createAdmin({ id: "RFM-EAST", name: "Jordan RFM", pin: "1234", homeLocationCode: "MFT-1" });
 
   db.importGlEntries(
@@ -551,6 +554,17 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
         subsidiary: "300 Tertiary",
         amount: 750,
         purchaseOrder: "PO90103",
+      },
+      // Business Unit matches a location's PPS job # (a different field
+      // than ef_job_number) -- this should read "PPS Job" on Question 1,
+      // not "E&F Job" (the exact bug Krista found live).
+      {
+        glDate: "2026-09-04",
+        businessUnit: "100110077777",
+        objectAccount: "605500 PPS Coded Work",
+        subsidiary: "400 Quaternary",
+        amount: 900,
+        purchaseOrder: "PO90150",
       },
     ],
     16,
@@ -615,6 +629,17 @@ test("GL Reconciliation: export POs missing from the tracker", async (t) => {
     assert.equal(womRow.admin, "Jordan RFM");
     assert.equal(needsWomRow.requestor, "Jordan RFM");
     assert.equal(needsWomRow.admin, "Jordan RFM");
+
+    // Business Unit matches the location's PPS job # specifically (not
+    // its E&F job #) -- Question 1 should read "PPS Job", and the PPS Job
+    // Number column (not E&F Contract Job #) gets filled.
+    const ppsRow = rows.find((r) => r.poNumber === "PO90150");
+    assert.ok(ppsRow, "expected the PPS-coded unmatched PO to show up");
+    assert.equal(ppsRow.question1, "PPS Job");
+    assert.equal(ppsRow.question2, "-");
+    assert.equal(ppsRow.needsWomNumberConfirmed, false);
+    assert.equal(ppsRow.ppsJobNumber, "100110077777");
+    assert.equal(ppsRow.efJobNumber, null, "should never fall back to E&F Contract Job # for a PPS-job-number line");
   });
 
   await t.test("no active admin covers the territory -> Requestor/Admin left null, not guessed", () => {

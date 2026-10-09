@@ -9753,20 +9753,30 @@ function getUnmatchedEntriesPage({ page = 1, pageSize = GL_PAGE_SIZE_DEFAULT } =
 // active admin's home location is tagged with it -- never guessed.
 //
 // Question 1/Question 2 use the real sheet's own vocabulary (confirmed
-// against that same export): a line with no WOM # (subledger_gl) gets
-// "E&F Job"/"-", matching how every other E&F-coded request on the real
-// sheet reads. A WOM-coded line (subledger_gl present) is left blank in
-// both -- Krista only specified the no-WOM case, and guessing between
-// "There is already a WOM"/"A new WOM is required" isn't something GL
-// activity alone can answer.
+// against that same export): a line with no WOM # (subledger_gl) reads as
+// either "E&F Job" or "PPS Job" depending on which of the location's own
+// job numbers the GL's Business Unit actually matched (see
+// resolveMatchedLocation/findLocationByJobNumber -- the same three-column
+// OR match importGlEntries itself makes), each paired with "-" the same
+// way every E&F/PPS-coded request on the real sheet reads. Confirmed
+// directly: a location coded through its PPS job number was showing up
+// as "E&F Job" before this distinguished the two -- wrong instruction on
+// the real sheet, since PPS Job # and E&F Contract Job # are different
+// columns. A WOM-coded line (subledger_gl present) is left blank in both
+// -- Krista only specified the no-WOM case, and guessing between "There
+// is already a WOM"/"A new WOM is required" isn't something GL activity
+// alone can answer.
 //
 // subledger_gl is this app's established WOM-number signal for a GL line
 // (see getGlSpendBreakdown's own noWomReferenceOnly handling) -- when
 // present, it fills the WOM Number column directly, and the matched
 // location's own wom_job_number fills E1 WOM Job # (the location-level
 // field WOM-coded PPS requests use, distinct from the WOM # itself). When
-// absent, the matched location's ef_job_number fills E&F Contract Job #
-// instead -- one or the other, never both, same as the real sheet.
+// absent, whichever of ef_job_number/pps_job_number the Business Unit
+// actually matched fills the corresponding column (E&F Contract Job # or
+// PPS Job Number) -- never both, and never guessed when the location was
+// only resolved by its name (matched_location_source = "name"), since
+// that match carries no job-number signal to read Question 1 off of.
 //
 // A line can also be posted against the location's own WOM job number
 // (its Business Unit matches locations.wom_job_number -- the same
@@ -9787,6 +9797,7 @@ function getPosMissingFromTrackerForExport() {
               SUM(amount) AS totalAmount,
               MIN(gl_date) AS earliestGlDate,
               MAX(matched_location_code) AS matchedLocationCode,
+              MAX(matched_location_source) AS matchedLocationSource,
               MAX(business_unit) AS businessUnit,
               MAX(subledger_gl) AS subledgerGl,
               MAX(name_alpha) AS nameAlpha,
@@ -9805,26 +9816,54 @@ function getPosMissingFromTrackerForExport() {
   return rows.map((r) => {
     const location = r.matchedLocationCode ? locationsByCode.get(r.matchedLocationCode) : null;
     const hasWom = Boolean(r.subledgerGl);
-    const codedToWomJobNumber = Boolean(location && location.wom_job_number && r.businessUnit && r.businessUnit === location.wom_job_number);
-    const needsWomNumberConfirmed = !hasWom && codedToWomJobNumber;
+    // Only trust a specific job-number field when the Business Unit is
+    // actually what resolved this location (matched_location_source ===
+    // "business_unit") -- a location resolved by its name match carries no
+    // job-number signal at all, so neither E&F/PPS/WOM can be read off it.
+    const resolvedByBusinessUnit = r.matchedLocationSource === "business_unit";
+    const matchesWomJobNumber = Boolean(resolvedByBusinessUnit && location && location.wom_job_number && r.businessUnit === location.wom_job_number);
+    const matchesPpsJobNumber = Boolean(resolvedByBusinessUnit && location && location.pps_job_number && r.businessUnit === location.pps_job_number);
+    const needsWomNumberConfirmed = !hasWom && matchesWomJobNumber;
     const rfm = location && location.territory ? findAdminForTerritory(location.territory) : null;
+
+    let question1 = null;
+    let question2 = null;
+    let efJobNumber = null;
+    let ppsJobNumber = null;
+    if (!hasWom) {
+      if (needsWomNumberConfirmed) {
+        question1 = "WOM is Required";
+      } else if (matchesPpsJobNumber) {
+        question1 = "PPS Job";
+        question2 = "-";
+        ppsJobNumber = location.pps_job_number;
+      } else {
+        // Default to E&F -- covers a genuine ef_job_number match
+        // (matchesEfJobNumber) and the name-resolved/no-signal case alike,
+        // same fallback this already used before PPS was distinguished out.
+        question1 = "E&F Job";
+        question2 = "-";
+        efJobNumber = location && location.ef_job_number ? `${location.ef_job_number}\t${location.name}` : null;
+      }
+    }
+
     return {
       dateRequested: r.earliestGlDate || null,
-      question1: hasWom ? null : needsWomNumberConfirmed ? "WOM is Required" : "E&F Job",
-      question2: hasWom ? null : needsWomNumberConfirmed ? null : "-",
+      question1,
+      question2,
       needsWomNumberConfirmed,
       description:
         (needsWomNumberConfirmed ? "[Coded to this location's WOM job # on GL, but no WOM # on the line -- confirm the WOM # before filing] " : "") +
         (r.remark || "") || null,
       requestor: rfm ? rfm.name : null,
       poNumber: r.poNumber,
-      efJobNumber: !hasWom && !needsWomNumberConfirmed && location && location.ef_job_number ? `${location.ef_job_number}\t${location.name}` : null,
+      efJobNumber,
       poAmount: r.totalAmount,
       changeOrder: null,
       status: null,
       vendorName: r.nameAlpha || null,
       vendorNumber: null,
-      ppsJobNumber: null,
+      ppsJobNumber,
       e1WomJobNumber: (hasWom || needsWomNumberConfirmed) && location && location.wom_job_number ? location.wom_job_number : null,
       womNumber: hasWom ? r.subledgerGl : null,
       assetNumber: null,
