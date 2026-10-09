@@ -7293,11 +7293,19 @@ function normalizeMatchText(v) {
 // invoiced under one PO), so both keys fold in the description too, to keep
 // those as separate records instead of one line item's import silently
 // overwriting another's.
+// poNumberKey is the PO # alone (when it's a real all-digit number) -- not
+// paired with description like compositeKey is. The real sheet sometimes
+// has the same PO # genuinely covering more than one line item/service
+// call (confirmed directly: one PO # across two different requestors'
+// rows, two different door repairs under the same PO, etc.) -- Krista's
+// call is that those should combine into one Budget PO Tracker record
+// with one total dollar amount, not stay as separate line items that
+// happen to share a PO #. See runPoImport's combine-on-match handling.
 function computePoMatchKeys({ poNumber, requestor, dateRequested, description }) {
   const trimmedPo = String(poNumber == null ? "" : poNumber).trim();
   const normDesc = normalizeMatchText(description);
   const compositeKey = `composite:${normalizeMatchText(requestor)}|${normalizeMatchText(dateRequested)}|${normDesc}`;
-  const poNumberKey = /^\d+$/.test(trimmedPo) ? `po:${trimmedPo}|${normDesc}` : null;
+  const poNumberKey = /^\d+$/.test(trimmedPo) ? `po:${trimmedPo}` : null;
   return { compositeKey, poNumberKey };
 }
 
@@ -7580,6 +7588,143 @@ function linkPoRequestTaskFromImport(poId, description, importedBy) {
   );
 }
 
+// Every place elsewhere in the schema that points at a pos row by id --
+// kept in one spot so collapsing a duplicate PO into another record
+// re-points all of them, not just whichever one came to mind first.
+function repointPoReferences(fromId, toId) {
+  db.prepare("UPDATE gl_entries SET matched_po_id = ? WHERE matched_po_id = ?").run(toId, fromId);
+  db.prepare("UPDATE tasks SET related_po_id = ? WHERE related_po_id = ?").run(toId, fromId);
+  db.prepare("UPDATE tasks SET matched_po_id = ? WHERE matched_po_id = ?").run(toId, fromId);
+  db.prepare("UPDATE reclass_items SET related_po_id = ? WHERE related_po_id = ?").run(toId, fromId);
+  db.prepare("UPDATE time_log_entries SET related_po_id = ? WHERE related_po_id = ?").run(toId, fromId);
+}
+
+// Single insert-or-update for one pos record, shared by runPoImport's
+// normal one-row-in-one-row-out path and its combine-duplicate-PO-#s path
+// below -- the only difference between them is what description/amount/
+// po_number_key gets written, not how the write happens.
+function writePoRecord(existing, entry, poNumberKey, description, amount, importedBy, now) {
+  const { row, lineNumber, efJobNumber, matchedLocation, matchedVendor } = entry;
+  const poNumberRaw = String(row.poNumber == null ? "" : row.poNumber).trim();
+
+  if (existing) {
+    const changed =
+      existing.po_number !== (poNumberRaw || null) ||
+      existing.description !== (description || null) ||
+      existing.po_amount !== (amount == null ? null : amount) ||
+      existing.status !== (row.status || null) ||
+      existing.change_order !== (row.changeOrder || null) ||
+      existing.vendor_name !== (row.vendorName || null) ||
+      existing.vendor_number !== (row.vendorNumber || null);
+
+    db.prepare(
+      `UPDATE pos SET
+        po_number_key = COALESCE(po_number_key, ?),
+        line_number = ?,
+        po_number = ?, date_requested = ?, requestor = ?, description = ?,
+        ef_job_number_raw = ?, ef_job_number = ?,
+        location_code = COALESCE(location_code, ?),
+        region = COALESCE(region, ?),
+        po_amount = ?, change_order = ?, status = ?, vendor_name = ?, vendor_number = ?,
+        vendor_id = COALESCE(vendor_id, ?),
+        pps_job_number = ?, e1_wom_job_number = ?, wom_number = ?, asset_number = ?, maximo_wo = ?,
+        object_code = ?, subsidiary = ?, admin_name = ?, urgent = ?, urgent_notes = ?,
+        missing_from_import = 0, last_seen_at = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(
+      poNumberKey,
+      lineNumber,
+      poNumberRaw || null,
+      row.dateRequested || null,
+      row.requestor || null,
+      description || null,
+      row.efJobNumberRaw || null,
+      efJobNumber,
+      matchedLocation ? matchedLocation.code : null,
+      matchedLocation ? matchedLocation.territory || null : null,
+      amount == null ? null : amount,
+      row.changeOrder || null,
+      row.status || null,
+      row.vendorName || null,
+      row.vendorNumber || null,
+      matchedVendor ? matchedVendor.id : null,
+      row.ppsJobNumber || null,
+      row.e1WomJobNumber || null,
+      row.womNumber || null,
+      row.assetNumber || null,
+      row.maximoWo || null,
+      row.objectCode || null,
+      row.subsidiary || null,
+      row.adminName || null,
+      row.urgent ? 1 : 0,
+      row.urgentNotes || null,
+      now,
+      now,
+      existing.id
+    );
+    maybeAutoActivatePo(existing.id);
+    refreshPoWomLinkTask(existing.id);
+    refreshPoJobNumberTypeMismatchTask(existing.id);
+    refreshPoWomLocationMismatchTask(existing.id);
+    refreshGlMismatchFlagsForPo(existing.id);
+    linkPoRequestTaskFromImport(existing.id, description, importedBy);
+    return { id: existing.id, created: false, changed };
+  }
+
+  const { compositeKey } = computePoMatchKeys(row);
+  const result = db
+    .prepare(
+      `INSERT INTO pos (
+        composite_key, po_number_key, line_number, po_number, date_requested, requestor, description,
+        ef_job_number_raw, ef_job_number, location_code, region,
+        po_amount, change_order, status, vendor_name, vendor_number, vendor_id,
+        pps_job_number, e1_wom_job_number, wom_number, asset_number, maximo_wo,
+        object_code, subsidiary, admin_name, urgent, urgent_notes,
+        lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
+    )
+    .run(
+      compositeKey,
+      poNumberKey,
+      lineNumber,
+      poNumberRaw || null,
+      row.dateRequested || null,
+      row.requestor || null,
+      description || null,
+      row.efJobNumberRaw || null,
+      efJobNumber,
+      matchedLocation ? matchedLocation.code : null,
+      matchedLocation ? matchedLocation.territory || null : null,
+      amount == null ? null : amount,
+      row.changeOrder || null,
+      row.status || null,
+      row.vendorName || null,
+      row.vendorNumber || null,
+      matchedVendor ? matchedVendor.id : null,
+      row.ppsJobNumber || null,
+      row.e1WomJobNumber || null,
+      row.womNumber || null,
+      row.assetNumber || null,
+      row.maximoWo || null,
+      row.objectCode || null,
+      row.subsidiary || null,
+      row.adminName || null,
+      row.urgent ? 1 : 0,
+      row.urgentNotes || null,
+      now,
+      now,
+      now,
+      now
+    );
+  const id = Number(result.lastInsertRowid);
+  maybeAutoActivatePo(id);
+  refreshPoWomLinkTask(id);
+  refreshPoJobNumberTypeMismatchTask(id);
+  refreshPoWomLocationMismatchTask(id);
+  linkPoRequestTaskFromImport(id, description, importedBy);
+  return { id, created: true, changed: true };
+}
+
 // The shared engine behind both the import preview and the real import --
 // identical logic either way, run inside a transaction that's committed for
 // a real import and rolled back for a preview, so "what would happen" can
@@ -7591,9 +7736,23 @@ function runPoImport(rows, importedBy, { dryRun }) {
   let updated = 0;
   let unchanged = 0;
   let invalid = 0;
+  let merged = 0;
 
   db.exec("BEGIN");
   try {
+    // Rows with a real PO Number are grouped by it below (po_number_key is
+    // UNIQUE) instead of written row-by-row -- the real sheet genuinely has
+    // the same PO Number covering more than one line item (a PO issued once
+    // but used for two separate service calls, or a straight duplicate
+    // entry; confirmed directly against a real export), and Krista's call
+    // is that those are one PO with one combined dollar total, not two
+    // tracker records that happen to share a PO #. A group of exactly one
+    // entry (by far the normal case) behaves identically to the old
+    // row-by-row write. Rows with no PO # yet never collide on
+    // po_number_key, so they're written immediately, same as always.
+    const groups = new Map();
+    const singles = [];
+
     for (const row of rows) {
       const poNumberRaw = row.poNumber == null ? "" : String(row.poNumber).trim();
       const hasAnyContent = row.description || row.vendorName || poNumberRaw || row.requestor;
@@ -7613,7 +7772,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
       // matches, though -- a row deleted/inserted elsewhere in the sheet
       // shifts every later line_number down or up by one, and without that
       // guard this would silently hijack a since-shifted, unrelated record
-      // instead of falling through to the key-based lookup below.
+      // instead of falling through to the composite-key lookup below.
       let existing = null;
       if (lineNumber) {
         const byLine = db.prepare("SELECT * FROM pos WHERE line_number = ?").get(lineNumber);
@@ -7621,15 +7780,6 @@ function runPoImport(rows, importedBy, { dryRun }) {
           existing = byLine;
         }
       }
-      // The real PO Number, once one exists, is the next most specific
-      // identity -- try it before the composite key. Falling back to the
-      // composite key (never the other way around) is what makes the
-      // "promotion" below safe: it only ever adds a po_number_key to a
-      // record the composite key already owns, it never moves/renames that
-      // record's composite_key, so any other row in this same tracker still
-      // sharing that composite identity (a not-yet-PO'd duplicate of this
-      // exact request) keeps finding it too.
-      if (!existing) existing = poNumberKey ? db.prepare("SELECT * FROM pos WHERE po_number_key = ?").get(poNumberKey) : null;
       if (!existing) existing = db.prepare("SELECT * FROM pos WHERE composite_key = ?").get(compositeKey);
 
       const efJobNumber = parseEfJobNumber(row.efJobNumberRaw);
@@ -7646,123 +7796,76 @@ function runPoImport(rows, importedBy, { dryRun }) {
       }
       const matchedVendor = row.vendorNumber ? findVendorByNumber(row.vendorNumber) : null;
 
-      if (existing) {
-        touchedIds.add(existing.id);
-        const changed =
-          existing.po_number !== (poNumberRaw || null) ||
-          existing.description !== (row.description || null) ||
-          existing.po_amount !== (row.poAmount == null ? null : row.poAmount) ||
-          existing.status !== (row.status || null) ||
-          existing.change_order !== (row.changeOrder || null) ||
-          existing.vendor_name !== (row.vendorName || null) ||
-          existing.vendor_number !== (row.vendorNumber || null);
-
-        db.prepare(
-          `UPDATE pos SET
-            po_number_key = COALESCE(po_number_key, ?),
-            line_number = ?,
-            po_number = ?, date_requested = ?, requestor = ?, description = ?,
-            ef_job_number_raw = ?, ef_job_number = ?,
-            location_code = COALESCE(location_code, ?),
-            region = COALESCE(region, ?),
-            po_amount = ?, change_order = ?, status = ?, vendor_name = ?, vendor_number = ?,
-            vendor_id = COALESCE(vendor_id, ?),
-            pps_job_number = ?, e1_wom_job_number = ?, wom_number = ?, asset_number = ?, maximo_wo = ?,
-            object_code = ?, subsidiary = ?, admin_name = ?, urgent = ?, urgent_notes = ?,
-            missing_from_import = 0, last_seen_at = ?, updated_at = ?
-           WHERE id = ?`
-        ).run(
-          poNumberKey,
-          lineNumber,
-          poNumberRaw || null,
-          row.dateRequested || null,
-          row.requestor || null,
-          row.description || null,
-          row.efJobNumberRaw || null,
-          efJobNumber,
-          matchedLocation ? matchedLocation.code : null,
-          matchedLocation ? matchedLocation.territory || null : null,
-          row.poAmount == null ? null : row.poAmount,
-          row.changeOrder || null,
-          row.status || null,
-          row.vendorName || null,
-          row.vendorNumber || null,
-          matchedVendor ? matchedVendor.id : null,
-          row.ppsJobNumber || null,
-          row.e1WomJobNumber || null,
-          row.womNumber || null,
-          row.assetNumber || null,
-          row.maximoWo || null,
-          row.objectCode || null,
-          row.subsidiary || null,
-          row.adminName || null,
-          row.urgent ? 1 : 0,
-          row.urgentNotes || null,
-          now,
-          now,
-          existing.id
-        );
-        maybeAutoActivatePo(existing.id);
-        refreshPoWomLinkTask(existing.id);
-        refreshPoJobNumberTypeMismatchTask(existing.id);
-        refreshPoWomLocationMismatchTask(existing.id);
-        refreshGlMismatchFlagsForPo(existing.id);
-        linkPoRequestTaskFromImport(existing.id, row.description, importedBy);
-        if (changed) updated++;
-        else unchanged++;
+      const entry = { row, lineNumber, existing, efJobNumber, matchedLocation, matchedVendor };
+      if (poNumberKey) {
+        if (!groups.has(poNumberKey)) groups.set(poNumberKey, []);
+        groups.get(poNumberKey).push(entry);
       } else {
-        const result = db
-          .prepare(
-            `INSERT INTO pos (
-              composite_key, po_number_key, line_number, po_number, date_requested, requestor, description,
-              ef_job_number_raw, ef_job_number, location_code, region,
-              po_amount, change_order, status, vendor_name, vendor_number, vendor_id,
-              pps_job_number, e1_wom_job_number, wom_number, asset_number, maximo_wo,
-              object_code, subsidiary, admin_name, urgent, urgent_notes,
-              lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_organization', ?, ?, ?, ?)`
-          )
-          .run(
-            compositeKey,
-            poNumberKey,
-            lineNumber,
-            poNumberRaw || null,
-            row.dateRequested || null,
-            row.requestor || null,
-            row.description || null,
-            row.efJobNumberRaw || null,
-            efJobNumber,
-            matchedLocation ? matchedLocation.code : null,
-            matchedLocation ? matchedLocation.territory || null : null,
-            row.poAmount == null ? null : row.poAmount,
-            row.changeOrder || null,
-            row.status || null,
-            row.vendorName || null,
-            row.vendorNumber || null,
-            matchedVendor ? matchedVendor.id : null,
-            row.ppsJobNumber || null,
-            row.e1WomJobNumber || null,
-            row.womNumber || null,
-            row.assetNumber || null,
-            row.maximoWo || null,
-            row.objectCode || null,
-            row.subsidiary || null,
-            row.adminName || null,
-            row.urgent ? 1 : 0,
-            row.urgentNotes || null,
-            now,
-            now,
-            now,
-            now
-          );
-        touchedIds.add(Number(result.lastInsertRowid));
-        maybeAutoActivatePo(Number(result.lastInsertRowid));
-        refreshPoWomLinkTask(Number(result.lastInsertRowid));
-        refreshPoJobNumberTypeMismatchTask(Number(result.lastInsertRowid));
-        refreshPoWomLocationMismatchTask(Number(result.lastInsertRowid));
-        linkPoRequestTaskFromImport(Number(result.lastInsertRowid), row.description, importedBy);
-        created++;
+        singles.push(entry);
       }
+    }
+
+    for (const entry of singles) {
+      const result = writePoRecord(
+        entry.existing,
+        entry,
+        null,
+        entry.row.description,
+        entry.row.poAmount == null ? null : entry.row.poAmount,
+        importedBy,
+        now
+      );
+      touchedIds.add(result.id);
+      if (result.created) created++;
+      else if (result.changed) updated++;
+      else unchanged++;
+    }
+
+    for (const [poNumberKey, entries] of groups) {
+      // Whichever pos record already owns this key (from a previous
+      // import) is the survivor; failing that, the lowest-id record among
+      // this group's own matches; failing that, there's no existing record
+      // at all and a fresh one is created below. The amount and
+      // description are always recomputed from every entry CURRENTLY in
+      // this group -- never added on top of whatever the survivor already
+      // had -- so re-importing the same sheet twice lands on the same
+      // total instead of doubling it.
+      const alreadyClaimed = db.prepare("SELECT * FROM pos WHERE po_number_key = ?").get(poNumberKey);
+      const candidateExisting = entries
+        .map((e) => e.existing)
+        .filter(Boolean)
+        .sort((a, b) => a.id - b.id);
+      const target = alreadyClaimed || candidateExisting[0] || null;
+      const primary = (target && entries.find((e) => e.existing && e.existing.id === target.id)) || entries[0];
+
+      const totalAmount = entries.every((e) => e.row.poAmount == null)
+        ? null
+        : entries.reduce((sum, e) => sum + (e.row.poAmount || 0), 0);
+      const descriptions = [];
+      for (const e of entries) {
+        if (e.row.description && !descriptions.some((d) => normalizeMatchText(d) === normalizeMatchText(e.row.description))) {
+          descriptions.push(e.row.description);
+        }
+      }
+      const combinedDescription = descriptions.length ? descriptions.join("; ") : null;
+
+      // Every other existing record caught up in this group besides the
+      // survivor is the duplicate Krista found in her sheet -- re-point
+      // anything elsewhere that referenced it onto the survivor, then
+      // remove it, rather than leave it to collide with the survivor on
+      // the po_number_key UNIQUE constraint.
+      const extras = candidateExisting.filter((e) => !target || e.id !== target.id);
+      for (const extra of extras) {
+        repointPoReferences(extra.id, target ? target.id : null);
+        db.prepare("DELETE FROM pos WHERE id = ?").run(extra.id);
+      }
+      merged += extras.length;
+
+      const result = writePoRecord(target, primary, poNumberKey, combinedDescription, totalAmount, importedBy, now);
+      touchedIds.add(result.id);
+      if (result.created) created++;
+      else if (result.changed) updated++;
+      else unchanged++;
     }
 
     // Anything on file from a previous import that this run didn't touch at
@@ -7785,6 +7888,7 @@ function runPoImport(rows, importedBy, { dryRun }) {
       unchangedCount: unchanged,
       missingCount: missingIds.length,
       invalidCount: invalid,
+      mergedIntoExistingCount: merged,
     };
 
     if (dryRun) {

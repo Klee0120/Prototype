@@ -653,6 +653,11 @@ export async function renderPos(container, { openPoId } = {}) {
       <p class="review-checklist-hint">
         Read sheet <strong>${escapeHtml(preview.sheetName)}</strong> — ${preview.totalRows} rows.
         ${preview.missingColumns.length ? `<br /><span class="attachments-error">Missing expected column(s): ${preview.missingColumns.map(escapeHtml).join(", ")}</span>` : ""}
+        ${
+          preview.mergedIntoExistingCount > 0
+            ? `<br /><span class="attachments-error">${preview.mergedIntoExistingCount} row${preview.mergedIntoExistingCount === 1 ? "" : "s"} share${preview.mergedIntoExistingCount === 1 ? "s" : ""} a PO # with another record already on file -- combined into that record as one PO with the amounts totaled, rather than kept as separate rows. Worth a look in the sheet to confirm that's right.</span>`
+            : ""
+        }
       </p>
       <div class="task-tiles">
         <div class="task-tile"><div class="task-tile-count">${preview.createdCount}</div><div class="task-tile-label">New records</div></div>

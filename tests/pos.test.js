@@ -1142,3 +1142,99 @@ test("Task Manager: PO coded to one location but referencing a WOM synced to a d
 
   raw.close();
 });
+
+// po_number_key is UNIQUE (the real identity a PO # promotes a record to,
+// see the pos table comment / computePoMatchKeys) -- the real sheet
+// genuinely has two different requests sharing the same PO # (a PO
+// covering more than one line item, or a plain data-entry duplicate;
+// confirmed directly against a real export). This used to crash the whole
+// import with "UNIQUE constraint failed: pos.po_number_key" the moment a
+// re-import tried to promote both rows to the same key at once. Krista's
+// call: those aren't two tracker records that happen to share a PO #,
+// they're one PO with one combined dollar total -- see runPoImport's
+// group-by-po_number_key handling.
+test("PO Tracker import: two rows sharing the same PO # combine into one record with a summed total", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const headers = [
+    "Date Requested", "Description", "Requestor", "PO Number", "E&F Contract Job #", "PO Amount",
+    "Change Order", "Status", "Vendor Name", "Vendor Number", "PPS Job Number", "E1 WOM Job #",
+    "WOM Number", "Asset Number", "Maximo WO#", "Object Code", "Subsidiary", "PPS Subsidiary",
+    "Admin", "Urgent", "Urgent Reason/Notes",
+  ];
+
+  function buildBuffer(rows) {
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "PO Tracking");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  // First import: both rows have no PO # yet -- land in needs_organization
+  // under their own distinct composite keys (different requestors and
+  // descriptions, like the real "door #26" vs. a second visit example).
+  const firstImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-dup-1.xlsx",
+    fileContent: buildBuffer([
+      ["2026-01-01", "Emergency repairs for Dock door #26", "Shane Fitzpatrick", null, null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+      ["2026-01-02", "Dock door #26 repair, second visit", "Derrick Hazel", null, null, 200, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(firstImport.status, 200, JSON.stringify(firstImport.body));
+  assert.equal(firstImport.body.createdCount, 2);
+
+  // Re-import: same line positions/requestors (so line_number matches each
+  // row back to its own existing record), but now BOTH carry the identical
+  // real PO # -- same PO # means computePoMatchKeys produces the identical
+  // po_number_key for both. The second one to promote would have collided
+  // and aborted the whole import before this fix; now the two combine into
+  // one record instead.
+  const secondImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-dup-2.xlsx",
+    fileContent: buildBuffer([
+      ["2026-01-01", "Emergency repairs for Dock door #26", "Shane Fitzpatrick", "10031034", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+      ["2026-01-02", "Dock door #26 repair, second visit", "Derrick Hazel", "10031034", null, 200, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(secondImport.status, 200, JSON.stringify(secondImport.body), "the whole import should succeed, not abort on the duplicate PO #");
+  assert.equal(secondImport.body.mergedIntoExistingCount, 1, "the duplicate should be surfaced as a merge, not silently swallowed");
+
+  const listRes = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Dock+door", { userId: "ADMIN" });
+  assert.equal(listRes.body.length, 1, "the two lines should now be ONE combined record, not two");
+  const combined = listRes.body[0];
+  assert.equal(combined.poNumber, "10031034");
+  assert.equal(combined.poAmount, 300, "the two amounts should be summed into one total");
+  assert.ok(
+    combined.description.includes("Dock door #26") && combined.description.includes("second visit"),
+    "both lines' descriptions should be preserved, not one overwriting the other"
+  );
+
+  // A third import of the exact same file should be stable -- the combined
+  // total is recomputed fresh from what's currently in the sheet every
+  // time, not added on top of the already-combined total, so repeating the
+  // same import never doubles it.
+  const thirdImport = await server.upload("/api/admin/pos/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "po-dup-3.xlsx",
+    fileContent: buildBuffer([
+      ["2026-01-01", "Emergency repairs for Dock door #26", "Shane Fitzpatrick", "10031034", null, 100, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+      ["2026-01-02", "Dock door #26 repair, second visit", "Derrick Hazel", "10031034", null, 200, null, "Open", "Vendor A", "1001", null, null, null, null, null, null, "100 Primary", null, "Krista Lee", null, null],
+    ]),
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(thirdImport.status, 200, JSON.stringify(thirdImport.body));
+  assert.equal(thirdImport.body.unchangedCount, 1, "stable across repeated re-imports, not doubling the total or duplicating rows");
+
+  const listRes2 = await server.call("GET", "/api/admin/pos?lifecycleStatus=needs_organization&search=Dock+door", { userId: "ADMIN" });
+  assert.equal(listRes2.body.length, 1);
+  assert.equal(listRes2.body[0].poAmount, 300, "the total should not have doubled on the repeated import");
+});
