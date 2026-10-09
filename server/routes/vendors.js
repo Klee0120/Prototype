@@ -8,8 +8,22 @@ router.use(requireAuth, requireAdmin);
 
 const EXPIRED_DOC_LABELS = { coi: "Certificate of Insurance (COI)", w9: "W-9", ach: "ACH / banking details" };
 
-function validateVendorBody(body) {
-  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage } = body || {};
+// No DB constraint stops two vendor profiles from sharing a JDE Vendor #
+// (jde_vendor_number only has a plain index, not a UNIQUE one) -- without
+// this check, nothing in the form or the route catches it either, which
+// is exactly how two separate "Southland Industries" profiles both ended
+// up carrying 6041642. excludeVendorId lets an edit keep its own number
+// without tripping over itself.
+function findDuplicateVendorNumber(jdeVendorNumber, excludeVendorId) {
+  if (!jdeVendorNumber || !String(jdeVendorNumber).trim()) return null;
+  const match = db.findVendorByNumber(jdeVendorNumber);
+  if (!match) return null;
+  if (excludeVendorId != null && Number(match.id) === Number(excludeVendorId)) return null;
+  return match;
+}
+
+function validateVendorBody(body, excludeVendorId) {
+  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage, jdeVendorNumber } = body || {};
   if (!name || !String(name).trim()) return "name is required";
   if (cwStatus && !db.CW_STATUSES.includes(cwStatus)) return `cwStatus must be one of: ${db.CW_STATUSES.join(", ")}`;
   if (toyotaStatus && !db.TOYOTA_STATUSES.includes(toyotaStatus)) {
@@ -25,6 +39,8 @@ function validateVendorBody(body) {
     const n = Number(successfulInvoiceRecords);
     if (!Number.isFinite(n) || n < 0) return "successfulInvoiceRecords must be a non-negative number";
   }
+  const duplicate = findDuplicateVendorNumber(jdeVendorNumber, excludeVendorId);
+  if (duplicate) return `JDE Vendor # ${String(jdeVendorNumber).trim()} is already on file for ${duplicate.name}`;
   return null;
 }
 
@@ -59,7 +75,7 @@ router.patch("/:id", (req, res) => {
   const existing = db.findVendor(req.params.id);
   if (!existing) return res.status(404).json({ error: "Vendor not found" });
 
-  const error = validateVendorBody(req.body);
+  const error = validateVendorBody(req.body, req.params.id);
   if (error) return res.status(400).json({ error });
 
   const vendor = db.updateVendor(req.params.id, { ...req.body, name: String(req.body.name).trim() });

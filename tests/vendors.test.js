@@ -61,6 +61,61 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     assert.equal(res.body[0].id, vendorId);
   });
 
+  await t.test("creating a vendor with a JDE # already on file is rejected, not silently duplicated", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Southland Industries", jdeVendorNumber: "5865247" },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /already on file/);
+    const list = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(list.body.length, 1, "no second profile should have been created");
+  });
+
+  await t.test("the duplicate JDE # check is whitespace-tolerant -- a stray space can't sneak past it", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Southland Industries", jdeVendorNumber: " 5865247 " },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  let otherVendorId;
+  await t.test("a second vendor with its OWN JDE # creates fine", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", jdeVendorNumber: "9981234" },
+    });
+    assert.equal(res.status, 201);
+    otherVendorId = res.body.id;
+  });
+
+  await t.test("editing one vendor to another vendor's JDE # is rejected", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${otherVendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", jdeVendorNumber: "5865247" },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /already on file/);
+  });
+
+  // Cleanup -- this suite's later tests (delete, etc.) assume vendorId is
+  // the only vendor on file; this one only existed to prove the duplicate
+  // check against a SECOND vendor, not to stick around.
+  await t.test("cleanup: remove the second vendor used for the duplicate-JDE# checks", async () => {
+    const res = await server.call("DELETE", `/api/admin/vendors/${otherVendorId}`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+  });
+
+  await t.test("editing a vendor and keeping its own JDE # is never flagged as a duplicate of itself", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "24/7 Fire Protection", jdeVendorNumber: "5865247", phone: "(513) 555-0199" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.phone, "(513) 555-0199");
+  });
+
   await t.test("a technician cannot edit a vendor", async () => {
     const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
       userId: "T1001",
