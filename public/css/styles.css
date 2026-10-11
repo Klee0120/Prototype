@@ -720,12 +720,14 @@ h1, h2, h3, h4 {
    app.js) raises specificity just enough to always win regardless of
    source order -- a solid red fill now too, not just a fix for the text
    color, so it reads clearly as the one destructive action in the
-   sidebar. */
+   sidebar. Uses --accent (the same C&W brand red as the active sidebar
+   tab and the logo), not --danger -- a brighter, different red that
+   didn't match the rest of the app's palette. */
 .btn.sidebar-logout-btn {
   width: 100%;
   justify-content: center;
   display: flex;
-  background: var(--danger);
+  background: var(--accent);
   color: #fff;
 }
 .btn.sidebar-logout-btn:hover {
