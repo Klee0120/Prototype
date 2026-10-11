@@ -13,6 +13,15 @@
 # on the `bash` side of the pipe (not before `curl`) for it to actually
 # reach the script:
 #   curl -fsSL https://raw.githubusercontent.com/Klee0120/Prototype/claude/labor-allocation-prototype-b0y12v/scripts/deploy.sh | DOMAIN=www.serviceworks.com bash
+#
+# To turn on the "forgot my PIN" emailed-reset-link feature (see
+# server/utils/mailer.js), also set SMTP_HOST/SMTP_USER/SMTP_PASS (and
+# PUBLIC_BASE_URL so the emailed link points at the right place) the same
+# way, all on the `bash` side of the pipe:
+#   curl -fsSL https://raw.githubusercontent.com/Klee0120/Prototype/claude/labor-allocation-prototype-b0y12v/scripts/deploy.sh | DOMAIN=services-works.com SMTP_HOST=smtp.gmail.com SMTP_USER=you@gmail.com SMTP_PASS='your16charapppassword' PUBLIC_BASE_URL=https://services-works.com bash
+# Until those are set, the forgot-PIN flow still runs end-to-end (the
+# reset token is created either way) but mailer.js just logs what it would
+# have sent instead of delivering it -- see README "Where this stands".
 set -euo pipefail
 
 REPO_URL="https://github.com/Klee0120/Prototype.git"
@@ -20,6 +29,19 @@ BRANCH="claude/labor-allocation-prototype-b0y12v"
 APP_DIR="/opt/labor-allocation"
 APP_PORT=3000
 DOMAIN="${DOMAIN:-}"
+SMTP_HOST="${SMTP_HOST:-}"
+SMTP_PORT="${SMTP_PORT:-587}"
+SMTP_USER="${SMTP_USER:-}"
+SMTP_PASS="${SMTP_PASS:-}"
+SMTP_FROM="${SMTP_FROM:-$SMTP_USER}"
+# Defaults to the domain itself (once one is set) rather than making you
+# pass the same thing twice -- without this, a reset-PIN email would link
+# to this box's own internal localhost:$APP_PORT, which nobody else can
+# ever reach.
+if [ -z "${PUBLIC_BASE_URL:-}" ] && [ -n "$DOMAIN" ]; then
+  PUBLIC_BASE_URL="https://$DOMAIN"
+fi
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-}"
 
 echo "== Installing Node.js 22 =="
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -51,6 +73,12 @@ Restart=always
 RestartSec=5
 Environment=PORT=$APP_PORT
 Environment=NODE_ENV=production
+Environment=SMTP_HOST=$SMTP_HOST
+Environment=SMTP_PORT=$SMTP_PORT
+Environment=SMTP_USER=$SMTP_USER
+Environment=SMTP_PASS=$SMTP_PASS
+Environment=SMTP_FROM=$SMTP_FROM
+Environment=PUBLIC_BASE_URL=$PUBLIC_BASE_URL
 
 [Install]
 WantedBy=multi-user.target
@@ -111,3 +139,9 @@ else
   echo "Once you own a domain and its DNS A record points at $PUBLIC_IP, re-run:"
   echo "  curl -fsSL https://raw.githubusercontent.com/Klee0120/Prototype/$BRANCH/scripts/deploy.sh | DOMAIN=www.yourdomain.com bash"
 fi
+if [ -n "$SMTP_HOST" ] && [ -n "$SMTP_USER" ] && [ -n "$SMTP_PASS" ]; then
+  echo "Email delivery is configured (sending as $SMTP_FROM) -- the 'forgot my PIN' link will actually arrive."
+else
+  echo "Email isn't configured yet -- 'forgot my PIN' requests are logged, not delivered. See this script's header comment for how to turn it on."
+fi
+echo "NOTE: re-running this full setup script (as opposed to redeploy.sh) always rewrites the systemd service file -- any env var not passed on a given run (DOMAIN, SMTP_*, PUBLIC_BASE_URL) reverts to unset, even if a previous run had it configured. Pass the full set every time you run deploy.sh itself; redeploy.sh (the normal pull-and-restart script) never touches this and is safe to run on its own."

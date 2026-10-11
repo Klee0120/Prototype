@@ -27,26 +27,17 @@ function createApp() {
   // Baseline security response headers (CSP, X-Content-Type-Options,
   // X-Frame-Options, etc.) -- defaults work as-is since this app only ever
   // loads its own same-origin JS/CSS plus the one Google Fonts stylesheet
-  // already in index.html. Doesn't touch the actual gap (no TLS yet --
-  // see README "Where this stands"), just closes off the cheap stuff.
+  // already in index.html.
   //
-  // upgrade-insecure-requests is dropped from helmet's default CSP: on a
-  // site still served over plain HTTP (no cert yet), that directive tells
-  // the browser to silently rewrite every request -- scripts, the API
-  // calls, everything -- to https:// first. There's nothing listening on
-  // 443, so every one of those just hangs, which is exactly what turned
-  // the whole app into a stuck blank page the first time this shipped.
-  // Safe to bring back once the HTTPS gap itself is closed (see README).
-  app.use(
-    helmet({
-      contentSecurityPolicy: {
-        directives: {
-          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-          "upgrade-insecure-requests": null,
-        },
-      },
-    })
-  );
+  // helmet's default CSP includes upgrade-insecure-requests, which tells
+  // the browser to rewrite any plain-http:// request on this page to
+  // https:// first. That's correct now that Caddy serves real HTTPS on
+  // services-works.com (see scripts/deploy.sh and README "Where this
+  // stands") -- it was deliberately dropped here for a stretch while the
+  // site only had a bare IP and no cert, since back then nothing was
+  // listening on 443 and every rewritten request just hung, turning the
+  // whole app into a stuck blank page. Left as helmet's own default now.
+  app.use(helmet());
 
   app.use(express.json());
 

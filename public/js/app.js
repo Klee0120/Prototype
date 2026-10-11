@@ -1,5 +1,6 @@
 import { api } from "./api.js";
 import { renderLogin } from "./views/login.js";
+import { renderResetPin } from "./views/resetPin.js";
 import { renderTechHome } from "./views/techHome.js";
 import { renderAdminReview } from "./views/adminReview.js";
 import { mountTimeTracker } from "./views/timeTracker.js";
@@ -95,6 +96,19 @@ document.addEventListener("keydown", (e) => {
 });
 
 export async function render() {
+  // A clicked "reset my PIN" link from email -- checked before the
+  // logged-in/logged-out branch below since this is its own distinct
+  // intent, not something an existing session (someone else's, or a
+  // stale one) should silently swallow. There's no server-side router
+  // (see server/app.js's static file serving), so this is just a query
+  // param on the site's own root rather than a real path.
+  const resetToken = new URLSearchParams(window.location.search).get("resetToken");
+  if (resetToken) {
+    root.innerHTML = "";
+    root.appendChild(renderResetPin(resetToken));
+    return;
+  }
+
   if (!state.user) {
     root.innerHTML = "";
     root.appendChild(renderLogin(loggedOutMessage));

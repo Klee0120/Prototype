@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
 
 test("auth: login flow", async (t) => {
   const server = await startServer();
@@ -81,5 +82,114 @@ test("auth: login flow", async (t) => {
     }
     const stillLocked = await server.call("POST", "/api/auth/login", { body: { id: "T1002", pin: "1234" } });
     assert.equal(stillLocked.status, 429);
+  });
+});
+
+// Self-service "forgot my PIN" -- emails a one-time reset link rather than
+// an admin having to hand the new PIN to someone directly. SMTP isn't
+// configured in the test environment, so mailer.sendMail is a no-op
+// logger (see server/utils/mailer.js) -- the route still runs its full
+// token-creation path regardless, since that doesn't depend on delivery
+// actually succeeding, which is what these tests exercise against the raw
+// password_resets table.
+test("auth: forgot-pin / reset-pin flow", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  function resetRowsFor(techId) {
+    return raw.prepare("SELECT * FROM password_resets WHERE tech_id = ? ORDER BY created_at DESC").all(techId);
+  }
+
+  await t.test("requesting a reset for an unknown ID gives the same generic response, creates nothing", async () => {
+    const res = await server.call("POST", "/api/auth/forgot-pin", { body: { id: "NOPE1234" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, true);
+    assert.match(res.body.message, /if that id has an email on file/i);
+  });
+
+  await t.test("requesting a reset for an account with no email on file is the same generic response, creates nothing", async () => {
+    const res = await server.call("POST", "/api/auth/forgot-pin", { body: { id: "ADMIN" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, true);
+    assert.equal(resetRowsFor("ADMIN").length, 0, "ADMIN has no email on file in seed data -- nothing should be created");
+  });
+
+  await t.test("requesting a reset for a real account with an email creates a single-use token", async () => {
+    const res = await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1001" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, true);
+
+    const rows = resetRowsFor("T1001");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].used, 0);
+  });
+
+  await t.test("a second request burns the first token so only the newest link works", async () => {
+    await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1002" } });
+    const firstToken = resetRowsFor("T1002")[0].token;
+
+    await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1002" } });
+    const rows = resetRowsFor("T1002");
+    assert.equal(rows.length, 2);
+
+    const first = rows.find((r) => r.token === firstToken);
+    assert.equal(first.used, 1, "the earlier outstanding token should be burned once a newer one is requested");
+
+    const stale = await server.call("POST", "/api/auth/reset-pin", { body: { token: firstToken, pin: "5555" } });
+    assert.equal(stale.status, 400);
+  });
+
+  await t.test("resetting with a valid token actually changes the PIN, and the token can't be reused", async () => {
+    await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1003" } });
+    const token = resetRowsFor("T1003")[0].token;
+
+    const reset = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "4321" } });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.body.ok, true);
+
+    const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1003", pin: "2345" } });
+    assert.equal(oldLogin.status, 401);
+    const newLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1003", pin: "4321" } });
+    assert.equal(newLogin.status, 200);
+
+    const replay = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "9876" } });
+    assert.equal(replay.status, 400);
+  });
+
+  await t.test("rejects a made-up reset token", async () => {
+    const res = await server.call("POST", "/api/auth/reset-pin", { body: { token: "not-a-real-token", pin: "4321" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rejects an expired reset token", async () => {
+    await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1001" } });
+    const token = resetRowsFor("T1001")[0].token;
+    raw.prepare("UPDATE password_resets SET expires_at = ? WHERE token = ?").run(
+      new Date(Date.now() - 60 * 1000).toISOString(),
+      token
+    );
+
+    const res = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "4321" } });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("rejects a non-numeric or oddly-shaped new PIN", async () => {
+    await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1002" } });
+    const token = resetRowsFor("T1002")[0].token;
+
+    const letters = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "abcd" } });
+    assert.equal(letters.status, 400);
+
+    const tooShort = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "12" } });
+    assert.equal(tooShort.status, 400);
+  });
+
+  await t.test("missing id/token on either route is a 400", async () => {
+    const forgot = await server.call("POST", "/api/auth/forgot-pin", { body: {} });
+    assert.equal(forgot.status, 400);
+    const reset = await server.call("POST", "/api/auth/reset-pin", { body: { pin: "4321" } });
+    assert.equal(reset.status, 400);
   });
 });

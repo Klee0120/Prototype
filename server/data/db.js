@@ -13,6 +13,7 @@ const mailer = require("../utils/mailer");
 const { mondayOf, datesForWeek, DAY_NAMES } = require("../utils/week");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 // Krista only wants GL Reconciliation (summary tiles, the reconciled PO
 // list, the unmatched-lines table, the missing-from-tracker export, and
@@ -180,6 +181,21 @@ db.exec(`
     tech_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
+  );
+
+  -- A self-service "forgot my PIN" link, emailed to whatever address is on
+  -- the account -- distinct from the admin-mediated reset (POST
+  -- /technicians/:id/reset-pin), which still exists for when nobody has an
+  -- email on file. token is a random, unguessable id, never anything
+  -- derived from the account itself. Single-use (used flips to 1 the
+  -- moment it's redeemed) and short-lived (see PASSWORD_RESET_TTL_MS),
+  -- same "narrow window, one shot" shape as the login lockout below it.
+  CREATE TABLE IF NOT EXISTS password_resets (
+    token TEXT PRIMARY KEY,
+    tech_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS onboarding_progress (
@@ -7162,6 +7178,40 @@ function deleteSession(token) {
   db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
 }
 
+// ---- Password resets ----
+
+// Burns any reset link already outstanding for this person first -- only
+// the most recently requested one should ever work, so an old email
+// (forwarded, left open in a browser tab, whatever) can't reset the PIN
+// out from under a since-requested newer one.
+function createPasswordReset(techId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + PASSWORD_RESET_TTL_MS);
+  db.prepare("UPDATE password_resets SET used = 1 WHERE tech_id = ? AND used = 0").run(techId);
+  db.prepare("INSERT INTO password_resets (token, tech_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(
+    token,
+    techId,
+    now.toISOString(),
+    expiresAt.toISOString()
+  );
+  return token;
+}
+
+// Single-use: a valid, unexpired token is marked used in the same call
+// that reads it, so the link can never be replayed even if the response
+// never makes it back to whoever clicked it. Returns the tech_id on
+// success, null on anything else (unknown token, expired, already used)
+// -- deliberately one failure shape, so the route can give one generic
+// "invalid or expired" message without leaking which case it was.
+function consumePasswordReset(token) {
+  const reset = db.prepare("SELECT * FROM password_resets WHERE token = ?").get(token);
+  if (!reset || reset.used) return null;
+  if (new Date(reset.expires_at) < new Date()) return null;
+  db.prepare("UPDATE password_resets SET used = 1 WHERE token = ?").run(token);
+  return reset.tech_id;
+}
+
 // ---- Audit log ----
 
 function addAudit(actor, action, details) {
@@ -11403,6 +11453,8 @@ module.exports = {
   createSession,
   getSessionUser,
   deleteSession,
+  createPasswordReset,
+  consumePasswordReset,
   addAudit,
   listAudit,
   insertFile,

@@ -2011,26 +2011,41 @@ happen.
   before a redeploy keeps running whatever JS was already loaded into that
   page's memory until it's actually reloaded (closing and reopening the tab,
   or a plain refresh, both do it).
-- **Auth is real but the transport isn't encrypted yet.** Login issues a
+- **Auth is real, and the transport is now encrypted too.** Login issues a
   genuine random session token (`server/data/db.js`'s `sessions` table); PINs
   are hashed with scrypt, never stored or compared in plain text
   (`server/utils/password.js`) -- there is deliberately no reversible copy
   anywhere, so a stolen database yields only unusable hashes, never a real
   PIN. (An earlier draft of this feature added a decryptable copy so admin
   could look a PIN back up; that was reverted before it shipped, in favor of
-  a PIN *reset* instead -- see **Admin PIN reset** above -- since this login
-  also gates the compliance-sensitive vendor documents in "Vendor documents"
-  below, and a recoverable PIN would have weakened that.) Repeated wrong-PIN
-  attempts lock out for 15 minutes (`server/routes/auth.js`). What's still
-  missing: the site is served
-  over plain HTTP, so credentials and data travel unencrypted over the
-  network. Real HTTPS needs a domain name pointed at the droplet's IP (a
-  bare IP can't get a trusted certificate) — the domain itself is a separate
-  purchase/registration step still ahead, but the serving side is ready:
-  `scripts/deploy.sh` now puts Caddy in front of the app, and re-running it
-  with `DOMAIN=www.yourdomain.com` set (on the `bash` side of the `curl | bash`
-  pipe, not before `curl`) gets a free, auto-renewing Let's Encrypt cert and
-  an http→https redirect with no further manual cert work.
+  a PIN *reset* instead -- see **Admin PIN reset** and **Self-service PIN
+  reset** below -- since this login also gates the compliance-sensitive
+  vendor documents in "Vendor documents" below, and a recoverable PIN would
+  have weakened that.) Repeated wrong-PIN attempts lock out for 15 minutes
+  (`server/routes/auth.js`). The site is now served over real HTTPS at
+  `services-works.com` (a free, auto-renewing Let's Encrypt certificate via
+  Caddy, set up by `scripts/deploy.sh` with `DOMAIN=services-works.com` --
+  see that script's own header comment for the exact command), so
+  credentials and data no longer travel unencrypted over the network. The
+  bare droplet IP has no certificate of its own and is no longer how this
+  app should be reached -- use the domain.
+- **Self-service PIN reset via email (`POST /api/auth/forgot-pin` /
+  `POST /api/auth/reset-pin`, `server/routes/auth.js`).** Previously the
+  only way to recover a forgotten PIN was an admin manually clicking
+  "Reset PIN" and relaying the new one by phone/in person (still available
+  -- see **Admin PIN reset** below, useful when nobody has an email on
+  file). Now anyone with an email on their account can request a one-time
+  link themselves: a random, single-use token good for 30 minutes
+  (`password_resets` table), emailed via `server/utils/mailer.js`. The
+  route always answers with the same generic message regardless of
+  whether the ID exists, is active, or has an email on file, so it can't
+  be used to probe for valid IDs -- and a second request silently burns
+  any still-outstanding earlier token, so only the newest emailed link
+  ever works. Needs real SMTP credentials to actually deliver (see
+  `scripts/deploy.sh`'s header comment for the one-liner, or set
+  `SMTP_HOST`/`SMTP_USER`/`SMTP_PASS`/`PUBLIC_BASE_URL` directly in the
+  systemd service) -- until then it's a no-op logger, same as every other
+  email this app sends.
 - **A dead session used to fail silently.** If a session token the browser
   still holds stops being valid server-side (it expired, or the token row
   is simply gone), every tab that fetches data on load hit a 401, threw,
@@ -2051,25 +2066,30 @@ happen.
   and bounces to the login screen with "Your session expired -- please
   log in again." instead of a silent blank tab.
 - **Vendor documents (COI/W-9/ACH, which can carry bank routing/account
-  numbers and tax IDs) are already access-controlled at the application
-  layer** — `server/routes/files.js`'s `canRead`/`canWrite` refuse any
-  non-admin for `relatedType: "vendor"` outright (a technician can look up
-  a vendor's active/contact info via the separate `/api/vendors` endpoint,
-  but never sees or downloads its files), every file route requires a
-  valid session token, and there's no public/unauthenticated route that
-  serves uploaded files at all — nothing is reachable by just guessing a
-  URL. What that access control doesn't cover is the **network** it
-  travels over: see the HTTPS gap directly above. Until that's closed,
-  anyone positioned to intercept traffic between a browser and the droplet
-  (the same public wifi, a compromised router, etc.) could read a session
-  token or a downloaded file's bytes in transit, even though they still
-  couldn't just browse to it unauthenticated. Practically: **put a domain
-  in front of the droplet and get it a free Let's Encrypt certificate**
-  (e.g. via `certbot --nginx` once a reverse proxy is added, or a
-  DigitalOcean App Platform / Cloudflare tunnel in front of it) before
-  onboarding real ACH numbers — that one change closes the actual gap here.
-  Everything else (hashed PINs, session-based auth, admin-only file access)
-  is already in place and doesn't change with that migration.
+  numbers and tax IDs) are access-controlled at the application layer** —
+  `server/routes/files.js`'s `canRead`/`canWrite` refuse any non-admin for
+  `relatedType: "vendor"` outright (a technician can look up a vendor's
+  active/contact info via the separate `/api/vendors` endpoint, but never
+  sees or downloads its files), every file route requires a valid session
+  token, and there's no public/unauthenticated route that serves uploaded
+  files at all — nothing is reachable by just guessing a URL. The actual
+  bank account/routing numbers are also never stored as their own
+  database columns anywhere; the `vendors` table only ever holds
+  compliance checkboxes about the ACH form (e.g. "bank letterhead
+  provided"), so the real numbers only ever exist inside the uploaded
+  document itself. The **network** these files travel over is now
+  encrypted too (see the HTTPS bullet above) — downloads and uploads are
+  no longer interceptable in transit the way they were before a domain
+  and certificate were in place.
+  **What's still genuinely open: encryption at rest.** Uploaded files sit
+  as plain, unencrypted bytes on the droplet's own disk
+  (`server/data/uploads/` by default), and the SQLite database isn't
+  encrypted either. Admin-only access control and encryption-in-transit
+  don't cover someone who gets at the filesystem directly — root/SSH
+  access to the droplet itself, or a leaked disk backup. Closing that
+  fully would mean encrypting the uploads directory (e.g. a LUKS-encrypted
+  volume) and/or switching to per-file encryption before writing to disk,
+  neither of which exists yet.
 - **PINs are still short (4 digits).** Hashing protects them if the database
   ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
   rate-limit is what actually prevents brute-forcing it online. Worth moving
