@@ -711,15 +711,25 @@ h1, h2, h3, h4 {
   font-size: 11px;
 }
 
-.sidebar-logout-btn {
+/* .btn-ghost (defined further down) sets its own `color: var(--ink)` --
+   same specificity as a single class selector, so whichever of the two
+   rules comes later in this file was silently winning the cascade and
+   making this button's text the dark --ink color instead of the white it
+   was supposed to be, unreadable against the dark sidebar. The extra
+   `.btn` in this selector (the button also carries that class, see
+   app.js) raises specificity just enough to always win regardless of
+   source order -- a solid red fill now too, not just a fix for the text
+   color, so it reads clearly as the one destructive action in the
+   sidebar. */
+.btn.sidebar-logout-btn {
   width: 100%;
   justify-content: center;
   display: flex;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--danger);
   color: #fff;
 }
-.sidebar-logout-btn:hover {
-  background: rgba(255, 255, 255, 0.16);
+.btn.sidebar-logout-btn:hover {
+  background: var(--accent-dark);
   color: #fff;
 }
 
