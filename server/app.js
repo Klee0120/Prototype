@@ -39,6 +39,27 @@ function createApp() {
   // whole app into a stuck blank page. Left as helmet's own default now.
   app.use(helmet());
 
+  // The browser-toolbar extension (a separate chrome-extension:// origin,
+  // not this site) needs to call these same /api/ routes directly -- a
+  // plain browser request from any other origin is blocked by CORS by
+  // default, and the extension's popup is exactly that: a different
+  // origin making a fetch() call, not a server-to-server request (which
+  // was never subject to CORS at all, so this isn't opening anything up
+  // that curl/Postman/the extension's own background worker couldn't
+  // already reach). Safe to allow any origin here specifically because
+  // auth is a bearer-style x-session-token header the caller must already
+  // have, never a cookie -- there's no ambient browser credential for a
+  // malicious page to silently ride along on, which is the actual risk
+  // `Access-Control-Allow-Origin: *` would otherwise create. Scoped to
+  // /api/ only; the static site itself has no reason to allow this.
+  app.use("/api", (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-session-token");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+  });
+
   app.use(express.json());
 
   app.get("/api/meta/current-week", (req, res) => {

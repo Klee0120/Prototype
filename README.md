@@ -2405,6 +2405,57 @@ happen.
   labor report will need to be matched up against; the rest is a bigger
   "site directory" feature to build only if/when it's actually needed for
   reconciliation or reporting.
+- **Browser-toolbar time tracker extension (`public/extension/`).** A
+  Manifest V3 Chrome/Edge extension that puts the admin Time Tracker widget
+  (`public/js/views/timeTracker.js`) in the browser toolbar instead of only
+  inside the app tab -- same categories, same `/api/admin/time-log/*`
+  endpoints, same PO/technician linking, same auto-switch/deliberate-stop
+  behavior. It has its own login (extension storage is a separate origin
+  from the site's `localStorage`, so a site session can't be reused) and
+  its own background service worker that polls `/time-log/current` once a
+  minute to keep a toolbar badge showing elapsed time on the running entry
+  (MV3 service workers aren't continuously alive, so this is minute-level,
+  not a live second-by-second tick like the in-app widget's own badge).
+  `server/app.js` added CORS headers scoped to `/api/*` so the extension's
+  `chrome-extension://` origin can call them directly (`Access-Control-
+  Allow-Origin: *` is safe here specifically because auth is a bearer
+  `x-session-token` header, never a cookie -- see that file's own comment).
+  A hosted privacy policy for the Chrome Web Store listing lives at
+  `public/extension-privacy.html` (served at `/extension-privacy.html` once
+  deployed). Not yet published -- see **Publishing the extension** below
+  for what's still needed and who has to do it.
+
+## Publishing the extension
+
+`public/extension/` is a working, locally-loadable extension, but getting
+it onto the Chrome Web Store (so Krista doesn't have to manually install it
+on every machine) needs a few things only she can do, since they require
+her own Google account and payment method:
+
+1. **Create a Chrome Web Store developer account** at
+   https://chrome.google.com/webstore/devconsole -- a one-time $5 registration
+   fee.
+2. **Zip `public/extension/`** (the folder itself, not a parent folder
+   containing it) and upload it as a new item.
+3. **Fill in the store listing**: a short description, at least one
+   1280x800 (or 640x400) screenshot of the popup in use, and the privacy
+   policy URL -- once deployed, `https://services-works.com/extension-privacy.html`.
+4. **Choose visibility.** Since this is an internal company tool, "Private"
+   (restricted to specific Google accounts/Google Workspace domain, e.g.
+   everyone `@cushwake.com`) is almost certainly the right choice over a
+   public "Unlisted"/"Public" listing -- set under the listing's
+   "Visibility" settings.
+5. **Submit for review.** Google's review for a first-time publish can take
+   anywhere from a few hours to a few days; a private/internal listing is
+   typically faster than a public one.
+6. **Edge**: a Chrome Web Store item installs directly in Microsoft Edge too
+   (Edge has a built-in toggle to allow extensions from other stores), so
+   one listing covers both browsers -- no separate Edge submission needed
+   unless she later wants it in the Microsoft Edge Add-ons store as well.
+
+Until it's published, anyone can still use it today via
+`chrome://extensions` -> enable "Developer mode" -> "Load unpacked" ->
+select the `public/extension/` folder.
 
 ## Folder structure
 
