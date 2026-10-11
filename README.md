@@ -25,9 +25,12 @@ for what that means in practice.
   served as static files by Express.
 - No cloud services are required — the whole thing runs on one machine with
   two local files/folders as its only state. The one optional exception is
-  outbound email (`nodemailer`, via `server/utils/mailer.js`): it's a no-op
-  until you point it at an SMTP account (see "Where this stands"), and
-  nothing else in the app depends on it.
+  outbound email (SendGrid's HTTP API, via `server/utils/mailer.js`): it's
+  a no-op until you point it at a SendGrid API key (see "Where this
+  stands"), and nothing else in the app depends on it. Not raw SMTP --
+  most cloud hosts (DigitalOcean included) block outbound SMTP ports by
+  default, so this goes over plain HTTPS instead, the same as every other
+  outbound call this app makes.
 
 ## Running it
 
@@ -2041,11 +2044,15 @@ happen.
   whether the ID exists, is active, or has an email on file, so it can't
   be used to probe for valid IDs -- and a second request silently burns
   any still-outstanding earlier token, so only the newest emailed link
-  ever works. Needs real SMTP credentials to actually deliver (see
+  ever works. Needs a real SendGrid API key to actually deliver (see
   `scripts/deploy.sh`'s header comment for the one-liner, or set
-  `SMTP_HOST`/`SMTP_USER`/`SMTP_PASS`/`PUBLIC_BASE_URL` directly in the
+  `SENDGRID_API_KEY`/`SENDGRID_FROM`/`PUBLIC_BASE_URL` directly in the
   systemd service) -- until then it's a no-op logger, same as every other
-  email this app sends.
+  email this app sends. Sends over SendGrid's HTTP API rather than SMTP --
+  confirmed live that DigitalOcean blocks outbound SMTP ports by default
+  (a real Gmail App Password, correctly configured, still timed out trying
+  to reach `smtp.gmail.com:587` from this droplet), while ordinary
+  outbound HTTPS works fine. See `server/utils/mailer.js`'s own comment.
 - **A dead session used to fail silently.** If a session token the browser
   still holds stops being valid server-side (it expired, or the token row
   is simply gone), every tab that fetches data on load hit a 401, threw,
@@ -2205,17 +2212,22 @@ happen.
   currently 30 days) if that lead time needs to change. The email
   infrastructure now exists (`server/utils/mailer.js`, see below) if this
   ever needs a real email/SMS alert too — it just isn't wired up for it yet.
-- **Email notifications need SMTP credentials to actually send anything.**
+- **Email notifications need a SendGrid API key to actually send anything.**
   Until then, `server/utils/mailer.js` just logs what it would have sent and
   the technician only ever sees the in-app note — nothing breaks, nothing
   silently lies about having emailed someone. To turn real email on, set
   these environment variables before starting the app (e.g. in the
   systemd service file, or a `.env` loaded by your process manager):
-  `SMTP_HOST`, `SMTP_PORT` (defaults to 587), `SMTP_USER`, `SMTP_PASS`, and
-  optionally `SMTP_FROM` (defaults to `SMTP_USER`). Any SMTP provider works
-  (a Microsoft 365/Google Workspace mailbox's SMTP settings, or a
-  transactional provider like SendGrid) — this app doesn't care which, it
-  just needs standard SMTP auth.
+  `SENDGRID_API_KEY` and `SENDGRID_FROM` (the verified sender address).
+  Sends over SendGrid's HTTP API (`https://api.sendgrid.com/v3/mail/send`
+  via plain `fetch`), not SMTP — confirmed live that this matters: a
+  correctly-configured Gmail App Password still couldn't connect to
+  `smtp.gmail.com:587` from this app's droplet, because DigitalOcean (like
+  most cloud hosts) blocks outbound SMTP ports by default as an anti-spam
+  measure. Ordinary outbound HTTPS isn't blocked, so an HTTP-API-based
+  provider is what actually works here — plain SMTP credentials, however
+  correct, will time out the same way regardless of which provider issued
+  them.
 - **Smartsheet connection: read-only pull that creates, promotes, and prices
   WOMs from the external PSE tracker.** `server/utils/smartsheet.js` is a
   thin, opt-in client (same no-crash-until-configured pattern as the mailer
