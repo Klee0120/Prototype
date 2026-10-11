@@ -2097,10 +2097,17 @@ happen.
   fully would mean encrypting the uploads directory (e.g. a LUKS-encrypted
   volume) and/or switching to per-file encryption before writing to disk,
   neither of which exists yet.
-- **PINs are still short (4 digits).** Hashing protects them if the database
-  ever leaked; it doesn't make a 4-digit PIN itself less guessable. The
-  rate-limit is what actually prevents brute-forcing it online. Worth moving
-  to longer PINs or real passwords before this holds anything sensitive.
+- **PIN strength policy: 8+ characters, at least one special character
+  (`server/utils/password.js`'s `pinStrengthError`).** Enforced on every
+  path that sets a PIN going forward -- account creation (admin or
+  self-service technician/admin forms), an admin-generated reset
+  (`randomPin` in `server/routes/admin.js`, now 8 characters with exactly
+  one special character inserted, via `crypto.randomInt` rather than
+  `Math.random`), and the self-service emailed reset. Applies only to a
+  PIN actually being set; an existing short/all-numeric PIN already on an
+  account keeps working to log in, nothing revalidates it at login time.
+  The 15-minute lockout (`server/routes/auth.js`) still does real work
+  here too, but no longer has to carry the whole burden on its own.
 - **The Priorities tab's daily-focus goal numbers are fixed constants (10),
   not admin-configurable.** `DAILY_GOAL_TARGET` in `adminReview.js` — the
   suggestion text is generated from real backlog counts, but the "try

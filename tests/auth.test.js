@@ -137,7 +137,7 @@ test("auth: forgot-pin / reset-pin flow", async (t) => {
     const first = rows.find((r) => r.token === firstToken);
     assert.equal(first.used, 1, "the earlier outstanding token should be burned once a newer one is requested");
 
-    const stale = await server.call("POST", "/api/auth/reset-pin", { body: { token: firstToken, pin: "5555" } });
+    const stale = await server.call("POST", "/api/auth/reset-pin", { body: { token: firstToken, pin: "ValidPin1!" } });
     assert.equal(stale.status, 400);
   });
 
@@ -145,21 +145,21 @@ test("auth: forgot-pin / reset-pin flow", async (t) => {
     await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1003" } });
     const token = resetRowsFor("T1003")[0].token;
 
-    const reset = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "4321" } });
+    const reset = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "NewPin123!" } });
     assert.equal(reset.status, 200);
     assert.equal(reset.body.ok, true);
 
     const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1003", pin: "2345" } });
     assert.equal(oldLogin.status, 401);
-    const newLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1003", pin: "4321" } });
+    const newLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1003", pin: "NewPin123!" } });
     assert.equal(newLogin.status, 200);
 
-    const replay = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "9876" } });
+    const replay = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "AnotherPin1!" } });
     assert.equal(replay.status, 400);
   });
 
   await t.test("rejects a made-up reset token", async () => {
-    const res = await server.call("POST", "/api/auth/reset-pin", { body: { token: "not-a-real-token", pin: "4321" } });
+    const res = await server.call("POST", "/api/auth/reset-pin", { body: { token: "not-a-real-token", pin: "ValidPin1!" } });
     assert.equal(res.status, 400);
   });
 
@@ -171,25 +171,35 @@ test("auth: forgot-pin / reset-pin flow", async (t) => {
       token
     );
 
-    const res = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "4321" } });
+    const res = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "ValidPin1!" } });
     assert.equal(res.status, 400);
   });
 
-  await t.test("rejects a non-numeric or oddly-shaped new PIN", async () => {
+  // New PIN policy (server/utils/password.js's pinStrengthError): at least
+  // 8 characters, and at least one special character -- a plain short
+  // numeric PIN is guessable fast enough that the login lockout was doing
+  // most of the real work. Applies here the same as account creation and
+  // the admin-mediated reset.
+  await t.test("rejects a new PIN that's too short or missing a special character, accepts one that meets both", async () => {
     await server.call("POST", "/api/auth/forgot-pin", { body: { id: "T1002" } });
     const token = resetRowsFor("T1002")[0].token;
 
-    const letters = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "abcd" } });
-    assert.equal(letters.status, 400);
-
-    const tooShort = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "12" } });
+    const tooShort = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "Ab1!" } });
     assert.equal(tooShort.status, 400);
+    assert.match(tooShort.body.error, /at least 8 characters/i);
+
+    const noSpecialChar = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "LongEnoughButPlain1" } });
+    assert.equal(noSpecialChar.status, 400);
+    assert.match(noSpecialChar.body.error, /special character/i);
+
+    const compliant = await server.call("POST", "/api/auth/reset-pin", { body: { token, pin: "Compliant1!" } });
+    assert.equal(compliant.status, 200);
   });
 
   await t.test("missing id/token on either route is a 400", async () => {
     const forgot = await server.call("POST", "/api/auth/forgot-pin", { body: {} });
     assert.equal(forgot.status, 400);
-    const reset = await server.call("POST", "/api/auth/reset-pin", { body: { pin: "4321" } });
+    const reset = await server.call("POST", "/api/auth/reset-pin", { body: { pin: "ValidPin1!" } });
     assert.equal(reset.status, 400);
   });
 });

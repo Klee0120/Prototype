@@ -254,7 +254,7 @@ export function renderTechniciansTab(content, openTo) {
           <div class="add-tech-grid">
             <input name="id" placeholder="ID (e.g. ADMIN2)" required />
             <input name="name" placeholder="Full name" required />
-            <input name="pin" placeholder="PIN" required inputmode="numeric" />
+            <input name="pin" placeholder="PIN (8+ chars, 1 special)" required />
           </div>
           <button type="submit" class="btn btn-secondary">Add admin account</button>
           <span class="save-message add-admin-message"></span>
@@ -387,7 +387,7 @@ export function renderTechniciansTab(content, openTo) {
           <div class="add-tech-grid">
             <input name="id" placeholder="ID (e.g. T1004)" required />
             <input name="name" placeholder="Full name" required />
-            <input name="pin" placeholder="PIN" required inputmode="numeric" />
+            <input name="pin" placeholder="PIN (8+ chars, 1 special)" required />
             <input name="position" placeholder="Position" />
             <select name="homeLocationCode"><option value="">No home location</option>${locationOptions}</select>
             <input name="email" placeholder="Email" type="email" />
@@ -449,7 +449,7 @@ export function renderTechniciansTab(content, openTo) {
           <div class="add-tech-grid">
             <input name="id" placeholder="ID (e.g. ADMIN2)" required />
             <input name="name" placeholder="Full name" required />
-            <input name="pin" placeholder="PIN" required inputmode="numeric" />
+            <input name="pin" placeholder="PIN (8+ chars, 1 special)" required />
             <select name="homeLocationCode"><option value="">No location</option>${locationOptions}</select>
             <input name="ukgId" placeholder="UKG ID" />
             <input name="email" placeholder="Email" type="email" />

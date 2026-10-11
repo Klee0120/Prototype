@@ -16,9 +16,9 @@ export function renderResetPin(token) {
         <h1>ServiceWorks</h1>
         <p class="login-sub">Set a new PIN</p>
         <label for="reset-pin-new">New PIN</label>
-        <input id="reset-pin-new" name="pin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="4-10 digits" required />
+        <input id="reset-pin-new" name="pin" type="password" autocomplete="new-password" placeholder="8+ characters, 1 special" required />
         <label for="reset-pin-confirm">Confirm new PIN</label>
-        <input id="reset-pin-confirm" name="confirmPin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="4-10 digits" required />
+        <input id="reset-pin-confirm" name="confirmPin" type="password" autocomplete="new-password" placeholder="8+ characters, 1 special" required />
         <button type="submit" class="btn btn-primary">Set new PIN</button>
         <p class="login-error" id="reset-pin-error" hidden></p>
       </form>

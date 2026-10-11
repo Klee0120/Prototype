@@ -52,7 +52,7 @@ export function renderLogin(initialMessage) {
       <label for="login-id">ID</label>
       <input id="login-id" name="id" type="text" autocomplete="username" placeholder="e.g. T1001" required />
       <label for="login-pin">PIN</label>
-      <input id="login-pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="****" required />
+      <input id="login-pin" name="pin" type="password" autocomplete="current-password" placeholder="PIN" required />
       <button type="submit" class="btn btn-primary">Log in</button>
       <button type="button" class="btn btn-link" id="login-forgot-pin">Forgot your PIN?</button>
       <p class="login-error" id="login-error" ${initialMessage ? "" : "hidden"}>${initialMessage || ""}</p>

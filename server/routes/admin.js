@@ -1,5 +1,7 @@
 const express = require("express");
+const crypto = require("crypto");
 const db = require("../data/db");
+const { pinStrengthError } = require("../utils/password");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { DAY_NAMES, shiftWeek, currentWeekMonday } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
@@ -44,6 +46,8 @@ router.get("/technicians", (req, res) => {
 router.post("/technicians", (req, res) => {
   const { id, name, pin, homeLocationCode, email, phone, ukgId, position, hireDate } = req.body || {};
   if (!id || !name || !pin) return res.status(400).json({ error: "id, name, and pin are required" });
+  const pinError = pinStrengthError(pin);
+  if (pinError) return res.status(400).json({ error: pinError });
   if (db.findTechnician(id)) return res.status(409).json({ error: "That ID is already in use" });
   if (homeLocationCode && !db.findLocation(homeLocationCode)) {
     return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });
@@ -55,8 +59,23 @@ router.post("/technicians", (req, res) => {
   res.status(201).json(presentTechnician(tech));
 });
 
+// Avoids visually ambiguous characters (0/O, 1/l/I) since this is read off
+// a screen and relayed to someone by phone/in person -- still meets the
+// PIN strength policy (server/utils/password.js's pinStrengthError): 7
+// random alphanumeric characters plus exactly one special character
+// inserted at a random position, 8 characters total. crypto.randomInt
+// (not Math.random) since this is generating a real login credential.
+const PIN_ALPHANUM = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+const PIN_SPECIAL_CHARS = "!@#$%^&*";
+
 function randomPin() {
-  return String(Math.floor(1000 + Math.random() * 9000));
+  let body = "";
+  for (let i = 0; i < 7; i++) {
+    body += PIN_ALPHANUM[crypto.randomInt(PIN_ALPHANUM.length)];
+  }
+  const special = PIN_SPECIAL_CHARS[crypto.randomInt(PIN_SPECIAL_CHARS.length)];
+  const pos = crypto.randomInt(body.length + 1);
+  return body.slice(0, pos) + special + body.slice(pos);
 }
 
 // For onboarding a whole real roster at once instead of one form per
@@ -758,6 +777,8 @@ router.get("/admins", (req, res) => {
 router.post("/admins", (req, res) => {
   const { id, name, pin, homeLocationCode } = req.body || {};
   if (!id || !name || !pin) return res.status(400).json({ error: "id, name, and pin are required" });
+  const pinError = pinStrengthError(pin);
+  if (pinError) return res.status(400).json({ error: pinError });
   if (db.findTechnician(id)) return res.status(409).json({ error: "That ID is already in use" });
   if (homeLocationCode && !db.findLocation(homeLocationCode)) {
     return res.status(400).json({ error: `Unknown location: ${homeLocationCode}` });

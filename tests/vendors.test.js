@@ -627,7 +627,7 @@ test("vendors: territory-derived compliance routing (findAdminForVendor)", async
   db.createLocation("EASTLOC", "East Test Site", null, "East", null, "East", null);
   await server.call("POST", "/api/admin/admins", {
     userId: "ADMIN",
-    body: { id: "ADMIN-EAST", name: "East Admin", pin: "5555", homeLocationCode: "EASTLOC" },
+    body: { id: "ADMIN-EAST", name: "East Admin", pin: "EastAdmin1!", homeLocationCode: "EASTLOC" },
   });
 
   function insertMatchedPo(vendorId, region) {

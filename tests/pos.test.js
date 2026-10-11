@@ -911,7 +911,7 @@ test("PO Tracker: a PO's territory comes from its admin, falling back to its own
   await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TERRTEST-EAST", name: "East HQ Site", territory: "East" } });
   await server.call("POST", "/api/locations", { userId: "ADMIN", body: { code: "TERRTEST-WEST", name: "West Depot", territory: "West" } });
 
-  await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN1", name: "Pat Eastward", pin: "1234" } });
+  await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN1", name: "Pat Eastward", pin: "Eastward1!" } });
   await server.call("PATCH", "/api/admin/admins/TERRADMIN1/basic-info", { userId: "ADMIN", body: { homeLocationCode: "TERRTEST-EAST" } });
 
   await t.test("a matched admin's territory wins even when the PO's own location disagrees", async () => {
@@ -939,14 +939,14 @@ test("PO Tracker: a PO's territory comes from its admin, falling back to its own
   });
 
   await t.test("a matched admin with no home location on file falls back to the PO's own location", async () => {
-    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN2", name: "No Home Set", pin: "1234" } });
+    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN2", name: "No Home Set", pin: "NoHome123!" } });
     const poId = insertPo({ composite: "terr-5", poNumber: "PO92005", adminName: "No Home Set", locationCode: "TERRTEST-WEST" });
     const res = await server.call("GET", `/api/admin/pos/${poId}`, { userId: "ADMIN" });
     assert.equal(res.body.territory, "West");
   });
 
   await t.test("a terminated admin's name no longer drives territory -- falls back to the PO's own location", async () => {
-    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN3", name: "Gone Fromhere", pin: "1234" } });
+    await server.call("POST", "/api/admin/admins", { userId: "ADMIN", body: { id: "TERRADMIN3", name: "Gone Fromhere", pin: "Gone1234!" } });
     await server.call("PATCH", "/api/admin/admins/TERRADMIN3/basic-info", { userId: "ADMIN", body: { homeLocationCode: "TERRTEST-EAST" } });
     await server.call("PATCH", "/api/admin/admins/TERRADMIN3/employment-status", { userId: "ADMIN", body: { status: "terminated" } });
 

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 const db = require("../server/data/db");
+const { pinStrengthError } = require("../server/utils/password");
 
 async function submitFullWeek(server, techId, week, locationCode) {
   const detail = await server.call("GET", `/api/technicians/${techId}/weeks/${week}`, { userId: techId });
@@ -717,12 +718,12 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
   await t.test("admin can create a new admin account with its own login", async () => {
     const create = await server.call("POST", "/api/admin/admins", {
       userId: "ADMIN",
-      body: { id: "ADMIN2", name: "Jordan Smith", pin: "4321" },
+      body: { id: "ADMIN2", name: "Jordan Smith", pin: "Jordan1!" },
     });
     assert.equal(create.status, 201);
     assert.equal(create.body.employmentStatus, "active");
 
-    const login = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "4321" } });
+    const login = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "Jordan1!" } });
     assert.equal(login.status, 200);
 
     const list = await server.call("GET", "/api/admin/admins", { userId: "ADMIN" });
@@ -733,7 +734,7 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
   await t.test("admin can set a home location when creating a new admin account", async () => {
     const create = await server.call("POST", "/api/admin/admins", {
       userId: "ADMIN",
-      body: { id: "ADMIN3", name: "Casey Rivers", pin: "5566", homeLocationCode: "PRINCETON" },
+      body: { id: "ADMIN3", name: "Casey Rivers", pin: "Casey123!", homeLocationCode: "PRINCETON" },
     });
     assert.equal(create.status, 201);
     assert.equal(create.body.homeLocationCode, "PRINCETON");
@@ -746,7 +747,7 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
   await t.test("creating an admin account rejects an unknown home location", async () => {
     const res = await server.call("POST", "/api/admin/admins", {
       userId: "ADMIN",
-      body: { id: "ADMIN4", name: "Someone Else", pin: "7788", homeLocationCode: "NOWHERE" },
+      body: { id: "ADMIN4", name: "Someone Else", pin: "Someone1!", homeLocationCode: "NOWHERE" },
     });
     assert.equal(res.status, 400);
     assert.ok(!(await server.call("GET", "/api/admin/admins", { userId: "ADMIN" })).body.some((a) => a.id === "ADMIN4"));
@@ -755,7 +756,7 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
   await t.test("cannot create an admin account with an ID already in use", async () => {
     const res = await server.call("POST", "/api/admin/admins", {
       userId: "ADMIN",
-      body: { id: "T1001", name: "Someone", pin: "1111" },
+      body: { id: "T1001", name: "Someone", pin: "Dup1234!" },
     });
     assert.equal(res.status, 409);
   });
@@ -920,9 +921,9 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
   await t.test("admin can reset an admin account's PIN, and it's logged to the audit trail", async () => {
     const res = await server.call("POST", "/api/admin/admins/ADMIN2/reset-pin", { userId: "ADMIN", body: {} });
     assert.equal(res.status, 200);
-    assert.match(res.body.pin, /^\d{4}$/);
+    assert.equal(pinStrengthError(res.body.pin), null, "the generated PIN should itself meet the strength policy");
 
-    const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "4321" } });
+    const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "Jordan1!" } });
     assert.equal(oldLogin.status, 401);
     const newLogin = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: res.body.pin } });
     assert.equal(newLogin.status, 200);
@@ -967,7 +968,7 @@ test("priorities: short-hours flag, missing UKG, report gaps, admin accounts", a
     assert.equal(deactivate.status, 200);
     assert.equal(deactivate.body.employmentStatus, "inactive");
 
-    const loginBlocked = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "4321" } });
+    const loginBlocked = await server.call("POST", "/api/auth/login", { body: { id: "ADMIN2", pin: "Jordan1!" } });
     assert.equal(loginBlocked.status, 401);
 
     // The account is deactivated, but the history of what it did while

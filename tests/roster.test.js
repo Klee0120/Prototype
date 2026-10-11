@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 const db = require("../server/data/db");
+const { pinStrengthError } = require("../server/utils/password");
 
 test("roster: technician profile (basic info, onboarding, devices, history)", async (t) => {
   const server = await startServer();
@@ -83,7 +84,7 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
   await t.test("cannot switch to email without an email on file", async () => {
     const create = await server.call("POST", "/api/admin/technicians", {
       userId: "ADMIN",
-      body: { id: "T-NOEMAIL", name: "No Email Tech", pin: "1111" },
+      body: { id: "T-NOEMAIL", name: "No Email Tech", pin: "NoEmail1!" },
     });
     assert.equal(create.status, 201);
 
@@ -155,7 +156,7 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
       body: {
         id: "T1099",
         name: "Casey New",
-        pin: "4321",
+        pin: "Casey123!",
         position: "Technician",
         homeLocationCode: "PRINCETON",
         hireDate: "2026-03-02",
@@ -165,14 +166,14 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.body.employmentStatus, "active");
     assert.equal(res.body.hireDate, "2026-03-02");
 
-    const login = await server.call("POST", "/api/auth/login", { body: { id: "T1099", pin: "4321" } });
+    const login = await server.call("POST", "/api/auth/login", { body: { id: "T1099", pin: "Casey123!" } });
     assert.equal(login.status, 200);
   });
 
   await t.test("rejects a malformed start date when creating a technician", async () => {
     const res = await server.call("POST", "/api/admin/technicians", {
       userId: "ADMIN",
-      body: { id: "T1098", name: "Bad Date", pin: "4321", hireDate: "03/02/2026" },
+      body: { id: "T1098", name: "Bad Date", pin: "BadDate1!", hireDate: "03/02/2026" },
     });
     assert.equal(res.status, 400);
   });
@@ -180,7 +181,7 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
   await t.test("admin can reset a technician's PIN, and it's logged to the audit trail", async () => {
     const res = await server.call("POST", "/api/admin/technicians/T1001/reset-pin", { userId: "ADMIN", body: {} });
     assert.equal(res.status, 200);
-    assert.match(res.body.pin, /^\d{4}$/);
+    assert.equal(pinStrengthError(res.body.pin), null, "the generated PIN should itself meet the strength policy");
 
     const oldLogin = await server.call("POST", "/api/auth/login", { body: { id: "T1001", pin: "1234" } });
     assert.equal(oldLogin.status, 401);
@@ -205,7 +206,7 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
   await t.test("cannot create a technician with a duplicate ID", async () => {
     const res = await server.call("POST", "/api/admin/technicians", {
       userId: "ADMIN",
-      body: { id: "T1001", name: "Dupe", pin: "1111" },
+      body: { id: "T1001", name: "Dupe", pin: "Dupe1234!" },
     });
     assert.equal(res.status, 409);
   });
@@ -389,11 +390,12 @@ test("roster: technician profile (basic info, onboarding, devices, history)", as
     assert.equal(res.status, 201);
     assert.equal(res.body.created.length, 2);
     assert.equal(res.body.errors.length, 0);
-    // Each row gets its own randomly-generated 4-digit PIN, not a shared one.
+    // Each row gets its own randomly-generated PIN, not a shared one, and
+    // it meets the same strength policy a typed-in PIN would have to.
     const [one, two] = res.body.created;
-    assert.match(one.pin, /^\d{4}$/);
-    assert.match(two.pin, /^\d{4}$/);
-    assert.notEqual(one.pin === two.pin && one.id === two.id, true);
+    assert.equal(pinStrengthError(one.pin), null);
+    assert.equal(pinStrengthError(two.pin), null);
+    assert.notEqual(one.pin, two.pin);
 
     // The generated PIN actually works to log in.
     const login = await server.call("POST", "/api/auth/login", { body: { id: "T-BULK-1", pin: one.pin } });

@@ -1,6 +1,7 @@
 const express = require("express");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
+const { pinStrengthError } = require("../utils/password");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
@@ -131,9 +132,8 @@ router.post("/forgot-pin", async (req, res) => {
 router.post("/reset-pin", (req, res) => {
   const { token, pin } = req.body || {};
   if (!token || !pin) return res.status(400).json({ error: "token and pin are required" });
-  if (!/^\d{4,10}$/.test(String(pin))) {
-    return res.status(400).json({ error: "PIN must be 4-10 digits" });
-  }
+  const pinError = pinStrengthError(pin);
+  if (pinError) return res.status(400).json({ error: pinError });
 
   const techId = db.consumePasswordReset(token);
   if (!techId) {
