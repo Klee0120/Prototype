@@ -255,3 +255,120 @@ test("Time Log: Enter WOM/Invoice-Found durations, new timer categories, estimat
     await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
   });
 });
+
+// Category flags that drive the widget/extension's required-link-on-stop
+// prompt, plus the 12h runaway-timer safety net and the time-correction
+// path for fixing an entry after the fact.
+test("Time Log: category tracksPo/tracksVendor flags, the 12h auto-stop cap, and manual time correction", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+
+  await t.test("tracksPo is set on exactly the PO-money categories", async () => {
+    const res = await server.call("GET", "/api/admin/time-log/categories", { userId: "ADMIN" });
+    const poKeys = res.body.filter((c) => c.tracksPo).map((c) => c.key);
+    assert.deepEqual(poKeys.sort(), ["invoicing", "order_supplies", "po_invoice", "reclasses"]);
+  });
+
+  await t.test("tracksVendor is set on exactly the vendor-record categories", async () => {
+    const res = await server.call("GET", "/api/admin/time-log/categories", { userId: "ADMIN" });
+    const vendorKeys = res.body.filter((c) => c.tracksVendor).map((c) => c.key);
+    assert.deepEqual(vendorKeys.sort(), ["coi_renewals", "vendor_onboarding"]);
+  });
+
+  await t.test("a timer left running past the 12h cap auto-stops the next time it's read", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    assert.equal(started.status, 201);
+
+    // Backdate it past the cap, simulating a timer nobody touched for 13h.
+    const staleStart = new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString();
+    raw.prepare("UPDATE time_log_entries SET started_at = ? WHERE id = ?").run(staleStart, started.body.id);
+
+    const current = await server.call("GET", "/api/admin/time-log/current", { userId: "ADMIN" });
+    assert.equal(current.status, 200);
+    assert.equal(current.body, null); // auto-closed, so nothing is "running" anymore
+
+    const row = raw.prepare("SELECT ended_at, note FROM time_log_entries WHERE id = ?").get(started.body.id);
+    assert.ok(row.ended_at);
+    assert.match(row.note, /auto-stopped after 12h/);
+    // Stopped at the 12h cap from its (backdated) start, not at "now".
+    const cappedMs = new Date(row.ended_at).getTime() - new Date(staleStart).getTime();
+    assert.equal(Math.round(cappedMs / 60000), 12 * 60);
+  });
+
+  await t.test("a timer well within the cap is left alone", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    const current = await server.call("GET", "/api/admin/time-log/current", { userId: "ADMIN" });
+    assert.equal(current.status, 200);
+    assert.equal(current.body.id, started.body.id);
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+  });
+
+  await t.test("PATCH can correct a stopped entry's startedAt/endedAt", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+
+    const goodStart = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    const goodEnd = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const res = await server.call("PATCH", `/api/admin/time-log/${started.body.id}`, {
+      userId: "ADMIN",
+      body: { startedAt: goodStart, endedAt: goodEnd },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.startedAt, goodStart);
+    assert.equal(res.body.endedAt, goodEnd);
+    assert.equal(res.body.durationSeconds, 30 * 60);
+  });
+
+  await t.test("PATCH rejects endedAt before startedAt", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+
+    const res = await server.call("PATCH", `/api/admin/time-log/${started.body.id}`, {
+      userId: "ADMIN",
+      body: { startedAt: new Date().toISOString(), endedAt: new Date(Date.now() - 60000).toISOString() },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /endedAt must be after startedAt/);
+  });
+
+  await t.test("PATCH rejects a future startedAt", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+
+    const res = await server.call("PATCH", `/api/admin/time-log/${started.body.id}`, {
+      userId: "ADMIN",
+      body: { startedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /future/);
+  });
+
+  await t.test("PATCH won't let a still-running entry's startedAt change without also giving an endedAt", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    const res = await server.call("PATCH", `/api/admin/time-log/${started.body.id}`, {
+      userId: "ADMIN",
+      body: { startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /still-running/);
+    await server.call("POST", "/api/admin/time-log/stop", { userId: "ADMIN", body: {} });
+  });
+
+  await t.test("PATCH with both startedAt and endedAt can correct a still-running entry (stops it)", async () => {
+    const started = await server.call("POST", "/api/admin/time-log/start", { userId: "ADMIN", body: { category: "general" } });
+    const goodStart = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const goodEnd = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const res = await server.call("PATCH", `/api/admin/time-log/${started.body.id}`, {
+      userId: "ADMIN",
+      body: { startedAt: goodStart, endedAt: goodEnd },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.endedAt);
+
+    const current = await server.call("GET", "/api/admin/time-log/current", { userId: "ADMIN" });
+    assert.equal(current.body, null);
+  });
+});

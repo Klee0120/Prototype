@@ -81,12 +81,27 @@ router.post("/stop", (req, res) => {
 });
 
 // Attach/edit a note or a linked PO/vendor/WOM/tech on the running entry
-// (or any past entry of your own) without stopping the clock.
+// (or any past entry of your own) without stopping the clock. startedAt/
+// endedAt are the deliberate time-correction path (see updateTimeLogEntry's
+// own comment) -- for fixing an entry after the fact, e.g. one the 12h
+// auto-stop safety net closed, not something the normal start/stop UI sets.
 router.patch("/:id", (req, res) => {
-  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = req.body || {};
-  const entry = db.updateTimeLogEntry(req.user.id, Number(req.params.id), { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId });
-  if (!entry) return res.status(404).json({ error: "Entry not found" });
-  res.json(entry);
+  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId, startedAt, endedAt } = req.body || {};
+  try {
+    const entry = db.updateTimeLogEntry(req.user.id, Number(req.params.id), {
+      note,
+      relatedPoId,
+      relatedVendorId,
+      relatedWomCode,
+      relatedTechId,
+      startedAt,
+      endedAt,
+    });
+    if (!entry) return res.status(404).json({ error: "Entry not found" });
+    res.json(entry);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

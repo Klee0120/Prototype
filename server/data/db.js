@@ -10258,20 +10258,25 @@ function getPosMissingFromTrackerForExport() {
 // process, document management). A closed list keeps every admin's log
 // comparable to every other's -- an open-ended category field would make
 // "how much time goes to reclasses across the territory" unanswerable.
+// tracksPo/tracksVendor mark categories where stopping the clock must
+// resolve a real PO or vendor link first (see stopTimeLogEntry's own
+// comment) -- Krista's own split: PO/Invoice, Reclasses, Invoicing, and
+// Order Supplies are money-against-a-PO work, while Vendor Onboarding and
+// COI Renewals are about a vendor record, not a PO.
 const TIME_LOG_CATEGORIES = [
-  { key: "po_invoice", label: "PO / Invoice (unplanned)" },
-  { key: "vendor_onboarding", label: "Vendor Onboarding" },
+  { key: "po_invoice", label: "PO / Invoice (unplanned)", tracksPo: true },
+  { key: "vendor_onboarding", label: "Vendor Onboarding", tracksVendor: true },
   { key: "timekeeping", label: "Timekeeping (Review of Tech)", tracksTech: true },
   { key: "timekeeping_ukg", label: "Timekeeping - Enter UKG", tracksTech: true },
   { key: "project_status", label: "Project Status Review" },
   { key: "ops_meeting", label: "Operations Meeting" },
   { key: "safety_meeting", label: "Safety Meeting" },
-  { key: "reclasses", label: "Reclasses" },
-  { key: "coi_renewals", label: "COI Renewals" },
+  { key: "reclasses", label: "Reclasses", tracksPo: true },
+  { key: "coi_renewals", label: "COI Renewals", tracksVendor: true },
   { key: "employee_support", label: "Employee Support" },
-  { key: "invoicing", label: "Invoicing" },
+  { key: "invoicing", label: "Invoicing", tracksPo: true },
   { key: "documents", label: "Document Management" },
-  { key: "order_supplies", label: "Order Supplies/Parts" },
+  { key: "order_supplies", label: "Order Supplies/Parts", tracksPo: true },
   { key: "uniform_ordering", label: "Uniform Ordering" },
   { key: "general", label: "General / Other" },
 ];
@@ -10319,13 +10324,34 @@ function presentTimeLogEntry(row) {
   };
 }
 
+// A runaway timer nobody stopped (left the widget/popup closed overnight,
+// stepped away for the day) shouldn't keep accumulating indefinitely --
+// Krista hit a real 24+ hour entry from exactly this. Rather than guess at
+// a calendar-day boundary (timezone-fragile, and the admin's local day
+// isn't tracked anywhere on this row), cap any single run at a flat
+// duration well past a real work stretch, and auto-close it at that cap
+// the next time anything reads "what's running" -- both the in-app widget
+// (on mount) and the extension's background.js (polling every minute)
+// call this, so the clock self-heals within a minute either way.
+const MAX_RUNNING_MINUTES = 12 * 60;
+
 // The one entry (if any) still running for this admin -- what the widget
 // polls on load so a page refresh/re-login picks the clock back up
 // exactly where it was, instead of losing the running segment.
 function getRunningTimeLogEntry(adminId) {
-  return presentTimeLogEntry(
-    db.prepare("SELECT * FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1").get(adminId)
-  );
+  const running = db
+    .prepare("SELECT * FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1")
+    .get(adminId);
+  if (running) {
+    const startedAt = new Date(running.started_at);
+    const cutoff = new Date(startedAt.getTime() + MAX_RUNNING_MINUTES * 60 * 1000);
+    if (cutoff.getTime() <= Date.now()) {
+      const note = running.note ? `${running.note} [auto-stopped after ${MAX_RUNNING_MINUTES / 60}h -- left running]` : "[auto-stopped after 12h -- left running]";
+      db.prepare("UPDATE time_log_entries SET ended_at = ?, note = ? WHERE id = ?").run(cutoff.toISOString(), note, running.id);
+      return getRunningTimeLogEntry(adminId);
+    }
+  }
+  return presentTimeLogEntry(running);
 }
 
 // Auto-switch: starting a new category while one's already running stops
@@ -10428,10 +10454,18 @@ function stopTimeLogEntry(adminId, fields = {}) {
 // Attaches/edits a note or a linked PO/vendor/WOM on an entry -- the
 // currently-running one (add the PO # once you know it, without losing
 // the clock) or a past one. Always scoped to the admin's own rows.
+// startedAt/endedAt are a separate, deliberate correction path (not set by
+// the normal start/stop flow) for fixing a bad entry after the fact -- the
+// auto-stopped-after-12h case above, or a fat-fingered Stop click. Both
+// must be valid, non-future timestamps with endedAt after startedAt; a
+// still-running entry (ended_at IS NULL) can't have its startedAt edited
+// without also supplying an endedAt, since picking a new startedAt alone
+// would silently change how long it's been "running" out from under the
+// live timer.
 function updateTimeLogEntry(adminId, id, fields = {}) {
   const row = db.prepare("SELECT * FROM time_log_entries WHERE id = ? AND admin_id = ?").get(id, adminId);
   if (!row) return null;
-  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = fields;
+  const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId, startedAt, endedAt } = fields;
   const sets = [];
   const params = [];
   if (note != null) {
@@ -10453,6 +10487,23 @@ function updateTimeLogEntry(adminId, id, fields = {}) {
   if (relatedTechId !== undefined) {
     sets.push("related_tech_id = ?");
     params.push(relatedTechId || null);
+  }
+  if (startedAt !== undefined || endedAt !== undefined) {
+    const nextStartedAt = startedAt !== undefined ? new Date(startedAt) : new Date(row.started_at);
+    const nextEndedAtRaw = endedAt !== undefined ? endedAt : row.ended_at;
+    const nextEndedAt = nextEndedAtRaw ? new Date(nextEndedAtRaw) : null;
+    if (Number.isNaN(nextStartedAt.getTime())) throw new Error("startedAt is not a valid date");
+    if (nextEndedAtRaw && Number.isNaN(nextEndedAt.getTime())) throw new Error("endedAt is not a valid date");
+    if (nextStartedAt.getTime() > Date.now()) throw new Error("startedAt can't be in the future");
+    if (nextEndedAt && nextEndedAt.getTime() > Date.now()) throw new Error("endedAt can't be in the future");
+    if (nextEndedAt && nextEndedAt.getTime() <= nextStartedAt.getTime()) throw new Error("endedAt must be after startedAt");
+    if (!row.ended_at && startedAt !== undefined && endedAt === undefined) {
+      throw new Error("a still-running entry's start time can only be changed together with an end time");
+    }
+    sets.push("started_at = ?");
+    params.push(nextStartedAt.toISOString());
+    sets.push("ended_at = ?");
+    params.push(nextEndedAt ? nextEndedAt.toISOString() : null);
   }
   if (sets.length === 0) return presentTimeLogEntry(row);
   params.push(id);
