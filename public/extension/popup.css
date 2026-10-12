@@ -11,6 +11,8 @@
   --danger: #d6342c;
   --ok-bg: #e6f6ef;
   --ok: #1f7a4d;
+  --warn: #b8590a;
+  --warn-bg: #fdf1e4;
 }
 
 * {
@@ -243,6 +245,70 @@ textarea.note-input {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+.cat-btn-armed {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}
+
+.current-card-stale {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+.stale-banner {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.resolve-text {
+  font-size: 12.5px;
+  margin: 0 0 8px;
+}
+.resolve-or {
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin: 4px 0 0;
+}
+.resolve-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.recent-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.recent-row:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+.recent-cat {
+  font-weight: 600;
+  flex-basis: 100%;
+}
+.recent-range {
+  color: var(--ink-soft);
+  flex: 1;
+}
+.recent-editing {
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px;
+}
+.recent-start-input,
+.recent-end-input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
 }
 
 .instant-grid {

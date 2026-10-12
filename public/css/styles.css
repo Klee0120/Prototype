@@ -6390,6 +6390,117 @@ tr.gl-import-shrink-row {
   margin: 0;
 }
 
+.time-tracker-cat-btn-armed {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}
+
+.time-tracker-arm-bar {
+  margin-bottom: 10px;
+}
+.time-tracker-start-btn {
+  width: 100%;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.time-tracker-start-btn:hover {
+  background: var(--accent-dark);
+}
+
+.time-tracker-tab-stale .time-tracker-tab-dot {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(184, 89, 10, 0.25);
+}
+
+.time-tracker-current-stale {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--warn-bg);
+}
+
+.time-tracker-stale-banner {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.time-tracker-resolve {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.time-tracker-resolve-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.time-tracker-resolve-search,
+.time-tracker-resolve-freetext {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.time-tracker-resolve-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.time-tracker-resolve-or {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.time-tracker-resolve-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.time-tracker-recent {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+.time-tracker-recent-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.time-tracker-recent-cat {
+  font-weight: 600;
+  color: var(--ink);
+  flex-basis: 100%;
+}
+.time-tracker-recent-range {
+  color: var(--muted);
+  flex: 1;
+}
+.time-tracker-recent-editing {
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 8px;
+}
+.time-tracker-recent-start,
+.time-tracker-recent-end {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 @media (max-width: 640px) {
   .time-tracker {
     right: 10px;

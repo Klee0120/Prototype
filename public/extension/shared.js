@@ -10,23 +10,29 @@ export const STORAGE_KEYS = {
   current: "serviceworks_current", // cached /time-log/current entry, or null
 };
 
+// tracksPo/tracksVendor mirror db.js/timeTracker.js exactly -- they drive
+// the required-link-before-stop prompt (see popup.js's own comment).
 export const TIME_LOG_CATEGORIES = [
-  { key: "po_invoice", label: "PO / Invoice (unplanned)" },
-  { key: "vendor_onboarding", label: "Vendor Onboarding" },
+  { key: "po_invoice", label: "PO / Invoice (unplanned)", tracksPo: true },
+  { key: "vendor_onboarding", label: "Vendor Onboarding", tracksVendor: true },
   { key: "timekeeping", label: "Timekeeping (Review of Tech)", tracksTech: true },
   { key: "timekeeping_ukg", label: "Timekeeping - Enter UKG", tracksTech: true },
   { key: "project_status", label: "Project Status Review" },
   { key: "ops_meeting", label: "Operations Meeting" },
   { key: "safety_meeting", label: "Safety Meeting" },
-  { key: "reclasses", label: "Reclasses" },
-  { key: "coi_renewals", label: "COI Renewals" },
+  { key: "reclasses", label: "Reclasses", tracksPo: true },
+  { key: "coi_renewals", label: "COI Renewals", tracksVendor: true },
   { key: "employee_support", label: "Employee Support" },
-  { key: "invoicing", label: "Invoicing" },
+  { key: "invoicing", label: "Invoicing", tracksPo: true },
   { key: "documents", label: "Document Management" },
-  { key: "order_supplies", label: "Order Supplies/Parts" },
+  { key: "order_supplies", label: "Order Supplies/Parts", tracksPo: true },
   { key: "uniform_ordering", label: "Uniform Ordering" },
   { key: "general", label: "General / Other" },
 ];
+
+// Same threshold as timeTracker.js's own STALE_WARNING_SECONDS -- past
+// this, both the popup and the toolbar badge switch to the warning style.
+export const STALE_WARNING_SECONDS = 2 * 60 * 60;
 
 export const INSTANT_LOG_CATEGORIES = [
   { key: "po_entered_tech_ordered", label: "PO Entered (Tech Ordered)", minutes: 2 },

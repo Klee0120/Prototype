@@ -1,4 +1,4 @@
-import { getSession, getCachedCurrent, setCachedCurrent, apiRequest, formatBadgeElapsed } from "./shared.js";
+import { getSession, getCachedCurrent, setCachedCurrent, apiRequest, formatBadgeElapsed, STALE_WARNING_SECONDS } from "./shared.js";
 
 // MV3 service workers aren't continuously alive, so a live ticking badge
 // (like the popup's own second-by-second timer) isn't realistic here --
@@ -45,5 +45,9 @@ async function refreshBadge() {
 
   const seconds = (Date.now() - new Date(current.startedAt).getTime()) / 1000;
   await chrome.action.setBadgeText({ text: formatBadgeElapsed(seconds) });
-  await chrome.action.setBadgeBackgroundColor({ color: "#a3182a" });
+  // Past the stale threshold, switch the badge amber so a forgotten timer
+  // is visible at a glance without opening the popup -- the GET above also
+  // hits the server's 12h hard auto-stop cap (getRunningTimeLogEntry), so
+  // a truly abandoned timer self-heals within a minute either way.
+  await chrome.action.setBadgeBackgroundColor({ color: seconds > STALE_WARNING_SECONDS ? "#b8590a" : "#a3182a" });
 }
