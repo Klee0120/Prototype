@@ -121,6 +121,10 @@ test("marking a PO generated: real vendor verification off the uploaded PDF", as
     assert.ok(extracted.body.matchedVendorId, "expected the fixture's vendor # to match the real vendor profile");
     assert.equal(extracted.body.matchedVendorName, "Fixture Vendor");
     assert.equal(extracted.body.emailMismatch, false, "the vendor's own po_email matches the PDF's email");
+
+    const vendors = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const persisted = vendors.body.find((v) => v.id === extracted.body.matchedVendorId);
+    assert.equal(persisted.poEmailMismatch, false, "a match shouldn't leave any mismatch flag set");
   });
 
   await t.test("extraction is scoped to po_document files only", async () => {
@@ -194,12 +198,33 @@ test("marking a PO generated: a vendor-email mismatch is surfaced, not silently 
     mimeType: "application/pdf",
   });
 
-  await t.test("extraction flags the mismatch instead of guessing", async () => {
+  await t.test("extraction flags the mismatch instead of guessing, and persists it onto the vendor", async () => {
     const extracted = await server.call("GET", `/api/files/${upload.body.id}/extract-po-vendor`, { userId: "ADMIN" });
     assert.equal(extracted.body.matchedVendorId, vendorId);
     assert.equal(extracted.body.matchedVendorPoEmail, "onfile@example.com");
     assert.equal(extracted.body.extractedEmail, FIXTURE_EMAIL);
     assert.equal(extracted.body.emailMismatch, true);
+
+    const vendors = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const persisted = vendors.body.find((v) => v.id === vendorId);
+    assert.equal(persisted.poEmailMismatch, true, "a real mismatch should show up as a standing compliance gap, not just a one-time warning");
+    assert.equal(persisted.poEmailMismatchExtracted, FIXTURE_EMAIL);
+  });
+
+  await t.test("a later extraction that matches clears the flag again", async () => {
+    const fix = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Mismatch Vendor", jdeVendorNumber: FIXTURE_VENDOR_NUMBER_2, poEmail: FIXTURE_EMAIL },
+    });
+    assert.equal(fix.status, 200);
+
+    const reextracted = await server.call("GET", `/api/files/${upload.body.id}/extract-po-vendor`, { userId: "ADMIN" });
+    assert.equal(reextracted.body.emailMismatch, false);
+
+    const vendors = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const persisted = vendors.body.find((v) => v.id === vendorId);
+    assert.equal(persisted.poEmailMismatch, false, "fixing the vendor's email should clear the standing flag, not leave it stuck");
+    assert.equal(persisted.poEmailMismatchExtracted, null);
   });
 
   await t.test("marking generated still works once the admin picks which email is right", async () => {

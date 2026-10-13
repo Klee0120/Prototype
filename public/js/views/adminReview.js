@@ -835,7 +835,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       .filter(
         (v) =>
           v.onboardingStage === "onboarded" &&
-          (v.formsStatus === "outdated" || !v.formChecksComplete || v.w9InvoiceStale) &&
+          (v.formsStatus === "outdated" || !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch) &&
           vendorInTerritoryScope(v)
       )
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -945,6 +945,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${v.formsStatus === "outdated" ? `<span class="badge badge-rejected">Forms Outdated</span>` : ""}
         ${!v.formChecksComplete ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
         ${v.w9InvoiceStale ? `<span class="badge badge-rejected">W-9 invoice stale</span>` : ""}
+        ${v.poEmailMismatch ? `<span class="badge badge-rejected">PO email mismatch</span>` : ""}
         <button class="btn btn-secondary onboarding-review-compliance-btn" type="button">Review Compliance</button>
       </div>
     `;
@@ -968,6 +969,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     if (v.expiredComplianceCategories && v.expiredComplianceCategories.length > 0) {
       reasons.push(`Expired on file: ${v.expiredComplianceCategories.join(", ").toUpperCase()}`);
     }
+    if (v.poEmailMismatch) reasons.push(`PO email mismatch (saw ${v.poEmailMismatchExtracted})`);
     return reasons;
   }
 
@@ -1988,7 +1990,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.formsStatus]}">${escapeHtml(FORMS_STATUS_LABELS[v.formsStatus])}</span>
-        ${!v.formChecksComplete || v.w9InvoiceStale ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
+        ${!v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
         ${!v.phone || !v.email ? `<span class="badge badge-rejected" title="Missing ${!v.phone && !v.email ? "phone and email" : !v.phone ? "phone" : "email"}">Update Profile</span>` : ""}
         ${v.onboardingStage === "in_progress" ? `<span class="badge badge-draft">Onboarding: In Progress</span>` : ""}
         ${v.onboardingStage === "denied" ? `<span class="badge badge-rejected">Onboarding: Denied</span>` : ""}
@@ -2088,7 +2090,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const nextAction =
       v.onboardingStage !== "onboarded"
         ? "Continue onboarding -- see the Onboarding & Compliance tab."
-        : !v.formChecksComplete || v.formsStatus === "outdated" || v.w9InvoiceStale
+        : !v.formChecksComplete || v.formsStatus === "outdated" || v.w9InvoiceStale || v.poEmailMismatch
           ? "Update compliance documents -- see the Onboarding & Compliance tab."
           : "No action needed -- this vendor is in good standing.";
     host.innerHTML = `
@@ -2573,8 +2575,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <label><input type="checkbox" name="achHasW9Address" ${v.formChecks.achHasW9Address ? "checked" : ""} /> Has W-9 address</label>
         </div>
         ${
-          !v.formChecksComplete || v.w9InvoiceStale
-            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks above aren't confirmed yet. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old." : ""}</p>`
+          !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch
+            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks above aren't confirmed yet. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old. " : ""}${v.poEmailMismatch ? `The email on a generated PO didn't match what's on file (saw ${escapeHtml(v.poEmailMismatchExtracted || "")}).` : ""}</p>`
             : ""
         }
         <div class="vendor-edit-actions">
@@ -2842,7 +2844,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       api.get("/api/admin/punch-issues"),
     ]);
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
-    const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale);
+    const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch);
     const womsNeedingSmartsheetUpdate = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt);
     const pendingWoms = woms.filter((w) => w.status === "pending");
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -2890,7 +2892,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         "Vendor document checks incomplete",
         incompleteDocVendors.map((v) => ({
           label: v.name,
-          detail: v.w9InvoiceStale ? "Blank invoice on file is over 2 years old" : "COI/W-9/ACH checks not all confirmed",
+          detail: v.w9InvoiceStale
+            ? "Blank invoice on file is over 2 years old"
+            : v.poEmailMismatch
+              ? `PO email doesn't match what's on file (saw ${v.poEmailMismatchExtracted})`
+              : "COI/W-9/ACH checks not all confirmed",
           kind: "vendor-doc",
           vendorId: v.id,
         })),

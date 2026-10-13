@@ -183,6 +183,11 @@ router.get("/:id/extract-po-vendor", requireAuth, async (req, res) => {
 
   const match = extracted.vendorNumber ? db.findVendorByNumber(extracted.vendorNumber) : null;
   const matchedVendor = match ? db.findVendor(match.id) : null;
+  // Persists the comparison (not just returns it) so a real mismatch shows
+  // up on the vendor's own compliance status going forward, instead of
+  // only ever being a one-time warning on this one screen that's easy to
+  // click past and forget.
+  if (matchedVendor) db.recordPoEmailExtraction(matchedVendor.id, extracted.email);
   res.json({
     extractedVendorNumber: extracted.vendorNumber,
     extractedEmail: extracted.email,

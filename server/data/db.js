@@ -1762,6 +1762,19 @@ if (!hasColumn("vendors", "coi_form_status")) {
   db.exec("ALTER TABLE vendors ADD COLUMN blank_invoice_form_status TEXT NOT NULL DEFAULT 'not_requested'");
 }
 
+// Whether the vendor's own email, read straight off the text layer of an
+// actual generated PO (see server/utils/poDocument.js), disagrees with
+// what's on the vendor's profile -- caught live at PO-generation time
+// (extract-po-vendor route, via recordPoEmailExtraction below) instead of
+// only surfacing once an invoice actually bounces. A live condition, same
+// as formsStatus/w9InvoiceStale: a later extraction that matches clears it
+// again, it isn't a one-time flag someone has to remember to unset.
+if (!hasColumn("vendors", "po_email_mismatch")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN po_email_mismatch INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE vendors ADD COLUMN po_email_mismatch_extracted TEXT");
+  db.exec("ALTER TABLE vendors ADD COLUMN po_email_mismatch_detected_at TEXT");
+}
+
 // Per-case fields the redesigned onboarding cases need beyond the existing
 // free-text status/reference_number/note/as_of: an expiration date (every
 // case and any linked waiver needs one, no "no expiration" option), the
@@ -2491,6 +2504,9 @@ function presentVendorRowBase(v) {
     w9FormStatus: v.w9_form_status || "not_requested",
     paymentFormStatus: v.payment_form_status || "not_requested",
     blankInvoiceFormStatus: v.blank_invoice_form_status || "not_requested",
+    poEmailMismatch: Boolean(v.po_email_mismatch),
+    poEmailMismatchExtracted: v.po_email_mismatch_extracted || null,
+    poEmailMismatchDetectedAt: v.po_email_mismatch_detected_at || null,
     // Display-only, never stored -- see deriveParentStage. A manual denial
     // always wins, the same "denied overrides everything" rule
     // deriveOnboardingStage already applies.
@@ -2603,6 +2619,23 @@ function listVendors() {
 function findVendor(id) {
   const row = db.prepare("SELECT * FROM vendors WHERE id = ?").get(Number(id));
   return row ? presentVendorRow(row) : null;
+}
+
+// Called right when a generated PO's own text layer is read (extract-po-
+// vendor route) -- the one moment there's real proof of what email a
+// specific, actual PO carries, as opposed to the vendor's own profile
+// field, which just records whatever was entered. Only writes when there's
+// something to compare (a profile email on file and a real extracted one);
+// a match clears any previous flag since the file's current email is
+// confirmed good again, same live-condition pattern as formsStatus.
+function recordPoEmailExtraction(vendorId, extractedEmail) {
+  const v = db.prepare("SELECT po_email FROM vendors WHERE id = ?").get(Number(vendorId));
+  if (!v || !v.po_email || !extractedEmail) return;
+  const mismatch = v.po_email.trim().toLowerCase() !== extractedEmail.trim().toLowerCase();
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE vendors SET po_email_mismatch = ?, po_email_mismatch_extracted = ?, po_email_mismatch_detected_at = ?, updated_at = ? WHERE id = ?"
+  ).run(mismatch ? 1 : 0, mismatch ? extractedEmail.trim() : null, mismatch ? now : null, now, Number(vendorId));
 }
 
 // Real territories this vendor has actually been used in, derived from its
@@ -4849,6 +4882,7 @@ function vendorComplianceReasons(v, vendorId) {
   if (v.formsStatus === "outdated") reasons.push("forms status is outdated");
   if (v.w9InvoiceStale) reasons.push("the blank invoice on file is over 2 years old");
   if (vendorHasExpiredComplianceDoc(vendorId)) reasons.push("a COI/W-9/ACH document on file has expired");
+  if (v.poEmailMismatch) reasons.push(`the email on a generated PO doesn't match what's on file (saw ${v.poEmailMismatchExtracted})`);
   return reasons;
 }
 
@@ -11340,6 +11374,7 @@ module.exports = {
   listVendors,
   findVendor,
   findVendorByNumber,
+  recordPoEmailExtraction,
   getVendorTerritories,
   getVendorPoGlRollup,
   getVendorInvoiceHistory,
