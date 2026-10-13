@@ -86,7 +86,7 @@ const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
   { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review", "fiscalcalendar", "timeoff", "schedule"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
-  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding"] },
+  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
@@ -117,6 +117,7 @@ const TAB_LABELS = {
   technicians: "Technicians",
   vendors: "Vendor Directory",
   onboarding: "Onboarding",
+  compliance: "Vendor Compliance",
   locations: "Locations",
   woms: "WOM Projects",
   womlookup: "WOM Lookup",
@@ -423,6 +424,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
+    else if (activeTab === "compliance") await drawVendorCompliance(content);
     else if (activeTab === "pos") {
       const openPoId = poToOpen;
       poToOpen = null;
@@ -947,6 +949,94 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       </div>
     `;
     el.querySelector(".onboarding-review-compliance-btn").addEventListener("click", () => {
+      openVendorProfile(v.id, "onboarding");
+    });
+    return el;
+  }
+
+  // Mirrors server/data/db.js's vendorComplianceReasons -- same four checks
+  // that drive each vendor's own compliance follow-up task -- but computed
+  // here from fields the vendor list already carries (formChecksComplete,
+  // formsStatus, w9InvoiceStale, expiredComplianceCategories), so this
+  // dashboard needs no dedicated endpoint beyond the vendor list already
+  // fetched for Onboarding above.
+  function vendorComplianceReasonsClient(v) {
+    const reasons = [];
+    if (!v.formChecksComplete) reasons.push("Doc checks incomplete");
+    if (v.formsStatus === "outdated") reasons.push("Forms outdated");
+    if (v.w9InvoiceStale) reasons.push("W-9 invoice stale");
+    if (v.expiredComplianceCategories && v.expiredComplianceCategories.length > 0) {
+      reasons.push(`Expired on file: ${v.expiredComplianceCategories.join(", ").toUpperCase()}`);
+    }
+    return reasons;
+  }
+
+  // Standalone compliance view across the whole onboarded vendor base --
+  // Needs Update / Approved -- as opposed to Onboarding's own "Compliance
+  // Needed" list, which only surfaces the needs-update side alongside the
+  // onboarding pipeline itself. Scoped to onboarded vendors only: a vendor
+  // still being onboarded isn't "out of compliance" yet, it's just not
+  // done yet -- that's tracked on the Onboarding board instead.
+  async function drawVendorCompliance(content) {
+    if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    const onboarded = vendorsCache.filter((v) => v.onboardingStage === "onboarded" && vendorInTerritoryScope(v));
+    const withReasons = onboarded.map((v) => ({ v, reasons: vendorComplianceReasonsClient(v) }));
+    const needsUpdate = withReasons.filter((x) => x.reasons.length > 0).sort((a, b) => a.v.name.localeCompare(b.v.name));
+    const approved = withReasons.filter((x) => x.reasons.length === 0).sort((a, b) => a.v.name.localeCompare(b.v.name));
+
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Compliance status for every onboarded vendor -- the same COI/W-9/ACH document checks, forms
+        currency, and blank-invoice staleness that drive each vendor's own compliance follow-up task.
+        Vendors still being onboarded aren't shown here -- see Onboarding for those.
+      </p>
+      <div class="wom-stat-cards">
+        <div class="wom-stat-card ${needsUpdate.length > 0 ? "wom-stat-card-danger" : ""}">
+          <span class="wom-stat-icon">&#9888;&#65039;</span>
+          <div><div class="wom-stat-label">Need Update</div><div class="wom-stat-value">${needsUpdate.length}</div></div>
+        </div>
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#9989;</span>
+          <div><div class="wom-stat-label">Approved</div><div class="wom-stat-value">${approved.length}</div></div>
+        </div>
+      </div>
+      <h3>Needs Update (${needsUpdate.length})</h3>
+      <div class="review-list" id="compliance-needs-update-list"></div>
+      <h3>Approved (${approved.length})</h3>
+      <div class="review-list" id="compliance-approved-list"></div>
+    `;
+
+    const needsUpdateList = content.querySelector("#compliance-needs-update-list");
+    if (needsUpdate.length === 0) {
+      needsUpdateList.innerHTML = `<p class="empty-note">No onboarded vendors are out of compliance.</p>`;
+    } else {
+      needsUpdate.forEach(({ v, reasons }) => needsUpdateList.appendChild(renderComplianceDashboardRow(v, reasons)));
+    }
+
+    const approvedList = content.querySelector("#compliance-approved-list");
+    if (approved.length === 0) {
+      approvedList.innerHTML = `<p class="empty-note">No onboarded vendors are currently approved.</p>`;
+    } else {
+      approved.forEach(({ v }) => approvedList.appendChild(renderComplianceDashboardRow(v, [])));
+    }
+  }
+
+  function renderComplianceDashboardRow(v, reasons) {
+    const el = document.createElement("div");
+    el.className = "review-row onboarding-row";
+    el.innerHTML = `
+      <div class="review-row-summary">
+        <span class="review-row-name">${escapeHtml(v.name)}</span>
+        ${v.preferred ? `<span class="badge badge-approved">Preferred</span>` : ""}
+        ${
+          reasons.length === 0
+            ? `<span class="badge badge-approved">Compliant</span>`
+            : reasons.map((r) => `<span class="badge badge-rejected">${escapeHtml(r)}</span>`).join("")
+        }
+        <button class="btn btn-secondary compliance-dashboard-review-btn" type="button">${reasons.length === 0 ? "View" : "Review Compliance"}</button>
+      </div>
+    `;
+    el.querySelector(".compliance-dashboard-review-btn").addEventListener("click", () => {
       openVendorProfile(v.id, "onboarding");
     });
     return el;
