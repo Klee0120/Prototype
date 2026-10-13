@@ -24,6 +24,30 @@ const timeOffRoutes = require("./routes/timeOff");
 function createApp() {
   const app = express();
 
+  // TEMPORARY diagnostic -- Krista is seeing a 403 "Not logged in" on
+  // POST /api/admin/smartsheet/sync-woms that our own code structurally
+  // cannot produce (requireAuth's "Not logged in" branch has only ever
+  // returned 401, in every version in git history). This logs exactly
+  // what the Node process actually receives for that one route, so we can
+  // see whether it's really hitting this process with the headers the
+  // browser sent, or something upstream (Caddy, a stale process, a proxy)
+  // is intercepting it first. Remove once that's root-caused.
+  app.use((req, res, next) => {
+    if (req.path === "/api/admin/smartsheet/sync-woms") {
+      console.log("[diag] incoming", req.method, req.path, {
+        hasSessionToken: Boolean(req.header("x-session-token")),
+        origin: req.header("origin"),
+        userAgent: req.header("user-agent"),
+      });
+      const originalStatus = res.status.bind(res);
+      res.status = (code) => {
+        console.log("[diag] app.js setting status", code, "for", req.method, req.path);
+        return originalStatus(code);
+      };
+    }
+    next();
+  });
+
   // Baseline security response headers (CSP, X-Content-Type-Options,
   // X-Frame-Options, etc.) -- defaults work as-is since this app only ever
   // loads its own same-origin JS/CSS plus the one Google Fonts stylesheet
