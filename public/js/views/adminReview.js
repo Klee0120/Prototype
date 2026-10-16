@@ -7,6 +7,7 @@ import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderOnboardRequirementsForm } from "./onboardRequirementsForm.js";
+import { renderServiceCombo } from "../serviceCombo.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { renderPos } from "./pos.js";
 import { renderReclasses } from "./reclasses.js";
@@ -1842,6 +1843,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       `,
     });
     const addForm = body.querySelector(".add-vendor-form");
+    mountServicesCombo(addForm);
     addForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = addForm.querySelector(".save-message");
@@ -1933,6 +1935,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       bodyHtml: renderVendorEditFormFields(v),
     });
     const form = body.querySelector(".vendor-edit-form");
+    mountServicesCombo(form);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = form.querySelector(".save-message");
@@ -2481,40 +2484,32 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     "achHasW9Address",
   ];
 
-  // A vendor can do more than one kind of work (electrical AND HVAC, say),
-  // so this is a real multi-select -- currentValue is the stored "|"-joined
-  // string (see splitServices above), and the caller reads the result back
-  // out with selectedServicesValue. Ctrl/Cmd-click (or drag) picks more
-  // than one, same as any native multi-select.
+  // A vendor can do more than one kind of work (electrical AND HVAC, say)
+  // -- currentValue is the stored "|"-joined string (see splitServices
+  // above). This just reserves the spot in the form's markup; the actual
+  // combobox is built after the form exists in the DOM (see
+  // mountServicesCombo), since renderServiceCombo creates real DOM nodes
+  // rather than an HTML string.
   function renderServicesSelect(currentValue) {
-    const selectedValues = splitServices(currentValue);
-    const matchedLabels = new Set(COI_MATRIX.map((e) => e.label));
-    const groups = new Map();
-    for (const entry of COI_MATRIX) {
-      if (!groups.has(entry.group)) groups.set(entry.group, []);
-      groups.get(entry.group).push(entry);
-    }
-    const optgroups = [...groups.entries()]
-      .map(
-        ([group, entries]) =>
-          `<optgroup label="${escapeHtml(group)}">${entries
-            .map((e) => `<option value="${escapeHtml(e.label)}" ${selectedValues.includes(e.label) ? "selected" : ""}>${escapeHtml(e.label)}</option>`)
-            .join("")}</optgroup>`
-      )
-      .join("");
-    // A vendor imported before this was matrix-backed (or with a service
-    // type outside the matrix) keeps its original free-text value(s) as
-    // preserved options, rather than silently losing them the moment the
-    // field renders as a select.
-    const unmatchedOptions = selectedValues
-      .filter((v) => !matchedLabels.has(v))
-      .map((v) => `<option value="${escapeHtml(v)}" selected>${escapeHtml(v)} (not in matrix)</option>`)
-      .join("");
-    return `<select name="services" multiple size="8" class="vendor-services-select">
-      ${unmatchedOptions}
-      ${optgroups}
-    </select>
-    <p class="services-select-hint">Ctrl/Cmd-click (or drag) to select more than one service.</p>`;
+    return `<div class="service-combo-mount" data-current="${escapeHtml(currentValue)}"></div>
+    <p class="services-select-hint">Start typing to search, or click to browse by category.</p>`;
+  }
+
+  // Builds the Services combobox into whatever form just got its
+  // innerHTML set from renderServicesSelect's placeholder -- a real
+  // (visually hidden) <select multiple name="services"> rides along
+  // inside it, so the existing form.services / selectedServicesValue
+  // read-back on submit keeps working unchanged.
+  function mountServicesCombo(formEl) {
+    const mount = formEl.querySelector(".service-combo-mount");
+    if (!mount) return;
+    const combo = renderServiceCombo({
+      multiple: true,
+      initialValue: splitServices(mount.dataset.current),
+      hiddenSelectName: "services",
+      onChange: () => {},
+    });
+    mount.replaceWith(combo);
   }
 
   // Reads a <select multiple name="services"> back into the single "|"-

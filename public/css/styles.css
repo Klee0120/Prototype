@@ -4921,13 +4921,12 @@ tr.gl-import-shrink-row {
   width: 100%;
 }
 
-/* A multi-select needs real height to show more than one row at a time --
+/* The services combobox (chips + search) needs real width to be usable --
    letting it sit full-width across the grid (rather than squeezed into one
-   ~160px column like the single-line fields around it) keeps that height
-   from looking cramped. */
-.vendor-services-select {
+   ~160px column like the single-line fields around it) keeps it from
+   looking cramped. */
+.add-tech-grid .service-combo {
   grid-column: 1 / -1;
-  height: auto;
 }
 .add-tech-grid .services-select-hint {
   grid-column: 1 / -1;
@@ -5009,7 +5008,7 @@ tr.gl-import-shrink-row {
   gap: 10px;
   margin-bottom: 10px;
 }
-.vendor-edit-grid:has(.vendor-services-select) label:has(.vendor-services-select) {
+.vendor-edit-grid:has(.service-combo) label:has(.service-combo) {
   grid-column: 1 / -1;
 }
 
@@ -6661,7 +6660,7 @@ tr.gl-import-shrink-row {
 }
 
 .onboard-req-editor {
-  background: var(--card-bg, #fff);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 18px 20px;
@@ -6672,7 +6671,7 @@ tr.gl-import-shrink-row {
 }
 
 .onboard-req-editor-hint {
-  color: var(--ink-soft, #6b7078);
+  color: var(--muted);
   font-size: 13px;
   margin: 0 0 16px;
 }
@@ -6868,4 +6867,125 @@ tr.gl-import-shrink-row {
     max-width: none;
     padding: 0;
   }
+}
+
+/* ---- Service combobox (type-to-filter picker over COI_MATRIX) ---- */
+
+.service-combo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.service-combo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.service-combo-chips:empty {
+  display: none;
+}
+
+.service-combo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-bg);
+  color: var(--accent-dark);
+  border-radius: 999px;
+  padding: 4px 6px 4px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.service-combo-chip-unmatched {
+  background: var(--neutral-bg);
+  color: var(--muted);
+}
+
+.service-combo-chip-remove {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 999px;
+}
+
+.service-combo-chip-remove:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.service-combo-input-wrap {
+  position: relative;
+}
+
+.service-combo-input {
+  width: 100%;
+  font: inherit;
+  font-weight: 400;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+}
+
+.service-combo-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.service-combo-dropdown {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  padding: 6px 0;
+}
+
+.service-combo-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  padding: 6px 12px 2px;
+}
+
+.service-combo-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.service-combo-option:hover {
+  background: var(--accent-bg);
+}
+
+.service-combo-option-selected {
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+
+.service-combo-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 12px;
+  margin: 0;
 }

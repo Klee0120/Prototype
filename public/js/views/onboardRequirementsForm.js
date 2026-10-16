@@ -1,5 +1,6 @@
 import { escapeHtml } from "../app.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
+import { renderServiceCombo } from "../serviceCombo.js";
 
 // Coverage columns in display order, with the full label used on the
 // printed form (the matrix's own header abbreviations -- GL OCC, EXS,
@@ -65,9 +66,7 @@ export async function renderOnboardRequirementsForm(container) {
           <div class="onboard-req-field-grid">
             <label class="onboard-req-field onboard-req-field-wide">
               <span>Type of service</span>
-              <select id="onboard-req-service">
-                ${groupedServiceOptions(state.service)}
-              </select>
+              <div class="service-combo-mount" id="onboard-req-service"></div>
             </label>
             <label class="onboard-req-field onboard-req-field-wide">
               <span>Name of requested company</span>
@@ -99,10 +98,16 @@ export async function renderOnboardRequirementsForm(container) {
     renderDocument();
 
     const editor = container.querySelector(".onboard-req-editor");
-    editor.querySelector("#onboard-req-service").addEventListener("change", (e) => {
-      state.service = e.target.value;
-      renderDocument();
-    });
+    editor.querySelector("#onboard-req-service").replaceWith(
+      renderServiceCombo({
+        multiple: false,
+        initialValue: state.service,
+        onChange: (label) => {
+          state.service = label;
+          renderDocument();
+        },
+      })
+    );
     const textFields = [
       ["onboard-req-company", "companyName"],
       ["onboard-req-po-email", "poEmail"],
@@ -126,25 +131,6 @@ export async function renderOnboardRequirementsForm(container) {
     const entry = COI_MATRIX_BY_LABEL[state.service] || COI_MATRIX[0];
     container.querySelector("#onboard-req-document").innerHTML = documentHtml(state, entry);
   }
-}
-
-// Same grouping (by COI_MATRIX's own `group`) as the vendor profile's
-// Services multi-select, so a service picked here reads the same way it
-// does on a vendor record.
-function groupedServiceOptions(selected) {
-  const groups = new Map();
-  for (const entry of COI_MATRIX) {
-    if (!groups.has(entry.group)) groups.set(entry.group, []);
-    groups.get(entry.group).push(entry);
-  }
-  return [...groups.entries()]
-    .map(
-      ([group, entries]) =>
-        `<optgroup label="${escapeHtml(group)}">${entries
-          .map((e) => `<option value="${escapeHtml(e.label)}" ${e.label === selected ? "selected" : ""}>${escapeHtml(e.label)}</option>`)
-          .join("")}</optgroup>`
-    )
-    .join("");
 }
 
 function hasLimit(v) {
