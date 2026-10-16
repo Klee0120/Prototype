@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
+import { t } from "../i18n.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderAttachments } from "./attachments.js";
 import { renderSchedule } from "./schedule.js";
@@ -257,13 +258,13 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
   // click re-renders it).
   let womGuideOpen = false;
   const TECH_TABS = [
-    ["mywork", "My Work"],
-    ["week", "My Week"],
-    ["timeoff", "Time Off"],
-    ["schedule", "Schedule"],
-    ["locations", "Locations &amp; WOM"],
-    ["vendors", "Vendors"],
-    ["documents", "My Documents"],
+    ["mywork", t("My Work")],
+    ["week", t("My Week")],
+    ["timeoff", t("Time Off")],
+    ["schedule", t("Schedule")],
+    ["locations", t("Locations &amp; WOM")],
+    ["vendors", t("Vendors")],
+    ["documents", t("My Documents")],
   ];
 
   draw();

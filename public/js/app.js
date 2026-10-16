@@ -4,6 +4,13 @@ import { renderResetPin } from "./views/resetPin.js";
 import { renderTechHome } from "./views/techHome.js";
 import { renderAdminReview } from "./views/adminReview.js";
 import { mountTimeTracker } from "./views/timeTracker.js";
+import { t, onLanguageChange, renderLanguageToggle } from "./i18n.js";
+
+// Every string on screen depends on the current language, so the simplest
+// correct response to a toggle is just redrawing the whole shell the same
+// way a login/logout does -- cheaper to reason about than hunting down
+// every view that would otherwise need its own language-change listener.
+onLanguageChange(() => render());
 
 export const state = {
   user: loadUser(),
@@ -63,7 +70,7 @@ let loggedOutMessage = null;
 window.addEventListener("laborapp:session-expired", () => {
   if (!state.user) return;
   setUser(null);
-  loggedOutMessage = "Your session expired -- please log in again.";
+  loggedOutMessage = t("Your session expired -- please log in again.");
   render();
 });
 
@@ -176,12 +183,14 @@ function renderTopBar() {
     <button type="button" class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="Open navigation">&#9776;</button>
     <div class="topbar-brand-text">
       <span class="topbar-brand-name">ServiceWorks</span>
-      <span class="topbar-brand-sub">Toyota Operations &amp; Financial Management</span>
+      <span class="topbar-brand-sub">${escapeHtml(t("Toyota Operations & Financial Management"))}</span>
     </div>
     <div class="topbar-context" id="topbar-context"></div>
     <div class="topbar-global-tools" id="topbar-global-tools"></div>
+    <div class="topbar-lang-tools" id="topbar-lang-tools"></div>
   `;
   bar.querySelector("#mobile-nav-toggle").addEventListener("click", openMobileNav);
+  bar.querySelector("#topbar-lang-tools").appendChild(renderLanguageToggle());
   return bar;
 }
 
@@ -228,10 +237,10 @@ function renderSidebarUser() {
       <div class="sidebar-user-avatar">${escapeHtml(initials)}</div>
       <div class="sidebar-user-text">
         <span class="sidebar-user-name">${escapeHtml(state.user.name)}</span>
-        <span class="sidebar-user-role">${state.user.role === "admin" ? "Admin" : "Technician"}</span>
+        <span class="sidebar-user-role">${state.user.role === "admin" ? escapeHtml(t("Admin")) : escapeHtml(t("Technician"))}</span>
       </div>
     </div>
-    <button class="btn btn-ghost sidebar-logout-btn" id="logout-btn">Log out</button>
+    <button class="btn btn-ghost sidebar-logout-btn" id="logout-btn">${escapeHtml(t("Log out"))}</button>
   `;
   el.querySelector("#logout-btn").addEventListener("click", logout);
   return el;

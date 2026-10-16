@@ -191,6 +191,12 @@ h1, h2, h3, h4 {
   font-size: 18px;
 }
 
+.auth-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .auth-topbar-help {
   display: flex;
   align-items: center;
@@ -1678,6 +1684,15 @@ h1, h2, h3, h4 {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
+}
+
+.lang-toggle {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.lang-toggle .tab {
+  padding: 6px 10px;
 }
 
 .tab-badge {
