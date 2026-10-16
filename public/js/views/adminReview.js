@@ -23,6 +23,10 @@ import { openModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
+// Imported as `tx`, not `t` -- this file uses `t` constantly as an ordinary
+// loop variable (`.map((t) => ...)` for tabs/table rows throughout), and
+// shadowing the translate function with that would be a silent, easy-to-miss bug.
+import { t as tx } from "../i18n.js";
 
 const STATUS_LABELS = {
   draft: "Draft",
@@ -369,7 +373,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     navHost.innerHTML = sections.map(
       (s) => `
         <button class="sidebar-nav-item ${currentSection.key === s.key ? "active" : ""}" data-section="${s.key}">
-          <span>${s.label}</span>${s.key === "priorities" && priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}
+          <span>${escapeHtml(tx(s.label))}</span>${s.key === "priorities" && priorityCount > 0 ? ` <span class="tab-badge">${priorityCount}</span>` : ""}
         </button>
       `
     ).join("");
@@ -381,7 +385,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // single-tab section.
     subtabHost.innerHTML =
       currentSection.tabs.length > 1
-        ? currentSection.tabs.map((t) => `<button class="tab ${activeTab === t ? "active" : ""}" data-tab="${t}">${TAB_LABELS[t]}</button>`).join("")
+        ? currentSection.tabs.map((tab) => `<button class="tab ${activeTab === tab ? "active" : ""}" data-tab="${tab}">${escapeHtml(tx(TAB_LABELS[tab]))}</button>`).join("")
         : "";
 
     container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
@@ -401,7 +405,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // shared loading state shown here -- overwritten the moment that tab's
     // own draw function sets content.innerHTML -- is enough to make every
     // page's loading look the same without each one building its own.
-    renderLoadingState(content, loadingLabelFor(TAB_LABELS[activeTab] || "content"));
+    renderLoadingState(content, loadingLabelFor(tx(TAB_LABELS[activeTab] || "content")));
     // No admin tab currently fills this back in (Tech Allocation's own
     // technician/week picker moved into the sub-tab band instead -- see
     // drawTechAllocation); still cleared up front in case a future tab

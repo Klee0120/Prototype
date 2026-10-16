@@ -1,4 +1,5 @@
 import { escapeHtml } from "./app.js";
+import { t } from "./i18n.js";
 
 // A shared "loading" placeholder for a page-level fetch -- a spinner, a
 // title, and a few skeleton rows shaped like the eventual list, with a
@@ -46,8 +47,8 @@ export function renderLoadingState(container, label) {
     container.innerHTML = `
       <div class="loading-state">
         <div class="loading-spinner"></div>
-        <div class="loading-title">Loading ${escapeHtml(label)}&hellip;</div>
-        <div class="loading-subtext" hidden>This is taking longer than usual. Please wait.</div>
+        <div class="loading-title">${escapeHtml(t("Loading"))} ${escapeHtml(label)}&hellip;</div>
+        <div class="loading-subtext" hidden>${escapeHtml(t("This is taking longer than usual. Please wait."))}</div>
         <div class="loading-skeleton">
           ${Array.from({ length: SKELETON_ROWS })
             .map(
