@@ -70,6 +70,25 @@ body {
   color: #fff;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lang-toggle {
+  display: flex;
+  gap: 2px;
+}
+.lang-toggle-btn {
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.lang-toggle-btn-active {
+  color: #fff;
+  border-color: #6b7280;
+}
+
 main {
   padding: 14px;
 }

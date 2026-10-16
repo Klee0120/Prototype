@@ -9,9 +9,21 @@ import {
   apiRequest,
   formatElapsed,
 } from "./shared.js";
+import { loadLanguage, t, renderLanguageToggle } from "./i18n.js";
 
 const root = document.getElementById("root");
 const logoutBtn = document.getElementById("logout-btn");
+const langToggleHost = document.getElementById("lang-toggle-host");
+
+// Redraws whatever's currently on screen after a language toggle -- the
+// toggle itself has no idea whether that's the login form or the main app.
+function rerenderCurrent() {
+  langToggleHost.innerHTML = "";
+  langToggleHost.appendChild(renderLanguageToggle(rerenderCurrent));
+  logoutBtn.textContent = t("Log out");
+  if (session) renderApp();
+  else renderLogin();
+}
 
 let session = null; // { token, id, name, role, homeLocationCode }
 let current = null; // the running entry, or null
@@ -64,7 +76,7 @@ function categoryDef(key) {
   return TIME_LOG_CATEGORIES.find((c) => c.key === key) || null;
 }
 function categoryLabel(key) {
-  return categoryDef(key)?.label || key;
+  return t(categoryDef(key)?.label || key);
 }
 function categoryTracksTech(key) {
   return Boolean(categoryDef(key)?.tracksTech);
@@ -124,6 +136,9 @@ function stopTicking() {
 // ---- auth ----
 
 async function init() {
+  await loadLanguage();
+  langToggleHost.appendChild(renderLanguageToggle(rerenderCurrent));
+  logoutBtn.textContent = t("Log out");
   session = await getSession();
   if (session && session.role === "admin") {
     logoutBtn.hidden = false;
@@ -140,13 +155,13 @@ async function init() {
 function renderLogin(errorMessage) {
   root.innerHTML = `
     <form id="login-form" class="login-form">
-      <label for="login-id">Employee ID</label>
-      <input id="login-id" name="id" type="text" autocomplete="username" placeholder="e.g. T1001" required />
-      <label for="login-pin">PIN</label>
-      <input id="login-pin" name="pin" type="password" autocomplete="current-password" placeholder="Enter your PIN" required />
-      <button type="submit" class="btn btn-primary">Log in</button>
+      <label for="login-id">${escapeHtml(t("Employee ID"))}</label>
+      <input id="login-id" name="id" type="text" autocomplete="username" placeholder="${escapeHtml(t("e.g. T1001"))}" required />
+      <label for="login-pin">${escapeHtml(t("PIN"))}</label>
+      <input id="login-pin" name="pin" type="password" autocomplete="current-password" placeholder="${escapeHtml(t("Enter your PIN"))}" required />
+      <button type="submit" class="btn btn-primary">${escapeHtml(t("Log in"))}</button>
       ${errorMessage ? `<p class="form-error">${escapeHtml(errorMessage)}</p>` : ""}
-      <p class="form-hint">Admin accounts only -- this widget tracks your own time against ServiceWorks.</p>
+      <p class="form-hint">${escapeHtml(t("Admin accounts only -- this widget tracks your own time against ServiceWorks."))}</p>
     </form>
   `;
   const form = document.getElementById("login-form");
@@ -159,7 +174,7 @@ function renderLogin(errorMessage) {
     try {
       const user = await apiRequest("POST", "/api/auth/login", { id, pin });
       if (user.role !== "admin") {
-        renderLogin("This widget is for admin accounts only.");
+        renderLogin(t("This widget is for admin accounts only."));
         return;
       }
       session = user;
@@ -441,7 +456,7 @@ async function logEstimated(key) {
   const form = estimatedState(key);
   const minutes = Number(form.minutes);
   if (!form.minutes || !Number.isFinite(minutes) || minutes <= 0) {
-    estimatedSaveMessage = "Enter a number of minutes greater than 0.";
+    estimatedSaveMessage = t("Enter a number of minutes greater than 0.");
     renderApp();
     return;
   }
@@ -449,7 +464,7 @@ async function logEstimated(key) {
     await apiRequest("POST", "/api/admin/time-log/estimated", { category: key, minutes, note: form.note }, session.token);
     form.minutes = "";
     form.note = "";
-    estimatedSaveMessage = `Logged ${minutes} min.`;
+    estimatedSaveMessage = `${t("Logged")} ${minutes} min.`;
     refreshRecent();
     renderApp();
   } catch (err) {
@@ -462,7 +477,7 @@ async function saveRecentEdit(entryId, startInput, endInput) {
   const startedAt = fromLocalInputValue(startInput.value);
   const endedAt = fromLocalInputValue(endInput.value);
   if (!startedAt || !endedAt) {
-    window.alert("Enter valid start and end times.");
+    window.alert(t("Enter valid start and end times."));
     return;
   }
   try {
@@ -482,19 +497,19 @@ function renderResolveForm() {
   const isVendor = cat.tracksVendor;
   return `
     <div class="card">
-      <p class="card-title">Link before stopping</p>
-      <p class="resolve-text">Before stopping <strong>${escapeHtml(cat.label)}</strong>, link it to ${isVendor ? "a vendor" : "a PO"} to sync it.</p>
-      <input type="text" class="link-search-input resolve-search-input" placeholder="${isVendor ? "Search vendor name..." : "Search PO # or description..."}" />
+      <p class="card-title">${escapeHtml(t("Link before stopping"))}</p>
+      <p class="resolve-text">${escapeHtml(t("Before stopping"))} <strong>${escapeHtml(t(cat.label))}</strong>, ${escapeHtml(t("link it to"))} ${isVendor ? escapeHtml(t("a vendor")) : escapeHtml(t("a PO"))} ${escapeHtml(t("to sync it."))}</p>
+      <input type="text" class="link-search-input resolve-search-input" placeholder="${isVendor ? escapeHtml(t("Search vendor name...")) : escapeHtml(t("Search PO # or description..."))}" />
       <div class="resolve-results"></div>
       ${
         !isVendor
-          ? `<p class="resolve-or">No matching PO? Describe it instead:</p>
-             <input type="text" class="link-search-input resolve-freetext-input" placeholder="PO description or code..." value="${escapeHtml(resolveFreeText)}" />`
+          ? `<p class="resolve-or">${escapeHtml(t("No matching PO? Describe it instead:"))}</p>
+             <input type="text" class="link-search-input resolve-freetext-input" placeholder="${escapeHtml(t("PO description or code..."))}" value="${escapeHtml(resolveFreeText)}" />`
           : ""
       }
       <div class="resolve-actions">
-        <button type="button" class="btn btn-primary resolve-confirm-btn" ${!isVendor && !resolveFreeText.trim() ? "disabled" : ""}>Stop &amp; save</button>
-        <button type="button" class="btn btn-secondary resolve-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary resolve-confirm-btn" ${!isVendor && !resolveFreeText.trim() ? "disabled" : ""}>${escapeHtml(t("Stop & save"))}</button>
+        <button type="button" class="btn btn-secondary resolve-cancel-btn">${escapeHtml(t("Cancel"))}</button>
       </div>
     </div>
   `;
@@ -527,7 +542,7 @@ function renderApp() {
   stopTicking();
 
   if (resolvingStop) {
-    root.innerHTML = `<p class="user-row">Signed in as ${escapeHtml(session.name || session.id)}</p>${renderResolveForm()}`;
+    root.innerHTML = `<p class="user-row">${escapeHtml(t("Signed in as"))} ${escapeHtml(session.name || session.id)}</p>${renderResolveForm()}`;
     const searchInput = document.querySelector(".resolve-search-input");
     if (searchInput) {
       searchInput.addEventListener("input", () => {
@@ -573,26 +588,26 @@ function renderApp() {
   const stale = isStale();
 
   root.innerHTML = `
-    <p class="user-row">Signed in as ${escapeHtml(session.name || session.id)}</p>
+    <p class="user-row">${escapeHtml(t("Signed in as"))} ${escapeHtml(session.name || session.id)}</p>
 
     <div class="card current-card ${stale ? "current-card-stale" : ""}">
       ${
         current
           ? `
-        ${stale ? `<p class="stale-banner">&#9888; Still working on this? Started ${formatClock(current.startedAt)}. Auto-stops after 12h.</p>` : ""}
+        ${stale ? `<p class="stale-banner">&#9888; ${escapeHtml(t("Still working on this? Started"))} ${formatClock(current.startedAt)}. ${escapeHtml(t("Auto-stops after 12h."))}</p>` : ""}
         <div class="current-row">
           <span class="current-category">${escapeHtml(categoryLabel(current.category))}</span>
           <span class="current-elapsed">${formatElapsed(liveElapsedSeconds())}</span>
         </div>
-        <textarea class="note-input" placeholder="Note (optional)">${escapeHtml(current.note || "")}</textarea>
+        <textarea class="note-input" placeholder="${escapeHtml(t("Note (optional)"))}">${escapeHtml(current.note || "")}</textarea>
         ${
           categoryTracksTech(current.category)
             ? `
           <div class="link-block">
             ${
               current.relatedTechId
-                ? `<span class="badge">Tech: ${escapeHtml(techName(current.relatedTechId))}</span> <button type="button" class="btn btn-secondary tech-unlink-btn">Unlink</button>`
-                : `<input type="text" class="link-search-input tech-search-input" placeholder="Assign a tech (search name/ID)..." /><div class="tech-results"></div>`
+                ? `<span class="badge">${escapeHtml(t("Tech:"))} ${escapeHtml(techName(current.relatedTechId))}</span> <button type="button" class="btn btn-secondary tech-unlink-btn">${escapeHtml(t("Unlink"))}</button>`
+                : `<input type="text" class="link-search-input tech-search-input" placeholder="${escapeHtml(t("Assign a tech (search name/ID)..."))}" /><div class="tech-results"></div>`
             }
           </div>
         `
@@ -604,28 +619,28 @@ function renderApp() {
           <div class="link-block">
             ${
               current.relatedPoId
-                ? `<span class="badge">PO linked</span> <button type="button" class="btn btn-secondary po-unlink-btn">Unlink</button>`
-                : `<input type="text" class="link-search-input po-search-input" placeholder="Link a PO (search #, description)..." /><div class="po-results"></div>`
+                ? `<span class="badge">${escapeHtml(t("PO linked"))}</span> <button type="button" class="btn btn-secondary po-unlink-btn">${escapeHtml(t("Unlink"))}</button>`
+                : `<input type="text" class="link-search-input po-search-input" placeholder="${escapeHtml(t("Link a PO (search #, description)..."))}" /><div class="po-results"></div>`
             }
           </div>
         `
             : ""
         }
-        <button type="button" class="btn btn-secondary stop-btn">Stop</button>
+        <button type="button" class="btn btn-secondary stop-btn">${escapeHtml(t("Stop"))}</button>
       `
-          : `<p class="card-title">Pick what you're working on</p>
+          : `<p class="card-title">${escapeHtml(t("Pick what you're working on"))}</p>
              <div class="cat-grid">
                ${TIME_LOG_CATEGORIES.map(
-                 (c) => `<button type="button" class="cat-btn ${armedCategory === c.key ? "cat-btn-armed" : ""}" data-key="${c.key}">${escapeHtml(c.label)}</button>`
+                 (c) => `<button type="button" class="cat-btn ${armedCategory === c.key ? "cat-btn-armed" : ""}" data-key="${c.key}">${escapeHtml(t(c.label))}</button>`
                ).join("")}
              </div>`
       }
       ${
         armedCategory
-          ? `<button type="button" class="btn btn-primary start-btn" style="margin-top:8px;width:100%;">Start tracking: ${escapeHtml(categoryLabel(armedCategory))}</button>`
+          ? `<button type="button" class="btn btn-primary start-btn" style="margin-top:8px;width:100%;">${escapeHtml(t("Start tracking:"))} ${escapeHtml(categoryLabel(armedCategory))}</button>`
           : current
             ? ""
-            : `<p class="idle-hint" style="margin-top:8px;">Pick a category, then confirm Start.</p>`
+            : `<p class="idle-hint" style="margin-top:8px;">${escapeHtml(t("Pick a category, then confirm Start."))}</p>`
       }
     </div>
 
@@ -633,18 +648,18 @@ function renderApp() {
       current
         ? `
       <div class="card">
-        <p class="card-title">Switch to</p>
+        <p class="card-title">${escapeHtml(t("Switch to"))}</p>
         <div class="cat-grid">
           ${TIME_LOG_CATEGORIES.map(
             (c) =>
               `<button type="button" class="cat-btn ${current.category === c.key ? "cat-btn-active" : ""} ${
                 armedCategory === c.key ? "cat-btn-armed" : ""
-              }" data-key="${c.key}">${escapeHtml(c.label)}</button>`
+              }" data-key="${c.key}">${escapeHtml(t(c.label))}</button>`
           ).join("")}
         </div>
         ${
           armedCategory && armedCategory !== current.category
-            ? `<button type="button" class="btn btn-primary start-btn" style="margin-top:8px;width:100%;">Start tracking: ${escapeHtml(categoryLabel(armedCategory))}</button>`
+            ? `<button type="button" class="btn btn-primary start-btn" style="margin-top:8px;width:100%;">${escapeHtml(t("Start tracking:"))} ${escapeHtml(categoryLabel(armedCategory))}</button>`
             : ""
         }
       </div>
@@ -653,28 +668,28 @@ function renderApp() {
     }
 
     <div class="card">
-      <p class="card-title">Quick log</p>
+      <p class="card-title">${escapeHtml(t("Quick log"))}</p>
       <div class="instant-grid">
         ${INSTANT_LOG_CATEGORIES.map(
-          (c) => `<button type="button" class="instant-btn" data-key="${c.key}"><span>${escapeHtml(c.label)}</span><span class="instant-min">${c.minutes} min</span></button>`
+          (c) => `<button type="button" class="instant-btn" data-key="${c.key}"><span>${escapeHtml(t(c.label))}</span><span class="instant-min">${c.minutes} min</span></button>`
         ).join("")}
       </div>
       ${
         lastInstantEntry
           ? `
         <div class="instant-confirm">
-          <p class="instant-confirm-text">&#10003; Logged ${escapeHtml(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category)} &middot; ${
+          <p class="instant-confirm-text">&#10003; ${escapeHtml(t("Logged"))} ${escapeHtml(t(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category))} &middot; ${
               instantCategoryDef(lastInstantEntry.category)?.minutes ?? ""
             } min</p>
-          <input type="text" class="link-search-input instant-ref-input" placeholder="Reference # (Request #, Maximo #...)" value="${escapeHtml(lastInstantEntry.note || "")}" />
+          <input type="text" class="link-search-input instant-ref-input" placeholder="${escapeHtml(t("Reference # (Request #, Maximo #...)"))}" value="${escapeHtml(lastInstantEntry.note || "")}" />
           <div class="link-block">
             ${
               lastInstantEntry.relatedPoId
-                ? `<span class="badge">PO linked</span> <button type="button" class="btn btn-secondary instant-po-unlink-btn">Unlink</button>`
-                : `<input type="text" class="link-search-input instant-po-search-input" placeholder="Or link a PO (search #, description)..." /><div class="instant-po-results"></div>`
+                ? `<span class="badge">${escapeHtml(t("PO linked"))}</span> <button type="button" class="btn btn-secondary instant-po-unlink-btn">${escapeHtml(t("Unlink"))}</button>`
+                : `<input type="text" class="link-search-input instant-po-search-input" placeholder="${escapeHtml(t("Or link a PO (search #, description)..."))}" /><div class="instant-po-results"></div>`
             }
           </div>
-          <button type="button" class="btn btn-secondary instant-dismiss-btn">Done</button>
+          <button type="button" class="btn btn-secondary instant-dismiss-btn">${escapeHtml(t("Done"))}</button>
         </div>
       `
           : ""
@@ -682,15 +697,15 @@ function renderApp() {
     </div>
 
     <div class="card">
-      <p class="card-title">End of day log</p>
+      <p class="card-title">${escapeHtml(t("End of day log"))}</p>
       ${ESTIMATED_LOG_CATEGORIES.map(
         (c) => `
         <div class="estimated-row" data-key="${c.key}">
-          <span class="estimated-cat">${escapeHtml(c.label)}</span>
+          <span class="estimated-cat">${escapeHtml(t(c.label))}</span>
           <div class="estimated-inputs">
-            <input type="number" class="estimated-minutes-input" data-key="${c.key}" placeholder="Minutes" min="1" step="1" value="${escapeHtml(estimatedState(c.key).minutes)}" />
-            <input type="text" class="estimated-note-input" data-key="${c.key}" placeholder="Note (optional)" value="${escapeHtml(estimatedState(c.key).note)}" />
-            <button type="button" class="btn btn-secondary estimated-log-btn" data-key="${c.key}">Log</button>
+            <input type="number" class="estimated-minutes-input" data-key="${c.key}" placeholder="${escapeHtml(t("Minutes"))}" min="1" step="1" value="${escapeHtml(estimatedState(c.key).minutes)}" />
+            <input type="text" class="estimated-note-input" data-key="${c.key}" placeholder="${escapeHtml(t("Note (optional)"))}" value="${escapeHtml(estimatedState(c.key).note)}" />
+            <button type="button" class="btn btn-secondary estimated-log-btn" data-key="${c.key}">${escapeHtml(t("Log"))}</button>
           </div>
         </div>
       `
@@ -702,7 +717,7 @@ function renderApp() {
       recentEntries.length > 0
         ? `
       <div class="card">
-        <p class="card-title">Recent entries</p>
+        <p class="card-title">${escapeHtml(t("Recent entries"))}</p>
         ${recentEntries
           .map((e) =>
             recentEditingId === e.id
@@ -712,8 +727,8 @@ function renderApp() {
               <input type="datetime-local" class="recent-start-input" value="${toLocalInputValue(e.startedAt)}" />
               <input type="datetime-local" class="recent-end-input" value="${toLocalInputValue(e.endedAt)}" />
               <div class="estimated-inputs">
-                <button type="button" class="btn btn-secondary recent-save-btn">Save</button>
-                <button type="button" class="btn btn-secondary recent-cancel-btn">Cancel</button>
+                <button type="button" class="btn btn-secondary recent-save-btn">${escapeHtml(t("Save"))}</button>
+                <button type="button" class="btn btn-secondary recent-cancel-btn">${escapeHtml(t("Cancel"))}</button>
               </div>
             </div>
           `
@@ -721,7 +736,7 @@ function renderApp() {
             <div class="recent-row" data-id="${e.id}">
               <span class="recent-cat">${escapeHtml(categoryLabel(e.category))}</span>
               <span class="recent-range">${formatDateTime(e.startedAt)}&ndash;${formatClock(e.endedAt)} (${formatElapsed(e.durationSeconds)})</span>
-              <button type="button" class="btn btn-secondary recent-edit-btn">Edit times</button>
+              <button type="button" class="btn btn-secondary recent-edit-btn">${escapeHtml(t("Edit times"))}</button>
             </div>
           `
           )
