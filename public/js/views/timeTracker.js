@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
+import { t } from "../i18n.js";
 
 // A persistent floating widget, mounted once in app.js's render() as a
 // sibling of the sidebar/main shell -- NOT inside any single view's own
@@ -123,7 +124,7 @@ export function mountTimeTracker() {
     return TIME_LOG_CATEGORIES.find((c) => c.key === key) || null;
   }
   function categoryLabel(key) {
-    return categoryDef(key)?.label || key;
+    return t(categoryDef(key)?.label || key);
   }
   function categoryTracksTech(key) {
     return Boolean(categoryDef(key)?.tracksTech);
@@ -449,7 +450,7 @@ export function mountTimeTracker() {
     const form = estimatedState(key);
     const minutes = Number(form.minutes);
     if (!form.minutes || !Number.isFinite(minutes) || minutes <= 0) {
-      estimatedSaveMessage = "Enter a number of minutes greater than 0.";
+      estimatedSaveMessage = t("Enter a number of minutes greater than 0.");
       render();
       return;
     }
@@ -457,7 +458,7 @@ export function mountTimeTracker() {
       await api.post("/api/admin/time-log/estimated", { category: key, minutes, note: form.note });
       form.minutes = "";
       form.note = "";
-      estimatedSaveMessage = `Logged ${minutes} min.`;
+      estimatedSaveMessage = `${t("Logged")} ${minutes} min.`;
       refreshRecent();
       render();
     } catch (err) {
@@ -470,7 +471,7 @@ export function mountTimeTracker() {
     const startedAt = fromLocalInputValue(startInput.value);
     const endedAt = fromLocalInputValue(endInput.value);
     if (!startedAt || !endedAt) {
-      window.alert("Enter valid start and end times.");
+      window.alert(t("Enter valid start and end times."));
       return;
     }
     try {
@@ -489,10 +490,10 @@ export function mountTimeTracker() {
     return `
       <div class="time-tracker-resolve">
         <p class="time-tracker-resolve-title">
-          Before stopping <strong>${escapeHtml(cat.label)}</strong>, link it to ${isVendor ? "a vendor" : "a PO"} to sync it.
+          ${escapeHtml(t("Before stopping"))} <strong>${escapeHtml(t(cat.label))}</strong>, ${escapeHtml(t("link it to"))} ${isVendor ? escapeHtml(t("a vendor")) : escapeHtml(t("a PO"))} ${escapeHtml(t("to sync it."))}
         </p>
         <input type="text" class="time-tracker-resolve-search" placeholder="${
-          isVendor ? "Search vendor name..." : "Search PO # or description..."
+          isVendor ? escapeHtml(t("Search vendor name...")) : escapeHtml(t("Search PO # or description..."))
         }" />
         <div class="time-tracker-resolve-results">
           ${resolveSearchResults
@@ -508,15 +509,15 @@ export function mountTimeTracker() {
         </div>
         ${
           !isVendor
-            ? `<p class="time-tracker-resolve-or">No matching PO? Describe it instead:</p>
-               <input type="text" class="time-tracker-resolve-freetext" placeholder="PO description or code..." value="${escapeHtml(resolveFreeText)}" />`
+            ? `<p class="time-tracker-resolve-or">${escapeHtml(t("No matching PO? Describe it instead:"))}</p>
+               <input type="text" class="time-tracker-resolve-freetext" placeholder="${escapeHtml(t("PO description or code..."))}" value="${escapeHtml(resolveFreeText)}" />`
             : ""
         }
         <div class="time-tracker-resolve-actions">
           <button type="button" class="btn btn-secondary time-tracker-resolve-confirm" ${
             !isVendor && !resolveFreeText.trim() ? "disabled" : ""
-          }>Stop &amp; save</button>
-          <button type="button" class="btn btn-link time-tracker-resolve-cancel">Cancel</button>
+          }>${escapeHtml(t("Stop & save"))}</button>
+          <button type="button" class="btn btn-link time-tracker-resolve-cancel">${escapeHtml(t("Cancel"))}</button>
         </div>
       </div>
     `;
@@ -527,7 +528,7 @@ export function mountTimeTracker() {
     const stale = isStale();
     const tabLabel = current
       ? `${escapeHtml(categoryLabel(current.category))} &middot; <span class="time-tracker-elapsed">${formatElapsed(liveElapsedSeconds())}</span>`
-      : "Track time";
+      : escapeHtml(t("Track time"));
 
     el.innerHTML = `
       <div class="time-tracker-tab ${current ? "time-tracker-tab-active" : ""} ${stale ? "time-tracker-tab-stale" : ""}">
@@ -545,24 +546,24 @@ export function mountTimeTracker() {
               (c) =>
                 `<button type="button" class="time-tracker-cat-btn ${
                   current && current.category === c.key ? "time-tracker-cat-btn-active" : ""
-                } ${armedCategory === c.key ? "time-tracker-cat-btn-armed" : ""}" data-key="${c.key}">${escapeHtml(c.label)}</button>`
+                } ${armedCategory === c.key ? "time-tracker-cat-btn-armed" : ""}" data-key="${c.key}">${escapeHtml(t(c.label))}</button>`
             ).join("")}
           </div>
           ${
             armedCategory
               ? `
             <div class="time-tracker-arm-bar">
-              <button type="button" class="btn btn-secondary time-tracker-start-btn">Start tracking: ${escapeHtml(categoryLabel(armedCategory))}</button>
+              <button type="button" class="btn btn-secondary time-tracker-start-btn">${escapeHtml(t("Start tracking:"))} ${escapeHtml(categoryLabel(armedCategory))}</button>
             </div>
           `
               : ""
           }
           <div class="time-tracker-instant">
-            <div class="time-tracker-instant-label">Quick log</div>
+            <div class="time-tracker-instant-label">${escapeHtml(t("Quick log"))}</div>
             <div class="time-tracker-instant-buttons">
               ${INSTANT_LOG_CATEGORIES.map(
                 (c) =>
-                  `<button type="button" class="time-tracker-instant-btn" data-key="${c.key}">${escapeHtml(c.label)} <span class="time-tracker-instant-min">${c.minutes} min</span></button>`
+                  `<button type="button" class="time-tracker-instant-btn" data-key="${c.key}">${escapeHtml(t(c.label))} <span class="time-tracker-instant-min">${c.minutes} min</span></button>`
               ).join("")}
             </div>
             ${
@@ -570,33 +571,33 @@ export function mountTimeTracker() {
                 ? `
               <div class="time-tracker-instant-confirm">
                 <p class="time-tracker-instant-confirm-text">
-                  &#10003; Logged ${escapeHtml(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category)}
+                  &#10003; ${escapeHtml(t("Logged"))} ${escapeHtml(t(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category))}
                   &middot; ${instantCategoryDef(lastInstantEntry.category)?.minutes ?? ""} min
                 </p>
-                <input type="text" class="time-tracker-instant-ref" placeholder="Reference # (Request #, Maximo #...)" value="${escapeHtml(lastInstantEntry.note || "")}" />
+                <input type="text" class="time-tracker-instant-ref" placeholder="${escapeHtml(t("Reference # (Request #, Maximo #...)"))}" value="${escapeHtml(lastInstantEntry.note || "")}" />
                 <div class="time-tracker-po-link">
                   ${
                     lastInstantEntry.relatedPoId
-                      ? `<span class="badge badge-approved">PO linked</span> <button type="button" class="btn btn-link time-tracker-instant-po-unlink">Unlink</button>`
-                      : `<input type="text" class="time-tracker-instant-po-search" placeholder="Or link a PO (search #, description)..." />
+                      ? `<span class="badge badge-approved">${escapeHtml(t("PO linked"))}</span> <button type="button" class="btn btn-link time-tracker-instant-po-unlink">${escapeHtml(t("Unlink"))}</button>`
+                      : `<input type="text" class="time-tracker-instant-po-search" placeholder="${escapeHtml(t("Or link a PO (search #, description)..."))}" />
                          <div class="time-tracker-instant-po-results"></div>`
                   }
                 </div>
-                <button type="button" class="btn btn-link time-tracker-instant-dismiss">Done</button>
+                <button type="button" class="btn btn-link time-tracker-instant-dismiss">${escapeHtml(t("Done"))}</button>
               </div>
             `
                 : ""
             }
           </div>
           <div class="time-tracker-estimated">
-            <div class="time-tracker-instant-label">End of day log</div>
+            <div class="time-tracker-instant-label">${escapeHtml(t("End of day log"))}</div>
             ${ESTIMATED_LOG_CATEGORIES.map(
               (c) => `
               <div class="time-tracker-estimated-row" data-key="${c.key}">
-                <span class="time-tracker-estimated-cat">${escapeHtml(c.label)}</span>
-                <input type="number" class="time-tracker-estimated-minutes" data-key="${c.key}" placeholder="Minutes" min="1" step="1" value="${escapeHtml(estimatedState(c.key).minutes)}" />
-                <input type="text" class="time-tracker-estimated-note" data-key="${c.key}" placeholder="Note (optional)" value="${escapeHtml(estimatedState(c.key).note)}" />
-                <button type="button" class="btn btn-secondary time-tracker-estimated-log-btn" data-key="${c.key}">Log</button>
+                <span class="time-tracker-estimated-cat">${escapeHtml(t(c.label))}</span>
+                <input type="number" class="time-tracker-estimated-minutes" data-key="${c.key}" placeholder="${escapeHtml(t("Minutes"))}" min="1" step="1" value="${escapeHtml(estimatedState(c.key).minutes)}" />
+                <input type="text" class="time-tracker-estimated-note" data-key="${c.key}" placeholder="${escapeHtml(t("Note (optional)"))}" value="${escapeHtml(estimatedState(c.key).note)}" />
+                <button type="button" class="btn btn-secondary time-tracker-estimated-log-btn" data-key="${c.key}">${escapeHtml(t("Log"))}</button>
               </div>
             `
             ).join("")}
@@ -608,19 +609,19 @@ export function mountTimeTracker() {
             <div class="time-tracker-current ${stale ? "time-tracker-current-stale" : ""}">
               ${
                 stale
-                  ? `<p class="time-tracker-stale-banner">&#9888; Still working on this? Started ${formatClock(current.startedAt)}. A forgotten timer auto-stops after 12h.</p>`
+                  ? `<p class="time-tracker-stale-banner">&#9888; ${escapeHtml(t("Still working on this? Started"))} ${formatClock(current.startedAt)}. ${escapeHtml(t("A forgotten timer auto-stops after 12h."))}</p>`
                   : ""
               }
               <div class="time-tracker-details">
-                <textarea class="time-tracker-note" placeholder="Note (optional)">${escapeHtml(current.note || "")}</textarea>
+                <textarea class="time-tracker-note" placeholder="${escapeHtml(t("Note (optional)"))}">${escapeHtml(current.note || "")}</textarea>
                 ${
                   categoryTracksTech(current.category)
                     ? `
                   <div class="time-tracker-po-link">
                     ${
                       current.relatedTechId
-                        ? `<span class="badge badge-approved">Tech: ${escapeHtml(techName(current.relatedTechId))}</span> <button type="button" class="btn btn-link time-tracker-tech-unlink">Unlink</button>`
-                        : `<input type="text" class="time-tracker-tech-search" placeholder="Assign a tech (search name/ID)..." />
+                        ? `<span class="badge badge-approved">${escapeHtml(t("Tech:"))} ${escapeHtml(techName(current.relatedTechId))}</span> <button type="button" class="btn btn-link time-tracker-tech-unlink">${escapeHtml(t("Unlink"))}</button>`
+                        : `<input type="text" class="time-tracker-tech-search" placeholder="${escapeHtml(t("Assign a tech (search name/ID)..."))}" />
                            <div class="time-tracker-tech-results"></div>`
                     }
                   </div>
@@ -633,25 +634,25 @@ export function mountTimeTracker() {
                   <div class="time-tracker-po-link">
                     ${
                       current.relatedPoId
-                        ? `<span class="badge badge-approved">PO linked</span> <button type="button" class="btn btn-link time-tracker-po-unlink">Unlink</button>`
-                        : `<input type="text" class="time-tracker-po-search" placeholder="Link a PO (search #, description)..." />
+                        ? `<span class="badge badge-approved">${escapeHtml(t("PO linked"))}</span> <button type="button" class="btn btn-link time-tracker-po-unlink">${escapeHtml(t("Unlink"))}</button>`
+                        : `<input type="text" class="time-tracker-po-search" placeholder="${escapeHtml(t("Link a PO (search #, description)..."))}" />
                            <div class="time-tracker-po-results"></div>`
                     }
                   </div>
                 `
                     : ""
                 }
-                <button type="button" class="btn btn-secondary time-tracker-stop-btn">Stop</button>
+                <button type="button" class="btn btn-secondary time-tracker-stop-btn">${escapeHtml(t("Stop"))}</button>
               </div>
             </div>
           `
-              : `<p class="time-tracker-idle-hint">Pick what you're working on, then confirm Start.</p>`
+              : `<p class="time-tracker-idle-hint">${escapeHtml(t("Pick what you're working on, then confirm Start."))}</p>`
           }
           ${
             recentEntries.length > 0
               ? `
             <div class="time-tracker-recent">
-              <div class="time-tracker-instant-label">Recent entries</div>
+              <div class="time-tracker-instant-label">${escapeHtml(t("Recent entries"))}</div>
               ${recentEntries
                 .map((e) =>
                   recentEditingId === e.id
@@ -660,15 +661,15 @@ export function mountTimeTracker() {
                     <span class="time-tracker-recent-cat">${escapeHtml(categoryLabel(e.category))}</span>
                     <input type="datetime-local" class="time-tracker-recent-start" value="${toLocalInputValue(e.startedAt)}" />
                     <input type="datetime-local" class="time-tracker-recent-end" value="${toLocalInputValue(e.endedAt)}" />
-                    <button type="button" class="btn btn-secondary time-tracker-recent-save">Save</button>
-                    <button type="button" class="btn btn-link time-tracker-recent-cancel">Cancel</button>
+                    <button type="button" class="btn btn-secondary time-tracker-recent-save">${escapeHtml(t("Save"))}</button>
+                    <button type="button" class="btn btn-link time-tracker-recent-cancel">${escapeHtml(t("Cancel"))}</button>
                   </div>
                 `
                     : `
                   <div class="time-tracker-recent-row" data-id="${e.id}">
                     <span class="time-tracker-recent-cat">${escapeHtml(categoryLabel(e.category))}</span>
                     <span class="time-tracker-recent-range">${formatDateTime(e.startedAt)} &ndash; ${formatClock(e.endedAt)} (${formatElapsed(e.durationSeconds)})</span>
-                    <button type="button" class="btn btn-link time-tracker-recent-edit">Edit times</button>
+                    <button type="button" class="btn btn-link time-tracker-recent-edit">${escapeHtml(t("Edit times"))}</button>
                   </div>
                 `
                 )

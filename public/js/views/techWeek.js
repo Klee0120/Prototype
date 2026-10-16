@@ -1,23 +1,31 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
+import { t } from "../i18n.js";
 import { DAY_NAMES, shiftWeek, weekRangeLabel, datesForWeek, formatDateShort } from "../weekUtil.js";
 import { renderAttachments } from "./attachments.js";
 import { renderWomPhotoPrompt } from "./womPhotoPrompt.js";
 
-const STATUS_LABELS = {
-  draft: "Draft",
-  submitted: "Submitted — awaiting review",
-  approved: "Approved & locked",
-  rejected: "Returned — needs changes",
-};
+// STATUS_LABELS/TIME_OFF_OPTIONS are read lazily inside functions (not at
+// module load) so t() picks up the language active at render time, not
+// whatever it was when this module first loaded.
+function statusLabels() {
+  return {
+    draft: t("Draft"),
+    submitted: t("Submitted — awaiting review"),
+    approved: t("Approved & locked"),
+    rejected: t("Returned — needs changes"),
+  };
+}
 
-const TIME_OFF_OPTIONS = [
-  { value: "vacation", label: "Vacation" },
-  { value: "sick", label: "Sick" },
-  { value: "bereavement", label: "Bereavement" },
-  { value: "holiday", label: "Holiday" },
-  { value: "floating_holiday", label: "Floating Holiday" },
-];
+function timeOffOptions() {
+  return [
+    { value: "vacation", label: t("Vacation") },
+    { value: "sick", label: t("Sick") },
+    { value: "bereavement", label: t("Bereavement") },
+    { value: "holiday", label: t("Holiday") },
+    { value: "floating_holiday", label: t("Floating Holiday") },
+  ];
+}
 
 const WEEKEND_DAYS = ["Sat", "Sun"];
 const REGULAR_DAY_NAMES = DAY_NAMES.filter((d) => !WEEKEND_DAYS.includes(d));
@@ -86,15 +94,15 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
 
   draw();
   renderAttachments(attachmentsHost, {
-    title: "Attachments",
+    title: t("Attachments"),
     relatedType: "week",
     relatedId: `${techId}|${state.weekMonday}`,
     categories: [
-      { value: "ukg_screenshot", label: "UKG Timesheet Screenshot" },
-      { value: "receipt", label: "Receipt / Invoice" },
+      { value: "ukg_screenshot", label: t("UKG Timesheet Screenshot") },
+      { value: "receipt", label: t("Receipt / Invoice") },
     ],
     canUpload: true,
-    emptyText: "No UKG screenshots or receipts attached yet.",
+    emptyText: t("No UKG screenshots or receipts attached yet."),
   });
 
   function openWomsAt(locationCode) {
@@ -196,16 +204,16 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     // why editing is locked, time-off-only guidance); a bare "Draft" pill
     // with nothing underneath was pure redundant chrome.
     const statusNotesHtml = [
-      week.status === "rejected" && week.note ? `<div class="status-note">Admin note: ${escapeHtml(week.note)}</div>` : "",
+      week.status === "rejected" && week.note ? `<div class="status-note">${escapeHtml(t("Admin note:"))} ${escapeHtml(week.note)}</div>` : "",
       week.status === "approved" || week.status === "submitted"
         ? state.user.role === "admin"
-          ? `<div class="status-note">This week is locked. <button class="btn btn-link unlock-week-btn" type="button">Unlock for correction</button></div>`
-          : `<div class="status-note">This week is locked. Contact an admin to make corrections.</div>`
+          ? `<div class="status-note">${escapeHtml(t("This week is locked."))} <button class="btn btn-link unlock-week-btn" type="button">${escapeHtml(t("Unlock for correction"))}</button></div>`
+          : `<div class="status-note">${escapeHtml(t("This week is locked. Contact an admin to make corrections."))}</div>`
         : "",
-      locked && week.status === "draft" ? `<div class="status-note">The window to adjust this week has closed. Contact an admin if it needs correction.</div>` : "",
-      timeOffOnly ? `<div class="status-note">This week isn't open for full allocation yet. Any approved time off will show here automatically; everything else opens up closer to the week itself.</div>` : "",
+      locked && week.status === "draft" ? `<div class="status-note">${escapeHtml(t("The window to adjust this week has closed. Contact an admin if it needs correction."))}</div>` : "",
+      timeOffOnly ? `<div class="status-note">${escapeHtml(t("This week isn't open for full allocation yet. Any approved time off will show here automatically; everything else opens up closer to the week itself."))}</div>` : "",
       state.user.role !== "admin" && !locked && !timeOffOnly && week.status === "draft" && week.ukgTotal > 0
-        ? `<div class="status-note ready-to-allocate">Your hours are in — go ahead and allocate your time below.</div>`
+        ? `<div class="status-note ready-to-allocate">${escapeHtml(t("Your hours are in — go ahead and allocate your time below."))}</div>`
         : "",
     ].join("");
 
@@ -218,19 +226,19 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     const weekNavMarkup = weekNavHost
       ? `
         <div class="topbar-field">
-          <label>Week</label>
+          <label>${escapeHtml(t("Week"))}</label>
           <div class="topbar-field-row">
-            <button class="topbar-arrow-btn" id="prev-week" aria-label="Previous week">&larr;</button>
+            <button class="topbar-arrow-btn" id="prev-week" aria-label="${escapeHtml(t("Previous week"))}">&larr;</button>
             <span class="topbar-pill-static">📅 ${weekRangeLabel(state.weekMonday)}</span>
-            <button class="topbar-arrow-btn" id="next-week" aria-label="Next week">&rarr;</button>
+            <button class="topbar-arrow-btn" id="next-week" aria-label="${escapeHtml(t("Next week"))}">&rarr;</button>
           </div>
         </div>
       `
       : `
         <div class="week-nav">
-          <button class="btn btn-ghost" id="prev-week">&larr; Prev</button>
+          <button class="btn btn-ghost" id="prev-week">&larr; ${escapeHtml(t("Prev"))}</button>
           <div class="week-range">${weekRangeLabel(state.weekMonday)}</div>
-          <button class="btn btn-ghost" id="next-week">Next &rarr;</button>
+          <button class="btn btn-ghost" id="next-week">${escapeHtml(t("Next"))} &rarr;</button>
         </div>
       `;
     if (weekNavHost) weekNavHost.innerHTML = weekNavMarkup;
@@ -241,19 +249,19 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
       <div class="week-kpi-tiles">
         <div class="kpi-tile">
           <div class="kpi-tile-icon">⏱</div>
-          <div><div class="kpi-tile-label">UKG total hours<br>(source of truth)</div><div class="kpi-tile-value">${week.ukgTotal}h</div></div>
+          <div><div class="kpi-tile-label">${t("UKG total hours<br>(source of truth)")}</div><div class="kpi-tile-value">${week.ukgTotal}h</div></div>
         </div>
         <div class="kpi-tile">
           <div class="kpi-tile-icon">📋</div>
-          <div><div class="kpi-tile-label">Allocated hours</div><div class="kpi-tile-value ${Math.abs(weekAllocated - week.ukgTotal) < 0.01 ? "" : "kpi-tile-value-warn"}">${weekAllocated}h</div></div>
+          <div><div class="kpi-tile-label">${escapeHtml(t("Allocated hours"))}</div><div class="kpi-tile-value ${Math.abs(weekAllocated - week.ukgTotal) < 0.01 ? "" : "kpi-tile-value-warn"}">${weekAllocated}h</div></div>
         </div>
         <div class="kpi-tile">
           <div class="kpi-tile-icon">⏳</div>
-          <div><div class="kpi-tile-label">Remaining</div><div class="kpi-tile-value ${Math.abs(weekRemaining) > 0.01 ? "kpi-tile-value-warn" : ""}">${weekRemaining}h</div></div>
+          <div><div class="kpi-tile-label">${escapeHtml(t("Remaining"))}</div><div class="kpi-tile-value ${Math.abs(weekRemaining) > 0.01 ? "kpi-tile-value-warn" : ""}">${weekRemaining}h</div></div>
         </div>
         <div class="kpi-tile">
           <div class="kpi-tile-icon">📄</div>
-          <div><div class="kpi-tile-label">Status</div><div class="kpi-tile-value kpi-tile-status status-${week.status}">${STATUS_LABELS[week.status]}</div></div>
+          <div><div class="kpi-tile-label">${escapeHtml(t("Status"))}</div><div class="kpi-tile-value kpi-tile-status status-${week.status}">${statusLabels()[week.status]}</div></div>
         </div>
       </div>
 
@@ -270,7 +278,11 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
           ${
             weekendEditable
               ? `<div class="weekend-section">
-                  <div class="weekend-section-title">Weekend hours</div>
+                  <div class="weekend-section-title">${escapeHtml(t("Weekend hours"))}</div>
+                  <!-- Dynamic sentences below (embed week.status) are left English-only
+                       for now -- see the README note on translation coverage: this is
+                       pay-related explanatory text, worth a careful translation pass
+                       rather than a quick mechanical one. -->
                   <p class="weekend-section-hint">Called in after this week was already ${week.status}? Log Saturday/Sunday
                     here — Mon-Fri below stays exactly as ${week.status}.</p>
                   ${
@@ -287,7 +299,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
                   }
                   <div class="day-grid weekend-day-grid" id="weekend-day-grid"></div>
                   <div class="action-row">
-                    <button class="btn btn-primary" id="save-weekend">Save weekend hours</button>
+                    <button class="btn btn-primary" id="save-weekend">${escapeHtml(t("Save weekend hours"))}</button>
                     <span class="save-message">${escapeHtml(saveMessage)}</span>
                   </div>
                 </div>`
@@ -304,10 +316,10 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
 
         <div class="week-side-col">
           <div class="side-card">
-            <h4>Weekly Summary</h4>
-            <div class="side-summary-row"><span>UKG total hours</span><strong>${week.ukgTotal}h</strong></div>
-            <div class="side-summary-row"><span>Allocated hours</span><strong>${weekAllocated}h</strong></div>
-            <div class="side-summary-row"><span>Remaining</span><strong class="${Math.abs(weekRemaining) > 0.01 ? "side-summary-warn" : ""}">${weekRemaining}h</strong></div>
+            <h4>${escapeHtml(t("Weekly Summary"))}</h4>
+            <div class="side-summary-row"><span>${escapeHtml(t("UKG total hours"))}</span><strong>${week.ukgTotal}h</strong></div>
+            <div class="side-summary-row"><span>${escapeHtml(t("Allocated hours"))}</span><strong>${weekAllocated}h</strong></div>
+            <div class="side-summary-row"><span>${escapeHtml(t("Remaining"))}</span><strong class="${Math.abs(weekRemaining) > 0.01 ? "side-summary-warn" : ""}">${weekRemaining}h</strong></div>
             <div class="side-summary-days">
               ${summaryDays
                 .map((day) => {
@@ -325,8 +337,8 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
             locked
               ? ""
               : `<div class="side-card">
-                  <h4>Quick Actions</h4>
-                  <button class="btn btn-primary side-action-btn" id="save-draft" type="button">💾 Save draft</button>
+                  <h4>${escapeHtml(t("Quick Actions"))}</h4>
+                  <button class="btn btn-primary side-action-btn" id="save-draft" type="button">💾 ${escapeHtml(t("Save draft"))}</button>
                   ${
                     timeOffOnly
                       ? ""
@@ -334,12 +346,12 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
                           isSelfSubmit
                             ? `<label class="submit-confirm-row">
                                 <input type="checkbox" id="submit-confirm-checkbox" ${confirmChecked ? "checked" : ""} />
-                                I confirm these allocations reflect the work I performed this week.
+                                ${escapeHtml(t("I confirm these allocations reflect the work I performed this week."))}
                               </label>`
                             : ""
-                        }<button class="btn btn-secondary side-action-btn" id="submit-week" type="button" ${canSubmitWeek() ? "" : "disabled"}>📨 Submit for review</button>`
+                        }<button class="btn btn-secondary side-action-btn" id="submit-week" type="button" ${canSubmitWeek() ? "" : "disabled"}>📨 ${escapeHtml(t("Submit for review"))}</button>`
                   }
-                  <button class="btn btn-secondary side-action-btn" id="print-week" type="button">🖨 Print / Export</button>
+                  <button class="btn btn-secondary side-action-btn" id="print-week" type="button">🖨 ${escapeHtml(t("Print / Export"))}</button>
                   <span class="save-message">${escapeHtml(saveMessage)}</span>
                 </div>`
           }
@@ -482,10 +494,10 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     return `
       <div class="notification-pref-row">
         <label>
-          Notify me by
+          ${escapeHtml(t("Notify me by"))}
           <select class="notification-pref-select">
-            <option value="in_app" ${pref === "in_app" ? "selected" : ""}>In-app only</option>
-            <option value="email" ${pref === "email" ? "selected" : ""} ${hasEmail ? "" : "disabled"}>Email${hasEmail ? "" : " (ask admin to add your email first)"}</option>
+            <option value="in_app" ${pref === "in_app" ? "selected" : ""}>${escapeHtml(t("In-app only"))}</option>
+            <option value="email" ${pref === "email" ? "selected" : ""} ${hasEmail ? "" : "disabled"}>${escapeHtml(t("Email"))}${hasEmail ? "" : ` ${escapeHtml(t("(ask admin to add your email first)"))}`}</option>
           </select>
         </label>
         <span class="save-message notification-pref-message"></span>
@@ -516,8 +528,8 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
 
     card.innerHTML = `
       <div class="day-card-header">
-        <span class="day-name">${day} <span class="day-date">${dayDate}</span>${dayReopened ? ` <span class="badge badge-draft">Weekend entry</span>` : ""}</span>
-        <span class="day-ukg-actual">UKG ACTUAL: <strong>${ukgActual}h</strong></span>
+        <span class="day-name">${day} <span class="day-date">${dayDate}</span>${dayReopened ? ` <span class="badge badge-draft">${escapeHtml(t("Weekend entry"))}</span>` : ""}</span>
+        <span class="day-ukg-actual">${escapeHtml(t("UKG ACTUAL:"))} <strong>${ukgActual}h</strong></span>
       </div>
       ${
         pendingPunch
@@ -535,16 +547,16 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
       <div class="day-rows"></div>
       ${full ? `
         <div class="day-actions">
-          <button class="btn btn-link add-split" type="button">+ Add split</button>
+          <button class="btn btn-link add-split" type="button">+ ${escapeHtml(t("Add split"))}</button>
           <button class="btn btn-link default-home" type="button" ${homeLocationCode ? "" : "disabled"}>
-            Default to home — ${homeLocationCode ? remaining : "0.00"} hrs
+            ${escapeHtml(t("Default to home"))} — ${homeLocationCode ? remaining : "0.00"} ${escapeHtml(t("hrs"))}
           </button>
         </div>
       `: ""}
       ${timeOffOnly ? "" : `
         <div class="day-balance">
           <span class="balance-pill ${Math.abs(delta) < 0.01 ? "ok" : "warn"}">
-            ${Math.abs(delta) < 0.01 ? "● Balanced" : `● Off by ${Math.abs(delta)}`}
+            ${Math.abs(delta) < 0.01 ? `● ${escapeHtml(t("Balanced"))}` : `● ${escapeHtml(t("Off by"))} ${Math.abs(delta)}`}
           </span>
         </div>
       `}
@@ -556,22 +568,22 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
         if (splits.length === 0) {
           const empty = document.createElement("div");
           empty.className = "day-row-empty";
-          empty.textContent = locked ? "No hours logged." : "Not yet allocated.";
+          empty.textContent = locked ? t("No hours logged.") : t("Not yet allocated.");
           rowsEl.appendChild(empty);
         }
         splits.forEach((row) => rowsEl.appendChild(renderSplitRow(row, locked)));
       }
 
       if (timeOff) {
-        const label = TIME_OFF_OPTIONS.find((o) => o.value === timeOff.timeOffType)?.label || timeOff.timeOffType;
+        const label = timeOffOptions().find((o) => o.value === timeOff.timeOffType)?.label || timeOff.timeOffType;
         const row = document.createElement("div");
         row.className = "day-row";
-        row.innerHTML = `<span class="row-wom">Time off — ${escapeHtml(label)}</span><span class="row-hours">${timeOff.hours}h</span>`;
+        row.innerHTML = `<span class="row-wom">${escapeHtml(t("Time off"))} — ${escapeHtml(label)}</span><span class="row-hours">${timeOff.hours}h</span>`;
         rowsEl.appendChild(row);
       } else if (timeOffOnly) {
         const empty = document.createElement("div");
         empty.className = "day-row-empty";
-        empty.textContent = "No approved time off on file for this day.";
+        empty.textContent = t("No approved time off on file for this day.");
         rowsEl.appendChild(empty);
       }
     }
@@ -633,7 +645,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     }
 
     const locationOptions = locations
-      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === row.locationCode ? "selected" : ""}>${escapeHtml(l.name)}${l.code === homeLocationCode ? " (home)" : ""}</option>`)
+      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === row.locationCode ? "selected" : ""}>${escapeHtml(l.name)}${l.code === homeLocationCode ? ` (${escapeHtml(t("home"))})` : ""}</option>`)
       .join("");
 
     const womOptionsForLocation = openWomsAt(row.locationCode);
@@ -659,20 +671,20 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
     rowEl.innerHTML = `
       <div class="split-row-fields">
         <select class="split-type-select">
-          <option value="ef" ${row.type === "ef" ? "selected" : ""}>E&amp;F — Location</option>
-          <option value="wom" ${row.type === "wom" ? "selected" : ""}>WOM Project</option>
+          <option value="ef" ${row.type === "ef" ? "selected" : ""}>E&amp;F — ${escapeHtml(t("Location"))}</option>
+          <option value="wom" ${row.type === "wom" ? "selected" : ""}>${escapeHtml(t("WOM Project"))}</option>
         </select>
         <select class="split-location-select">${locationOptions}</select>
-        ${row.type === "wom" ? `<select class="split-wom-select">${womOptions || `<option value="">No open WOMs at this location</option>`}</select>` : ""}
+        ${row.type === "wom" ? `<select class="split-wom-select">${womOptions || `<option value="">${escapeHtml(t("No open WOMs at this location"))}</option>`}</select>` : ""}
         <input class="split-hours-input" type="text" inputmode="decimal" value="${row.hours}" data-focus-key="split-hours:${idx}" />
-        <button class="btn btn-icon remove-split" type="button" aria-label="Remove split">&times;</button>
+        <button class="btn btn-icon remove-split" type="button" aria-label="${escapeHtml(t("Remove split"))}">&times;</button>
       </div>
       ${womIsStale ? `<p class="split-row-warning">This WOM is no longer open -- pick a different one before you can submit.</p>` : ""}
       ${
         row.type === "wom" && row.womCode && !womIsStale
           ? row._markComplete
-            ? `<span class="mark-complete-pending">Will mark ${escapeHtml(row.womCode)} complete after you submit.</span> <button class="btn btn-link undo-complete-btn" type="button">Undo</button>`
-            : `<button class="btn btn-link mark-complete-btn" type="button">Mark this WOM project complete</button>`
+            ? `<span class="mark-complete-pending">Will mark ${escapeHtml(row.womCode)} complete after you submit.</span> <button class="btn btn-link undo-complete-btn" type="button">${escapeHtml(t("Undo"))}</button>`
+            : `<button class="btn btn-link mark-complete-btn" type="button">${escapeHtml(t("Mark this WOM project complete"))}</button>`
           : ""
       }
     `;
@@ -752,38 +764,38 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
         const loc = locationByCode[b.code];
         return `E&F — ${loc ? loc.name : b.code}`;
       }
-      const label = TIME_OFF_OPTIONS.find((o) => o.value === b.code)?.label || b.code;
-      return `Time off — ${label}`;
+      const label = timeOffOptions().find((o) => o.value === b.code)?.label || b.code;
+      return `${t("Time off")} — ${label}`;
     };
 
     const wrap = document.createElement("div");
     wrap.className = "receipt-panel";
     wrap.innerHTML = `
-      <div class="receipt-title">Weekly Receipt — Reg / OT Breakdown</div>
+      <div class="receipt-title">${escapeHtml(t("Weekly Receipt — Reg / OT Breakdown"))}</div>
       <div class="receipt-tiles">
-        <div class="receipt-tile"><span class="receipt-tile-label">Week Total (Worked)</span><span class="receipt-tile-value">${receipt.totalWorked}</span></div>
-        <div class="receipt-tile"><span class="receipt-tile-label">Regular</span><span class="receipt-tile-value ok">${receipt.regularTotal}</span></div>
-        <div class="receipt-tile"><span class="receipt-tile-label">Overtime</span><span class="receipt-tile-value warn">${receipt.otTotal}</span></div>
-        <div class="receipt-tile"><span class="receipt-tile-label">OT on WOM</span><span class="receipt-tile-value warn">${receipt.otFromWom}</span></div>
-        <div class="receipt-tile"><span class="receipt-tile-label">OT not on WOM</span><span class="receipt-tile-value ${receipt.otFromEf > 3 ? "danger" : "warn"}">${receipt.otFromEf}</span></div>
-        <div class="receipt-tile"><span class="receipt-tile-label">Time Off</span><span class="receipt-tile-value">${receipt.totalTimeOff}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">${escapeHtml(t("Week Total (Worked)"))}</span><span class="receipt-tile-value">${receipt.totalWorked}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">${escapeHtml(t("Regular"))}</span><span class="receipt-tile-value ok">${receipt.regularTotal}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">${escapeHtml(t("Overtime"))}</span><span class="receipt-tile-value warn">${receipt.otTotal}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">${escapeHtml(t("OT on WOM"))}</span><span class="receipt-tile-value warn">${receipt.otFromWom}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">${escapeHtml(t("OT not on WOM"))}</span><span class="receipt-tile-value ${receipt.otFromEf > 3 ? "danger" : "warn"}">${receipt.otFromEf}</span></div>
+        <div class="receipt-tile"><span class="receipt-tile-label">${escapeHtml(t("Time Off"))}</span><span class="receipt-tile-value">${receipt.totalTimeOff}</span></div>
       </div>
       ${
         receipt.buckets.length === 0
           ? ""
           : `<table class="detail-table receipt-table">
-              <thead><tr><th>Bucket</th><th>Type</th><th>Reg</th><th>OT</th><th>Total</th></tr></thead>
+              <thead><tr><th>${escapeHtml(t("Bucket"))}</th><th>${escapeHtml(t("Type"))}</th><th>${escapeHtml(t("Reg"))}</th><th>${escapeHtml(t("OT"))}</th><th>${escapeHtml(t("Total"))}</th></tr></thead>
               <tbody>
                 ${receipt.buckets
                   .map(
                     (b) => `<tr><td>${escapeHtml(bucketLabel(b))}</td><td>${b.kind.toUpperCase()}</td><td>${b.reg}</td><td>${b.ot}</td><td>${b.hours}</td></tr>`
                   )
                   .join("")}
-                <tr class="receipt-total-row"><td colspan="2">Total</td><td>${receipt.regularTotal}</td><td>${receipt.otTotal}</td><td>${round2(receipt.regularTotal + receipt.otTotal)}</td></tr>
+                <tr class="receipt-total-row"><td colspan="2">${escapeHtml(t("Total"))}</td><td>${receipt.regularTotal}</td><td>${receipt.otTotal}</td><td>${round2(receipt.regularTotal + receipt.otTotal)}</td></tr>
               </tbody>
             </table>`
       }
-      <p class="receipt-note">OT rule: hours beyond 40/week are automatic overtime, calculated on the week's total (not day-by-day). WOM-allocated hours are charged to OT before E&amp;F hours. Time off is paid straight time and isn't counted toward the 40-hour threshold. When OT spans more than one WOM, it's split proportionally across them.</p>
+      <p class="receipt-note">${t("OT rule: hours beyond 40/week are automatic overtime, calculated on the week's total (not day-by-day). WOM-allocated hours are charged to OT before E&amp;F hours. Time off is paid straight time and isn't counted toward the 40-hour threshold. When OT spans more than one WOM, it's split proportionally across them.")}</p>
     `;
     return wrap;
   }
@@ -791,7 +803,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
   async function saveDraft() {
     try {
       await api.put(`/api/technicians/${techId}/weeks/${state.weekMonday}/allocations`, { allocations });
-      saveMessage = "Draft saved.";
+      saveMessage = t("Draft saved.");
     } catch (err) {
       saveMessage = err.message;
     }
@@ -808,7 +820,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
         allocations: weekendAllocations,
       });
       week.weekendAddendumAt = result.weekendAddendumAt;
-      saveMessage = "Weekend hours saved -- your admin will review, correct if needed, and accept them.";
+      saveMessage = t("Weekend hours saved -- your admin will review, correct if needed, and accept them.");
     } catch (err) {
       saveMessage = err.message;
     }
@@ -825,7 +837,7 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
 
     function drawHost() {
       if (!expanded) {
-        host.innerHTML = `<button class="btn btn-link report-punch-btn" type="button">⚠ Flag a punch issue</button>`;
+        host.innerHTML = `<button class="btn btn-link report-punch-btn" type="button">⚠ ${escapeHtml(t("Flag a punch issue"))}</button>`;
         host.querySelector(".report-punch-btn").addEventListener("click", () => {
           expanded = true;
           drawHost();
@@ -834,9 +846,9 @@ export async function renderTechWeek(container, techIdOverride, weekNavHost) {
       }
       host.innerHTML = `
         <div class="report-punch-form">
-          <input type="text" class="report-punch-note" placeholder="What happened? (optional)" maxlength="500" />
-          <button class="btn btn-secondary report-punch-submit" type="button">Submit</button>
-          <button class="btn btn-link report-punch-cancel" type="button">Cancel</button>
+          <input type="text" class="report-punch-note" placeholder="${escapeHtml(t("What happened? (optional)"))}" maxlength="500" />
+          <button class="btn btn-secondary report-punch-submit" type="button">${escapeHtml(t("Submit"))}</button>
+          <button class="btn btn-link report-punch-cancel" type="button">${escapeHtml(t("Cancel"))}</button>
           <span class="save-message report-punch-message"></span>
         </div>
       `;
