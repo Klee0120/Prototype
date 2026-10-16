@@ -6,6 +6,7 @@ import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
+import { renderOnboardRequirementsForm } from "./onboardRequirementsForm.js";
 import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
 import { renderPos } from "./pos.js";
 import { renderReclasses } from "./reclasses.js";
@@ -90,7 +91,7 @@ const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
   { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review", "fiscalcalendar", "timeoff", "schedule"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
-  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance"] },
+  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance", "onboardform"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
@@ -122,6 +123,7 @@ const TAB_LABELS = {
   vendors: "Vendor Directory",
   onboarding: "Onboarding",
   compliance: "Vendor Compliance",
+  onboardform: "Onboard Requirements Form",
   locations: "Locations",
   woms: "WOM Projects",
   womlookup: "WOM Lookup",
@@ -429,6 +431,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "compliance") await drawVendorCompliance(content);
+    else if (activeTab === "onboardform") await renderOnboardRequirementsForm(content);
     else if (activeTab === "pos") {
       const openPoId = poToOpen;
       poToOpen = null;

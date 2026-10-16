@@ -6650,3 +6650,222 @@ tr.gl-import-shrink-row {
   margin: 4px 14px 4px 0;
   font-size: 13px;
 }
+
+/* ---- Onboard Requirements Form (Vendors > Onboard Requirements Form) ---- */
+
+.onboard-req-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 820px;
+}
+
+.onboard-req-editor {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.onboard-req-editor h2 {
+  margin: 0 0 6px;
+}
+
+.onboard-req-editor-hint {
+  color: var(--ink-soft, #6b7078);
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.onboard-req-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.onboard-req-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.onboard-req-field-wide {
+  grid-column: 1 / -1;
+}
+
+.onboard-req-field input,
+.onboard-req-field select {
+  font: inherit;
+  font-weight: 400;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+}
+
+.onboard-req-document {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.onboard-req-sheet {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 36px 40px;
+  color: #1a1a1a;
+  line-height: 1.5;
+}
+
+.onboard-req-sheet h1 {
+  font-size: 20px;
+  margin: 0 0 18px;
+}
+
+.onboard-req-sheet h3 {
+  font-size: 15px;
+  margin: 22px 0 8px;
+}
+
+.onboard-req-line {
+  margin: 6px 0;
+}
+
+.onboard-req-list {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.onboard-req-list li {
+  margin: 3px 0;
+}
+
+.onboard-req-blank {
+  display: inline-block;
+  border-bottom: 1px solid #333;
+  height: 1em;
+  vertical-align: middle;
+}
+
+.coi-limits-table {
+  border-collapse: collapse;
+  margin: 8px 0 14px;
+  width: 100%;
+  max-width: 520px;
+}
+
+.coi-limits-table th,
+.coi-limits-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 13.5px;
+}
+
+.coi-limits-table th {
+  background: var(--bg, #f8f2ee);
+  font-weight: 600;
+  width: 70%;
+}
+
+.onboard-req-quote-box,
+.onboard-req-address-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--bg, #f8f2ee);
+  padding: 12px 14px;
+  margin: 6px 0 14px;
+  font-size: 13.5px;
+}
+
+.auto-liability-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 18px;
+}
+
+.auto-liability-box {
+  border: 2px solid #1a1a1a;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  width: 150px;
+  flex-shrink: 0;
+}
+
+.alb-title {
+  font-weight: 700;
+  font-size: 9.5px;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.alb-any-row {
+  border-bottom: 1px solid #1a1a1a;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+}
+
+.alb-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 6px;
+}
+
+.alb-check {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1px solid #1a1a1a;
+  text-align: center;
+  line-height: 11px;
+  font-size: 10px;
+  margin-right: 3px;
+}
+
+.onboard-req-notice {
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  color: #7a3c06;
+  border-radius: var(--radius-sm, 8px);
+  padding: 12px 14px;
+  margin-top: 20px;
+  font-size: 13.5px;
+}
+
+/* A printed page should be the document itself, not a screenshot of the
+   app with the document shrunk into a corner -- hide every bit of chrome
+   (sidebar, topbars, subtab band, the floating time tracker widget) and
+   anything a view marks .no-print, and let the printable content fill
+   the page edge to edge. */
+@media print {
+  .app-sidebar,
+  .sidebar-backdrop,
+  .app-topbar,
+  .subtab-band,
+  .time-tracker,
+  .no-print {
+    display: none !important;
+  }
+  html,
+  body,
+  .app-shell,
+  .app-main,
+  .content {
+    background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  .onboard-req-document {
+    border: none;
+    box-shadow: none;
+  }
+  .onboard-req-sheet {
+    max-width: none;
+    padding: 0;
+  }
+}

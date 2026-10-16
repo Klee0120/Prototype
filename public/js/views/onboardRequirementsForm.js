@@ -1,0 +1,265 @@
+import { escapeHtml } from "../app.js";
+import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
+
+// Coverage columns in display order, with the full label used on the
+// printed form (the matrix's own header abbreviations -- GL OCC, EXS,
+// E&O, POL -- aren't self-explanatory to a vendor reading the PDF cold).
+// Keys match COI_MATRIX's own `requirements` object (see coiMatrix.js).
+const COVERAGE_COLUMNS = [
+  { key: "glOcc", label: "General Liability -- Each Occurrence" },
+  { key: "glAgg", label: "General Liability -- Aggregate" },
+  { key: "auto", label: "Automobile Liability" },
+  { key: "wc", label: "Workers' Compensation" },
+  { key: "exs", label: "Umbrella / Excess Liability" },
+  { key: "eAndO", label: "Errors & Omissions" },
+  { key: "pol", label: "Pollution Liability" },
+  { key: "crime", label: "Crime" },
+  { key: "productsComplOpAgg", label: "Products / Completed Operations Aggregate" },
+];
+
+// Auto Liability's five acceptable ACORD 25 check-box combinations (see
+// the matching screenshot Krista provided) -- kept as data rather than
+// five near-identical HTML blocks so the box markup lives in one place.
+const AUTO_LIABILITY_PATTERNS = [
+  { any: true, owned: false, scheduled: false, hired: false, nonOwned: false },
+  { any: false, owned: true, scheduled: true, hired: true, nonOwned: true },
+  { any: false, owned: false, scheduled: true, hired: true, nonOwned: true },
+  { any: false, owned: true, scheduled: false, hired: true, nonOwned: true },
+  { any: false, owned: false, scheduled: false, hired: true, nonOwned: true },
+];
+
+const REQUIRED_COI_LANGUAGE =
+  "C&W Facility Services Inc. d/b/a C&W Services, Toyota Motor Sales, USA, Inc., its subsidiaries and affiliated corporations are additional insureds (except Workers’ Compensation) as required by written contract/agreement.";
+
+// Vendors & Onboarding > Onboard Requirements Form -- a standalone
+// generator, not tied to an existing vendor record, since it's meant to
+// go out *before* a vendor is in the system (the first ask sent during
+// outreach). An RFM/admin picks what kind of work the vendor does -- the
+// same COI_MATRIX that already backs the vendor profile's own Services
+// select (see renderServicesSelect) -- and the rest of the page is the
+// fixed C&W/Toyota onboarding checklist, same for every service, never
+// translated or reworded, since it's quoted contract language a vendor
+// is expected to match exactly on their COI.
+export async function renderOnboardRequirementsForm(container) {
+  const state = {
+    service: COI_MATRIX[0].label,
+    companyName: "",
+    poEmail: "",
+    paymentContact: "",
+    w9Name: "",
+    w9Address: "",
+  };
+
+  draw();
+
+  function draw() {
+    container.innerHTML = `
+      <div class="onboard-req-page">
+        <div class="onboard-req-editor no-print">
+          <h2>Onboard Requirements Form</h2>
+          <p class="onboard-req-editor-hint">
+            Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, fill in
+            what you know, then use your browser's Print &rarr; Save as PDF to send the document below to the vendor.
+            Anything left blank prints as a blank line for the vendor to fill in by hand.
+          </p>
+          <div class="onboard-req-field-grid">
+            <label class="onboard-req-field onboard-req-field-wide">
+              <span>Type of service</span>
+              <select id="onboard-req-service">
+                ${groupedServiceOptions(state.service)}
+              </select>
+            </label>
+            <label class="onboard-req-field onboard-req-field-wide">
+              <span>Name of requested company</span>
+              <input type="text" id="onboard-req-company" value="${escapeHtml(state.companyName)}" placeholder="Vendor company name" />
+            </label>
+            <label class="onboard-req-field">
+              <span>PO notification email</span>
+              <input type="email" id="onboard-req-po-email" value="${escapeHtml(state.poEmail)}" placeholder="billing@vendor.com" />
+            </label>
+            <label class="onboard-req-field">
+              <span>Payment verification contact</span>
+              <input type="text" id="onboard-req-payment-contact" value="${escapeHtml(state.paymentContact)}" placeholder="Name, phone and ext." />
+            </label>
+            <label class="onboard-req-field">
+              <span>W-9 name</span>
+              <input type="text" id="onboard-req-w9-name" value="${escapeHtml(state.w9Name)}" placeholder="Legal name on W-9" />
+            </label>
+            <label class="onboard-req-field">
+              <span>W-9 address</span>
+              <input type="text" id="onboard-req-w9-address" value="${escapeHtml(state.w9Address)}" placeholder="Address on W-9" />
+            </label>
+          </div>
+          <button type="button" class="btn-primary" id="onboard-req-print">Print / Save as PDF</button>
+        </div>
+        <div class="onboard-req-document" id="onboard-req-document"></div>
+      </div>
+    `;
+
+    renderDocument();
+
+    const editor = container.querySelector(".onboard-req-editor");
+    editor.querySelector("#onboard-req-service").addEventListener("change", (e) => {
+      state.service = e.target.value;
+      renderDocument();
+    });
+    const textFields = [
+      ["onboard-req-company", "companyName"],
+      ["onboard-req-po-email", "poEmail"],
+      ["onboard-req-payment-contact", "paymentContact"],
+      ["onboard-req-w9-name", "w9Name"],
+      ["onboard-req-w9-address", "w9Address"],
+    ];
+    for (const [id, key] of textFields) {
+      editor.querySelector(`#${id}`).addEventListener("input", (e) => {
+        state[key] = e.target.value;
+        renderDocument();
+      });
+    }
+    editor.querySelector("#onboard-req-print").addEventListener("click", () => window.print());
+  }
+
+  // Only the document re-renders on every keystroke/selection change --
+  // the editor's own inputs are left alone so typing doesn't lose focus
+  // or cursor position.
+  function renderDocument() {
+    const entry = COI_MATRIX_BY_LABEL[state.service] || COI_MATRIX[0];
+    container.querySelector("#onboard-req-document").innerHTML = documentHtml(state, entry);
+  }
+}
+
+// Same grouping (by COI_MATRIX's own `group`) as the vendor profile's
+// Services multi-select, so a service picked here reads the same way it
+// does on a vendor record.
+function groupedServiceOptions(selected) {
+  const groups = new Map();
+  for (const entry of COI_MATRIX) {
+    if (!groups.has(entry.group)) groups.set(entry.group, []);
+    groups.get(entry.group).push(entry);
+  }
+  return [...groups.entries()]
+    .map(
+      ([group, entries]) =>
+        `<optgroup label="${escapeHtml(group)}">${entries
+          .map((e) => `<option value="${escapeHtml(e.label)}" ${e.label === selected ? "selected" : ""}>${escapeHtml(e.label)}</option>`)
+          .join("")}</optgroup>`
+    )
+    .join("");
+}
+
+function hasLimit(v) {
+  return v && v !== "-";
+}
+
+function blank(value, placeholderWidth = "220px") {
+  if (value && value.trim()) return escapeHtml(value.trim());
+  return `<span class="onboard-req-blank" style="width:${placeholderWidth}"></span>`;
+}
+
+function limitsTableHtml(entry) {
+  const rows = COVERAGE_COLUMNS.filter((c) => hasLimit(entry.requirements[c.key]));
+  if (rows.length === 0) return "<p>No minimum limits are on file for this service type -- confirm with your RFM before sending.</p>";
+  return `
+    <table class="coi-limits-table">
+      <tbody>
+        ${rows.map((c) => `<tr><th>${escapeHtml(c.label)}</th><td>${escapeHtml(entry.requirements[c.key])}</td></tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function autoLiabilityBoxHtml(p) {
+  const check = (on) => `<span class="alb-check">${on ? "✓" : ""}</span>`;
+  return `
+    <div class="auto-liability-box">
+      <div class="alb-title">AUTOMOBILE LIABILITY</div>
+      <div class="alb-any-row">${check(p.any)} ANY AUTO</div>
+      <div class="alb-grid">
+        <div>${check(p.owned)} OWNED AUTOS ONLY</div>
+        <div>${check(p.scheduled)} SCHEDULED AUTOS</div>
+        <div>${check(p.hired)} HIRED AUTOS ONLY</div>
+        <div>${check(p.nonOwned)} NON-OWNED AUTOS ONLY</div>
+      </div>
+    </div>
+  `;
+}
+
+function documentHtml(state, entry) {
+  // Just the leaf service name (after the last " / ") for the COI
+  // section heading -- the full "Category / Sub-category / Service"
+  // matrix label is right for a grouped dropdown, but reads oddly in a
+  // sentence like "Certificate of Insurance -- HVAC Services".
+  const serviceName = entry.label.split(" / ").pop();
+  return `
+    <div class="onboard-req-sheet">
+      <h1>Vendor Onboarding Requirements</h1>
+
+      <div class="onboard-req-line"><strong>Name of Requested Company:</strong> ${blank(state.companyName, "320px")}</div>
+
+      <h3>Confirmations</h3>
+      <ul class="onboard-req-list">
+        <li><strong>PO Notification Email:</strong> Email address where purchase orders should be sent: ${blank(state.poEmail)}</li>
+        <li><strong>Payment Verification Contact:</strong> Direct phone number and extension, if applicable, for someone who can verbally verify the banking/payment information if ServiceEdge requires verification: ${blank(state.paymentContact)}</li>
+      </ul>
+
+      <p>Please provide the following updated documentation and information to Onboard with Service Edge:</p>
+
+      <h3>1. W-9</h3>
+      <ul class="onboard-req-list">
+        <li>Signed and dated</li>
+        <li>Must use the October 2018 or March 2024 W-9 version</li>
+      </ul>
+      <div class="onboard-req-line"><strong>W-9 Name:</strong> ${blank(state.w9Name, "300px")}</div>
+      <div class="onboard-req-line"><strong>W-9 Address:</strong> ${blank(state.w9Address, "300px")}</div>
+
+      <h3>2. Certificate of Insurance &ndash; ${escapeHtml(serviceName)}</h3>
+      <ul class="onboard-req-list">
+        <li>COI must be provided on an ACORD 25 (2016/03) form</li>
+      </ul>
+      <p>COI must meet the following minimum limits:</p>
+      ${limitsTableHtml(entry)}
+
+      <p><strong>Required COI Language</strong> (Descriptions box needs to EXACTLY copy the following text):</p>
+      <div class="onboard-req-quote-box">${escapeHtml(REQUIRED_COI_LANGUAGE)}</div>
+
+      <p><strong>Certificate Holder:</strong></p>
+      <div class="onboard-req-address-box">
+        C&amp;W Facility Services, Inc. d/b/a C&amp;W Services<br />
+        117 Kendrick Street, Suite 250<br />
+        Needham, MA 02494
+      </div>
+
+      <p><strong>Auto Liability Check Box Requirements:</strong> Under the Auto Liability, one of the following must be met:</p>
+      <ol class="onboard-req-list">
+        <li>Any Auto is checked (if checked, overrides all other check boxes and no further check box combinations are needed)</li>
+        <li>All 4 Auto check boxes are checked (Owned Autos Only, Scheduled Autos, Hired Autos Only, Non-Owned Autos Only)</li>
+        <li>Scheduled Autos, Hired Autos AND Non-Owned Autos checked ONLY</li>
+        <li>Owned Autos, Hired Autos, Non-Owned Autos checked ONLY</li>
+        <li>Hired Autos and Non-Owned Autos Only (can only be accepted after confirming with the supplier that there are no company-owned or scheduled vehicles) &ndash; email confirmation.</li>
+      </ol>
+      <div class="auto-liability-boxes">
+        ${AUTO_LIABILITY_PATTERNS.map(autoLiabilityBoxHtml).join("")}
+      </div>
+
+      <h3>3. Payment / ACH Documentation</h3>
+      <ul class="onboard-req-list">
+        <li>Bank letter on BANK letterhead confirming the payment/banking information</li>
+        <li>
+          Blank invoice showing:
+          <ul class="onboard-req-list">
+            <li>Company name and address as stated on the W-9</li>
+            <li>Contact name and phone number</li>
+          </ul>
+        </li>
+      </ul>
+
+      <div class="onboard-req-notice">
+        <strong>NOTICE &ndash; Annual Maintenance Fee:</strong> As part of C&amp;W Services' supplier maintenance program, an
+        annual maintenance fee based on the type of services provided is required to offset the cost of maintaining
+        compliance with C&amp;W/C&amp;W Services standards. A Supplier Maintenance Fee invoice will be issued annually.
+        This fee covers standard business relationships with Cushman &amp; Wakefield and C&amp;W Services. This happens
+        POST onboarding by Avetta and recurs annually.
+      </div>
+    </div>
+  `;
+}

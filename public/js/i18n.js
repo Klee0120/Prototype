@@ -268,6 +268,7 @@ const es = {
   "WOM Projects": "Proyectos WOM",
   "WOM Lookup": "Búsqueda de WOM",
   "Budget PO Tracker": "Rastreador de PO Presupuestario",
+  "Onboard Requirements Form": "Formulario de Requisitos de Incorporación",
   content: "contenido",
 
   // -- loadingState.js (shared loading placeholder, used by every admin tab) --
