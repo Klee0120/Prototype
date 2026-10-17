@@ -8,7 +8,7 @@
 // public/js/views/onboardRequirementsForm.js for the UI this backs, and
 // server/routes/vendors.js for the route that calls this.
 const path = require("path");
-const { PDFDocument, StandardFonts, rgb } = require("pdf-lib");
+const { PDFDocument, StandardFonts, rgb, PDFName, PDFString } = require("pdf-lib");
 
 const PAGE_WIDTH = 612; // US Letter, points
 const PAGE_HEIGHT = 792;
@@ -203,9 +203,17 @@ function drawAutoLiabilityBox(page, x, y, pattern, fonts) {
 // Adds a fillable text field at the given spot -- light blue fill +
 // border so a vendor opening the PDF can see at a glance which fields are
 // theirs to complete, same idea as a web form's focus/input styling.
-function addField(form, page, name, { x, y, width, height = 16, value = "", fonts }) {
+//
+// `description` sets the field's /TU (alternate field name) entry --
+// pdf-lib has no typed API for this (unlike setText), so it's written
+// straight into the field's dict. Screen readers announce this instead
+// of the raw field name ("poEmail"), so a vendor using one hears "PO
+// Notification Email, the email address purchase orders should be sent
+// to" rather than just "poEmail, edit text."
+function addField(form, page, name, { x, y, width, height = 16, value = "", description, fonts }) {
   const field = form.createTextField(name);
   field.setText(value || "");
+  if (description) field.acroField.dict.set(PDFName.of("TU"), PDFString.of(description));
   field.addToPage(page, {
     x,
     y,
@@ -233,6 +241,7 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
   const pdfDoc = await PDFDocument.create();
   pdfDoc.setTitle("Vendor Onboarding Requirements");
   pdfDoc.setProducer("ServiceWorks");
+  pdfDoc.setLanguage("en-US");
   const fonts = {
     regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
     bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold),
@@ -265,14 +274,20 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
   // time) and nothing here *requires* the admin to know it up front.
   c.text("Name of Requested Company:", { size: 9.5, font: fonts.bold, gap: 3 });
   c.ensureSpace(22);
-  addField(form, c.currentPage(), "companyName", { x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: companyName, fonts });
+  addField(form, c.currentPage(), "companyName", {
+    x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: companyName, fonts,
+    description: "Name of Requested Company -- the vendor's company name",
+  });
   c.space(24);
 
   // --- Confirmations (fillable) ---
   c.text("Confirmations", { size: 12.5, font: fonts.bold, color: COLOR.ink, gap: 6 });
   c.text("PO Notification Email -- where purchase orders should be sent:", { size: 9.5, color: COLOR.ink, gap: 3 });
   c.ensureSpace(22);
-  addField(form, c.currentPage(), "poEmail", { x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: poEmail, fonts });
+  addField(form, c.currentPage(), "poEmail", {
+    x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: poEmail, fonts,
+    description: "PO Notification Email -- the email address where purchase orders should be sent",
+  });
   c.space(24);
 
   c.text("Payment Verification Contact -- direct phone + extension for someone who can verbally verify banking/payment info if required:", {
@@ -281,7 +296,10 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
     gap: 3,
   });
   c.ensureSpace(22);
-  addField(form, c.currentPage(), "paymentContact", { x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: paymentContact, fonts });
+  addField(form, c.currentPage(), "paymentContact", {
+    x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: paymentContact, fonts,
+    description: "Payment Verification Contact -- direct phone number and extension for someone who can verbally verify banking or payment information",
+  });
   c.space(24);
 
   c.wrapped("Please provide the following updated documentation and information to onboard with Service Edge:", {
@@ -296,12 +314,18 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
 
   c.text("W-9 Name:", { size: 9.5, font: fonts.bold, gap: 3 });
   c.ensureSpace(22);
-  addField(form, c.currentPage(), "w9Name", { x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: w9Name, fonts });
+  addField(form, c.currentPage(), "w9Name", {
+    x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: w9Name, fonts,
+    description: "W-9 Name -- the legal name on file on your W-9",
+  });
   c.space(24);
 
   c.text("W-9 Address:", { size: 9.5, font: fonts.bold, gap: 3 });
   c.ensureSpace(22);
-  addField(form, c.currentPage(), "w9Address", { x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: w9Address, fonts });
+  addField(form, c.currentPage(), "w9Address", {
+    x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: w9Address, fonts,
+    description: "W-9 Address -- the address on file on your W-9",
+  });
   c.space(26);
   c.rule();
 
