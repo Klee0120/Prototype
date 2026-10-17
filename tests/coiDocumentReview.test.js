@@ -134,6 +134,15 @@ test("coi document review: approve creates a ServiceEdge task naming the vendor'
   // raw DB row, snake_case columns included -- not run through a presenter.
   assert.equal(approveRes.body.task.related_vendor_id, vendor.id);
 
+  // Approving is what drives the legacy vendor-level compliance flags now
+  // -- no separate manual checkbox for this anymore (see
+  // applyCoiReviewOutcomeToVendor in db.js).
+  const approvedVendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendor.id);
+  assert.equal(approvedVendor.coiMeetsRequiredLimits, true);
+  assert.equal(approvedVendor.coiMeetsLanguageRequirements, true);
+  assert.equal(approvedVendor.formChecks.coiIsAcord25_2016_03, true);
+  assert.equal(approvedVendor.formChecks.coiMatchesW9, true);
+
   // Can't approve (or reject) the same review twice.
   const reapproveRes = await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review.id}/approve`, { userId: "ADMIN" });
   assert.equal(reapproveRes.status, 400);
@@ -181,6 +190,48 @@ test("coi document review: reject requires reasons from the review's own checkli
   assert.ok(entry);
   assert.match(entry.details, /ACORD 25/);
   assert.match(entry.details, /Certificate Holder/);
+
+  // Only the two legacy flags implicated by the chosen reasons flip false
+  // -- "Meets required limits"/"meets language" are untouched since
+  // neither a limit key nor "language" was picked.
+  const rejectedVendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendor.id);
+  assert.equal(rejectedVendor.formChecks.coiIsAcord25_2016_03, false);
+  assert.equal(rejectedVendor.formChecks.coiMatchesW9, false);
+  assert.equal(rejectedVendor.coiMeetsRequiredLimits, false, "defaults false, never set true for this vendor");
+  assert.equal(rejectedVendor.coiMeetsLanguageRequirements, false, "defaults false, never set true for this vendor");
+});
+
+test("coi document review: rejecting a coverage-limit reason clears only coiMeetsRequiredLimits", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Limit Rejected Co", services: "Corporate Administrative / Marketing & Communications / Commercial Printing & Finishing" },
+  });
+  const vendor = vendorRes.body;
+
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload.body.id}/coi-review`, { userId: "ADMIN" })).body;
+  const glOccKey = review.checklist.find((i) => i.key.startsWith("glOcc:")).key;
+
+  const rejectRes = await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review.id}/reject`, {
+    userId: "ADMIN",
+    body: { reasonKeys: [glOccKey] },
+  });
+  assert.equal(rejectRes.status, 200);
+
+  const rejectedVendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendor.id);
+  assert.equal(rejectedVendor.coiMeetsRequiredLimits, false);
+  // Nothing else was implicated by this one reason.
+  assert.equal(rejectedVendor.coiMeetsLanguageRequirements, false, "defaults false, never set true for this vendor");
+  assert.equal(rejectedVendor.formChecks.coiIsAcord25_2016_03, false, "defaults false, never set true for this vendor");
 });
 
 test("coi document review: a technician can't start, approve, or reject a review", async (t) => {

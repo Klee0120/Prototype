@@ -40,6 +40,17 @@ const CATEGORY_BY_RELATED = {
   // Budget PO Tracker records -- admin-only, same reasoning as vendor/task
   // compliance documents below.
   po: new Set(["po_doc", "document"]),
+  // The COI Reviews queue's pool: a COI that's come in with no known
+  // vendor yet (today, a manual upload before anyone's matched it; later,
+  // an inbound email that couldn't be matched automatically). One fixed
+  // bucket (relatedId is always the literal string "pool" -- there's
+  // nothing per-record to key it to yet), not per-vendor and not
+  // attached to a task either, so it shows up directly in the queue
+  // rather than requiring a task to be created first just to hold it.
+  // db.reassignFile moves a pool file onto relatedType "vendor" once an
+  // admin picks which vendor it belongs to -- same file row, no
+  // re-upload, so its uploaded-at/expiry/etc. survive the move.
+  coi_pool: new Set(["coi"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -52,9 +63,9 @@ function canRead(user, relatedType, relatedId) {
   // Vendor forms (COI, W-9, etc.) are compliance documents a technician has
   // no reason to see -- their own vendor lookup is a separate, much
   // narrower read-only endpoint that never touches this files system.
-  // Task attachments follow the same rule -- they're the same kind of
-  // compliance document, just not filed against a vendor yet.
-  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po") return false;
+  // Task attachments and the COI pool follow the same rule -- they're the
+  // same kind of compliance document, just not filed against a vendor yet.
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
@@ -67,7 +78,7 @@ function canRead(user, relatedType, relatedId) {
 function canWrite(user, relatedType, relatedId, category) {
   if (user.role === "admin") return true;
   if (category === "tech_form") return false;
-  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po") return false;
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   return false;
@@ -83,6 +94,8 @@ function relatedRecordExists(relatedType, relatedId) {
   // Labor reports aren't tied to a record that already exists elsewhere --
   // they're just an admin-only monthly archive, keyed by "YYYY-MM".
   if (relatedType === "labor_report") return /^\d{4}-\d{2}$/.test(relatedId);
+  // The COI pool is one fixed bucket, not a real record to look up.
+  if (relatedType === "coi_pool") return relatedId === "pool";
   return false;
 }
 

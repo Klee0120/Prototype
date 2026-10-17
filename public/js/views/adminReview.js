@@ -92,7 +92,7 @@ const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
   { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review", "fiscalcalendar", "timeoff", "schedule"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
-  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance", "onboardform"] },
+  { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance", "coireviews", "onboardform"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
@@ -124,6 +124,7 @@ const TAB_LABELS = {
   vendors: "Vendor Directory",
   onboarding: "Onboarding",
   compliance: "Vendor Compliance",
+  coireviews: "COI Reviews",
   onboardform: "Onboard Requirements Form",
   locations: "Locations",
   woms: "WOM Projects",
@@ -432,6 +433,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "compliance") await drawVendorCompliance(content);
+    else if (activeTab === "coireviews") await drawCoiReviewsQueue(content);
     else if (activeTab === "onboardform") await renderOnboardRequirementsForm(content);
     else if (activeTab === "pos") {
       const openPoId = poToOpen;
@@ -2417,7 +2419,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // on that exception, not a blanket requirement every vendor needs.
     const requiredCategories = ["coi", "w9", "ach", "blank_invoice"];
     if (!v.coiMeetsRequiredLimits || !v.coiMeetsLanguageRequirements) requiredCategories.push("vpo_waiver");
-    const refreshDocumentsPanel = () =>
+    const refreshDocumentsPanel = async () => {
+      // The latest review per file, so a COI's row shows whether it's
+      // still waiting, already approved, or was rejected -- otherwise the
+      // only way to know is opening Review COI on every file to check.
+      const reviews = await api.get(`/api/admin/vendors/${v.id}/coi-reviews`);
+      const latestReviewByFileId = new Map();
+      for (const r of reviews) if (!latestReviewByFileId.has(r.fileId)) latestReviewByFileId.set(r.fileId, r);
+      const COI_REVIEW_STATUS_BADGE = { pending: "warn", approved: "approved", rejected: "rejected" };
+      const COI_REVIEW_STATUS_LABEL = { pending: "Pending Review", approved: "Approved", rejected: "Rejected" };
+
       renderAttachments(documentsPanel, {
         title: "Vendor Documents",
         relatedType: "vendor",
@@ -2428,7 +2439,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         requiredCategories,
         emptyText: "No documents on file yet.",
         onReviewCoi: (file) => openCoiReviewModal(v, file, refreshDocumentsPanel),
+        statusForFile: (file) => {
+          const r = latestReviewByFileId.get(file.id);
+          if (!r) return null;
+          return { label: COI_REVIEW_STATUS_LABEL[r.status], badgeClass: COI_REVIEW_STATUS_BADGE[r.status] };
+        },
       });
+    };
     await refreshDocumentsPanel();
     await renderAssignTaskDocumentControl(host.querySelector(".vendor-assign-task-doc-host"), v, refreshDocumentsPanel);
   }
@@ -2570,6 +2587,120 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     renderReviewBody();
   }
 
+  // A small search-and-pick modal over the vendor list -- not a full
+  // combobox component, just a text filter over vendorsCache and a click
+  // to choose, matching the Vendor Directory's own search box.
+  async function openVendorPickerModal(title, onPick) {
+    if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    const { body, close } = openModal({
+      title,
+      bodyHtml: `
+        <input type="text" class="vendor-picker-search" placeholder="Vendor name" autofocus />
+        <div class="review-list vendor-picker-results"></div>
+      `,
+    });
+    const searchInput = body.querySelector(".vendor-picker-search");
+    const results = body.querySelector(".vendor-picker-results");
+    function renderResults() {
+      const term = searchInput.value.trim().toLowerCase();
+      const matches = term ? vendorsCache.filter((v) => v.name.toLowerCase().includes(term)) : vendorsCache;
+      if (matches.length === 0) {
+        results.innerHTML = `<p class="empty-note">No vendor matches.</p>`;
+        return;
+      }
+      results.innerHTML = matches
+        .slice(0, 50)
+        .map(
+          (v) =>
+            `<div class="review-row"><div class="review-row-summary"><span class="review-row-name">${escapeHtml(v.name)}</span></div>
+               <button type="button" class="btn btn-secondary vendor-picker-pick-btn" data-id="${v.id}">Pick</button></div>`
+        )
+        .join("");
+      results.querySelectorAll(".vendor-picker-pick-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          close();
+          onPick(Number(btn.dataset.id));
+        });
+      });
+    }
+    searchInput.addEventListener("input", renderResults);
+    renderResults();
+  }
+
+  // The COI Reviews queue: cross-vendor visibility that's otherwise only
+  // reachable by already being on the right vendor's own Documents tab.
+  // Two sections -- an "Unmatched COI" pool (a document that's come in
+  // with no vendor match yet; today, uploaded here directly before anyone
+  // picks a vendor, since inbound email capture isn't built) and every
+  // still-pending per-vendor review, across every vendor.
+  async function drawCoiReviewsQueue(content) {
+    content.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let queue;
+    try {
+      queue = await api.get("/api/admin/coi-reviews/queue");
+    } catch (err) {
+      content.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    content.innerHTML = `
+      <p class="review-checklist-hint">
+        Every COI that needs admin attention right now, in one place -- a document with no vendor
+        match yet (upload it below, then assign it once you know whose it is), and every review
+        that's already started but not yet decided. Once a document's assigned to a vendor, the
+        rest of its review happens on that vendor's own Documents tab.
+      </p>
+      <h3>Unmatched COI (${queue.pool.length})</h3>
+      <div class="vendor-pool-panel"></div>
+      <h3>Pending Review (${queue.pendingReviews.length})</h3>
+      <div class="review-list" id="coi-pending-reviews-list"></div>
+    `;
+
+    const pendingList = content.querySelector("#coi-pending-reviews-list");
+    if (queue.pendingReviews.length === 0) {
+      pendingList.innerHTML = `<p class="empty-note">Nothing waiting on a decision right now.</p>`;
+    } else {
+      pendingList.innerHTML = queue.pendingReviews
+        .map(
+          (r) => `
+        <div class="review-row" data-vendor-id="${r.vendorId}">
+          <div class="review-row-summary">
+            <span class="review-row-name">${escapeHtml(r.vendorName)}</span>
+            <span class="review-row-detail">${escapeHtml(r.fileName || "")} -- uploaded ${r.uploadedAt ? new Date(r.uploadedAt).toLocaleDateString() : "unknown date"}</span>
+            <button type="button" class="btn btn-secondary open-pending-review-btn">Open</button>
+          </div>
+        </div>`
+        )
+        .join("");
+      pendingList.querySelectorAll(".open-pending-review-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const vendorId = Number(btn.closest(".review-row").dataset.vendorId);
+          openVendorProfile(vendorId, "documents");
+        });
+      });
+    }
+
+    const poolPanel = content.querySelector(".vendor-pool-panel");
+    renderAttachments(poolPanel, {
+      title: "Unmatched COI",
+      relatedType: "coi_pool",
+      relatedId: "pool",
+      categories: [{ value: "coi", label: "COI (Certificate of Insurance)" }],
+      canUpload: true,
+      emptyText: "No unmatched COI documents right now.",
+      onAssignVendor: (file) => {
+        openVendorPickerModal(`Assign "${file.originalName}" to a vendor`, async (vendorId) => {
+          try {
+            const result = await api.post(`/api/admin/coi-reviews/pool/${file.id}/assign-vendor`, { vendorId });
+            openVendorProfile(result.review.vendorId, "documents");
+          } catch (err) {
+            window.alert(err.message);
+          }
+        });
+      },
+    });
+  }
+
   async function renderVendorCostsTab(host, v) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
     let woms, pos, poGlRollup, invoiceHistory;
@@ -2708,36 +2839,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
   }
 
-  const COI_LIMIT_LABELS = {
-    glLiabilityOcc: "GL Liability (Occ)",
-    glLiabilityAgg: "GL Liability (Agg)",
-    autoLiability: "Auto Liability",
-    workersComp: "Workers Comp",
-    umbrellaLiability: "Umbrella Liability",
-    eAndO: "E&amp;O",
-    pollution: "Pollution",
-    crime: "Crime",
-    productsComplOpAgg: "Products Compl (OP Agg)",
-  };
-  // Maps our vendor COI field names to the COI matrix's own key names --
-  // same nine coverage types, named slightly differently in each place.
-  const COI_LIMIT_TO_MATRIX_KEY = {
-    glLiabilityOcc: "glOcc",
-    glLiabilityAgg: "glAgg",
-    autoLiability: "auto",
-    workersComp: "wc",
-    umbrellaLiability: "exs",
-    eAndO: "eAndO",
-    pollution: "pol",
-    crime: "crime",
-    productsComplOpAgg: "productsComplOpAgg",
-  };
-
   // Matches VENDOR_FORM_CHECK_FIELDS' camelCase keys in server/data/db.js --
   // each is a checkbox <input name="..."> in the vendor edit form below.
+  // The two COI checks (ACORD 25 form, matches W-9) used to live here as
+  // manual checkboxes but are now driven automatically by the real COI
+  // Review workflow (approve/reject on the actual document -- see
+  // db.js's approveCoiDocumentReview/rejectCoiDocumentReview), so they're
+  // not in this list or this form at all anymore.
   const FORM_CHECK_KEYS = [
-    "coiIsAcord25_2016_03",
-    "coiMatchesW9",
     "w9SignedDated",
     "w9CorrectVersion",
     "w9HasPhone",
@@ -2784,41 +2893,24 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   // The document-compliance checklist (does the vendor's actual uploaded
-  // COI/W-9/ACH meet requirements) -- its own standalone form, shared by
-  // the Onboarding & Compliance modal and (for the services-driven COI
-  // autofill) nowhere else now that it no longer shares a page with the
-  // Services select. Previously lived inline in the vendor edit modal;
-  // moved out so onboarding case status and document compliance live
-  // together in one place, separate from the vendor's general profile.
+  // W-9/ACH meet requirements) -- its own standalone form, shared by the
+  // Onboarding & Compliance modal and nowhere else now that it no longer
+  // shares a page with the Services select. Previously lived inline in
+  // the vendor edit modal; moved out so onboarding case status and
+  // document compliance live together in one place, separate from the
+  // vendor's general profile.
+  // COI checks used to live here too (editable matrix-limit fields, a
+  // "meets limits"/"meets language" pair, an ACORD-25/matches-W9 pair) --
+  // removed because the real COI Review workflow (Vendor Documents tab ->
+  // Review COI -> Approve/Reject against the actual document) replaced
+  // every one of those with a real, document-specific decision instead of
+  // a parallel manual checkbox nobody could keep in sync with it. See
+  // db.js's approveCoiDocumentReview/rejectCoiDocumentReview for where
+  // coiMeetsRequiredLimits/coiMeetsLanguageRequirements/coiIsAcord25_2016_03/
+  // coiMatchesW9 get set now -- automatically, from that real decision.
   function renderVendorDocChecksForm(v) {
-    const coiLimitInputs = Object.entries(COI_LIMIT_LABELS)
-      .map(
-        ([key, label]) =>
-          `<label class="profile-field"><span>${label}</span><input name="coi_${key}" placeholder="e.g. $1M or -" value="${escapeHtml((v.coiLimits && v.coiLimits[key]) || "")}" /></label>`
-      )
-      .join("");
     return `
       <form class="vendor-doc-checks-form">
-        <h4>COI (Certificate of Insurance) requirements</h4>
-        <p class="review-checklist-hint">
-          The limits Toyota requires for this vendor's service type (from the insurance matrix) --
-          still editable if this vendor has a negotiated exception. Check the boxes once the
-          vendor's actual COI (uploaded on the vendor's own Documents panel) has been reviewed
-          against them.
-        </p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="coiMeetsRequiredLimits" ${v.coiMeetsRequiredLimits ? "checked" : ""} /> Meets required limits</label>
-          <label><input type="checkbox" name="coiMeetsLanguageRequirements" ${v.coiMeetsLanguageRequirements ? "checked" : ""} /> Meets language requirements</label>
-        </div>
-        <div class="vendor-edit-grid">${coiLimitInputs}</div>
-
-        <h4>COI document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual COI document uploaded on the vendor's Documents panel.</p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="coiIsAcord25_2016_03" ${v.formChecks.coiIsAcord25_2016_03 ? "checked" : ""} /> Issued on ACORD 25 form (2016/03 version)</label>
-          <label><input type="checkbox" name="coiMatchesW9" ${v.formChecks.coiMatchesW9 ? "checked" : ""} /> Matches W-9 name &amp; address</label>
-        </div>
-
         <h4>W-9 document checks</h4>
         <p class="review-checklist-hint">Verified against the actual W-9 document uploaded on the vendor's Documents panel.</p>
         <div class="vendor-coi-checks">
@@ -2865,12 +2957,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         const updated = await api.patch(
           `/api/admin/vendors/${v.id}`,
           vendorFullPayload(v, {
-            coiMeetsRequiredLimits: docChecksForm.coiMeetsRequiredLimits.checked,
-            coiMeetsLanguageRequirements: docChecksForm.coiMeetsLanguageRequirements.checked,
-            coiLimits: Object.fromEntries(
-              Object.keys(COI_LIMIT_LABELS).map((key) => [key, docChecksForm[`coi_${key}`].value.trim()])
-            ),
-            formChecks: Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, docChecksForm[key].checked])),
+            // formChecks is rewritten whole on every save (see
+            // updateVendor) -- the two COI keys aren't in this form
+            // anymore (see renderVendorDocChecksForm's comment), so they
+            // have to be echoed back from the vendor's current value or
+            // saving the W-9/ACH checks here would silently blank
+            // whatever the real COI Review workflow just set.
+            formChecks: {
+              coiIsAcord25_2016_03: v.formChecks.coiIsAcord25_2016_03,
+              coiMatchesW9: v.formChecks.coiMatchesW9,
+              ...Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, docChecksForm[key].checked])),
+            },
             w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null,
           })
         );

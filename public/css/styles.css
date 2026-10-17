@@ -2209,6 +2209,20 @@ h1, h2, h3, h4 {
   }
 }
 
+.vendor-picker-search {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  margin-bottom: 12px;
+}
+
+.vendor-picker-results {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
 /* ---- Task board (Priorities / My Work) ---- */
 
 .task-tiles {

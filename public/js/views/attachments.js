@@ -40,6 +40,15 @@ function expiryBadge(expiresAt) {
   return `<span class="badge ${expired ? "badge-rejected" : "badge-draft"}">${expired ? "Expired" : "Expires"} ${escapeHtml(expiresAt)}</span>`;
 }
 
+// opts.statusForFile(file) returns { label, badgeClass } or null/undefined
+// -- used by the vendor Documents tab to show a COI's latest review
+// outcome (Pending Review / Approved / Rejected) right on its row, since
+// otherwise that's only visible by opening Review COI.
+function statusBadgeHtml(status) {
+  if (!status) return "";
+  return `<span class="badge badge-${status.badgeClass || "draft"}">${escapeHtml(status.label)}</span>`;
+}
+
 function accessBadge(f) {
   if (f.accessLevel === "restricted") {
     return `<span class="badge badge-warn" title="Admins only -- hidden from technicians entirely.">&#128274; Restricted access</span>`;
@@ -202,7 +211,7 @@ export async function renderAttachments(host, opts) {
         ${opts.trackExpiration && f.formType ? `<div class="attachment-subtext">${escapeHtml(f.formType)}</div>` : ""}
         ${opts.trackExpiration ? expiryBadge(f.expiresAt) : ""}
       </td>
-      <td><span class="badge badge-draft">${escapeHtml(label)}</span></td>
+      <td><span class="badge badge-draft">${escapeHtml(label)}</span> ${opts.statusForFile ? statusBadgeHtml(opts.statusForFile(f)) : ""}</td>
       <td>
         <div>${new Date(f.uploadedAt).toLocaleDateString()}</div>
         <div class="attachment-subtext">${escapeHtml(f.uploadedBy)} &middot; ${formatSize(f.size)}</div>
@@ -220,6 +229,7 @@ export async function renderAttachments(host, opts) {
                     f.accessLevel === "restricted" ? "Mark standard access" : "Mark restricted access"
                   }</button>
                   ${opts.onReviewCoi && f.category === "coi" ? `<button type="button" class="row-menu-item review-coi-btn">Review COI</button>` : ""}
+                  ${opts.onAssignVendor && f.category === "coi" ? `<button type="button" class="row-menu-item assign-vendor-btn">Assign to vendor&hellip;</button>` : ""}
                   <button type="button" class="row-menu-item row-menu-item-danger delete-btn">Delete</button>
                 </div>
               </div>`
@@ -255,6 +265,13 @@ export async function renderAttachments(host, opts) {
     if (reviewCoi) {
       reviewCoi.addEventListener("click", () => {
         opts.onReviewCoi(f);
+      });
+    }
+
+    const assignVendor = row.querySelector(".assign-vendor-btn");
+    if (assignVendor) {
+      assignVendor.addEventListener("click", () => {
+        opts.onAssignVendor(f);
       });
     }
 

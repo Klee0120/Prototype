@@ -3020,6 +3020,26 @@ function listCoiDocumentReviewsForVendor(vendorId) {
     .map(presentCoiDocumentReview);
 }
 
+// The COI Reviews queue's "Pending Review" section -- every still-open
+// review across every vendor, newest first, with the vendor's name and the
+// file's own name/uploaded-at joined in so the queue doesn't need a
+// separate round trip per row to show something useful.
+function listPendingCoiReviewsAcrossVendors() {
+  const rows = db
+    .prepare(
+      `SELECT r.id, r.file_id AS fileId, r.vendor_id AS vendorId, r.created_at AS createdAt,
+              v.name AS vendorName,
+              f.original_name AS fileName, f.uploaded_at AS uploadedAt
+       FROM coi_document_reviews r
+       JOIN vendors v ON v.id = r.vendor_id
+       LEFT JOIN files f ON f.id = r.file_id
+       WHERE r.status = 'pending'
+       ORDER BY r.id DESC`
+    )
+    .all();
+  return rows;
+}
+
 // Already-decided reviews are a record, not something to still be pending
 // -- a vendor can only have one open review per file at a time, so a
 // second review attempt on the same file (after a rejection and a fresh
@@ -3031,20 +3051,58 @@ function findPendingCoiDocumentReviewForFile(fileId) {
   );
 }
 
+// A limit-coverage checklist item's key is "<matrixKey>:<value>" (see
+// coiDocumentReview.js's buildCoiRequirementChecklist) -- this just needs
+// the prefix to know a selected reject reason was a coverage figure, not
+// which one or what value.
+const COI_LIMIT_KEY_RE = /^(glOcc|glAgg|auto|wc|exs|eAndO|pol|crime|productsComplOpAgg):/;
+
+// Approving/rejecting a real COI review is now what drives these four
+// legacy vendor-level flags (coi_meets_required_limits, coi_meets_
+// language_requirements, coi_is_acord25_2016_03, coi_matches_w9) --
+// they used to be separate manual checkboxes an admin kept in sync by
+// hand, duplicating exactly what a real per-document review now decides
+// for real. Approving sets every one true (an approval is a determination
+// that the document passed on every count); rejecting clears only the
+// ones implicated by the specific reasons picked, leaving the others at
+// whatever they were (a document can fail one requirement without ever
+// having been wrong about the others).
+function applyCoiReviewOutcomeToVendor(vendorId, { approved, reasonKeys = [] }) {
+  const now = new Date().toISOString();
+  if (approved) {
+    db.prepare(
+      `UPDATE vendors SET coi_meets_required_limits = 1, coi_meets_language_requirements = 1,
+       coi_is_acord25_2016_03 = 1, coi_matches_w9 = 1, updated_at = ? WHERE id = ?`
+    ).run(now, Number(vendorId));
+    return;
+  }
+  const sets = [];
+  if (reasonKeys.some((k) => COI_LIMIT_KEY_RE.test(k))) sets.push("coi_meets_required_limits = 0");
+  if (reasonKeys.includes("language")) sets.push("coi_meets_language_requirements = 0");
+  if (reasonKeys.includes("acord25")) sets.push("coi_is_acord25_2016_03 = 0");
+  if (reasonKeys.includes("certHolder")) sets.push("coi_matches_w9 = 0");
+  if (sets.length === 0) return;
+  db.prepare(`UPDATE vendors SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`).run(now, Number(vendorId));
+}
+
 function approveCoiDocumentReview(id, { reviewerId, reviewerName }) {
+  const review = findCoiDocumentReview(id);
   db.prepare("UPDATE coi_document_reviews SET status = 'approved', reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?").run(
     reviewerId,
     reviewerName,
     new Date().toISOString(),
     Number(id)
   );
+  applyCoiReviewOutcomeToVendor(review.vendorId, { approved: true });
   return findCoiDocumentReview(id);
 }
 
 function rejectCoiDocumentReview(id, { reviewerId, reviewerName, reasonKeys }) {
+  const review = findCoiDocumentReview(id);
   db.prepare(
     "UPDATE coi_document_reviews SET status = 'rejected', rejected_reasons_json = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?"
   ).run(JSON.stringify(reasonKeys || []), reviewerId, reviewerName, new Date().toISOString(), Number(id));
+  applyCoiReviewOutcomeToVendor(review.vendorId, { approved: false, reasonKeys: reasonKeys || [] });
   return findCoiDocumentReview(id);
 }
 
@@ -7493,6 +7551,21 @@ function getFile(id) {
     .get(id);
 }
 
+// Repoints an existing file row onto a different record -- used by the COI
+// Reviews queue to move a pool file (relatedType "coi_pool") onto a real
+// vendor once an admin picks which one it belongs to. Same row, same id/
+// storedName/uploadedAt/expiresAt -- not a re-upload, so nothing about the
+// file itself (including its bytes on disk) changes, only which record it
+// belongs to.
+function reassignFile(id, { relatedType, relatedId }) {
+  db.prepare("UPDATE files SET related_type = ?, related_id = ? WHERE id = ?").run(relatedType, String(relatedId), id);
+  return getFile(id);
+}
+
+function listCoiPoolFiles() {
+  return listFiles("coi_pool", "pool");
+}
+
 function deleteFile(id) {
   const file = getFile(id);
   if (!file) return null;
@@ -11587,6 +11660,7 @@ module.exports = {
   findPendingCoiDocumentReviewForFile,
   approveCoiDocumentReview,
   rejectCoiDocumentReview,
+  listPendingCoiReviewsAcrossVendors,
   WOM_COST_REVIEW_STATUSES,
   WOM_COST_REVIEW_REASONS,
   setWomCostReview,
@@ -11746,6 +11820,8 @@ module.exports = {
   listFiles,
   getFile,
   deleteFile,
+  reassignFile,
+  listCoiPoolFiles,
   setFileAccessLevel,
   listTaskDocuments,
   relocateFile,
