@@ -173,6 +173,37 @@ async function downloadFromUrl(path, filename) {
   URL.revokeObjectURL(url);
 }
 
+// Same save-this-blob pattern as downloadFromUrl, but POSTs a JSON body
+// instead of a GET -- for a server-generated file whose shape depends on
+// more than fits comfortably in a query string (the Onboard Requirements
+// Form's fillable PDF: service type + whatever the admin's typed so far).
+async function downloadFromPost(path, body, filename) {
+  const headers = { "Content-Type": "application/json" };
+  const token = currentSessionToken();
+  if (token) headers["x-session-token"] = token;
+
+  const res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    reportIfSessionExpired(res.status, token);
+    let message = `Could not generate file (${res.status})`;
+    try {
+      message = (await res.json()).error || message;
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "download";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   get: (path) => request("GET", path),
   post: (path, body) => request("POST", path, body),
@@ -183,5 +214,6 @@ export const api = {
   uploadRawFile,
   downloadFile,
   downloadFromUrl,
+  downloadFromPost,
   fetchFileBlob,
 };

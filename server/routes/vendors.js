@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
+const { buildOnboardRequirementsPdf } = require("../utils/onboardRequirementsPdf");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -60,6 +61,24 @@ router.get("/onboarding/case-summary", (req, res) => {
 // banner, same pattern as the outdated-forms one.
 router.get("/unregistered-po-vendors", (req, res) => {
   res.json(db.listUnregisteredPoVendors());
+});
+
+// Not tied to an existing vendor id -- this goes out *before* a vendor is
+// in the system (the first ask sent during outreach), so there's nothing
+// to look up. See server/utils/onboardRequirementsPdf.js for the actual
+// PDF-building logic and public/js/views/onboardRequirementsForm.js for
+// the admin-side UI this backs.
+router.post("/onboard-requirements-pdf", async (req, res) => {
+  const { service, companyName, poEmail, paymentContact, w9Name, w9Address } = req.body || {};
+  if (!service || !String(service).trim()) return res.status(400).json({ error: "service is required" });
+  try {
+    const pdfBytes = await buildOnboardRequirementsPdf({ service, companyName, poEmail, paymentContact, w9Name, w9Address });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", 'attachment; filename="Vendor Onboarding Requirements.pdf"');
+    res.send(Buffer.from(pdfBytes));
+  } catch (err) {
+    res.status(500).json({ error: `Could not generate PDF: ${err.message}` });
+  }
 });
 
 router.post("/", (req, res) => {

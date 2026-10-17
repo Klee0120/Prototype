@@ -6742,39 +6742,96 @@ tr.gl-import-shrink-row {
   margin: 3px 0;
 }
 
-.onboard-req-blank {
+/* A vendor-fillable field (matches a real AcroForm field in the
+   generated PDF) reads as a pill, not a blank line -- "this is yours to
+   fill in," not "this is empty." An admin-only optional field (company
+   name, static text in the PDF either way) stays a plain muted label. */
+.onboard-req-fillable {
   display: inline-block;
-  border-bottom: 1px solid #333;
-  height: 1em;
-  vertical-align: middle;
+  background: var(--accent-bg);
+  color: var(--accent-dark);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.onboard-req-unset {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.onboard-req-callout {
+  background: var(--accent-bg);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin: 10px 0 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent-dark);
+}
+
+/* The two "most important" callouts on the form -- what the COI has to
+   meet, and the legal language it has to quote exactly -- get the same
+   highlighted treatment so they read as unmissable, not just more text
+   in the list. */
+.onboard-req-highlight-box {
+  background: var(--accent-bg);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 6px 0 14px;
+  font-size: 13.5px;
+}
+
+.onboard-req-highlight-box-tight {
+  padding: 4px 14px;
 }
 
 .coi-limits-table {
   border-collapse: collapse;
-  margin: 8px 0 14px;
   width: 100%;
-  max-width: 520px;
 }
 
 .coi-limits-table th,
 .coi-limits-table td {
-  border: 1px solid var(--border);
-  padding: 6px 10px;
+  padding: 6px 4px;
   text-align: left;
   font-size: 13.5px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.coi-limits-table tr:last-child th,
+.coi-limits-table tr:last-child td {
+  border-bottom: none;
 }
 
 .coi-limits-table th {
-  background: var(--bg, #f8f2ee);
   font-weight: 600;
-  width: 70%;
+  color: var(--accent-dark);
+  width: 72%;
 }
 
-.onboard-req-quote-box,
+.coi-limits-table td {
+  font-weight: 700;
+  color: var(--accent-dark);
+}
+
+.onboard-req-quote-box {
+  border-left: 4px solid var(--accent);
+  background: var(--neutral-bg, var(--bg));
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 6px 0 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
 .onboard-req-address-box {
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 8px);
-  background: var(--bg, #f8f2ee);
+  border-radius: var(--radius-sm);
+  background: var(--card, #fff);
   padding: 12px 14px;
   margin: 6px 0 14px;
   font-size: 13.5px;

@@ -1,4 +1,5 @@
 import { escapeHtml } from "../app.js";
+import { api } from "../api.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderServiceCombo } from "../serviceCombo.js";
 
@@ -51,6 +52,8 @@ export async function renderOnboardRequirementsForm(container) {
     w9Address: "",
   };
 
+  let generating = false;
+
   draw();
 
   function draw() {
@@ -59,9 +62,11 @@ export async function renderOnboardRequirementsForm(container) {
         <div class="onboard-req-editor no-print">
           <h2>Onboard Requirements Form</h2>
           <p class="onboard-req-editor-hint">
-            Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, fill in
-            what you know, then use your browser's Print &rarr; Save as PDF to send the document below to the vendor.
-            Anything left blank prints as a blank line for the vendor to fill in by hand.
+            Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, then generate a
+            fillable PDF. The preview below shows what's in it. PO notification email, payment verification contact,
+            and the W-9 name/address are the <strong>vendor's</strong> information to give you -- they stay as real,
+            editable fields in the PDF itself (the fields below just let you pre-fill a guess if you already have one;
+            the vendor can still correct it). Nothing needs to be printed or signed by hand.
           </p>
           <div class="onboard-req-field-grid">
             <label class="onboard-req-field onboard-req-field-wide">
@@ -73,23 +78,24 @@ export async function renderOnboardRequirementsForm(container) {
               <input type="text" id="onboard-req-company" value="${escapeHtml(state.companyName)}" placeholder="Vendor company name" />
             </label>
             <label class="onboard-req-field">
-              <span>PO notification email</span>
-              <input type="email" id="onboard-req-po-email" value="${escapeHtml(state.poEmail)}" placeholder="billing@vendor.com" />
+              <span>PO notification email <em>(optional prefill)</em></span>
+              <input type="email" id="onboard-req-po-email" value="${escapeHtml(state.poEmail)}" placeholder="Leave blank for the vendor to fill in" />
             </label>
             <label class="onboard-req-field">
-              <span>Payment verification contact</span>
-              <input type="text" id="onboard-req-payment-contact" value="${escapeHtml(state.paymentContact)}" placeholder="Name, phone and ext." />
+              <span>Payment verification contact <em>(optional prefill)</em></span>
+              <input type="text" id="onboard-req-payment-contact" value="${escapeHtml(state.paymentContact)}" placeholder="Leave blank for the vendor to fill in" />
             </label>
             <label class="onboard-req-field">
-              <span>W-9 name</span>
-              <input type="text" id="onboard-req-w9-name" value="${escapeHtml(state.w9Name)}" placeholder="Legal name on W-9" />
+              <span>W-9 name <em>(optional prefill)</em></span>
+              <input type="text" id="onboard-req-w9-name" value="${escapeHtml(state.w9Name)}" placeholder="Leave blank for the vendor to fill in" />
             </label>
             <label class="onboard-req-field">
-              <span>W-9 address</span>
-              <input type="text" id="onboard-req-w9-address" value="${escapeHtml(state.w9Address)}" placeholder="Address on W-9" />
+              <span>W-9 address <em>(optional prefill)</em></span>
+              <input type="text" id="onboard-req-w9-address" value="${escapeHtml(state.w9Address)}" placeholder="Leave blank for the vendor to fill in" />
             </label>
           </div>
-          <button type="button" class="btn-primary" id="onboard-req-print">Print / Save as PDF</button>
+          <button type="button" class="btn-primary" id="onboard-req-generate">Download Fillable PDF</button>
+          <span class="save-message"></span>
         </div>
         <div class="onboard-req-document" id="onboard-req-document"></div>
       </div>
@@ -121,7 +127,24 @@ export async function renderOnboardRequirementsForm(container) {
         renderDocument();
       });
     }
-    editor.querySelector("#onboard-req-print").addEventListener("click", () => window.print());
+    const generateBtn = editor.querySelector("#onboard-req-generate");
+    const message = editor.querySelector(".save-message");
+    generateBtn.addEventListener("click", async () => {
+      if (generating) return;
+      generating = true;
+      generateBtn.disabled = true;
+      generateBtn.textContent = "Generating…";
+      message.textContent = "";
+      try {
+        await api.downloadFromPost("/api/admin/vendors/onboard-requirements-pdf", state, "Vendor Onboarding Requirements.pdf");
+      } catch (err) {
+        message.textContent = err.message;
+      } finally {
+        generating = false;
+        generateBtn.disabled = false;
+        generateBtn.textContent = "Download Fillable PDF";
+      }
+    });
   }
 
   // Only the document re-renders on every keystroke/selection change --
@@ -137,20 +160,36 @@ function hasLimit(v) {
   return v && v !== "-";
 }
 
-function blank(value, placeholderWidth = "220px") {
+// A prefilled value shows as itself; an empty one shows as a marked
+// placeholder rather than a blank line -- the generated PDF has a real
+// fillable field there, not a line to write on, so the preview should
+// read as "the vendor fills this in" rather than "this is blank."
+function blank(value) {
   if (value && value.trim()) return escapeHtml(value.trim());
-  return `<span class="onboard-req-blank" style="width:${placeholderWidth}"></span>`;
+  return `<span class="onboard-req-fillable">vendor fills in</span>`;
+}
+
+// Company name is static text in the PDF (not a fillable field) -- it's
+// just whatever the admin typed, or nothing, so an empty one reads as a
+// plain placeholder rather than the "vendor fills this in" marker above.
+function adminBlank(value) {
+  if (value && value.trim()) return escapeHtml(value.trim());
+  return `<span class="onboard-req-unset">not set</span>`;
 }
 
 function limitsTableHtml(entry) {
   const rows = COVERAGE_COLUMNS.filter((c) => hasLimit(entry.requirements[c.key]));
-  if (rows.length === 0) return "<p>No minimum limits are on file for this service type -- confirm with your RFM before sending.</p>";
+  if (rows.length === 0) {
+    return `<div class="onboard-req-highlight-box">No minimum limits are on file for this service type -- confirm with your RFM before sending.</div>`;
+  }
   return `
-    <table class="coi-limits-table">
-      <tbody>
-        ${rows.map((c) => `<tr><th>${escapeHtml(c.label)}</th><td>${escapeHtml(entry.requirements[c.key])}</td></tr>`).join("")}
-      </tbody>
-    </table>
+    <div class="onboard-req-highlight-box onboard-req-highlight-box-tight">
+      <table class="coi-limits-table">
+        <tbody>
+          ${rows.map((c) => `<tr><th>${escapeHtml(c.label)}</th><td>${escapeHtml(entry.requirements[c.key])}</td></tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -180,7 +219,12 @@ function documentHtml(state, entry) {
     <div class="onboard-req-sheet">
       <h1>Vendor Onboarding Requirements</h1>
 
-      <div class="onboard-req-line"><strong>Name of Requested Company:</strong> ${blank(state.companyName, "320px")}</div>
+      <div class="onboard-req-callout">
+        Please complete the highlighted fields below (PO notification email, payment verification contact, and your
+        W-9 name/address), then return this PDF. Nothing needs to be printed or signed by hand.
+      </div>
+
+      <div class="onboard-req-line"><strong>Name of Requested Company:</strong> ${adminBlank(state.companyName)}</div>
 
       <h3>Confirmations</h3>
       <ul class="onboard-req-list">
@@ -195,8 +239,8 @@ function documentHtml(state, entry) {
         <li>Signed and dated</li>
         <li>Must use the October 2018 or March 2024 W-9 version</li>
       </ul>
-      <div class="onboard-req-line"><strong>W-9 Name:</strong> ${blank(state.w9Name, "300px")}</div>
-      <div class="onboard-req-line"><strong>W-9 Address:</strong> ${blank(state.w9Address, "300px")}</div>
+      <div class="onboard-req-line"><strong>W-9 Name:</strong> ${blank(state.w9Name)}</div>
+      <div class="onboard-req-line"><strong>W-9 Address:</strong> ${blank(state.w9Address)}</div>
 
       <h3>2. Certificate of Insurance &ndash; ${escapeHtml(serviceName)}</h3>
       <ul class="onboard-req-list">
