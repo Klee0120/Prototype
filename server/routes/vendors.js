@@ -82,13 +82,33 @@ router.post("/onboard-requirements-pdf", async (req, res) => {
   }
 });
 
+// Whether the scheduled weekday-9am auto-send (server/index.js,
+// VENDOR_COMPLIANCE_REMINDERS_AUTO) is on -- so the dashboard can say so
+// plainly rather than the admin having to guess from whether a reminder
+// has shown up yet.
+router.get("/compliance-reminders-status", (req, res) => {
+  res.json({ autoSendEnabled: process.env.VENDOR_COMPLIANCE_REMINDERS_AUTO === "true" });
+});
+
+// Read-only dry run: exactly who the next real send would email and why
+// (expired vs. expiring, which document, which date), with nothing sent
+// and no cadence timestamp touched -- so this is safe to call as many
+// times as needed while checking the logic is right before ever firing a
+// real send.
+router.get("/compliance-reminders-preview", (req, res) => {
+  const daysAhead = req.query.daysAhead ? Number(req.query.daysAhead) : undefined;
+  const cadenceDays = req.query.cadenceDays ? Number(req.query.cadenceDays) : undefined;
+  res.json(db.listVendorsNeedingComplianceReminder({ daysAhead, cadenceDays }));
+});
+
 // Runs the same batch the scheduled job runs automatically every weekday
 // morning (see server/scheduler.js's startVendorComplianceReminders) --
 // on demand, so Krista doesn't have to wait for 9am to see it work or to
 // re-run it the same day she's actually looking. The cadence check
 // (listVendorsNeedingComplianceReminder) still applies: a vendor emailed
 // within the last week, by this route or the scheduled job either one,
-// won't be emailed again until that window is up.
+// won't be emailed again until that window is up. This really sends --
+// use the preview route above first.
 router.post("/send-compliance-reminders", async (req, res) => {
   const result = await sendVendorComplianceReminders();
   db.addAudit(

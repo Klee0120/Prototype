@@ -1010,6 +1010,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <div><div class="wom-stat-label">Approved</div><div class="wom-stat-value">${approved.length}</div></div>
         </div>
       </div>
+      <h3>Compliance Reminder Emails</h3>
+      <div class="review-checklist-hint" id="compliance-reminders-status">Checking automatic-send status&hellip;</div>
+      <div class="compliance-reminders-actions" style="display:flex;gap:8px;margin:8px 0;">
+        <button class="btn btn-secondary" id="compliance-reminders-preview-btn" type="button">Preview Who'd Be Emailed</button>
+        <button class="btn btn-primary" id="compliance-reminders-send-btn" type="button">Send Reminders Now</button>
+      </div>
+      <div id="compliance-reminders-result"></div>
       <h3>Needs Update (${needsUpdate.length})</h3>
       <div class="review-list" id="compliance-needs-update-list"></div>
       <h3>Approved (${approved.length})</h3>
@@ -1029,6 +1036,82 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     } else {
       approved.forEach(({ v }) => approvedList.appendChild(renderComplianceDashboardRow(v, [])));
     }
+
+    wireComplianceReminders(content);
+  }
+
+  const COMPLIANCE_REMINDER_CATEGORY_LABELS = { coi: "Certificate of Insurance (COI)", w9: "W-9", ach: "ACH / banking details" };
+
+  // Preview is read-only (it only calls listVendorsNeedingComplianceReminder,
+  // never sendMail) -- safe to click as many times as needed. Send Now is
+  // the real thing: it emails every vendor the preview just showed, which
+  // is exactly why it's a separate button behind its own confirm(), not
+  // folded into Preview.
+  function wireComplianceReminders(content) {
+    const statusEl = content.querySelector("#compliance-reminders-status");
+    const resultEl = content.querySelector("#compliance-reminders-result");
+    const previewBtn = content.querySelector("#compliance-reminders-preview-btn");
+    const sendBtn = content.querySelector("#compliance-reminders-send-btn");
+
+    api
+      .get("/api/admin/vendors/compliance-reminders-status")
+      .then((status) => {
+        statusEl.innerHTML = status.autoSendEnabled
+          ? `<strong>Automatic sending is ON</strong> -- this also runs by itself every weekday at 9am.`
+          : `<strong>Automatic sending is OFF.</strong> Nothing is emailed on a schedule yet -- use Preview and Send Now here to test it first.`;
+      })
+      .catch(() => {
+        statusEl.textContent = "Couldn't check automatic-send status.";
+      });
+
+    function renderPreviewResult(due) {
+      if (due.length === 0) {
+        resultEl.innerHTML = `<p class="empty-note">No vendor currently has an expired or soon-to-expire COI/W-9/ACH with an email on file.</p>`;
+        return;
+      }
+      const rows = due
+        .map((v) => {
+          const items = v.items
+            .map((i) => `${COMPLIANCE_REMINDER_CATEGORY_LABELS[i.category] || i.category} (${i.status}, ${i.expiresAt})`)
+            .join(", ");
+          return `<div class="review-row"><div class="review-row-summary"><span class="review-row-name">${escapeHtml(v.name)}</span> <span class="review-row-detail">${escapeHtml(v.email)} -- ${escapeHtml(items)}</span></div></div>`;
+        })
+        .join("");
+      resultEl.innerHTML = `<p class="review-checklist-hint">${due.length} vendor${due.length === 1 ? "" : "s"} would be emailed right now:</p><div class="review-list">${rows}</div>`;
+    }
+
+    previewBtn.addEventListener("click", async () => {
+      previewBtn.disabled = true;
+      resultEl.innerHTML = `<p class="empty-note">Loading preview&hellip;</p>`;
+      try {
+        const due = await api.get("/api/admin/vendors/compliance-reminders-preview");
+        renderPreviewResult(due);
+      } catch (err) {
+        resultEl.innerHTML = `<p class="empty-note">Preview failed: ${escapeHtml(err.message)}</p>`;
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+
+    sendBtn.addEventListener("click", async () => {
+      sendBtn.disabled = true;
+      try {
+        const due = await api.get("/api/admin/vendors/compliance-reminders-preview");
+        if (due.length === 0) {
+          resultEl.innerHTML = `<p class="empty-note">No vendor currently has an expired or soon-to-expire COI/W-9/ACH with an email on file -- nothing to send.</p>`;
+          return;
+        }
+        const names = due.map((v) => v.name).join(", ");
+        if (!window.confirm(`This will really email ${due.length} vendor${due.length === 1 ? "" : "s"}: ${names}. Continue?`)) return;
+        resultEl.innerHTML = `<p class="empty-note">Sending&hellip;</p>`;
+        const result = await api.post("/api/admin/vendors/send-compliance-reminders");
+        resultEl.innerHTML = `<p class="review-checklist-hint">Sent: ${result.emailed}/${result.checked} emailed${result.failures.length ? `, ${result.failures.length} failed` : ""}.</p>`;
+      } catch (err) {
+        resultEl.innerHTML = `<p class="empty-note">Send failed: ${escapeHtml(err.message)}</p>`;
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
   }
 
   function renderComplianceDashboardRow(v, reasons) {
