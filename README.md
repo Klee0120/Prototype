@@ -1383,7 +1383,9 @@ Demo logins:
     record that sits alongside this.
   - **Recurring admin tasks**, not tied to any WOM (`ensureRecurringTasks`
     in `server/data/db.js`, called lazily whenever the task list loads --
-    there's no cron/scheduler anywhere in this app): technician time
+    this one isn't on the `server/scheduler.js` clock described below,
+    it just backfills on whatever the next task-list read happens to be):
+    technician time
     allocation and final timecard review (weekly), AP open items
     (weekly), completed-WOM charge confirmation (biweekly), and open-PO/
     vendor-compliance cleanup (monthly) -- each keyed to its own period
@@ -2344,10 +2346,57 @@ happen.
   pricing hand-entered (`PATCH /api/woms/:code/pricing`) — a later sync
   overwrites both fields once that WOM code is found there, since they're meant to
   mirror Smartsheet once a match exists, not be independently maintained
-  here. **Admin-triggered for now, not on a schedule** — click "Sync WOMs
-  from Smartsheet" whenever you want the latest numbers; automatic periodic
-  syncing is a natural next step once this has been used successfully a few
-  times.
+  here. **Both admin-triggered and scheduled** — click "Sync WOMs
+  from Smartsheet" any time for the latest numbers, or just wait: it also
+  runs automatically three times on every business day (see the scheduled
+  jobs below).
+- **Scheduled jobs** (`server/scheduler.js`, started once from
+  `server/index.js` when the app boots): a handful of fixed-time-of-day
+  jobs sharing one minute-granularity mechanism (not a real cron library —
+  a few fixed times a day doesn't need one), each checking the wall clock
+  in `America/New_York` once a minute and firing at most once per matching
+  minute.
+  - **Smartsheet auto-sync** — 8am/12pm/4pm, business days only. Same sync
+    `runSmartsheetSync` the manual "Sync WOMs from Smartsheet" button
+    calls, just on autopilot (audited as actor `"scheduled"`).
+  - **Nightly database + uploads backup** — 2am, every day (see **Backups**
+    below).
+  - **Vendor compliance reminders** — 9am, business days only (see
+    **Vendor compliance reminders** below).
+- **Backups.** Neither `server/data/store.sqlite` nor the `server/data/
+  uploads/` folder (every COI/W-9/ACH/etc. anyone's ever attached) is
+  checked into git — correctly, they're live business data — which means
+  until now neither had any protection against the droplet's disk failing
+  or a bad command wiping a file by accident. `server/utils/backup.js` now
+  takes a snapshot of both once a night (via `VACUUM INTO`, not a raw file
+  copy, since the database runs in WAL mode — this asks SQLite itself for
+  a complete, self-contained copy rather than risking a half-written
+  `-wal` file) into `server/data/backups/` (override with
+  `LABOR_BACKUP_DIR`), keeping the most recent 14 of each by default
+  (override with `LABOR_BACKUP_RETENTION`) and deleting older ones
+  automatically. This is **droplet-local** protection against an
+  application-level mistake (a bad import, an accidental delete) or disk
+  corruption — it does not protect against the droplet itself being
+  destroyed or lost. For that, turn on DigitalOcean's own droplet
+  snapshots in its control panel; that's a hosting-account setting only
+  the account owner can enable, not something this app can do for itself.
+- **Vendor compliance reminders** (`server/utils/
+  vendorComplianceReminders.js`). The automated half of "chasing" a vendor
+  for an expired or soon-to-expire COI/W-9/ACH: once a day, it finds every
+  vendor with a document expiring within 30 days (or already expired) who
+  has an email on file, and emails them a plain reminder listing exactly
+  which document(s) and date(s) — at most once every 7 days per vendor
+  (`vendors.last_compliance_reminder_at`), so a vendor who's already
+  behind doesn't get a fresh nag every single morning. An admin can also
+  run the same batch on demand from the Vendor Directory (**POST
+  /api/admin/vendors/send-compliance-reminders**) — useful for seeing it
+  work immediately rather than waiting for 9am, though the per-vendor
+  cadence still applies either way. This is deliberately just the
+  outbound-nudge half of the larger COI-automation idea discussed
+  (reading what a vendor sends back, matching it to the right vendor,
+  and auto-approving or auto-kicking-back a document) — that's a
+  separate, higher-risk project to build and test against real documents
+  before trusting it to act on its own.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have

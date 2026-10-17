@@ -1775,6 +1775,16 @@ if (!hasColumn("vendors", "po_email_mismatch")) {
   db.exec("ALTER TABLE vendors ADD COLUMN po_email_mismatch_detected_at TEXT");
 }
 
+// When the scheduled compliance-reminder job (server/utils/
+// vendorComplianceReminders.js) last emailed this vendor about an
+// expiring/expired COI/W-9/ACH -- the cadence check that stops a vendor
+// getting a fresh nag every single day their document is still out of
+// date, same as any other "last contacted" timestamp in this schema
+// (ukg_confirmed_at, pse_followup_at, etc.).
+if (!hasColumn("vendors", "last_compliance_reminder_at")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN last_compliance_reminder_at TEXT");
+}
+
 // Per-case fields the redesigned onboarding cases need beyond the existing
 // free-text status/reference_number/note/as_of: an expiration date (every
 // case and any linked waiver needs one, no "no expiration" option), the
@@ -4871,6 +4881,74 @@ function listExpiredVendorComplianceCategories(vendorId) {
     )
     .all(String(vendorId), new Date().toISOString().slice(0, 10));
   return rows.map((r) => r.category);
+}
+
+// Every vendor with an email on file whose COI/W-9/ACH is already expired
+// or will expire within `daysAhead` days -- the automated version of what
+// the (still-available, manual) notify-expired-docs route sends one vendor
+// at a time. `cadenceDays` is the "don't badger them" throttle: a vendor
+// due a reminder today but reminded within the last `cadenceDays` is left
+// out entirely, same live-condition spirit as listExpiredVendorCompliance-
+// Categories -- a vendor who's since renewed just stops matching the
+// WHERE clause and drops off, nothing to "clear" by hand. See
+// server/utils/vendorComplianceReminders.js for what sends the email and
+// records last_compliance_reminder_at after.
+function listVendorsNeedingComplianceReminder({ daysAhead = 30, cadenceDays = 7 } = {}) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() + daysAhead);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  const rows = db
+    .prepare(
+      `SELECT f.related_id AS vendorId, f.category, f.expires_at AS expiresAt,
+              v.name AS vendorName, v.email AS vendorEmail, v.last_compliance_reminder_at AS lastReminderAt
+       FROM files f
+       JOIN vendors v ON v.id = f.related_id
+       WHERE f.related_type = 'vendor' AND f.category IN ('coi', 'w9', 'ach')
+         AND f.expires_at IS NOT NULL AND f.expires_at <= ?
+       ORDER BY f.related_id, f.expires_at`
+    )
+    .all(cutoffStr);
+
+  const cadenceMs = cadenceDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const byVendor = new Map();
+  for (const r of rows) {
+    if (!r.vendorEmail) continue; // nothing automated can send without an address
+    if (r.lastReminderAt && now - new Date(r.lastReminderAt).getTime() < cadenceMs) continue;
+    // files.related_id is TEXT (it has to cover other entity types too), so
+    // this join hands back vendorId as a string -- coerce it here so
+    // callers get the same number type vendors.id/every API response uses.
+    const vendorId = Number(r.vendorId);
+    if (!byVendor.has(vendorId)) {
+      byVendor.set(vendorId, { id: vendorId, name: r.vendorName, email: r.vendorEmail, items: [] });
+    }
+    byVendor.get(vendorId).items.push({
+      category: r.category,
+      expiresAt: r.expiresAt,
+      status: r.expiresAt <= todayStr ? "expired" : "expiring",
+    });
+  }
+  return [...byVendor.values()];
+}
+
+function recordVendorComplianceReminderSent(vendorId) {
+  db.prepare("UPDATE vendors SET last_compliance_reminder_at = ? WHERE id = ?").run(new Date().toISOString(), Number(vendorId));
+}
+
+// A consistent, point-in-time copy of the live database -- VACUUM INTO
+// (not a raw file copy) because the DB runs in WAL mode (see "PRAGMA
+// journal_mode = WAL" above): copying store.sqlite alone can miss
+// committed writes still sitting in the -wal file, where VACUUM INTO asks
+// SQLite itself for a complete, self-contained snapshot. destPath is
+// always built from a server-generated timestamp (see
+// server/utils/backup.js), never user input, but single quotes are still
+// escaped since VACUUM INTO takes its target as a SQL string literal, not
+// a bindable parameter.
+function backupDatabaseTo(destPath) {
+  const escaped = String(destPath).replace(/'/g, "''");
+  db.exec(`VACUUM INTO '${escaped}'`);
 }
 
 // Why a vendor currently needs a compliance follow-up -- shown on the task
@@ -11349,6 +11427,8 @@ for (const po of db
 
 module.exports = {
   UPLOADS_DIR,
+  DB_PATH,
+  backupDatabaseTo,
   findTechnician,
   listTechnicians,
   verifyLogin,
@@ -11386,6 +11466,8 @@ module.exports = {
   denyVendor,
   reinstateVendor,
   listExpiredVendorComplianceCategories,
+  listVendorsNeedingComplianceReminder,
+  recordVendorComplianceReminderSent,
   addVendorRemark,
   listVendorRemarks,
   WOM_COST_REVIEW_STATUSES,

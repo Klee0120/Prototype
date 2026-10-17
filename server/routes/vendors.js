@@ -3,6 +3,7 @@ const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { buildOnboardRequirementsPdf } = require("../utils/onboardRequirementsPdf");
+const { sendVendorComplianceReminders } = require("../utils/vendorComplianceReminders");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -79,6 +80,23 @@ router.post("/onboard-requirements-pdf", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: `Could not generate PDF: ${err.message}` });
   }
+});
+
+// Runs the same batch the scheduled job runs automatically every weekday
+// morning (see server/scheduler.js's startVendorComplianceReminders) --
+// on demand, so Krista doesn't have to wait for 9am to see it work or to
+// re-run it the same day she's actually looking. The cadence check
+// (listVendorsNeedingComplianceReminder) still applies: a vendor emailed
+// within the last week, by this route or the scheduled job either one,
+// won't be emailed again until that window is up.
+router.post("/send-compliance-reminders", async (req, res) => {
+  const result = await sendVendorComplianceReminders();
+  db.addAudit(
+    req.user.id,
+    "VENDOR_COMPLIANCE_REMINDERS_RUN",
+    `${req.user.name} manually ran compliance reminders: ${result.emailed}/${result.checked} emailed${result.failures.length ? `, ${result.failures.length} failed` : ""}`
+  );
+  res.json(result);
 });
 
 router.post("/", (req, res) => {
