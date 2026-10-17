@@ -43,14 +43,14 @@ const REQUIRED_COI_LANGUAGE =
 // translated or reworded, since it's quoted contract language a vendor
 // is expected to match exactly on their COI.
 export async function renderOnboardRequirementsForm(container) {
-  // companyName/poEmail/paymentContact/w9Name/w9Address are deliberately
-  // not editor inputs -- this is meant to be one reusable blank packet
-  // (the first ask sent during outreach, before a vendor is even in the
-  // system), not something retyped per send. All five stay as real
-  // fillable fields in the generated PDF (see server/utils/
-  // onboardRequirementsPdf.js), left blank here for the vendor to answer
-  // when they open it. The only thing the admin actually picks is the
-  // service type, since that's what the COI limits below depend on.
+  // poEmail/paymentContact/w9Name/w9Address are deliberately not editor
+  // inputs -- they're the vendor's own information to give back, not
+  // something an admin has on hand before asking for it. companyName is
+  // different: the admin addressing this packet to a specific vendor
+  // usually does know who that is, so it's typed here and carried into
+  // the PDF as that field's starting value -- still a real, editable
+  // AcroForm field there (see server/utils/onboardRequirementsPdf.js),
+  // just prefilled rather than always blank like the other four.
   const state = {
     service: COI_MATRIX[0].label,
     companyName: "",
@@ -70,15 +70,20 @@ export async function renderOnboardRequirementsForm(container) {
         <div class="onboard-req-editor no-print">
           <h2>Onboard Requirements Form</h2>
           <p class="onboard-req-editor-hint">
-            Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, then generate a
-            fillable PDF. The preview below shows what's in it. Everything else -- company name, PO notification
-            email, payment verification contact, and the W-9 name/address -- is a real, editable field in the PDF
-            itself for the vendor to fill in when they open it. Nothing needs to be printed or signed by hand.
+            Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, and the company
+            you're sending this to, then generate a fillable PDF. The preview below shows what's in it. PO
+            notification email, payment verification contact, and the W-9 name/address are the <strong>vendor's</strong>
+            information to give back -- those stay as real, editable fields in the PDF itself for the vendor to fill
+            in when they open it. Nothing needs to be printed or signed by hand.
           </p>
           <div class="onboard-req-field-grid">
             <label class="onboard-req-field onboard-req-field-wide">
               <span>Type of service</span>
               <div class="service-combo-mount" id="onboard-req-service"></div>
+            </label>
+            <label class="onboard-req-field onboard-req-field-wide">
+              <span>Name of requested company</span>
+              <input type="text" id="onboard-req-company" value="${escapeHtml(state.companyName)}" placeholder="Vendor company name" />
             </label>
           </div>
           <button type="button" class="btn-primary" id="onboard-req-generate">Download Fillable PDF</button>
@@ -101,6 +106,10 @@ export async function renderOnboardRequirementsForm(container) {
         },
       })
     );
+    editor.querySelector("#onboard-req-company").addEventListener("input", (e) => {
+      state.companyName = e.target.value;
+      renderDocument();
+    });
     const generateBtn = editor.querySelector("#onboard-req-generate");
     const message = editor.querySelector(".save-message");
     generateBtn.addEventListener("click", async () => {
