@@ -2514,6 +2514,45 @@ happen.
   - A COI's row on its own vendor's Documents tab also shows a Pending
     Review/Approved/Rejected badge now, so the outcome doesn't require
     reopening Review COI to see.
+  - **A decided COI Review now syncs the vendor's own "Onboarding - COI"
+    case** (`syncCoiCaseFromReview` in `server/data/db.js`) — the same
+    case record the Onboarding tab, Compliance Needed list, and
+    onboarding-stage derivation already read, so a COI dropped and
+    reviewed through this queue "adds to the vendor compliance list" the
+    same way working through onboarding by hand does, with no separate,
+    disconnected tracking concept. Approving sets the case `status` to
+    `"Approved"`; rejecting sets it to `"Revisions needed"` and maps the
+    rejection's checklist reason keys onto the case's own `REVIEW_NOTES_OPTIONS.coi`
+    vocabulary (`acord25`→`acord_25_form`, `language`→`needs_ai_wording`,
+    `certHolder`→`fix_holder_information`, any `glOcc:`/`glAgg:`/`auto:`/
+    `wc:`/`exs:`/`eAndO:`/`pol:`/`crime:`/`productsComplOpAgg:`-prefixed
+    limit key→`needs_limits_fixed`; `missing_coverage` and
+    `doesnt_match_w9_information` have no equivalent on the review
+    checklist, so a review decision never selects them). Finds the
+    vendor's latest COI case or creates one on its first-ever review,
+    and — since `addVendorRequest`/`updateVendorRequest` rewrite the
+    whole case row on every save — always echoes every other field on
+    the existing case (reference number, free-text note, etc.) unchanged
+    rather than risking blanking them.
+  - **The review also extracts Policy #, Carrier, and Expiration date as
+    editable suggestions** (`extractCoiStructuredFields` in
+    `server/utils/coiDocumentReview.js`), shown pre-filled in the review
+    modal next to the checklist. Unlike coverage limits or the Auto
+    Liability checkboxes, getting one of these three wrong is never a
+    coverage decision — just a worse starting guess — so plain regex
+    heuristics are fine: it looks for the flattened "`<policy #> <eff
+    date> <exp date>`" shape a coverage row reads as once a table's
+    columns collapse into reading order (pdfjs-dist has no table
+    structure), and separately for the carrier name following
+    `"INSURER A :"`. Nothing extracted is ever saved on its own — only
+    whatever the admin actually submits with the approve/reject call
+    becomes the case's `coiPolicyNumber`/`coiCarrier`/`expirationDate`.
+  - **The COI Reviews queue's own Pending Review rows show the case
+    status** (`coiCaseStatus` on each row, from
+    `listPendingCoiReviewsAcrossVendors`) — "list COI case status the
+    same way we do for onboarding" — so an admin can tell from the queue
+    alone whether a pending document is a vendor's first COI ever or a
+    re-review of a case already in some other state.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have

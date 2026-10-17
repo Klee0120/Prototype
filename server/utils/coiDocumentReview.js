@@ -116,6 +116,60 @@ function coiExtractionHints(extractedText) {
   };
 }
 
+// Best-effort suggestions for three low-stakes metadata fields -- unlike
+// coverage limits or the Auto Liability checkboxes (see this file's header
+// comment), getting one of these wrong never leads to approving
+// insufficient coverage: it's just a starting guess the admin edits or
+// clears in the review modal before it's ever saved as fact (see
+// syncCoiCaseFromReview in db.js, which only persists whatever value the
+// admin actually submits). pdfjs-dist flattens a page's text into reading
+// order with no table/column structure, so an ACORD 25's multi-row
+// coverage grid (one POLICY NUMBER/EXP per line of business) can't be
+// parsed reliably -- this just grabs the first match of each pattern,
+// which in practice is almost always the General Liability row, the one
+// that normally also carries the vendor's primary/earliest-relevant
+// expiration.
+const POLICY_TOKEN_STOPWORDS = /^(POLICY|NUMBER|EFF|EXP|DATE|MM|DD|YYYY|LIMITS|TYPE|INSURANCE|OF)$/i;
+
+function extractCoiStructuredFields(extractedText) {
+  const text = String(extractedText || "");
+  const result = { policyNumber: null, carrier: null, expirationDate: null };
+  if (!text.trim()) return result;
+
+  // An ACORD 25 coverage row flattens to "<policy #> <eff date> <exp
+  // date>" in reading order even though the column headers that label
+  // them sit on an earlier, separate line -- so this looks for that
+  // specific 3-token shape rather than trying to anchor off the "POLICY
+  // NUMBER"/"POLICY EXP" header text itself, which in a flattened read is
+  // nowhere near the actual values it labels.
+  const rowMatch = text.match(/([A-Za-z0-9][A-Za-z0-9\-\/]{3,24})\s+(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+  if (rowMatch) {
+    if (/\d/.test(rowMatch[1]) && !POLICY_TOKEN_STOPWORDS.test(rowMatch[1])) result.policyNumber = rowMatch[1];
+    const iso = mmddyyyyToIso(rowMatch[3]);
+    if (iso) result.expirationDate = iso;
+  }
+
+  const carrierMatch = text.match(/INSURER\s*A\s*:?\s*([A-Za-z][A-Za-z0-9&.,'\-\s]{2,60}?)(?=\s+NAIC|\s+INSURER\s*B|\s+\d{3,}|\s{2,}|$)/i);
+  if (carrierMatch) {
+    const carrier = carrierMatch[1].replace(/\s+/g, " ").trim();
+    if (carrier) result.carrier = carrier;
+  }
+
+  return result;
+}
+
+function mmddyyyyToIso(dateStr) {
+  const parts = String(dateStr).split("/");
+  if (parts.length !== 3) return null;
+  let [month, day, year] = parts;
+  if (year.length === 2) year = `20${year}`;
+  const m = Number(month);
+  const d = Number(day);
+  const y = Number(year);
+  if (!m || !d || !y || m > 12 || d > 31) return null;
+  return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
 const CATEGORY_LABELS = { coi: "Certificate of Insurance (COI)", w9: "W-9", ach: "ACH / banking details" };
 
 function coiDenialEmailText(vendorName, reasonLabels) {
@@ -133,5 +187,6 @@ module.exports = {
   buildCoiRequirementChecklist,
   extractCoiDocumentText,
   coiExtractionHints,
+  extractCoiStructuredFields,
   coiDenialEmailText,
 };

@@ -1837,6 +1837,18 @@ if (!hasColumn("vendor_requests", "expiration_date")) {
   db.exec("ALTER TABLE vendor_requests ADD COLUMN w9_address TEXT DEFAULT ''");
   db.exec("ALTER TABLE vendor_requests ADD COLUMN w9_previously_approved INTEGER NOT NULL DEFAULT 0");
 }
+// COI's own equivalent of W-9's name/address-as-shown-on-the-form fields --
+// filled from the real COI Review workflow's best-effort text extraction
+// (policy #/carrier/expiration, see coiDocumentReview.js's
+// extractCoiStructuredFields), always admin-confirmed before being saved
+// here, never trusted straight off the extraction (see that file's own
+// header comment on why dollar figures and checkboxes are never
+// auto-read -- these three are lower-stakes metadata, not a coverage
+// decision, but still just a starting guess, not a fact).
+if (!hasColumn("vendor_requests", "coi_policy_number")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN coi_policy_number TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN coi_carrier TEXT DEFAULT ''");
+}
 
 // COI is never itself marked "Waived" -- choosing "Waiting on VPO Waiver"
 // reveals this linked sub-case instead, one per COI case (created the
@@ -3037,6 +3049,11 @@ function listCoiDocumentReviewsForVendor(vendorId) {
 // review across every vendor, newest first, with the vendor's name and the
 // file's own name/uploaded-at joined in so the queue doesn't need a
 // separate round trip per row to show something useful.
+// coiCaseStatus surfaces the vendor's own "Onboarding - COI" case status
+// right in the queue row -- the same status the Onboarding tab shows --
+// so an admin can tell at a glance whether this is a vendor's first COI
+// ever (no case yet) or a re-review of one already in some other state,
+// without opening the vendor profile first.
 function listPendingCoiReviewsAcrossVendors() {
   const rows = db
     .prepare(
@@ -3050,7 +3067,10 @@ function listPendingCoiReviewsAcrossVendors() {
        ORDER BY r.id DESC`
     )
     .all();
-  return rows;
+  return rows.map((r) => {
+    const latest = latestRequestOfType(r.vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
+    return { ...r, coiCaseStatus: latest ? latest.status || "Not started" : "Not started" };
+  });
 }
 
 // Already-decided reviews are a record, not something to still be pending
@@ -3069,6 +3089,22 @@ function findPendingCoiDocumentReviewForFile(fileId) {
 // the prefix to know a selected reject reason was a coverage figure, not
 // which one or what value.
 const COI_LIMIT_KEY_RE = /^(glOcc|glAgg|auto|wc|exs|eAndO|pol|crime|productsComplOpAgg):/;
+
+// Maps a COI Review checklist reason key (see coiDocumentReview.js's
+// buildCoiRequirementChecklist) onto the COI case's own "Review notes ·
+// select issues" vocabulary (REVIEW_NOTES_OPTIONS.coi in adminReview.js),
+// so a rejected review's reasons show up as the exact same review-notes
+// chips the case card already renders for every other case type. Limit
+// keys are handled separately by COI_LIMIT_KEY_RE below (they all collapse
+// to "needs_limits_fixed"). "missing_coverage" and
+// "doesnt_match_w9_information" have no equivalent on the review
+// checklist, so a rejection can never select them -- only a manual case
+// edit can.
+const COI_REASON_KEY_TO_REVIEW_NOTE = {
+  acord25: "acord_25_form",
+  language: "needs_ai_wording",
+  certHolder: "fix_holder_information",
+};
 
 // Approving/rejecting a real COI review is now what drives these four
 // legacy vendor-level flags (coi_meets_required_limits, coi_meets_
@@ -3098,7 +3134,7 @@ function applyCoiReviewOutcomeToVendor(vendorId, { approved, reasonKeys = [] }) 
   db.prepare(`UPDATE vendors SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`).run(now, Number(vendorId));
 }
 
-function approveCoiDocumentReview(id, { reviewerId, reviewerName }) {
+function approveCoiDocumentReview(id, { reviewerId, reviewerName, policyNumber, carrier, expirationDate }) {
   const review = findCoiDocumentReview(id);
   db.prepare("UPDATE coi_document_reviews SET status = 'approved', reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?").run(
     reviewerId,
@@ -3107,15 +3143,17 @@ function approveCoiDocumentReview(id, { reviewerId, reviewerName }) {
     Number(id)
   );
   applyCoiReviewOutcomeToVendor(review.vendorId, { approved: true });
+  syncCoiCaseFromReview(review.vendorId, { approved: true, policyNumber, carrier, expirationDate });
   return findCoiDocumentReview(id);
 }
 
-function rejectCoiDocumentReview(id, { reviewerId, reviewerName, reasonKeys }) {
+function rejectCoiDocumentReview(id, { reviewerId, reviewerName, reasonKeys, policyNumber, carrier, expirationDate }) {
   const review = findCoiDocumentReview(id);
   db.prepare(
     "UPDATE coi_document_reviews SET status = 'rejected', rejected_reasons_json = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?"
   ).run(JSON.stringify(reasonKeys || []), reviewerId, reviewerName, new Date().toISOString(), Number(id));
   applyCoiReviewOutcomeToVendor(review.vendorId, { approved: false, reasonKeys: reasonKeys || [] });
+  syncCoiCaseFromReview(review.vendorId, { approved: false, reasonKeys: reasonKeys || [], policyNumber, carrier, expirationDate });
   return findCoiDocumentReview(id);
 }
 
@@ -3905,6 +3943,8 @@ function presentVendorRequestRow(r) {
     w9Name: r.w9_name || "",
     w9Address: r.w9_address || "",
     w9PreviouslyApproved: Boolean(r.w9_previously_approved),
+    coiPolicyNumber: r.coi_policy_number || "",
+    coiCarrier: r.coi_carrier || "",
   };
 }
 
@@ -4101,8 +4141,10 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     referenceNumber, status, note, asOf,
     expirationDate, reviewNotesSelected, reviewNotesFreeText,
     w9Name, w9Address, w9PreviouslyApproved,
+    coiPolicyNumber, coiCarrier,
   } = fields;
   const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
+  const isCoi = requestType === ONBOARDING_CASE_TYPE_BY_KEY.coi;
   // "Previously approved in ServiceEdge" is a shortcut, not a normal status
   // edit: it forces the case Approved and appends (never replaces) a dated
   // record of the historical source, while collection (form_status) stays
@@ -4114,8 +4156,8 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     `INSERT INTO vendor_requests
       (vendor_id, request_type, reference_number, status, note, as_of,
        expiration_date, review_notes_selected, review_notes_free_text,
-       w9_name, w9_address, w9_previously_approved, requested_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       w9_name, w9_address, w9_previously_approved, coi_policy_number, coi_carrier, requested_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     vendorId,
     requestType,
@@ -4129,6 +4171,8 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     isW9 ? w9Name || "" : "",
     isW9 ? w9Address || "" : "",
     previouslyApproved ? 1 : 0,
+    isCoi ? coiPolicyNumber || "" : "",
+    isCoi ? coiCarrier || "" : "",
     now,
     now
   );
@@ -4144,10 +4188,12 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     requestType, referenceNumber, status, note, asOf, updatedBy,
     expirationDate, reviewNotesSelected, reviewNotesFreeText,
     w9Name, w9Address, w9PreviouslyApproved,
+    coiPolicyNumber, coiCarrier,
   } = fields;
   const now = new Date().toISOString();
   const existing = db.prepare("SELECT w9_previously_approved FROM vendor_requests WHERE id = ? AND vendor_id = ?").get(requestId, vendorId);
   const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
+  const isCoi = requestType === ONBOARDING_CASE_TYPE_BY_KEY.coi;
   const previouslyApproved = isW9 && Boolean(w9PreviouslyApproved);
   // Only append the historical-approval note the moment the flag is first
   // checked -- not on every later save while it stays checked, or the note
@@ -4159,7 +4205,7 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     `UPDATE vendor_requests SET
       request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ?, updated_by = ?,
       expiration_date = ?, review_notes_selected = ?, review_notes_free_text = ?,
-      w9_name = ?, w9_address = ?, w9_previously_approved = ?
+      w9_name = ?, w9_address = ?, w9_previously_approved = ?, coi_policy_number = ?, coi_carrier = ?
      WHERE id = ? AND vendor_id = ?`
   ).run(
     requestType,
@@ -4175,6 +4221,8 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     isW9 ? w9Name || "" : "",
     isW9 ? w9Address || "" : "",
     previouslyApproved ? 1 : 0,
+    isCoi ? coiPolicyNumber || "" : "",
+    isCoi ? coiCarrier || "" : "",
     requestId,
     vendorId
   );
@@ -4183,6 +4231,47 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
   syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
   return listVendorRequests(vendorId);
+}
+
+// A real COI Review decision (see approveCoiDocumentReview/
+// rejectCoiDocumentReview) is now what drives the vendor's own
+// "Onboarding - COI" case -- the same case the Onboarding tab and the
+// Compliance Needed list already read -- rather than leaving that case to
+// be kept in sync by hand. Finds the vendor's latest COI case (creating
+// one if this is its first COI document ever reviewed) and updates its
+// status/review notes/policy#/carrier/expiration from the decision,
+// echoing every other field on the existing case unchanged (the same
+// "always re-send the current value" rule addVendorRequest/
+// updateVendorRequest already require of every other caller, since both
+// rewrite the whole row on every save).
+function coiReviewReasonKeysToReviewNotes(reasonKeys = []) {
+  const notes = new Set();
+  for (const key of reasonKeys) {
+    if (COI_LIMIT_KEY_RE.test(key)) notes.add("needs_limits_fixed");
+    else if (COI_REASON_KEY_TO_REVIEW_NOTE[key]) notes.add(COI_REASON_KEY_TO_REVIEW_NOTE[key]);
+  }
+  return Array.from(notes);
+}
+
+function syncCoiCaseFromReview(vendorId, { approved, reasonKeys = [], policyNumber, carrier, expirationDate } = {}) {
+  const latest = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
+  const status = approved ? "Approved" : "Revisions needed";
+  const reviewNotesSelected = approved ? [] : coiReviewReasonKeysToReviewNotes(reasonKeys);
+  const fields = {
+    status,
+    reviewNotesSelected,
+    reviewNotesFreeText: latest ? latest.review_notes_free_text || "" : "",
+    referenceNumber: latest ? latest.reference_number || "" : "",
+    note: latest ? latest.note || "" : "",
+    asOf: latest ? latest.as_of : undefined,
+    coiPolicyNumber: policyNumber !== undefined ? policyNumber : latest ? latest.coi_policy_number || "" : "",
+    coiCarrier: carrier !== undefined ? carrier : latest ? latest.coi_carrier || "" : "",
+    expirationDate: expirationDate !== undefined ? expirationDate : latest ? latest.expiration_date || null : null,
+  };
+  if (latest) {
+    return updateVendorRequest(vendorId, latest.id, { requestType: ONBOARDING_CASE_TYPE_BY_KEY.coi, ...fields });
+  }
+  return addVendorRequest(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi, fields);
 }
 
 // A case-log touch is real onboarding activity even though it isn't a

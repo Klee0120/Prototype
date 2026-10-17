@@ -7,7 +7,7 @@ const express = require("express");
 const path = require("path");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
-const { buildCoiRequirementChecklist, extractCoiDocumentText } = require("../utils/coiDocumentReview");
+const { buildCoiRequirementChecklist, extractCoiDocumentText, coiExtractionHints, extractCoiStructuredFields } = require("../utils/coiDocumentReview");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -42,7 +42,10 @@ router.post("/pool/:fileId/assign-vendor", async (req, res) => {
   const checklist = await buildCoiRequirementChecklist(vendor.services);
   const review = db.createCoiDocumentReview({ fileId: updated.id, vendorId: vendor.id, extractedText, checklist });
 
-  res.json({ file: updated, review });
+  res.json({
+    file: updated,
+    review: { ...review, extractionHints: coiExtractionHints(extractedText), extractedFields: extractCoiStructuredFields(extractedText) },
+  });
 });
 
 module.exports = router;

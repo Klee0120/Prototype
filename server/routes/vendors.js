@@ -5,7 +5,13 @@ const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { buildOnboardRequirementsPdf } = require("../utils/onboardRequirementsPdf");
 const { sendVendorComplianceReminders } = require("../utils/vendorComplianceReminders");
-const { buildCoiRequirementChecklist, extractCoiDocumentText, coiExtractionHints, coiDenialEmailText } = require("../utils/coiDocumentReview");
+const {
+  buildCoiRequirementChecklist,
+  extractCoiDocumentText,
+  coiExtractionHints,
+  extractCoiStructuredFields,
+  coiDenialEmailText,
+} = require("../utils/coiDocumentReview");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -314,12 +320,18 @@ router.post("/:id/files/:fileId/coi-review", async (req, res) => {
   if (file.category !== "coi") return res.status(400).json({ error: "Not a COI document" });
 
   const existingPending = db.findPendingCoiDocumentReviewForFile(file.id);
-  if (existingPending) return res.json(existingPending);
+  if (existingPending) {
+    return res.json({
+      ...existingPending,
+      extractionHints: coiExtractionHints(existingPending.extractedText),
+      extractedFields: extractCoiStructuredFields(existingPending.extractedText),
+    });
+  }
 
   const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, file.storedName));
   const checklist = await buildCoiRequirementChecklist(vendor.services);
   const review = db.createCoiDocumentReview({ fileId: file.id, vendorId: vendor.id, extractedText, checklist });
-  res.status(201).json({ ...review, extractionHints: coiExtractionHints(extractedText) });
+  res.status(201).json({ ...review, extractionHints: coiExtractionHints(extractedText), extractedFields: extractCoiStructuredFields(extractedText) });
 });
 
 router.get("/:id/coi-reviews", (req, res) => {
@@ -342,7 +354,8 @@ router.post("/:id/coi-reviews/:reviewId/approve", (req, res) => {
   if (!review || review.vendorId !== vendor.id) return res.status(404).json({ error: "Review not found" });
   if (review.status !== "pending") return res.status(400).json({ error: `Already ${review.status}` });
 
-  const updated = db.approveCoiDocumentReview(review.id, { reviewerId: req.user.id, reviewerName: req.user.name });
+  const { policyNumber, carrier, expirationDate } = req.body || {};
+  const updated = db.approveCoiDocumentReview(review.id, { reviewerId: req.user.id, reviewerName: req.user.name, policyNumber, carrier, expirationDate });
   const territories = db.getVendorTerritories(vendor.id);
   const territoryText = territories.length ? territories.join(", ") : "no territory on file yet from PO/WOM history -- confirm manually";
   const task = db.createTask({
@@ -380,7 +393,15 @@ router.post("/:id/coi-reviews/:reviewId/reject", async (req, res) => {
   const reasonLabels = reasonKeys.map((key) => checklistByKey.get(key)).filter(Boolean);
   if (reasonLabels.length !== reasonKeys.length) return res.status(400).json({ error: "One or more reasonKeys aren't on this review's checklist" });
 
-  const updated = db.rejectCoiDocumentReview(review.id, { reviewerId: req.user.id, reviewerName: req.user.name, reasonKeys });
+  const { policyNumber, carrier, expirationDate } = req.body || {};
+  const updated = db.rejectCoiDocumentReview(review.id, {
+    reviewerId: req.user.id,
+    reviewerName: req.user.name,
+    reasonKeys,
+    policyNumber,
+    carrier,
+    expirationDate,
+  });
 
   let sent = false;
   if (vendor.email) {
@@ -486,8 +507,20 @@ function auditStageChangeIfAny(req, vendorBefore) {
 const VPO_WAIVER_CASE_STATUS = "Waiting on VPO Waiver";
 
 function requestFieldsFromBody(body) {
-  const { referenceNumber, status, note, asOf, expirationDate, reviewNotesSelected, reviewNotesFreeText, w9Name, w9Address, w9PreviouslyApproved } =
-    body || {};
+  const {
+    referenceNumber,
+    status,
+    note,
+    asOf,
+    expirationDate,
+    reviewNotesSelected,
+    reviewNotesFreeText,
+    w9Name,
+    w9Address,
+    w9PreviouslyApproved,
+    coiPolicyNumber,
+    coiCarrier,
+  } = body || {};
   return {
     referenceNumber,
     status,
@@ -499,6 +532,8 @@ function requestFieldsFromBody(body) {
     w9Name,
     w9Address,
     w9PreviouslyApproved,
+    coiPolicyNumber,
+    coiCarrier,
   };
 }
 

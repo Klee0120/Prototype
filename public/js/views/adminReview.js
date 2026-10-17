@@ -1471,6 +1471,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const coiRef = ct.key === "coi" ? coiRequirementLine(v) : "";
     const formStatus = v[FORM_STATUS_KEY_BY_CASE_KEY[ct.key]] || "not_requested";
     const isW9 = ct.key === "w9";
+    const isCoi = ct.key === "coi";
     const statusOptions = caseStatusOptionsFor(ct.key);
     const currentStatus = latest ? latest.status || "" : "";
     return `
@@ -1524,6 +1525,22 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         `
             : ""
         }
+        ${
+          isCoi
+            ? `
+          <div class="onboarding-case-w9-grid">
+            <label class="onboarding-field">
+              Policy #
+              <input type="text" class="onboarding-coi-policy-input" placeholder="Policy number" value="${escapeHtml(latest ? latest.coiPolicyNumber || "" : "")}" />
+            </label>
+            <label class="onboarding-field">
+              Carrier
+              <input type="text" class="onboarding-coi-carrier-input" placeholder="Insurance carrier" value="${escapeHtml(latest ? latest.coiCarrier || "" : "")}" />
+            </label>
+          </div>
+        `
+            : ""
+        }
         ${renderReviewNotesChecklistHtml(ct, latest)}
         <label class="onboarding-field onboarding-case-notes-field">
           Document-case notes
@@ -1555,6 +1572,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const w9NameInput = caseEl.querySelector(".onboarding-w9-name-input");
     const w9AddressInput = caseEl.querySelector(".onboarding-w9-address-input");
     const w9PrevApprovedCheckbox = caseEl.querySelector(".onboarding-w9-prev-approved-checkbox");
+    const coiPolicyInput = caseEl.querySelector(".onboarding-coi-policy-input");
+    const coiCarrierInput = caseEl.querySelector(".onboarding-coi-carrier-input");
     const reviewNotesDetails = caseEl.querySelector(".onboarding-review-notes-details");
     const reviewNotesSummary = caseEl.querySelector(".onboarding-review-notes-summary");
 
@@ -1573,6 +1592,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         payload.w9Name = w9NameInput.value.trim();
         payload.w9Address = w9AddressInput.value.trim();
         payload.w9PreviouslyApproved = w9PrevApprovedCheckbox.checked;
+      }
+      if (ct.key === "coi") {
+        payload.coiPolicyNumber = coiPolicyInput.value.trim();
+        payload.coiCarrier = coiCarrierInput.value.trim();
       }
       return payload;
     }
@@ -1607,7 +1630,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     statusSelect.addEventListener("change", flushAndRefresh);
     expirationInput.addEventListener("change", flushAndRefresh);
     if (w9PrevApprovedCheckbox) w9PrevApprovedCheckbox.addEventListener("change", flushAndRefresh);
-    [refInput, noteInput, w9NameInput, w9AddressInput].forEach((input) => {
+    [refInput, noteInput, w9NameInput, w9AddressInput, coiPolicyInput, coiCarrierInput].forEach((input) => {
       if (!input) return;
       input.addEventListener("input", debouncedPersist);
       input.addEventListener("blur", flushAndRefresh);
@@ -2470,6 +2493,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     function renderReviewBody() {
       const hints = review.extractionHints || {};
+      const extracted = review.extractedFields || {};
       body.innerHTML = `
         <div class="coi-review-layout">
           <div class="coi-review-text-pane">
@@ -2484,6 +2508,26 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             }
           </div>
           <div class="coi-review-checklist-pane">
+            ${
+              review.status === "pending"
+                ? `<h4>Policy details</h4>
+                   <div class="onboarding-case-w9-grid">
+                     <label class="onboarding-field">
+                       Policy #
+                       <input type="text" class="coi-review-policy-input" placeholder="Policy number" value="${escapeHtml(extracted.policyNumber || "")}" />
+                     </label>
+                     <label class="onboarding-field">
+                       Carrier
+                       <input type="text" class="coi-review-carrier-input" placeholder="Insurance carrier" value="${escapeHtml(extracted.carrier || "")}" />
+                     </label>
+                     <label class="onboarding-field">
+                       Expiration
+                       <input type="date" class="coi-review-expiration-input" value="${extracted.expirationDate || ""}" />
+                     </label>
+                   </div>
+                   <p class="review-checklist-hint">Best-effort suggestions pulled from the document's text -- double-check and correct before approving or rejecting. These save to this vendor's COI case either way.</p>`
+                : ""
+            }
             <h4>Requirements</h4>
             <ul class="coi-review-checklist">
               ${review.checklist
@@ -2533,12 +2577,23 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         }
       });
 
+      function readPolicyFields() {
+        const policyInput = body.querySelector(".coi-review-policy-input");
+        const carrierInput = body.querySelector(".coi-review-carrier-input");
+        const expirationInput = body.querySelector(".coi-review-expiration-input");
+        return {
+          policyNumber: policyInput ? policyInput.value.trim() : undefined,
+          carrier: carrierInput ? carrierInput.value.trim() : undefined,
+          expirationDate: expirationInput ? expirationInput.value || null : undefined,
+        };
+      }
+
       const approveBtn = body.querySelector(".coi-review-approve-btn");
       if (approveBtn) {
         approveBtn.addEventListener("click", async () => {
           approveBtn.disabled = true;
           try {
-            const result = await api.post(`/api/admin/vendors/${v.id}/coi-reviews/${review.id}/approve`, {});
+            const result = await api.post(`/api/admin/vendors/${v.id}/coi-reviews/${review.id}/approve`, readPolicyFields());
             review = result.review;
             renderReviewBody();
             if (onDone) onDone();
@@ -2565,7 +2620,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           }
           submitReject.disabled = true;
           try {
-            const result = await api.post(`/api/admin/vendors/${v.id}/coi-reviews/${review.id}/reject`, { reasonKeys });
+            const result = await api.post(`/api/admin/vendors/${v.id}/coi-reviews/${review.id}/reject`, { reasonKeys, ...readPolicyFields() });
             review = result.review;
             renderReviewBody();
             if (!result.emailed) {
@@ -2667,6 +2722,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <div class="review-row-summary">
             <span class="review-row-name">${escapeHtml(r.vendorName)}</span>
             <span class="review-row-detail">${escapeHtml(r.fileName || "")} -- uploaded ${r.uploadedAt ? new Date(r.uploadedAt).toLocaleDateString() : "unknown date"}</span>
+            <span class="badge">COI case: ${escapeHtml(r.coiCaseStatus || "Not started")}</span>
             <button type="button" class="btn btn-secondary open-pending-review-btn">Open</button>
           </div>
         </div>`

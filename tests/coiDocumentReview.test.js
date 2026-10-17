@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 const { DatabaseSync } = require("node:sqlite");
+const { extractCoiStructuredFields } = require("../server/utils/coiDocumentReview");
 
 const REQUIRED_COI_LANGUAGE =
   "C&W Facility Services Inc. d/b/a C&W Services, Toyota Motor Sales, USA, Inc., its subsidiaries and affiliated corporations are additional insureds (except Workers’ Compensation) as required by written contract/agreement.";
@@ -249,4 +250,150 @@ test("coi document review: a technician can't start, approve, or reject a review
 
   const res = await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload.body.id}/coi-review`, { userId: "T1001" });
   assert.equal(res.status, 403);
+});
+
+test("extractCoiStructuredFields: pulls policy #, carrier, and expiration out of a flattened ACORD row, and stays empty with nothing to find", () => {
+  const sample = [
+    "ACORD CERTIFICATE OF LIABILITY INSURANCE",
+    "INSURER(S) AFFORDING COVERAGE NAIC #",
+    "INSURER A : Travelers Casualty and Surety Company 19038",
+    "INSR LTR TYPE OF INSURANCE POLICY NUMBER POLICY EFF (MM/DD/YYYY) POLICY EXP (MM/DD/YYYY) LIMITS",
+    "A GENERAL LIABILITY CL1234567890 01/01/2025 01/01/2026 EACH OCCURRENCE 1,000,000",
+  ].join("\n");
+
+  const fields = extractCoiStructuredFields(sample);
+  assert.equal(fields.policyNumber, "CL1234567890");
+  assert.equal(fields.carrier, "Travelers Casualty and Surety Company");
+  assert.equal(fields.expirationDate, "2026-01-01");
+
+  assert.deepEqual(extractCoiStructuredFields(""), { policyNumber: null, carrier: null, expirationDate: null });
+  assert.deepEqual(extractCoiStructuredFields("a scanned image with no useful text"), {
+    policyNumber: null,
+    carrier: null,
+    expirationDate: null,
+  });
+});
+
+test("coi review -> case sync: approving creates the vendor's Onboarding - COI case, Approved, with the submitted policy details", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Case Sync Co" } });
+  const vendor = vendorRes.body;
+
+  // No case at all yet -- this is the vendor's first COI ever reviewed.
+  const beforeRequests = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  assert.equal(beforeRequests.length, 0);
+
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload.body.id}/coi-review`, { userId: "ADMIN" })).body;
+
+  const approveRes = await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review.id}/approve`, {
+    userId: "ADMIN",
+    body: { policyNumber: "POL-998877", carrier: "Acme Mutual", expirationDate: "2027-03-15" },
+  });
+  assert.equal(approveRes.status, 200);
+
+  const requests = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  const coiCase = requests.find((r) => r.requestType === "Onboarding - COI");
+  assert.ok(coiCase, "approving a COI review should create the vendor's Onboarding - COI case");
+  assert.equal(coiCase.status, "Approved");
+  assert.equal(coiCase.coiPolicyNumber, "POL-998877");
+  assert.equal(coiCase.coiCarrier, "Acme Mutual");
+  assert.equal(coiCase.expirationDate, "2027-03-15");
+  assert.deepEqual(coiCase.reviewNotesSelected, []);
+
+  // "Add to my vendor compliance list like the vendor onboard profile
+  // does" -- the vendor's own onboarding stage should now reflect real
+  // case activity instead of staying not_started.
+  const synced = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendor.id);
+  assert.equal(synced.onboardingStage, "in_progress");
+});
+
+test("coi review -> case sync: rejecting sets Revisions needed and maps checklist reasons onto the case's own review-notes vocabulary", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Case Sync Reject Co" } });
+  const vendor = vendorRes.body;
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload.body.id}/coi-review`, { userId: "ADMIN" })).body;
+
+  const rejectRes = await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review.id}/reject`, {
+    userId: "ADMIN",
+    body: { reasonKeys: ["acord25", "certHolder"] },
+  });
+  assert.equal(rejectRes.status, 200);
+
+  const requests = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  const coiCase = requests.find((r) => r.requestType === "Onboarding - COI");
+  assert.ok(coiCase);
+  assert.equal(coiCase.status, "Revisions needed");
+  assert.deepEqual(new Set(coiCase.reviewNotesSelected), new Set(["acord_25_form", "fix_holder_information"]));
+});
+
+test("coi review -> case sync: a second review updates the SAME case rather than creating a duplicate, and never blanks a previously-set reference number", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Case Sync Repeat Co" } });
+  const vendor = vendorRes.body;
+
+  // An admin had already logged this vendor's COI case by hand (e.g. the
+  // ServiceEdge case number) before any document was ever reviewed here --
+  // that reference number must survive the review-driven sync untouched.
+  await server.call("POST", `/api/admin/vendors/${vendor.id}/requests`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - COI", referenceNumber: "SE-COI-555", status: "Case started" },
+  });
+
+  const upload1 = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi1.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review1 = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload1.body.id}/coi-review`, { userId: "ADMIN" })).body;
+  await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review1.id}/reject`, {
+    userId: "ADMIN",
+    body: { reasonKeys: ["acord25"], policyNumber: "POL-111" },
+  });
+
+  const afterFirst = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  const coiCases1 = afterFirst.filter((r) => r.requestType === "Onboarding - COI");
+  assert.equal(coiCases1.length, 1, "should update the existing case, not create a second one");
+  assert.equal(coiCases1[0].referenceNumber, "SE-COI-555", "the admin's own reference number must not be wiped by the review sync");
+  assert.equal(coiCases1[0].coiPolicyNumber, "POL-111");
+
+  const upload2 = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi2.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review2 = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload2.body.id}/coi-review`, { userId: "ADMIN" })).body;
+  await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review2.id}/approve`, { userId: "ADMIN" });
+
+  const afterSecond = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  const coiCases2 = afterSecond.filter((r) => r.requestType === "Onboarding - COI");
+  assert.equal(coiCases2.length, 1, "still just the one case, now approved");
+  assert.equal(coiCases2[0].status, "Approved");
+  assert.equal(coiCases2[0].referenceNumber, "SE-COI-555", "still preserved after a second sync with no policyNumber submitted");
+  // The approve call didn't submit a policyNumber -- the previous
+  // rejection's "POL-111" should still be on file, not blanked.
+  assert.equal(coiCases2[0].coiPolicyNumber, "POL-111");
 });
