@@ -173,6 +173,25 @@ router.delete("/:id", (req, res) => {
   res.json({ ok: true });
 });
 
+// Folds a duplicate vendor profile into this one -- the admin picks which
+// vendor survives; this never guesses by name or JDE# similarity. See
+// db.mergeVendors for exactly what moves and what gets backfilled.
+// Irreversible: the duplicate is gone once this returns.
+router.post("/:id/merge", (req, res) => {
+  const primary = db.findVendor(req.params.id);
+  if (!primary) return res.status(404).json({ error: "Vendor not found" });
+
+  const duplicateId = (req.body || {}).duplicateVendorId;
+  const duplicate = duplicateId ? db.findVendor(duplicateId) : null;
+  if (!duplicate) return res.status(400).json({ error: "A valid duplicateVendorId is required" });
+  if (Number(duplicateId) === Number(primary.id)) return res.status(400).json({ error: "Can't merge a vendor into itself" });
+
+  const result = db.mergeVendors(primary.id, duplicate.id, req.user.id, req.user.name);
+  if (result.error === "not_found") return res.status(404).json({ error: "Vendor not found" });
+  if (result.error === "same_vendor") return res.status(400).json({ error: "Can't merge a vendor into itself" });
+  res.json(result.vendor);
+});
+
 // Krista's own "go to this vendor first" flag -- separate from C&W/Toyota
 // approval status, which is about whether a vendor's allowed to work at
 // all, not whether they're preferred.

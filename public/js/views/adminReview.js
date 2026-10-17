@@ -2157,6 +2157,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>
         <div class="page-header-actions">
           <button type="button" class="btn btn-outline vendor-edit-btn">Edit vendor</button>
+          <button type="button" class="btn btn-link vendor-merge-btn">Merge duplicate&hellip;</button>
           <button type="button" class="btn btn-link vendor-delete-btn">Delete vendor</button>
         </div>
       </div>
@@ -2188,6 +2189,29 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       } catch (err) {
         window.alert(err.message);
       }
+    });
+    content.querySelector(".vendor-merge-btn").addEventListener("click", () => {
+      openVendorPickerModal(
+        `Merge a duplicate into ${v.name}`,
+        async (duplicateId) => {
+          const duplicate = vendorsCache.find((cand) => cand.id === duplicateId);
+          if (
+            !window.confirm(
+              `Merge "${duplicate ? duplicate.name : "that vendor"}" into "${v.name}"? Its POs, WOMs, tasks, onboarding cases, COI reviews, remarks, and documents all move onto ${v.name}, and the duplicate profile is removed. This can't be undone.`
+            )
+          ) {
+            return;
+          }
+          try {
+            const updated = await api.post(`/api/admin/vendors/${v.id}/merge`, { duplicateVendorId: duplicateId });
+            invalidateVendorsCache();
+            await renderVendorProfile(content, updated);
+          } catch (err) {
+            window.alert(err.message);
+          }
+        },
+        { allowCreate: false, excludeId: v.id }
+      );
     });
     content.querySelectorAll(".vendor-profile-tabs .tab").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -2645,22 +2669,31 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // (or the wrong vendor entirely) is always one click from "+ No match?
   // Create a new vendor", which creates a real profile on the spot and
   // picks it immediately -- same as always having had to leave, create
-  // the vendor in the Directory, and come back to assign.
+  // the vendor in the Directory, and come back to assign. opts.allowCreate
+  // (default true) hides that affordance entirely -- e.g. the merge-
+  // duplicate flow, where creating a brand new vendor makes no sense.
+  // opts.excludeId drops one vendor out of the results -- the merge flow's
+  // own primary vendor, so it can never be picked as its own duplicate.
   async function openVendorPickerModal(title, onPick, opts = {}) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
+    const allowCreate = opts.allowCreate !== false;
     const { body, close } = openModal({
       title,
       bodyHtml: `
         <input type="text" class="vendor-picker-search" placeholder="Vendor name" autofocus />
         <div class="review-list vendor-picker-results"></div>
-        <div class="vendor-picker-create">
-          <button type="button" class="btn btn-link vendor-picker-create-toggle">+ No match? Create a new vendor</button>
-          <div class="vendor-picker-create-form modal-form" hidden>
-            <input type="text" class="vendor-picker-create-name" placeholder="New vendor name" />
-            <input type="text" class="vendor-picker-create-address" placeholder="Company address (optional)" />
-            <button type="button" class="btn btn-secondary vendor-picker-create-btn">Create &amp; assign</button>
-          </div>
-        </div>
+        ${
+          allowCreate
+            ? `<div class="vendor-picker-create">
+                 <button type="button" class="btn btn-link vendor-picker-create-toggle">+ No match? Create a new vendor</button>
+                 <div class="vendor-picker-create-form modal-form" hidden>
+                   <input type="text" class="vendor-picker-create-name" placeholder="New vendor name" />
+                   <input type="text" class="vendor-picker-create-address" placeholder="Company address (optional)" />
+                   <button type="button" class="btn btn-secondary vendor-picker-create-btn">Create &amp; assign</button>
+                 </div>
+               </div>`
+            : ""
+        }
       `,
     });
     const searchInput = body.querySelector(".vendor-picker-search");
@@ -2670,13 +2703,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const createNameInput = body.querySelector(".vendor-picker-create-name");
     const createAddressInput = body.querySelector(".vendor-picker-create-address");
     const createBtn = body.querySelector(".vendor-picker-create-btn");
+    const pickable = opts.excludeId == null ? vendorsCache : vendorsCache.filter((v) => Number(v.id) !== Number(opts.excludeId));
 
     function renderResults() {
       const term = searchInput.value.trim().toLowerCase();
-      const matches = term ? vendorsCache.filter((v) => v.name.toLowerCase().includes(term)) : vendorsCache;
+      const matches = term ? pickable.filter((v) => v.name.toLowerCase().includes(term)) : pickable;
       if (matches.length === 0) {
         results.innerHTML = term
-          ? `<p class="empty-note">No vendor profile matches &ldquo;${escapeHtml(searchInput.value.trim())}&rdquo; -- create one below.</p>`
+          ? `<p class="empty-note">No vendor profile matches &ldquo;${escapeHtml(searchInput.value.trim())}&rdquo;${allowCreate ? " -- create one below." : "."}</p>`
           : `<p class="empty-note">No vendors yet.</p>`;
         return;
       }
@@ -2697,30 +2731,32 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     }
     searchInput.addEventListener("input", renderResults);
 
-    createToggle.addEventListener("click", () => {
-      createForm.hidden = !createForm.hidden;
-      if (!createForm.hidden) {
-        createNameInput.value = searchInput.value.trim();
-        createAddressInput.value = opts.initialAddress || "";
-      }
-    });
-    createBtn.addEventListener("click", async () => {
-      const name = createNameInput.value.trim();
-      if (!name) {
-        window.alert("Enter a vendor name.");
-        return;
-      }
-      createBtn.disabled = true;
-      try {
-        const vendor = await api.post("/api/admin/vendors", { name, companyAddress: createAddressInput.value.trim() });
-        vendorsCache = null; // stale until the next fetch -- this vendor is brand new
-        close();
-        await onPick(vendor.id);
-      } catch (err) {
-        window.alert(err.message);
-        createBtn.disabled = false;
-      }
-    });
+    if (allowCreate) {
+      createToggle.addEventListener("click", () => {
+        createForm.hidden = !createForm.hidden;
+        if (!createForm.hidden) {
+          createNameInput.value = searchInput.value.trim();
+          createAddressInput.value = opts.initialAddress || "";
+        }
+      });
+      createBtn.addEventListener("click", async () => {
+        const name = createNameInput.value.trim();
+        if (!name) {
+          window.alert("Enter a vendor name.");
+          return;
+        }
+        createBtn.disabled = true;
+        try {
+          const vendor = await api.post("/api/admin/vendors", { name, companyAddress: createAddressInput.value.trim() });
+          vendorsCache = null; // stale until the next fetch -- this vendor is brand new
+          close();
+          await onPick(vendor.id);
+        } catch (err) {
+          window.alert(err.message);
+          createBtn.disabled = false;
+        }
+      });
+    }
 
     if (opts.initialSearch) searchInput.value = opts.initialSearch;
     renderResults();

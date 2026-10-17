@@ -334,6 +334,26 @@ Demo logins:
   existing before the case-based onboarding tracker below was built)
   defaults to `not_started` rather than `in_progress` -- see **Start
   Onboarding** below for how one of those actually gets picked up.
+- **Merge a duplicate vendor** (`db.mergeVendors`, `POST /api/admin/vendors/
+  :id/merge`): the vendor profile's "Merge duplicate…" button opens the
+  same vendor picker used elsewhere (search by name; `allowCreate: false`
+  here since creating a brand new vendor makes no sense when picking one
+  to merge away, and the vendor being merged into is excluded from its own
+  results). The admin always picks which of the two survives -- never
+  guessed by name or JDE# similarity. Everything the duplicate still owns
+  moves onto the kept profile: POs, WOMs, tasks, onboarding cases (and
+  their COI reviews), remarks, documents, and any in-flight time-log
+  entries. A blank scalar field on the kept profile (JDE #, phone, email,
+  both addresses, PO email, online source URL, services) is backfilled
+  from the duplicate -- never overwritten if the kept profile already has
+  its own value, same "fill gaps, don't clobber" rule as everywhere else
+  in this app. The duplicate's free-text notes are appended as a dated
+  line rather than dropped, and a new remark on the kept profile records
+  exactly what merged in. The duplicate is then deleted outright via the
+  existing `deleteVendor` -- safe to call at that point since every
+  reference that would have blocked it has already moved off. Built to
+  resolve a real "Southland Industries" duplicate-profile case, but
+  general-purpose for any future duplicate.
 - **Vendor document compliance** (`coiIsAcord25_2016_03`/`coiMatchesW9`/
   `w9SignedDated`/`w9CorrectVersion`/`achBankLetterhead`/`achHasW9Name`/
   `achHasW9Address`): originally a set of manual checkboxes an admin kept

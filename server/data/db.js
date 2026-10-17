@@ -2988,6 +2988,89 @@ function deleteVendor(id) {
   return { ok: true, vendor };
 }
 
+// Folds a duplicate vendor profile into a real one -- the admin picks
+// which of the two survives (never guessed by name/JDE# similarity), then
+// every real record the duplicate still owns moves onto the kept profile:
+// POs, WOMs, tasks, onboarding cases (and their COI reviews), remarks,
+// documents, and any in-flight time-log entries. A blank scalar field on
+// the kept profile (JDE #, phone, email, both addresses, PO email, online
+// source URL, services) is backfilled from the duplicate -- never
+// overwritten if the kept profile already has its own value, same
+// "fill gaps, don't clobber" rule this app uses everywhere else. The
+// duplicate's free-text notes are appended as a dated line rather than
+// dropped. Once every reference has moved off the duplicate, it's deleted
+// via deleteVendor -- safe to call at that point since nothing blocks it
+// anymore (every WOM/PO/task that would have is already repointed).
+const VENDOR_MERGE_BACKFILL_COLUMNS = [
+  ["jde_vendor_number", "jdeVendorNumber"],
+  ["phone", "phone"],
+  ["email", "email"],
+  ["company_address", "companyAddress"],
+  ["bill_to_address", "billToAddress"],
+  ["po_email", "poEmail"],
+  ["online_source_url", "onlineSourceUrl"],
+  ["services", "services"],
+];
+
+function mergeVendors(primaryId, duplicateId, actorId, actorName) {
+  const pId = Number(primaryId);
+  const dId = Number(duplicateId);
+  const primary = findVendor(pId);
+  const duplicate = findVendor(dId);
+  if (!primary || !duplicate) return { error: "not_found" };
+  if (pId === dId) return { error: "same_vendor" };
+
+  db.prepare("UPDATE pos SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE woms SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE tasks SET related_vendor_id = ? WHERE related_vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE vendor_requests SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE vendor_remarks SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE coi_document_reviews SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE time_log_entries SET related_vendor_id = ? WHERE related_vendor_id = ?").run(pId, dId);
+  db.prepare("UPDATE files SET related_id = ? WHERE related_type = 'vendor' AND related_id = ?").run(String(pId), String(dId));
+
+  for (const [col, key] of VENDOR_MERGE_BACKFILL_COLUMNS) {
+    const incoming = duplicate[key];
+    if (!incoming) continue;
+    const current = db.prepare(`SELECT ${col} AS v FROM vendors WHERE id = ?`).get(pId).v;
+    if (current) continue;
+    // A JDE # is unique across vendors -- only backfill it if nothing
+    // ELSE (besides the duplicate, which is about to be deleted anyway)
+    // already holds it.
+    if (col === "jde_vendor_number") {
+      const clash = db.prepare("SELECT id FROM vendors WHERE jde_vendor_number = ? AND id != ?").get(incoming, dId);
+      if (clash) continue;
+    }
+    db.prepare(`UPDATE vendors SET ${col} = ? WHERE id = ?`).run(incoming, pId);
+  }
+
+  if (duplicate.notes && duplicate.notes.trim()) {
+    const withNotes = appendNote(primary.notes || "", `Notes carried over from merged duplicate "${duplicate.name}": ${duplicate.notes.trim()}`);
+    db.prepare("UPDATE vendors SET notes = ? WHERE id = ?").run(withNotes, pId);
+  }
+
+  db.prepare("UPDATE vendors SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), pId);
+  linkUnmatchedPosForVendor(pId, findVendor(pId).jdeVendorNumber);
+
+  addVendorRemark(
+    pId,
+    actorId,
+    actorName,
+    `Merged duplicate vendor profile "${duplicate.name}" (#${dId}) into this one -- its POs, WOMs, tasks, onboarding cases, COI reviews, remarks, and documents now live here.`
+  );
+
+  // The merged-in cases may change which onboarding/parent stage this
+  // vendor should be on (same ordering rule as every other case mutation:
+  // parent stage first, onboarding stage reads it).
+  syncParentStage(pId);
+  syncOnboardingStage(pId);
+
+  const deleteResult = deleteVendor(dId);
+  addAudit(actorId, "VENDORS_MERGED", `${actorName} merged vendor "${duplicate.name}" (#${dId}) into "${primary.name}" (#${pId})`);
+
+  return { ok: true, vendor: findVendor(pId), deleteResult };
+}
+
 function setVendorPreferred(id, preferred) {
   db.prepare("UPDATE vendors SET preferred = ?, updated_at = ? WHERE id = ?").run(
     preferred ? 1 : 0,
@@ -11797,6 +11880,7 @@ module.exports = {
   createVendor,
   updateVendor,
   deleteVendor,
+  mergeVendors,
   setVendorPreferred,
   setVendorComplianceRemindersEnabled,
   VENDOR_DENIAL_REASONS,

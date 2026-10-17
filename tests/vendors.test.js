@@ -1205,6 +1205,174 @@ test("vendors: Invoice History rolls up reconciled GL lines by vendor", async (t
   });
 });
 
+test("vendors: merging a duplicate moves every real record onto the kept vendor, backfills only blank fields, and removes the duplicate", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const primaryRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Southland Industries", phone: "(513) 555-0100", notes: "Primary's own note." },
+  });
+  const primary = primaryRes.body;
+
+  const dupRes = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: {
+      name: "Southland Industries Inc",
+      jdeVendorNumber: "7788990",
+      phone: "(999) 555-0199", // should NOT overwrite primary's own phone
+      email: "ap@southland.test", // primary has none -- should backfill
+      companyAddress: "456 Oak Ave, Dayton OH",
+      notes: "Duplicate's own note.",
+    },
+  });
+  const duplicate = dupRes.body;
+
+  // Attach a real record of every kind the merge needs to move.
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+  raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, vendor_id, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+    )
+    .run("merge-test-po", "9001", duplicate.id, now, now, now, now);
+  raw
+    .prepare("INSERT INTO woms (code, description, status, vendor_id) VALUES (?, ?, 'open', ?)")
+    .run("WOM-MERGE-1", "Merge test job", duplicate.id);
+  raw
+    .prepare(
+      `INSERT INTO coi_document_reviews (file_id, vendor_id, status, extracted_text, checklist_json, created_at)
+       VALUES (?, ?, 'pending', '', '[]', ?)`
+    )
+    .run("merge-test-file", duplicate.id, now);
+  raw
+    .prepare(
+      `INSERT INTO time_log_entries (admin_id, category, started_at, related_vendor_id, created_at)
+       VALUES (?, 'vendor_visit', ?, ?, ?)`
+    )
+    .run("ADMIN", now, duplicate.id, now);
+  raw.close();
+
+  const taskRes = await server.call("POST", "/api/tasks", {
+    userId: "ADMIN",
+    body: { title: "Follow up with duplicate", relatedVendorId: duplicate.id },
+  });
+  assert.equal(taskRes.status, 201);
+
+  const caseRes = await server.call("POST", `/api/admin/vendors/${duplicate.id}/requests`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - COI", referenceNumber: "SE-DUP-1", status: "Case started" },
+  });
+  assert.equal(caseRes.status, 201);
+
+  const remarkRes = await server.call("POST", `/api/admin/vendors/${duplicate.id}/remarks`, {
+    userId: "ADMIN",
+    body: { body: "A remark logged against the duplicate." },
+  });
+  assert.equal(remarkRes.status, 201);
+
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(duplicate.id), category: "coi" },
+    fileName: "dup-file.pdf",
+    fileContent: "pretend pdf bytes",
+  });
+  assert.equal(upload.status, 201);
+
+  await t.test("a technician can't merge vendors", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${primary.id}/merge`, {
+      userId: "T1001",
+      body: { duplicateVendorId: duplicate.id },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("can't merge a vendor into itself", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${primary.id}/merge`, {
+      userId: "ADMIN",
+      body: { duplicateVendorId: primary.id },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a bogus duplicateVendorId is rejected", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${primary.id}/merge`, {
+      userId: "ADMIN",
+      body: { duplicateVendorId: 999999 },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  let merged;
+  await t.test("merging succeeds and backfills only blank fields", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${primary.id}/merge`, {
+      userId: "ADMIN",
+      body: { duplicateVendorId: duplicate.id },
+    });
+    assert.equal(res.status, 200);
+    merged = res.body;
+    assert.equal(merged.phone, "(513) 555-0100", "primary's own phone must survive, not the duplicate's");
+    assert.equal(merged.email, "ap@southland.test", "blank email backfilled from the duplicate");
+    assert.equal(merged.jdeVendorNumber, "7788990", "blank JDE # backfilled from the duplicate");
+    assert.equal(merged.companyAddress, "456 Oak Ave, Dayton OH", "blank company address backfilled");
+    assert.ok(merged.notes.includes("Primary's own note."), "primary's own notes preserved");
+    assert.ok(merged.notes.includes("Duplicate's own note."), "duplicate's notes appended, not dropped");
+  });
+
+  await t.test("the duplicate vendor is gone", async () => {
+    const list = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.ok(!list.body.some((v) => v.id === duplicate.id));
+  });
+
+  await t.test("the PO and WOM now point at the primary vendor", async () => {
+    const po = await server.call("GET", "/api/admin/pos?lifecycleStatus=active", { userId: "ADMIN" });
+    const movedPo = po.body.find((p) => p.poNumber === "9001");
+    assert.ok(movedPo);
+    assert.equal(movedPo.vendorId, primary.id);
+
+    const woms = await server.call("GET", "/api/woms", { userId: "ADMIN" });
+    const movedWom = woms.body.find((w) => w.code === "WOM-MERGE-1");
+    assert.ok(movedWom);
+    assert.equal(movedWom.vendorId, primary.id);
+  });
+
+  await t.test("the task now points at the primary vendor", async () => {
+    const tasks = await server.call("GET", `/api/tasks?view=unassigned&vendor=${primary.id}`, { userId: "ADMIN" });
+    assert.ok(tasks.body.some((t2) => t2.title === "Follow up with duplicate"));
+  });
+
+  await t.test("the onboarding case moved and the primary's own compliance tracking picked it up", async () => {
+    const requests = await server.call("GET", `/api/admin/vendors/${primary.id}/requests`, { userId: "ADMIN" });
+    assert.ok(requests.body.some((r) => r.referenceNumber === "SE-DUP-1"));
+  });
+
+  await t.test("the duplicate's remark moved, and a new remark records the merge itself", async () => {
+    const remarks = await server.call("GET", `/api/admin/vendors/${primary.id}/remarks`, { userId: "ADMIN" });
+    assert.ok(remarks.body.some((r) => r.body === "A remark logged against the duplicate."));
+    assert.ok(remarks.body.some((r) => r.body.includes("Merged duplicate vendor profile")));
+  });
+
+  await t.test("the duplicate's uploaded file moved to the primary", async () => {
+    const files = await server.call("GET", `/api/files?relatedType=vendor&relatedId=${primary.id}`, { userId: "ADMIN" });
+    assert.ok(files.body.some((f) => f.originalName === "dup-file.pdf"));
+  });
+
+  await t.test("the COI review and time-log entry moved too (raw-checked -- no list route exists for either by vendor alone)", async () => {
+    const rawCheck = new DatabaseSync(process.env.LABOR_DB_PATH);
+    const review = rawCheck.prepare("SELECT vendor_id FROM coi_document_reviews WHERE file_id = ?").get("merge-test-file");
+    assert.equal(review.vendor_id, primary.id);
+    const entry = rawCheck.prepare("SELECT related_vendor_id FROM time_log_entries WHERE admin_id = 'ADMIN' AND category = 'vendor_visit'").get();
+    assert.equal(entry.related_vendor_id, primary.id);
+    rawCheck.close();
+  });
+
+  await t.test("an audit entry records the merge", async () => {
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    assert.ok(audit.body.some((e) => e.action === "VENDORS_MERGED" && e.details.includes("Southland Industries")));
+  });
+});
+
 test("vendors: companyAddress and billToAddress persist and survive unrelated saves", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
