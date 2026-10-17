@@ -43,6 +43,12 @@ const REQUIRED_COI_LANGUAGE =
 // translated or reworded, since it's quoted contract language a vendor
 // is expected to match exactly on their COI.
 export async function renderOnboardRequirementsForm(container) {
+  // poEmail/paymentContact/w9Name/w9Address are deliberately not editor
+  // inputs -- this form goes out *before* a vendor is in the system (the
+  // first ask sent during outreach), so an admin never has that
+  // information yet to prefill. They stay as real fillable fields in the
+  // generated PDF (see server/utils/onboardRequirementsPdf.js), always
+  // blank from this end, for the vendor to answer when they open it.
   const state = {
     service: COI_MATRIX[0].label,
     companyName: "",
@@ -64,9 +70,9 @@ export async function renderOnboardRequirementsForm(container) {
           <p class="onboard-req-editor-hint">
             Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, then generate a
             fillable PDF. The preview below shows what's in it. PO notification email, payment verification contact,
-            and the W-9 name/address are the <strong>vendor's</strong> information to give you -- they stay as real,
-            editable fields in the PDF itself (the fields below just let you pre-fill a guess if you already have one;
-            the vendor can still correct it). Nothing needs to be printed or signed by hand.
+            and the W-9 name/address are the <strong>vendor's</strong> information to give you back -- they're real,
+            editable fields in the PDF itself, left blank here for the vendor to fill in when they open it. Nothing
+            needs to be printed or signed by hand.
           </p>
           <div class="onboard-req-field-grid">
             <label class="onboard-req-field onboard-req-field-wide">
@@ -76,22 +82,6 @@ export async function renderOnboardRequirementsForm(container) {
             <label class="onboard-req-field onboard-req-field-wide">
               <span>Name of requested company</span>
               <input type="text" id="onboard-req-company" value="${escapeHtml(state.companyName)}" placeholder="Vendor company name" />
-            </label>
-            <label class="onboard-req-field">
-              <span>PO notification email <em>(optional prefill)</em></span>
-              <input type="email" id="onboard-req-po-email" value="${escapeHtml(state.poEmail)}" placeholder="Leave blank for the vendor to fill in" />
-            </label>
-            <label class="onboard-req-field">
-              <span>Payment verification contact <em>(optional prefill)</em></span>
-              <input type="text" id="onboard-req-payment-contact" value="${escapeHtml(state.paymentContact)}" placeholder="Leave blank for the vendor to fill in" />
-            </label>
-            <label class="onboard-req-field">
-              <span>W-9 name <em>(optional prefill)</em></span>
-              <input type="text" id="onboard-req-w9-name" value="${escapeHtml(state.w9Name)}" placeholder="Leave blank for the vendor to fill in" />
-            </label>
-            <label class="onboard-req-field">
-              <span>W-9 address <em>(optional prefill)</em></span>
-              <input type="text" id="onboard-req-w9-address" value="${escapeHtml(state.w9Address)}" placeholder="Leave blank for the vendor to fill in" />
             </label>
           </div>
           <button type="button" class="btn-primary" id="onboard-req-generate">Download Fillable PDF</button>
@@ -114,19 +104,10 @@ export async function renderOnboardRequirementsForm(container) {
         },
       })
     );
-    const textFields = [
-      ["onboard-req-company", "companyName"],
-      ["onboard-req-po-email", "poEmail"],
-      ["onboard-req-payment-contact", "paymentContact"],
-      ["onboard-req-w9-name", "w9Name"],
-      ["onboard-req-w9-address", "w9Address"],
-    ];
-    for (const [id, key] of textFields) {
-      editor.querySelector(`#${id}`).addEventListener("input", (e) => {
-        state[key] = e.target.value;
-        renderDocument();
-      });
-    }
+    editor.querySelector("#onboard-req-company").addEventListener("input", (e) => {
+      state.companyName = e.target.value;
+      renderDocument();
+    });
     const generateBtn = editor.querySelector("#onboard-req-generate");
     const message = editor.querySelector(".save-message");
     generateBtn.addEventListener("click", async () => {
