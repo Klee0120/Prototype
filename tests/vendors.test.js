@@ -150,7 +150,6 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     const vendor = res.body.find((v) => v.id === vendorId);
     assert.equal(vendor.formChecksComplete, false);
     assert.equal(vendor.formChecks.coiIsAcord25_2016_03, false);
-    assert.equal(vendor.w9InvoiceStale, false);
   });
 
   await t.test("checking every document box makes formChecksComplete true", async () => {
@@ -181,23 +180,19 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     assert.equal(uncheckOne.body.formChecksComplete, false);
   });
 
-  await t.test("a W-9 invoice date over 2 years old flags as stale", async () => {
-    const fiveYearsAgo = new Date();
-    fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
-    const stale = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+  // The old "blank invoice date on file" field (and its 2-year staleness
+  // flag) is retired -- a blank invoice is just a template with no real
+  // expiration, and there's no reliable shelf-life rule for a W-9 either.
+  // A client that still sends w9InvoiceDate is simply ignored, not an
+  // error, and no w9InvoiceStale field comes back on the vendor at all.
+  await t.test("the retired w9InvoiceDate field is silently ignored, not stored or echoed back", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
       userId: "ADMIN",
-      body: { name: "24/7 Fire Protection", w9InvoiceDate: fiveYearsAgo.toISOString().slice(0, 10) },
+      body: { name: "24/7 Fire Protection", w9InvoiceDate: "2020-01-01" },
     });
-    assert.equal(stale.status, 200);
-    assert.equal(stale.body.w9InvoiceStale, true);
-
-    const recent = new Date();
-    recent.setMonth(recent.getMonth() - 3);
-    const fresh = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
-      userId: "ADMIN",
-      body: { name: "24/7 Fire Protection", w9InvoiceDate: recent.toISOString().slice(0, 10) },
-    });
-    assert.equal(fresh.body.w9InvoiceStale, false);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.w9InvoiceDate, undefined);
+    assert.equal(res.body.w9InvoiceStale, undefined);
   });
 
   // The W-9/ACH document checks above used to be separate manual

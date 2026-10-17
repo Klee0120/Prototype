@@ -792,7 +792,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       coiMeetsLanguageRequirements: v.coiMeetsLanguageRequirements,
       coiLimits: v.coiLimits,
       formChecks: v.formChecks,
-      w9InvoiceDate: v.w9InvoiceDate,
       onboardingStage: v.onboardingStage,
       deniedReason: v.deniedReason,
       ...overrides,
@@ -847,7 +846,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       .filter(
         (v) =>
           v.onboardingStage === "onboarded" &&
-          (v.formsStatus === "outdated" || !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch) &&
+          (v.formsStatus === "outdated" || !v.formChecksComplete || v.poEmailMismatch) &&
           vendorInTerritoryScope(v)
       )
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -956,7 +955,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <span class="review-row-name">${escapeHtml(v.name)}</span>
         ${v.formsStatus === "outdated" ? `<span class="badge badge-rejected">Forms Outdated</span>` : ""}
         ${!v.formChecksComplete ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
-        ${v.w9InvoiceStale ? `<span class="badge badge-rejected">W-9 invoice stale</span>` : ""}
         ${v.poEmailMismatch ? `<span class="badge badge-rejected">PO email mismatch</span>` : ""}
         <button class="btn btn-secondary onboarding-review-compliance-btn" type="button">Review Compliance</button>
       </div>
@@ -967,17 +965,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return el;
   }
 
-  // Mirrors server/data/db.js's vendorComplianceReasons -- same four checks
-  // that drive each vendor's own compliance follow-up task -- but computed
-  // here from fields the vendor list already carries (formChecksComplete,
-  // formsStatus, w9InvoiceStale, expiredComplianceCategories), so this
-  // dashboard needs no dedicated endpoint beyond the vendor list already
-  // fetched for Onboarding above.
+  // Mirrors server/data/db.js's vendorComplianceReasons -- same checks that
+  // drive each vendor's own compliance follow-up task -- but computed here
+  // from fields the vendor list already carries (formChecksComplete,
+  // formsStatus, expiredComplianceCategories), so this dashboard needs no
+  // dedicated endpoint beyond the vendor list already fetched for
+  // Onboarding above.
   function vendorComplianceReasonsClient(v) {
     const reasons = [];
     if (!v.formChecksComplete) reasons.push("Doc checks incomplete");
     if (v.formsStatus === "outdated") reasons.push("Forms outdated");
-    if (v.w9InvoiceStale) reasons.push("W-9 invoice stale");
     if (v.expiredComplianceCategories && v.expiredComplianceCategories.length > 0) {
       reasons.push(`Expired on file: ${v.expiredComplianceCategories.join(", ").toUpperCase()}`);
     }
@@ -1000,8 +997,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     content.innerHTML = `
       <p class="review-checklist-hint">
-        Compliance status for every onboarded vendor -- the same COI/W-9/ACH document checks, forms
-        currency, and blank-invoice staleness that drive each vendor's own compliance follow-up task.
+        Compliance status for every onboarded vendor -- the same COI/W-9/ACH document checks and
+        forms currency that drive each vendor's own compliance follow-up task.
         Vendors still being onboarded aren't shown here -- see Onboarding for those.
       </p>
       <div class="wom-stat-cards">
@@ -2112,7 +2109,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.formsStatus]}">${escapeHtml(FORMS_STATUS_LABELS[v.formsStatus])}</span>
-        ${!v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
+        ${!v.formChecksComplete || v.poEmailMismatch ? `<span class="badge badge-rejected">Doc checks incomplete</span>` : ""}
         ${!v.phone || !v.email ? `<span class="badge badge-rejected" title="Missing ${!v.phone && !v.email ? "phone and email" : !v.phone ? "phone" : "email"}">Update Profile</span>` : ""}
         ${v.onboardingStage === "in_progress" ? `<span class="badge badge-draft">Onboarding: In Progress</span>` : ""}
         ${v.onboardingStage === "denied" ? `<span class="badge badge-rejected">Onboarding: Denied</span>` : ""}
@@ -2212,7 +2209,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const nextAction =
       v.onboardingStage !== "onboarded"
         ? "Continue onboarding -- see the Onboarding & Compliance tab."
-        : !v.formChecksComplete || v.formsStatus === "outdated" || v.w9InvoiceStale || v.poEmailMismatch
+        : !v.formChecksComplete || v.formsStatus === "outdated" || v.poEmailMismatch
           ? "Update compliance documents -- see the Onboarding & Compliance tab."
           : "No action needed -- this vendor is in good standing.";
     host.innerHTML = `
@@ -2314,24 +2311,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <h4>Compliance Follow-up</h4>
       <p class="review-checklist-hint">
         A follow-up task is generated automatically whenever this vendor needs attention (an
-        unconfirmed document check, outdated forms, a stale W-9 invoice, or an expired COI/W-9/ACH
-        upload) -- work it, snooze it, or comment on it from Task Manager like any other task. It
-        closes on its own once the actual gap is fixed; notes logged on it stay visible here even
-        after it's done.
+        unconfirmed document check, outdated forms, or an expired COI/W-9/ACH upload) -- work it,
+        snooze it, or comment on it from Task Manager like any other task. It closes on its own
+        once the actual gap is fixed; notes logged on it stay visible here even after it's done.
       </p>
       <div class="vendor-compliance-tasks-host"></div>
     `;
     renderVendorCasesSection(host.querySelector(".vendor-cases-section"), v);
-    const docChecksHost = host.querySelector(".vendor-doc-checks-host");
-    function attachDocChecksForm() {
-      docChecksHost.innerHTML = renderVendorDocChecksForm(v);
-      wireVendorDocChecksForm(docChecksHost.querySelector(".vendor-doc-checks-form"), v, (updated) => {
-        Object.assign(v, updated);
-        invalidateVendorsCache();
-        attachDocChecksForm();
-      });
-    }
-    attachDocChecksForm();
+    host.querySelector(".vendor-doc-checks-host").innerHTML = renderVendorComplianceStatus(v);
     attachVendorRemindersToggle(host.querySelector(".vendor-reminders-toggle-host"), v);
     await renderVendorComplianceTasks(host.querySelector(".vendor-compliance-tasks-host"), v);
   }
@@ -3004,67 +2991,25 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return [...selectEl.selectedOptions].map((o) => o.value).join("|");
   }
 
-  // The document-compliance checklist (does the vendor's actual uploaded
-  // W-9/ACH meet requirements) -- its own standalone form, shared by the
-  // Onboarding & Compliance modal and nowhere else now that it no longer
-  // shares a page with the Services select. Previously lived inline in
-  // the vendor edit modal; moved out so onboarding case status and
-  // document compliance live together in one place, separate from the
-  // vendor's general profile.
-  // COI checks used to live here too (editable matrix-limit fields, a
-  // "meets limits"/"meets language" pair, an ACORD-25/matches-W9 pair) --
-  // removed because the real COI Review workflow (Vendor Documents tab ->
-  // Review COI -> Approve/Reject against the actual document) replaced
-  // every one of those with a real, document-specific decision instead of
-  // a parallel manual checkbox nobody could keep in sync with it. See
-  // db.js's approveCoiDocumentReview/rejectCoiDocumentReview for where
-  // coiMeetsRequiredLimits/coiMeetsLanguageRequirements/coiIsAcord25_2016_03/
-  // coiMatchesW9 get set now -- automatically, from that real decision.
-  // The only thing left here now that COI/W-9/ACH document checks have all
-  // moved to real per-document workflows (COI Review for COI; the W-9 and
-  // Payment/ACH onboarding cases' own "Review notes · select issues"
-  // checklist for those two, see applyCaseReviewOutcomeToVendorFormChecks
-  // in db.js) is the blank invoice date -- there's no case-level or
-  // review-level home for that one, it's just tracked here directly.
-  function renderVendorDocChecksForm(v) {
-    return `
-      <form class="vendor-doc-checks-form">
-        <label class="profile-field vendor-w9-invoice-field">
-          <span>Blank invoice date on file${v.w9InvoiceStale ? ` <span class="badge badge-rejected">Over 2 years old</span>` : ""}</span>
-          <input type="date" name="w9InvoiceDate" value="${v.w9InvoiceDate || ""}" />
-        </label>
-        ${
-          !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch
-            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks (COI/W-9/ACH) aren't confirmed yet -- see the COI/W-9/Payment cases above. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old. " : ""}${v.poEmailMismatch ? `The email on a generated PO didn't match what's on file (saw ${escapeHtml(v.poEmailMismatchExtracted || "")}).` : ""}</p>`
-            : ""
-        }
-        <div class="vendor-edit-actions">
-          <button type="submit" class="btn btn-primary">Save</button>
-          <span class="save-message doc-checks-save-message"></span>
-        </div>
-      </form>
-    `;
-  }
-
-  // Wires the doc-checks form's save -- shared so both the Onboarding &
-  // Compliance modal (its only caller now) gets the same save behavior
-  // without duplicating it. `onSaved(updatedVendor)` lets the caller decide
-  // what else needs refreshing (the vendors cache, a badge elsewhere).
-  // formChecks is never overridden here -- nothing in this form edits any
-  // COI/W-9/ACH check anymore, so vendorFullPayload's own default (echoing
-  // v.formChecks unchanged) is exactly right.
-  function wireVendorDocChecksForm(docChecksForm, v, onSaved) {
-    docChecksForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = docChecksForm.querySelector(".save-message");
-      try {
-        const updated = await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null }));
-        msg.textContent = "Saved.";
-        onSaved(updated);
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    });
+  // Document compliance's own status readout -- not editable here anymore.
+  // COI/W-9/ACH document checks all moved to real per-document workflows
+  // (COI Review for COI; the W-9 and Payment/ACH onboarding cases' own
+  // "Review notes · select issues" checklist for those two, see
+  // applyCaseReviewOutcomeToVendorFormChecks in db.js) instead of a
+  // parallel manual checkbox nobody could keep in sync with the real
+  // decision. The one field that used to live here on its own -- a
+  // "blank invoice date on file" with a 2-year staleness check -- is gone
+  // too: a blank invoice is just a template, it never expires, and
+  // there's no reliable rule for how long a W-9 stays good either, so
+  // that whole staleness concept was never accurate. Nothing left here
+  // needs a form or a Save button; it's just whatever's actually still
+  // wrong, read off the vendor's real fields.
+  function renderVendorComplianceStatus(v) {
+    const warnings = [];
+    if (!v.formChecksComplete) warnings.push("One or more document checks (COI/W-9/ACH) aren't confirmed yet -- see the COI/W-9/Payment cases above.");
+    if (v.poEmailMismatch) warnings.push(`The email on a generated PO didn't match what's on file (saw ${escapeHtml(v.poEmailMismatchExtracted || "")}).`);
+    if (warnings.length === 0) return `<p class="review-checklist-hint">No open document-compliance issues.</p>`;
+    return `<p class="split-row-warning">${warnings.join(" ")}</p>`;
   }
 
   // "Onboarding and compliance" as one combined view for a single vendor --
@@ -3297,7 +3242,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       api.get("/api/admin/punch-issues"),
     ]);
     const outdatedVendors = vendors.filter((v) => v.formsStatus === "outdated");
-    const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch);
+    const incompleteDocVendors = vendors.filter((v) => !v.formChecksComplete || v.poEmailMismatch);
     const womsNeedingSmartsheetUpdate = woms.filter((w) => w.status === "closed" && !w.smartsheetReflectedAt);
     const pendingWoms = woms.filter((w) => w.status === "pending");
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -3345,11 +3290,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         "Vendor document checks incomplete",
         incompleteDocVendors.map((v) => ({
           label: v.name,
-          detail: v.w9InvoiceStale
-            ? "Blank invoice on file is over 2 years old"
-            : v.poEmailMismatch
-              ? `PO email doesn't match what's on file (saw ${v.poEmailMismatchExtracted})`
-              : "COI/W-9/ACH checks not all confirmed",
+          detail: v.poEmailMismatch
+            ? `PO email doesn't match what's on file (saw ${v.poEmailMismatchExtracted})`
+            : "COI/W-9/ACH checks not all confirmed",
           kind: "vendor-doc",
           vendorId: v.id,
         })),

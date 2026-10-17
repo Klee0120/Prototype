@@ -334,24 +334,32 @@ Demo logins:
   existing before the case-based onboarding tracker below was built)
   defaults to `not_started` rather than `in_progress` -- see **Start
   Onboarding** below for how one of those actually gets picked up.
-- **Vendor document compliance checklist**: specific checkboxes verified
-  against the actual attached COI/W-9/ACH document, separate from the COI
-  coverage-limit checks (`coiMeetsRequiredLimits`/`coiMeetsLanguageRequirements`)
-  and from `formsStatus` (currency/expiration) — these are about the
-  document itself being the right form and matching the vendor's other
-  paperwork:
-  - **COI**: issued on ACORD 25 (2016/03 version); matches the vendor's W-9
-    name & address.
-  - **W-9**: signed and dated; correct version (October 2018 or March
-    2024); has a phone number; has a remit-to address; has the vendor's
-    name. Plus a **blank invoice date** field — flagged stale once it's
-    over 2 years old.
-  - **ACH**: on bank letterhead; has the vendor's W-9 name; has the
-    vendor's W-9 address.
-
-  Any box left unchecked (or a stale invoice date) marks that vendor
-  "Doc checks incomplete" on the Vendors list and rolls up into the
-  Priorities tab, same flagging idea as an outdated form.
+- **Vendor document compliance** (`coiIsAcord25_2016_03`/`coiMatchesW9`/
+  `w9SignedDated`/`w9CorrectVersion`/`achBankLetterhead`/`achHasW9Name`/
+  `achHasW9Address`): originally a set of manual checkboxes an admin kept
+  in sync by hand against the actual attached COI/W-9/ACH document; now
+  driven automatically by the real per-document decisions instead —
+  COI's by the COI Review workflow (Vendor Documents tab → Review COI →
+  Approve/Reject against the actual document, see
+  `applyCoiReviewOutcomeToVendor` in `server/data/db.js`), W-9/ACH's by
+  their own onboarding cases' "Review notes · select issues" checklist
+  (see `applyCaseReviewOutcomeToVendorFormChecks`). There's no manual
+  checkbox form left anywhere in the UI for any of this. A vendor's
+  own Document Compliance section (on the Onboarding & Compliance tab)
+  is now a plain read-only status readout, not a form — it just states
+  whether anything's still unconfirmed. Separate from the COI
+  coverage-limit checks (`coiMeetsRequiredLimits`/
+  `coiMeetsLanguageRequirements`, also COI-Review-driven) and from
+  `formsStatus` (currency/expiration). Any check still unconfirmed marks
+  that vendor "Doc checks incomplete" on the Vendors list and rolls up
+  into the Priorities tab, same flagging idea as an outdated form. A
+  "blank invoice date on file" field used to live here too, with a
+  2-year staleness flag — removed outright: a blank invoice is just a
+  template with no real expiration, and there's no reliable rule for how
+  long a W-9 stays good either, so that staleness concept was never
+  accurate. Nothing replaced it; if the Blank Invoice onboarding case
+  itself ever needs a tracked date, it already has its own
+  `expirationDate` field like every other case.
 - **Vendors -> Onboarding tab**: mirrors ServiceEdge's own onboarding model
   rather than a single hand-set status -- a vendor being onboarded has
   three independent **cases** (`vendor_requests` rows with one of three

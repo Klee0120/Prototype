@@ -1500,8 +1500,12 @@ for (const col of VENDOR_FORM_CHECK_BOOL_COLUMNS) {
     db.exec(`ALTER TABLE vendors ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 0`);
   }
 }
-// The date on the blank invoice W-9 documentation is expected to include --
-// flagged stale once it's more than 2 years old (see W9_INVOICE_MAX_AGE_YEARS).
+// Retired -- this used to track a date for the Blank Invoice document
+// with a 2-year staleness rule, but a blank invoice is just a template
+// with no real expiration (and there's no reliable rule for how long a
+// W-9 stays good either), so that whole concept was wrong. Nothing reads
+// or writes this column anymore; the ALTER TABLE itself is left in place
+// rather than rewritten, same as any other historical migration.
 if (!hasColumn("vendors", "w9_invoice_date")) {
   db.exec("ALTER TABLE vendors ADD COLUMN w9_invoice_date TEXT");
 }
@@ -1802,8 +1806,8 @@ if (!hasColumn("vendors", "coi_form_status")) {
 // what's on the vendor's profile -- caught live at PO-generation time
 // (extract-po-vendor route, via recordPoEmailExtraction below) instead of
 // only surfacing once an invoice actually bounces. A live condition, same
-// as formsStatus/w9InvoiceStale: a later extraction that matches clears it
-// again, it isn't a one-time flag someone has to remember to unset.
+// as formsStatus: a later extraction that matches clears it again, it
+// isn't a one-time flag someone has to remember to unset.
 if (!hasColumn("vendors", "po_email_mismatch")) {
   db.exec("ALTER TABLE vendors ADD COLUMN po_email_mismatch INTEGER NOT NULL DEFAULT 0");
   db.exec("ALTER TABLE vendors ADD COLUMN po_email_mismatch_extracted TEXT");
@@ -2482,8 +2486,6 @@ const VENDOR_FORM_CHECK_FIELDS = [
   ["achHasW9Address", "ach_has_w9_address"],
 ];
 
-const W9_INVOICE_MAX_AGE_YEARS = 2;
-
 // How much contracted-services $ this vendor has actually been paid across
 // every WOM linked to them, and when they were last invoiced -- pulled from
 // the WOM lifecycle checklist's own "invoiced" step timestamp (see
@@ -2536,13 +2538,6 @@ function presentVendorRowBase(v) {
   for (const [key, col] of VENDOR_FORM_CHECK_FIELDS) formChecks[key] = Boolean(v[col]);
   const formChecksComplete = VENDOR_FORM_CHECK_FIELDS.every(([key]) => formChecks[key]);
 
-  let w9InvoiceStale = false;
-  if (v.w9_invoice_date) {
-    const maxAge = new Date(v.w9_invoice_date);
-    maxAge.setFullYear(maxAge.getFullYear() + W9_INVOICE_MAX_AGE_YEARS);
-    w9InvoiceStale = maxAge < new Date();
-  }
-
   return {
     id: v.id,
     name: v.name,
@@ -2570,8 +2565,6 @@ function presentVendorRowBase(v) {
     coiLimits,
     formChecks,
     formChecksComplete,
-    w9InvoiceDate: v.w9_invoice_date || null,
-    w9InvoiceStale,
     onboardingStage: v.onboarding_stage,
     deniedReason: v.denied_reason || "",
     deniedReasonCategory: v.denied_reason_category || "",
@@ -2849,7 +2842,6 @@ function createVendor(fields) {
     "coi_meets_language_requirements",
     ...VENDOR_COI_FIELDS.map(([, col]) => col),
     ...VENDOR_FORM_CHECK_FIELDS.map(([, col]) => col),
-    "w9_invoice_date",
     "onboarding_stage",
     "denied_reason",
     "created_by",
@@ -2881,7 +2873,6 @@ function createVendor(fields) {
     fields.coiMeetsLanguageRequirements ? 1 : 0,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
-    fields.w9InvoiceDate || null,
     // Adding a vendor here is, in practice, the start of onboarding it --
     // default to "in_progress" rather than "not_started" so it shows up on
     // the Onboarding tab immediately, without an extra step.
@@ -2934,7 +2925,6 @@ function updateVendor(id, fields) {
       coi_meets_required_limits = ?, coi_meets_language_requirements = ?,
       ${VENDOR_COI_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
       ${VENDOR_FORM_CHECK_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
-      w9_invoice_date = ?,
       onboarding_stage = ?,
       denied_reason = ?,
       updated_at = ?
@@ -2964,7 +2954,6 @@ function updateVendor(id, fields) {
     fields.coiMeetsLanguageRequirements ? 1 : 0,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
-    fields.w9InvoiceDate || null,
     ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : existing.onboardingStage,
     fields.deniedReason != null ? fields.deniedReason : existing.deniedReason,
     new Date().toISOString(),
@@ -5291,7 +5280,6 @@ function vendorComplianceReasons(v, vendorId) {
   const reasons = [];
   if (!v.formChecksComplete) reasons.push("one or more document checks (COI/W-9/ACH) aren't confirmed yet");
   if (v.formsStatus === "outdated") reasons.push("forms status is outdated");
-  if (v.w9InvoiceStale) reasons.push("the blank invoice on file is over 2 years old");
   if (vendorHasExpiredComplianceDoc(vendorId)) reasons.push("a COI/W-9/ACH document on file has expired");
   if (v.poEmailMismatch) reasons.push(`the email on a generated PO doesn't match what's on file (saw ${v.poEmailMismatchExtracted})`);
   return reasons;
