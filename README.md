@@ -2415,11 +2415,48 @@ happen.
     and wording. The Vendor Compliance dashboard shows plainly whether
     it's currently on or off.
   - This is deliberately just the outbound-nudge half of the larger
-    COI-automation idea discussed (reading what a vendor sends back,
-    matching it to the right vendor, and auto-approving or
-    auto-kicking-back a document) — that's a separate, higher-risk
-    project to build and test against real documents before trusting it
-    to act on its own.
+    COI-automation idea discussed (reading what a vendor sends back and
+    reviewing it) — see **COI document review** below for that half, and
+    for why it's a human-reviewed workflow rather than an
+    auto-approve/auto-reject one. Actual inbound email capture (a vendor's
+    reply landing in this app on its own) isn't built yet either — that
+    needs DNS/mail infrastructure changes only the account owner can make.
+    For now, a document gets reviewed once an admin attaches it to the
+    vendor's profile by hand, the same as any other upload.
+- **COI document review** (`server/utils/coiDocumentReview.js`,
+  `coi_document_reviews` table). From a vendor's Documents tab, a COI
+  file's row menu has a **Review COI** action that opens a two-pane
+  screen: whatever text could be read off the document (its real text
+  layer, via `pdfjs-dist` — no OCR, so a scanned image or a handwritten
+  form reads back empty, which is an expected, normal outcome, not an
+  error) next to the actual requirement checklist for that vendor's
+  registered service(s), pulled from the same `COI_MATRIX` the Onboard
+  Requirements Form uses. Two universal items (the ACORD 25 form name and
+  the required additional-insured language) get a "found in text"/"not
+  found in text" hint from a plain substring search — never anything
+  fancier, and never auto-checked as compliant. **Deliberately never
+  reads dollar limits or Auto Liability checkboxes off the page** — see
+  this file's own header comment: a wrong auto-read there means approving
+  a vendor with insufficient coverage, which is worse than just asking
+  the admin to look. Every requirement, including the ones with a hint,
+  stays a plain line the admin reads and decides on.
+  - **Approve** records who approved it and creates a task — ServiceEdge
+    (C&W's own Salesforce-based vendor case system) has no API today, so
+    this can't actually file anything there; the task instead names
+    exactly what still needs to be entered there by hand (an Onboarding -
+    COI case), for whichever territory this vendor's actually been
+    invoiced in (`db.getVendorTerritories`, the same PO/WOM-history-based
+    lookup the vendor profile's own Territories panel uses).
+  - **Reject** requires picking at least one reason from that same
+    requirement checklist (frozen at the moment the review started, so a
+    later edit to the vendor's services or the COI matrix never rewrites
+    what a past review was actually judged against) — those become both
+    the audit log entry and the body of a denial email sent to the
+    vendor's address on file, naming exactly what didn't pass. A vendor
+    with no email on file still gets a recorded rejection, just no email.
+  - Both are final for that review: a corrected document gets reviewed
+    fresh (a new row against the new file) rather than reopening an old
+    decision.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have

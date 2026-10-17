@@ -301,6 +301,30 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  -- A review session for one uploaded COI file -- see server/utils/
+  -- coiDocumentReview.js. checklist_json is the requirement list frozen at
+  -- the moment the review started (the vendor's registered service(s) plus
+  -- the universal items), so a later edit to that vendor's services or the
+  -- COI matrix never rewrites what an already-decided review was actually
+  -- judged against. rejected_reasons_json is only set on a rejection -- the
+  -- subset of checklist keys the admin picked as the reasons it failed,
+  -- which doubles as the content of the denial email sent back to the
+  -- vendor. One row per review attempt, not per file -- a rejected COI gets
+  -- a fresh row on its next review once a corrected copy comes in.
+  CREATE TABLE IF NOT EXISTS coi_document_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id TEXT NOT NULL,
+    vendor_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    extracted_text TEXT,
+    checklist_json TEXT NOT NULL,
+    rejected_reasons_json TEXT,
+    reviewed_by TEXT,
+    reviewed_by_name TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
   -- A GL reclass submission -- modeled directly on Krista's real "RECLASS"
   -- tracking sheet (JOURNAL ENTRY FORM - RECLASS), not a generic placeholder.
   -- One batch per submission (region/revision/reason, matching the sheet's
@@ -2958,6 +2982,70 @@ function addVendorRemark(vendorId, authorId, authorName, body) {
 
 function listVendorRemarks(vendorId) {
   return db.prepare("SELECT * FROM vendor_remarks WHERE vendor_id = ? ORDER BY id DESC").all(Number(vendorId));
+}
+
+// ---- COI document review (server/utils/coiDocumentReview.js) ----
+function presentCoiDocumentReview(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    fileId: row.file_id,
+    vendorId: row.vendor_id,
+    status: row.status,
+    extractedText: row.extracted_text || "",
+    checklist: JSON.parse(row.checklist_json),
+    rejectedReasons: row.rejected_reasons_json ? JSON.parse(row.rejected_reasons_json) : [],
+    reviewedBy: row.reviewed_by || null,
+    reviewedByName: row.reviewed_by_name || null,
+    reviewedAt: row.reviewed_at || null,
+    createdAt: row.created_at,
+  };
+}
+
+function createCoiDocumentReview({ fileId, vendorId, extractedText, checklist }) {
+  const result = db
+    .prepare("INSERT INTO coi_document_reviews (file_id, vendor_id, status, extracted_text, checklist_json, created_at) VALUES (?, ?, 'pending', ?, ?, ?)")
+    .run(String(fileId), Number(vendorId), extractedText || "", JSON.stringify(checklist), new Date().toISOString());
+  return presentCoiDocumentReview(db.prepare("SELECT * FROM coi_document_reviews WHERE id = ?").get(result.lastInsertRowid));
+}
+
+function findCoiDocumentReview(id) {
+  return presentCoiDocumentReview(db.prepare("SELECT * FROM coi_document_reviews WHERE id = ?").get(Number(id)));
+}
+
+function listCoiDocumentReviewsForVendor(vendorId) {
+  return db
+    .prepare("SELECT * FROM coi_document_reviews WHERE vendor_id = ? ORDER BY id DESC")
+    .all(Number(vendorId))
+    .map(presentCoiDocumentReview);
+}
+
+// Already-decided reviews are a record, not something to still be pending
+// -- a vendor can only have one open review per file at a time, so a
+// second review attempt on the same file (after a rejection and a fresh
+// upload, say) is always a brand new row against the new file, not a
+// re-opening of an old one.
+function findPendingCoiDocumentReviewForFile(fileId) {
+  return presentCoiDocumentReview(
+    db.prepare("SELECT * FROM coi_document_reviews WHERE file_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1").get(String(fileId))
+  );
+}
+
+function approveCoiDocumentReview(id, { reviewerId, reviewerName }) {
+  db.prepare("UPDATE coi_document_reviews SET status = 'approved', reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?").run(
+    reviewerId,
+    reviewerName,
+    new Date().toISOString(),
+    Number(id)
+  );
+  return findCoiDocumentReview(id);
+}
+
+function rejectCoiDocumentReview(id, { reviewerId, reviewerName, reasonKeys }) {
+  db.prepare(
+    "UPDATE coi_document_reviews SET status = 'rejected', rejected_reasons_json = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?"
+  ).run(JSON.stringify(reasonKeys || []), reviewerId, reviewerName, new Date().toISOString(), Number(id));
+  return findCoiDocumentReview(id);
 }
 
 // ---- Financials: contracted-services cost review (Repeated Costs Above
@@ -11493,6 +11581,12 @@ module.exports = {
   recordVendorComplianceReminderSent,
   addVendorRemark,
   listVendorRemarks,
+  createCoiDocumentReview,
+  findCoiDocumentReview,
+  listCoiDocumentReviewsForVendor,
+  findPendingCoiDocumentReviewForFile,
+  approveCoiDocumentReview,
+  rejectCoiDocumentReview,
   WOM_COST_REVIEW_STATUSES,
   WOM_COST_REVIEW_REASONS,
   setWomCostReview,

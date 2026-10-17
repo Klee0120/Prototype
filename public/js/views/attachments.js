@@ -219,6 +219,7 @@ export async function renderAttachments(host, opts) {
                   <button type="button" class="row-menu-item toggle-access-btn">${
                     f.accessLevel === "restricted" ? "Mark standard access" : "Mark restricted access"
                   }</button>
+                  ${opts.onReviewCoi && f.category === "coi" ? `<button type="button" class="row-menu-item review-coi-btn">Review COI</button>` : ""}
                   <button type="button" class="row-menu-item row-menu-item-danger delete-btn">Delete</button>
                 </div>
               </div>`
@@ -247,6 +248,13 @@ export async function renderAttachments(host, opts) {
         const isHidden = panel.hasAttribute("hidden");
         host.querySelectorAll(".row-menu-panel").forEach((p) => p.setAttribute("hidden", ""));
         if (isHidden) panel.removeAttribute("hidden");
+      });
+    }
+
+    const reviewCoi = row.querySelector(".review-coi-btn");
+    if (reviewCoi) {
+      reviewCoi.addEventListener("click", () => {
+        opts.onReviewCoi(f);
       });
     }
 

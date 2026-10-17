@@ -2135,6 +2135,80 @@ h1, h2, h3, h4 {
   }
 }
 
+/* ---- COI document review modal ---- */
+
+.coi-review-layout {
+  display: flex;
+  gap: 20px;
+  flex: 1;
+  min-height: 50vh;
+}
+
+.coi-review-text-pane,
+.coi-review-checklist-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.coi-review-text-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.coi-review-extracted-text {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--surface-alt, #f7f7f8);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.coi-review-checklist {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.coi-review-checklist li {
+  font-size: 13.5px;
+  line-height: 1.4;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.coi-review-decision {
+  display: flex;
+  gap: 10px;
+}
+
+.coi-review-reject-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+@media (max-width: 760px) {
+  .coi-review-layout {
+    flex-direction: column;
+  }
+}
+
 /* ---- Task board (Priorities / My Work) ---- */
 
 .task-tiles {

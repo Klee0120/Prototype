@@ -2427,9 +2427,147 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         trackExpiration: true,
         requiredCategories,
         emptyText: "No documents on file yet.",
+        onReviewCoi: (file) => openCoiReviewModal(v, file, refreshDocumentsPanel),
       });
     await refreshDocumentsPanel();
     await renderAssignTaskDocumentControl(host.querySelector(".vendor-assign-task-doc-host"), v, refreshDocumentsPanel);
+  }
+
+  // The admin-review half of the COI workflow: start (or resume) a review
+  // on one uploaded COI file, show whatever text could be read off it next
+  // to the real requirement checklist for this vendor's registered
+  // service(s), and let the admin Approve or Reject-with-reasons. Approve
+  // and Reject are both final for this review (see the route's own 400 on
+  // a second call) -- a rejected document gets reviewed again as a fresh
+  // row once a corrected copy is uploaded, not by reopening this one.
+  async function openCoiReviewModal(v, file, onDone) {
+    const { body, close } = openModal({ title: `Review COI -- ${file.originalName}`, bodyHtml: `<p class="empty-note">Starting review&hellip;</p>`, size: "large" });
+
+    let review;
+    try {
+      review = await api.post(`/api/admin/vendors/${v.id}/files/${file.id}/coi-review`, {});
+    } catch (err) {
+      body.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+
+    function renderReviewBody() {
+      const hints = review.extractionHints || {};
+      body.innerHTML = `
+        <div class="coi-review-layout">
+          <div class="coi-review-text-pane">
+            <div class="coi-review-text-header">
+              <h4>What we could read off the document</h4>
+              <button type="button" class="btn btn-secondary coi-review-view-btn">View actual document</button>
+            </div>
+            ${
+              review.extractedText
+                ? `<pre class="coi-review-extracted-text">${escapeHtml(review.extractedText)}</pre>`
+                : `<p class="empty-note">No extractable text found -- this is normal for a scanned image or a handwritten form. Use "View actual document" and compare against the checklist yourself.</p>`
+            }
+          </div>
+          <div class="coi-review-checklist-pane">
+            <h4>Requirements</h4>
+            <ul class="coi-review-checklist">
+              ${review.checklist
+                .map((item) => {
+                  const hint = hints[item.key];
+                  const hintBadge = hint === true ? `<span class="badge badge-approved">found in text</span>` : hint === false ? `<span class="badge badge-warn">not found in text</span>` : "";
+                  return `<li>${escapeHtml(item.label)} ${hintBadge}</li>`;
+                })
+                .join("")}
+            </ul>
+            ${
+              review.status === "pending"
+                ? `<div class="coi-review-decision">
+                     <button type="button" class="btn btn-primary coi-review-approve-btn">Approve</button>
+                     <button type="button" class="btn btn-secondary danger-link coi-review-reject-btn">Reject&hellip;</button>
+                   </div>
+                   <div class="coi-review-reject-form" hidden>
+                     <p class="review-checklist-hint">Which requirements weren't met? The vendor gets an email listing exactly what you check here.</p>
+                     <div class="coi-review-reject-reasons">
+                       ${review.checklist
+                         .map(
+                           (item) =>
+                             `<label class="roster-filter-field"><input type="checkbox" class="coi-review-reason-checkbox" value="${escapeHtml(item.key)}" /><span>${escapeHtml(item.label)}</span></label>`
+                         )
+                         .join("")}
+                     </div>
+                     <button type="button" class="btn btn-primary danger-link coi-review-submit-reject-btn">Send rejection</button>
+                   </div>`
+                : `<p class="review-checklist-hint">${
+                    review.status === "approved"
+                      ? `Approved by ${escapeHtml(review.reviewedByName)} on ${new Date(review.reviewedAt).toLocaleDateString()}.`
+                      : `Rejected by ${escapeHtml(review.reviewedByName)} on ${new Date(review.reviewedAt).toLocaleDateString()} -- ${review.rejectedReasons
+                          .map((key) => (review.checklist.find((i) => i.key === key) || {}).label || key)
+                          .join("; ")}`
+                  }</p>`
+            }
+          </div>
+        </div>
+      `;
+
+      body.querySelector(".coi-review-view-btn").addEventListener("click", async () => {
+        try {
+          const blob = await api.fetchFileBlob(file.id);
+          window.open(URL.createObjectURL(blob), "_blank");
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+
+      const approveBtn = body.querySelector(".coi-review-approve-btn");
+      if (approveBtn) {
+        approveBtn.addEventListener("click", async () => {
+          approveBtn.disabled = true;
+          try {
+            const result = await api.post(`/api/admin/vendors/${v.id}/coi-reviews/${review.id}/approve`, {});
+            review = result.review;
+            renderReviewBody();
+            if (onDone) onDone();
+          } catch (err) {
+            window.alert(err.message);
+            approveBtn.disabled = false;
+          }
+        });
+      }
+
+      const rejectBtn = body.querySelector(".coi-review-reject-btn");
+      const rejectForm = body.querySelector(".coi-review-reject-form");
+      if (rejectBtn && rejectForm) {
+        rejectBtn.addEventListener("click", () => {
+          rejectForm.hidden = false;
+          rejectBtn.closest(".coi-review-decision").hidden = true;
+        });
+        const submitReject = rejectForm.querySelector(".coi-review-submit-reject-btn");
+        submitReject.addEventListener("click", async () => {
+          const reasonKeys = [...rejectForm.querySelectorAll(".coi-review-reason-checkbox:checked")].map((cb) => cb.value);
+          if (reasonKeys.length === 0) {
+            window.alert("Pick at least one reason.");
+            return;
+          }
+          submitReject.disabled = true;
+          try {
+            const result = await api.post(`/api/admin/vendors/${v.id}/coi-reviews/${review.id}/reject`, { reasonKeys });
+            review = result.review;
+            renderReviewBody();
+            if (!result.emailed) {
+              window.alert(
+                result.emailSkippedNoAddress
+                  ? `Rejected, but this vendor has no email on file -- nobody was notified.`
+                  : `Rejected, but email isn't configured on this server -- nobody was actually notified.`
+              );
+            }
+            if (onDone) onDone();
+          } catch (err) {
+            window.alert(err.message);
+            submitReject.disabled = false;
+          }
+        });
+      }
+    }
+
+    renderReviewBody();
   }
 
   async function renderVendorCostsTab(host, v) {

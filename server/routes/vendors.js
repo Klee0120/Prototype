@@ -1,9 +1,11 @@
 const express = require("express");
+const path = require("path");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { buildOnboardRequirementsPdf } = require("../utils/onboardRequirementsPdf");
 const { sendVendorComplianceReminders } = require("../utils/vendorComplianceReminders");
+const { buildCoiRequirementChecklist, extractCoiDocumentText, coiExtractionHints, coiDenialEmailText } = require("../utils/coiDocumentReview");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -292,6 +294,110 @@ router.get("/:id/territories", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
   res.json(db.getVendorTerritories(vendor.id));
+});
+
+// Starts a review session for one uploaded COI file -- extracts whatever
+// text the document has (see coiDocumentReview.js for why that's often
+// nothing, and why that's fine) and builds the requirement checklist for
+// this vendor's registered service(s). Re-callable: a second call on the
+// same file while a review is still pending just returns that same
+// pending review rather than creating a duplicate (re-extracting is cheap
+// and harmless, but there's no reason to pile up rows for one admin
+// re-opening the same review screen).
+router.post("/:id/files/:fileId/coi-review", async (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const file = db.getFile(req.params.fileId);
+  if (!file || file.relatedType !== "vendor" || Number(file.relatedId) !== vendor.id) {
+    return res.status(404).json({ error: "File not found for this vendor" });
+  }
+  if (file.category !== "coi") return res.status(400).json({ error: "Not a COI document" });
+
+  const existingPending = db.findPendingCoiDocumentReviewForFile(file.id);
+  if (existingPending) return res.json(existingPending);
+
+  const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, file.storedName));
+  const checklist = await buildCoiRequirementChecklist(vendor.services);
+  const review = db.createCoiDocumentReview({ fileId: file.id, vendorId: vendor.id, extractedText, checklist });
+  res.status(201).json({ ...review, extractionHints: coiExtractionHints(extractedText) });
+});
+
+router.get("/:id/coi-reviews", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.listCoiDocumentReviewsForVendor(vendor.id));
+});
+
+// Approving doesn't (and, today, can't) actually file anything in
+// ServiceEdge -- that system has no API yet -- so this creates an
+// internal task naming exactly what still needs to happen there by hand,
+// for whoever covers the territory(ies) this vendor's actually been
+// invoiced in (see db.getVendorTerritories). A vendor with no invoice
+// history yet gets a task that says so plainly rather than silently
+// guessing a territory.
+router.post("/:id/coi-reviews/:reviewId/approve", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const review = db.findCoiDocumentReview(req.params.reviewId);
+  if (!review || review.vendorId !== vendor.id) return res.status(404).json({ error: "Review not found" });
+  if (review.status !== "pending") return res.status(400).json({ error: `Already ${review.status}` });
+
+  const updated = db.approveCoiDocumentReview(review.id, { reviewerId: req.user.id, reviewerName: req.user.name });
+  const territories = db.getVendorTerritories(vendor.id);
+  const territoryText = territories.length ? territories.join(", ") : "no territory on file yet from PO/WOM history -- confirm manually";
+  const task = db.createTask({
+    title: `Submit approved COI to ServiceEdge for ${vendor.name}`,
+    description: `${req.user.name} approved this vendor's COI on ${new Date().toLocaleDateString()}. ServiceEdge has no API today, so this still needs to be entered there by hand as an Onboarding - COI case. Territory (from this vendor's PO/WOM invoice history): ${territoryText}.`,
+    category: "coi_review_serviceedge",
+    relatedVendorId: vendor.id,
+    priority: "normal",
+    source: "coi_review",
+    sourceRecordId: String(review.id),
+    workflowRule: "coi_review_approved",
+    createdBy: req.user.id,
+  });
+  db.addAudit(req.user.id, "VENDOR_COI_REVIEW_APPROVED", `${req.user.name} approved a COI review for ${vendor.name}`);
+  res.json({ review: updated, task });
+});
+
+// Rejecting requires at least one reason, picked from this review's own
+// frozen checklist (not the vendor's current one -- see the table's own
+// comment) -- those become both the audit trail and the body of the
+// denial email sent back to the vendor's address on file. For now that's
+// always vendor.email (this is the manual-upload review path); once
+// inbound email capture exists, the same review flow sends to whoever the
+// document actually arrived from instead.
+router.post("/:id/coi-reviews/:reviewId/reject", async (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const review = db.findCoiDocumentReview(req.params.reviewId);
+  if (!review || review.vendorId !== vendor.id) return res.status(404).json({ error: "Review not found" });
+  if (review.status !== "pending") return res.status(400).json({ error: `Already ${review.status}` });
+
+  const reasonKeys = Array.isArray((req.body || {}).reasonKeys) ? req.body.reasonKeys : [];
+  if (reasonKeys.length === 0) return res.status(400).json({ error: "At least one reason is required to reject" });
+  const checklistByKey = new Map(review.checklist.map((item) => [item.key, item.label]));
+  const reasonLabels = reasonKeys.map((key) => checklistByKey.get(key)).filter(Boolean);
+  if (reasonLabels.length !== reasonKeys.length) return res.status(400).json({ error: "One or more reasonKeys aren't on this review's checklist" });
+
+  const updated = db.rejectCoiDocumentReview(review.id, { reviewerId: req.user.id, reviewerName: req.user.name, reasonKeys });
+
+  let sent = false;
+  if (vendor.email) {
+    const result = await mailer.sendMail({
+      to: vendor.email,
+      subject: "Certificate of Insurance could not be accepted",
+      text: coiDenialEmailText(vendor.name, reasonLabels),
+    });
+    sent = result.sent;
+  }
+  db.addAudit(
+    req.user.id,
+    "VENDOR_COI_REVIEW_REJECTED",
+    `${req.user.name} rejected a COI review for ${vendor.name}: ${reasonLabels.join("; ")}` +
+      (vendor.email ? (sent ? "" : " (SMTP not configured -- denial email not actually delivered)") : " (no email on file -- denial email not sent)")
+  );
+  res.json({ review: updated, emailed: sent, emailSkippedNoAddress: !vendor.email });
 });
 
 // What's still open against this vendor on the Budget PO Tracker vs. what's

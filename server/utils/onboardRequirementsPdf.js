@@ -410,4 +410,4 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
   return pdfDoc.save();
 }
 
-module.exports = { buildOnboardRequirementsPdf };
+module.exports = { buildOnboardRequirementsPdf, REQUIRED_COI_LANGUAGE, COVERAGE_COLUMNS, AUTO_LIABILITY_PATTERNS, hasLimit };
