@@ -181,6 +181,25 @@ router.patch("/:id/preferred", (req, res) => {
   res.json(updated);
 });
 
+// Per-vendor opt-in for the automated reminder emails (see
+// server/utils/vendorComplianceReminders.js) -- off by default for every
+// vendor, since most are currently out of date and shouldn't all start
+// getting nagged the moment this feature exists. An admin turns this on
+// for a vendor once they've confirmed its email/COI info while updating
+// its profile, rolling the chaser out gradually rather than all at once.
+router.patch("/:id/compliance-reminders-enabled", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const enabled = Boolean((req.body || {}).enabled);
+  const updated = db.setVendorComplianceRemindersEnabled(vendor.id, enabled);
+  db.addAudit(
+    req.user.id,
+    "VENDOR_COMPLIANCE_REMINDERS_ENABLED_CHANGED",
+    `${req.user.name} turned ${enabled ? "on" : "off"} compliance reminder emails for ${vendor.name}`
+  );
+  res.json(updated);
+});
+
 router.get("/denial-reasons", (req, res) => {
   res.json(db.VENDOR_DENIAL_REASONS);
 });

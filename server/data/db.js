@@ -1510,6 +1510,17 @@ if (!hasColumn("vendors", "denied_reason_category")) {
 if (!hasColumn("vendors", "preferred")) {
   db.exec("ALTER TABLE vendors ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0");
 }
+// Per-vendor opt-in for the automated COI/W-9/ACH reminder emails (see
+// server/utils/vendorComplianceReminders.js) -- defaults OFF. Almost every
+// existing vendor's documents are already out of date, so turning the
+// chaser on for everyone at once on day one would mean a wave of nag
+// emails the moment this shipped. Instead an admin flips this on,
+// vendor by vendor, as they confirm that vendor's info (especially its
+// email) while updating its profile -- same rollout shape as any other
+// slow, deliberate migration of existing data onto a new feature.
+if (!hasColumn("vendors", "compliance_reminders_enabled")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN compliance_reminders_enabled INTEGER NOT NULL DEFAULT 0");
+}
 // Who added this vendor profile -- the fallback for routing its compliance
 // checklist/task to someone before it has any real PO/WOM activity to
 // derive a territory from (see getVendorTerritories). A vendor created
@@ -2499,6 +2510,7 @@ function presentVendorRowBase(v) {
     deniedReason: v.denied_reason || "",
     deniedReasonCategory: v.denied_reason_category || "",
     preferred: Boolean(v.preferred),
+    complianceRemindersEnabled: Boolean(v.compliance_reminders_enabled),
     createdBy: v.created_by || null,
     createdAt: v.created_at,
     updatedAt: v.updated_at,
@@ -2918,6 +2930,15 @@ function deleteVendor(id) {
 function setVendorPreferred(id, preferred) {
   db.prepare("UPDATE vendors SET preferred = ?, updated_at = ? WHERE id = ?").run(
     preferred ? 1 : 0,
+    new Date().toISOString(),
+    Number(id)
+  );
+  return findVendor(id);
+}
+
+function setVendorComplianceRemindersEnabled(id, enabled) {
+  db.prepare("UPDATE vendors SET compliance_reminders_enabled = ?, updated_at = ? WHERE id = ?").run(
+    enabled ? 1 : 0,
     new Date().toISOString(),
     Number(id)
   );
@@ -4907,6 +4928,7 @@ function listVendorsNeedingComplianceReminder({ daysAhead = 30, cadenceDays = 7 
        JOIN vendors v ON v.id = f.related_id
        WHERE f.related_type = 'vendor' AND f.category IN ('coi', 'w9', 'ach')
          AND f.expires_at IS NOT NULL AND f.expires_at <= ?
+         AND v.compliance_reminders_enabled = 1
        ORDER BY f.related_id, f.expires_at`
     )
     .all(cutoffStr);
@@ -11462,6 +11484,7 @@ module.exports = {
   updateVendor,
   deleteVendor,
   setVendorPreferred,
+  setVendorComplianceRemindersEnabled,
   VENDOR_DENIAL_REASONS,
   denyVendor,
   reinstateVendor,

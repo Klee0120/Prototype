@@ -17,6 +17,11 @@ test("vendor compliance reminders: finding who's due, and the cadence throttle",
   await t.test("set up vendors: already-expired, expiring-soon, no-email, and far-out (shouldn't match)", async () => {
     const mk = async (name, email) => {
       const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name, email } });
+      // Reminders are opt-in per vendor, off by default (see db.js's
+      // compliance_reminders_enabled migration) -- turn it on the same way
+      // an admin would from the vendor profile, so these fixtures actually
+      // exercise the "due" logic rather than being silently excluded.
+      await server.call("PATCH", `/api/admin/vendors/${res.body.id}/compliance-reminders-enabled`, { userId: "ADMIN", body: { enabled: true } });
       return res.body.id;
     };
     expiredId = await mk("Already Expired Co", "ops@alreadyexpired.test");
@@ -90,6 +95,47 @@ test("vendor compliance reminders: finding who's due, and the cadence throttle",
     const dueAgain = db.listVendorsNeedingComplianceReminder({ daysAhead: 30, cadenceDays: 7 });
     assert.ok(dueAgain.some((v) => v.id === expiredId), "should be due again once the cadence window has passed");
   });
+
+  await t.test("a vendor is excluded until compliance-reminders-enabled is turned on for it", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Opt-In Gate Co", email: "ops@optingate.test" },
+    });
+    const optInId = res.body.id;
+    await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(optInId), category: "coi", expiresAt: "2020-01-01" },
+      fileName: "coi.pdf",
+    });
+
+    // Off by default -- not due even though the COI is expired and an
+    // email is on file.
+    let due = db.listVendorsNeedingComplianceReminder({ daysAhead: 30, cadenceDays: 7 });
+    assert.ok(!due.some((v) => v.id === optInId), "should stay excluded until explicitly opted in");
+
+    const enableRes = await server.call("PATCH", `/api/admin/vendors/${optInId}/compliance-reminders-enabled`, {
+      userId: "ADMIN",
+      body: { enabled: true },
+    });
+    assert.equal(enableRes.status, 200);
+    assert.equal(enableRes.body.complianceRemindersEnabled, true);
+
+    due = db.listVendorsNeedingComplianceReminder({ daysAhead: 30, cadenceDays: 7 });
+    assert.ok(due.some((v) => v.id === optInId), "should be due once opted in");
+
+    const disableRes = await server.call("PATCH", `/api/admin/vendors/${optInId}/compliance-reminders-enabled`, {
+      userId: "ADMIN",
+      body: { enabled: false },
+    });
+    assert.equal(disableRes.body.complianceRemindersEnabled, false);
+
+    due = db.listVendorsNeedingComplianceReminder({ daysAhead: 30, cadenceDays: 7 });
+    assert.ok(!due.some((v) => v.id === optInId), "should be excluded again once turned back off");
+
+    const audit = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entries = audit.body.filter((e) => e.action === "VENDOR_COMPLIANCE_REMINDERS_ENABLED_CHANGED" && e.details.includes("Opt-In Gate Co"));
+    assert.equal(entries.length, 2);
+  });
 });
 
 test("vendor compliance reminders: sending the batch, and the manual-trigger route", async (t) => {
@@ -104,6 +150,7 @@ test("vendor compliance reminders: sending the batch, and the manual-trigger rou
       body: { name: "Batch Reminder Co", email: "ops@batchreminder.test" },
     });
     vendorId = res.body.id;
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}/compliance-reminders-enabled`, { userId: "ADMIN", body: { enabled: true } });
     await server.upload("/api/files", {
       userId: "ADMIN",
       fields: { relatedType: "vendor", relatedId: String(vendorId), category: "coi", expiresAt: "2020-01-01" },

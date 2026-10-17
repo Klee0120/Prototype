@@ -2280,6 +2280,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="vendor-cases-section"></div>
       <h4>Document Compliance</h4>
       <div class="vendor-doc-checks-host"></div>
+      <h4>Automated Reminder Emails</h4>
+      <div class="vendor-reminders-toggle-host"></div>
       <h4>Compliance Follow-up</h4>
       <p class="review-checklist-hint">
         A follow-up task is generated automatically whenever this vendor needs attention (an
@@ -2301,7 +2303,48 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       });
     }
     attachDocChecksForm();
+    attachVendorRemindersToggle(host.querySelector(".vendor-reminders-toggle-host"), v);
     await renderVendorComplianceTasks(host.querySelector(".vendor-compliance-tasks-host"), v);
+  }
+
+  // Off for every vendor by default (see server/data/db.js's
+  // compliance_reminders_enabled migration) -- most vendors' info is
+  // currently out of date, so this is meant to be switched on one vendor
+  // at a time, as each one's email/documents get confirmed, not flipped
+  // on for everyone at once.
+  function attachVendorRemindersToggle(host, v) {
+    function render() {
+      host.innerHTML = `
+        <label class="roster-filter-field">
+          <input type="checkbox" class="vendor-reminders-checkbox" ${v.complianceRemindersEnabled ? "checked" : ""} ${v.email ? "" : "disabled"} />
+          <span>Send automated COI/W-9/ACH renewal reminder emails to this vendor</span>
+        </label>
+        <p class="review-checklist-hint">
+          ${
+            v.email
+              ? `When on, this vendor gets an automated email whenever its COI/W-9/ACH is expired or expiring within 30 days (at most once a week). Off by default -- turn this on once you've confirmed ${escapeHtml(v.email)} is the right address.`
+              : `This vendor has no email on file -- add one before turning reminders on.`
+          }
+        </p>
+      `;
+      const checkbox = host.querySelector(".vendor-reminders-checkbox");
+      if (checkbox) {
+        checkbox.addEventListener("change", async () => {
+          const enabled = checkbox.checked;
+          checkbox.disabled = true;
+          try {
+            const updated = await api.patch(`/api/admin/vendors/${v.id}/compliance-reminders-enabled`, { enabled });
+            Object.assign(v, updated);
+            invalidateVendorsCache();
+          } catch (err) {
+            window.alert(err.message);
+          } finally {
+            render();
+          }
+        });
+      }
+    }
+    render();
   }
 
   async function renderVendorTasksTab(host, v) {

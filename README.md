@@ -2383,20 +2383,43 @@ happen.
 - **Vendor compliance reminders** (`server/utils/
   vendorComplianceReminders.js`). The automated half of "chasing" a vendor
   for an expired or soon-to-expire COI/W-9/ACH: once a day, it finds every
-  vendor with a document expiring within 30 days (or already expired) who
-  has an email on file, and emails them a plain reminder listing exactly
-  which document(s) and date(s) — at most once every 7 days per vendor
-  (`vendors.last_compliance_reminder_at`), so a vendor who's already
-  behind doesn't get a fresh nag every single morning. An admin can also
-  run the same batch on demand from the Vendor Directory (**POST
-  /api/admin/vendors/send-compliance-reminders**) — useful for seeing it
-  work immediately rather than waiting for 9am, though the per-vendor
-  cadence still applies either way. This is deliberately just the
-  outbound-nudge half of the larger COI-automation idea discussed
-  (reading what a vendor sends back, matching it to the right vendor,
-  and auto-approving or auto-kicking-back a document) — that's a
-  separate, higher-risk project to build and test against real documents
-  before trusting it to act on its own.
+  **opted-in** vendor with a document expiring within 30 days (or already
+  expired) who has an email on file, and emails them a plain reminder
+  listing exactly which document(s) and date(s) — at most once every 7
+  days per vendor (`vendors.last_compliance_reminder_at`), so a vendor
+  who's already behind doesn't get a fresh nag every single morning.
+  - **Opt-in, per vendor, off by default** (`vendors.
+    compliance_reminders_enabled`) — almost every existing vendor's
+    documents are already out of date, so turning this on for everyone at
+    once would mean a wave of nag emails the moment it shipped. A vendor's
+    own profile (Onboarding & Compliance tab → **Automated Reminder
+    Emails**) has the toggle (**PATCH
+    /api/admin/vendors/:id/compliance-reminders-enabled**); flip it on one
+    vendor at a time, as you confirm that vendor's email/documents while
+    updating its profile. A vendor with no email on file can't be toggled
+    on until one's added.
+  - **Both the scheduled 9am job and the on-demand batch only ever touch
+    opted-in vendors.** The Vendor Compliance dashboard's **Preview Who'd
+    Be Emailed** button (**GET
+    /api/admin/vendors/compliance-reminders-preview**) is read-only — it
+    shows exactly who the next real send would email and why, without
+    sending anything or touching the cadence timestamp, safe to click
+    repeatedly while confirming the list is right. **Send Reminders Now**
+    (**POST /api/admin/vendors/send-compliance-reminders**) is the real
+    thing — it's gated behind a confirm() naming every vendor it's about
+    to email.
+  - **The scheduled 9am job itself is off until explicitly turned on** —
+    it only starts if `VENDOR_COMPLIANCE_REMINDERS_AUTO=true` is set in
+    the server's environment, so a redeploy of this feature doesn't start
+    it running before anyone's used Preview/Send Now to confirm the list
+    and wording. The Vendor Compliance dashboard shows plainly whether
+    it's currently on or off.
+  - This is deliberately just the outbound-nudge half of the larger
+    COI-automation idea discussed (reading what a vendor sends back,
+    matching it to the right vendor, and auto-approving or
+    auto-kicking-back a document) — that's a separate, higher-risk
+    project to build and test against real documents before trusting it
+    to act on its own.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have
