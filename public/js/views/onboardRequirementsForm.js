@@ -43,12 +43,14 @@ const REQUIRED_COI_LANGUAGE =
 // translated or reworded, since it's quoted contract language a vendor
 // is expected to match exactly on their COI.
 export async function renderOnboardRequirementsForm(container) {
-  // poEmail/paymentContact/w9Name/w9Address are deliberately not editor
-  // inputs -- this form goes out *before* a vendor is in the system (the
-  // first ask sent during outreach), so an admin never has that
-  // information yet to prefill. They stay as real fillable fields in the
-  // generated PDF (see server/utils/onboardRequirementsPdf.js), always
-  // blank from this end, for the vendor to answer when they open it.
+  // companyName/poEmail/paymentContact/w9Name/w9Address are deliberately
+  // not editor inputs -- this is meant to be one reusable blank packet
+  // (the first ask sent during outreach, before a vendor is even in the
+  // system), not something retyped per send. All five stay as real
+  // fillable fields in the generated PDF (see server/utils/
+  // onboardRequirementsPdf.js), left blank here for the vendor to answer
+  // when they open it. The only thing the admin actually picks is the
+  // service type, since that's what the COI limits below depend on.
   const state = {
     service: COI_MATRIX[0].label,
     companyName: "",
@@ -69,19 +71,14 @@ export async function renderOnboardRequirementsForm(container) {
           <h2>Onboard Requirements Form</h2>
           <p class="onboard-req-editor-hint">
             Pick the vendor's type of service to pull in the Toyota-account COI minimum limits, then generate a
-            fillable PDF. The preview below shows what's in it. PO notification email, payment verification contact,
-            and the W-9 name/address are the <strong>vendor's</strong> information to give you back -- they're real,
-            editable fields in the PDF itself, left blank here for the vendor to fill in when they open it. Nothing
-            needs to be printed or signed by hand.
+            fillable PDF. The preview below shows what's in it. Everything else -- company name, PO notification
+            email, payment verification contact, and the W-9 name/address -- is a real, editable field in the PDF
+            itself for the vendor to fill in when they open it. Nothing needs to be printed or signed by hand.
           </p>
           <div class="onboard-req-field-grid">
             <label class="onboard-req-field onboard-req-field-wide">
               <span>Type of service</span>
               <div class="service-combo-mount" id="onboard-req-service"></div>
-            </label>
-            <label class="onboard-req-field onboard-req-field-wide">
-              <span>Name of requested company</span>
-              <input type="text" id="onboard-req-company" value="${escapeHtml(state.companyName)}" placeholder="Vendor company name" />
             </label>
           </div>
           <button type="button" class="btn-primary" id="onboard-req-generate">Download Fillable PDF</button>
@@ -104,10 +101,6 @@ export async function renderOnboardRequirementsForm(container) {
         },
       })
     );
-    editor.querySelector("#onboard-req-company").addEventListener("input", (e) => {
-      state.companyName = e.target.value;
-      renderDocument();
-    });
     const generateBtn = editor.querySelector("#onboard-req-generate");
     const message = editor.querySelector(".save-message");
     generateBtn.addEventListener("click", async () => {
@@ -148,14 +141,6 @@ function hasLimit(v) {
 function blank(value) {
   if (value && value.trim()) return escapeHtml(value.trim());
   return `<span class="onboard-req-fillable">vendor fills in</span>`;
-}
-
-// Company name is static text in the PDF (not a fillable field) -- it's
-// just whatever the admin typed, or nothing, so an empty one reads as a
-// plain placeholder rather than the "vendor fills this in" marker above.
-function adminBlank(value) {
-  if (value && value.trim()) return escapeHtml(value.trim());
-  return `<span class="onboard-req-unset">not set</span>`;
 }
 
 function limitsTableHtml(entry) {
@@ -201,11 +186,11 @@ function documentHtml(state, entry) {
       <h1>Vendor Onboarding Requirements</h1>
 
       <div class="onboard-req-callout">
-        Please complete the highlighted fields below (PO notification email, payment verification contact, and your
-        W-9 name/address), then return this PDF. Nothing needs to be printed or signed by hand.
+        Please complete the highlighted fields below (company name, PO notification email, payment verification
+        contact, and your W-9 name/address), then return this PDF. Nothing needs to be printed or signed by hand.
       </div>
 
-      <div class="onboard-req-line"><strong>Name of Requested Company:</strong> ${adminBlank(state.companyName)}</div>
+      <div class="onboard-req-line"><strong>Name of Requested Company:</strong> ${blank(state.companyName)}</div>
 
       <h3>Confirmations</h3>
       <ul class="onboard-req-list">

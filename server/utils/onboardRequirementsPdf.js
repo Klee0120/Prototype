@@ -242,9 +242,6 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
 
   // --- Title ---
   c.text("Vendor Onboarding Requirements", { size: 19, font: fonts.bold, color: COLOR.accentDark, gap: 4 });
-  if (companyName && companyName.trim()) {
-    c.text(companyName.trim(), { size: 12, font: fonts.bold, color: COLOR.ink, gap: 2 });
-  }
   c.text(`Service type: ${serviceName}`, { size: 10, font: fonts.regular, color: COLOR.muted, gap: 10 });
 
   measuredBox(
@@ -254,11 +251,22 @@ async function buildOnboardRequirementsPdf({ service, companyName, poEmail, paym
     { fillColor: COLOR.accentBg, barColor: COLOR.accent, padding: 9 },
     (inner) => {
       inner.wrapped(
-        "Please complete the highlighted fields below (PO notification email, payment verification contact, and your W-9 name/address), then return this PDF. Nothing needs to be printed or signed by hand.",
+        "Please complete the highlighted fields below (company name, PO notification email, payment verification contact, and your W-9 name/address), then return this PDF. Nothing needs to be printed or signed by hand.",
         { size: 9.5, font: fonts.bold, color: COLOR.accentDark }
       );
     }
   );
+
+  // --- Name of Requested Company (fillable) ---
+  // Admin-prefillable in practice -- whoever's sending this usually knows
+  // who they're sending it to -- but still a real field, not baked-in
+  // static text, since this form is also meant to go out as a blank,
+  // reusable packet (one URL/attachment, not a new one typed up every
+  // time) and nothing here *requires* the admin to know it up front.
+  c.text("Name of Requested Company:", { size: 9.5, font: fonts.bold, gap: 3 });
+  c.ensureSpace(22);
+  addField(form, c.currentPage(), "companyName", { x: MARGIN, y: c.y - 16, width: CONTENT_WIDTH, value: companyName, fonts });
+  c.space(24);
 
   // --- Confirmations (fillable) ---
   c.text("Confirmations", { size: 12.5, font: fonts.bold, color: COLOR.ink, gap: 6 });

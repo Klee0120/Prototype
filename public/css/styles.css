@@ -6744,8 +6744,7 @@ tr.gl-import-shrink-row {
 
 /* A vendor-fillable field (matches a real AcroForm field in the
    generated PDF) reads as a pill, not a blank line -- "this is yours to
-   fill in," not "this is empty." An admin-only optional field (company
-   name, static text in the PDF either way) stays a plain muted label. */
+   fill in," not "this is empty." */
 .onboard-req-fillable {
   display: inline-block;
   background: var(--accent-bg);
@@ -6755,11 +6754,6 @@ tr.gl-import-shrink-row {
   padding: 1px 10px;
   font-size: 12px;
   font-weight: 600;
-}
-
-.onboard-req-unset {
-  color: var(--muted);
-  font-style: italic;
 }
 
 .onboard-req-callout {
