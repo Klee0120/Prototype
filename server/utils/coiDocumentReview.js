@@ -84,7 +84,13 @@ async function extractCoiDocumentText(filePath) {
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      pageTexts.push(content.items.map((item) => item.str).join(" "));
+      // pdfjs marks each text run's own line end via hasEOL -- without
+      // this, every run on a page joins into one flat space-separated
+      // blob with no row boundaries at all, which both reads worse for
+      // the admin's own "what we could read off the document" pane and
+      // starves extractCoiStructuredFields of any way to tell where an
+      // ACORD field (INSURED's name/address, say) actually ends.
+      pageTexts.push(content.items.map((item) => item.str + (item.hasEOL ? "\n" : " ")).join(""));
     }
     return pageTexts.join("\n\n").trim();
   } catch {
@@ -133,7 +139,7 @@ const POLICY_TOKEN_STOPWORDS = /^(POLICY|NUMBER|EFF|EXP|DATE|MM|DD|YYYY|LIMITS|T
 
 function extractCoiStructuredFields(extractedText) {
   const text = String(extractedText || "");
-  const result = { policyNumber: null, carrier: null, expirationDate: null };
+  const result = { policyNumber: null, carrier: null, expirationDate: null, insuredName: null, insuredAddress: null };
   if (!text.trim()) return result;
 
   // An ACORD 25 coverage row flattens to "<policy #> <eff date> <exp
@@ -153,6 +159,34 @@ function extractCoiStructuredFields(extractedText) {
   if (carrierMatch) {
     const carrier = carrierMatch[1].replace(/\s+/g, " ").trim();
     if (carrier) result.carrier = carrier;
+  }
+
+  // The ACORD 25's "INSURED" box names the vendor itself, with its
+  // mailing address directly beneath -- never "ADDITIONAL INSURED"
+  // (that's C&W/Toyota's own box, naming them, not the vendor). Weaker
+  // than the other three fields: a two-column Producer/Insured layout can
+  // flatten in either order depending on the PDF generator, so this
+  // misses often. That's fine here -- unlike policyNumber/carrier/
+  // expirationDate (which land on a real case once confirmed), these two
+  // are only ever a prefill for the vendor picker's search box and its
+  // "create a new vendor" quick-add form; a miss just leaves those boxes
+  // blank, same as before this existed. Name and address are split on the
+  // first token that looks like a street number -- "Acme LLC 123 Main
+  // St" becomes name "Acme LLC", address "123 Main St" -- since a company
+  // name essentially never itself starts with digits.
+  const insuredBlockMatch = text.match(
+    /(?<!ADDITIONAL\s)\bINSURED\b\s*:?\s*([A-Z][^\n]{2,160}?)(?=\s+(?:CERTIFICATE|REVISION|COVERAGES?|PRODUCER|CONTACT|INSURER|THIS)\b|\n|$)/
+  );
+  if (insuredBlockMatch) {
+    const block = insuredBlockMatch[1].replace(/\s+/g, " ").trim();
+    const tokens = block.split(" ");
+    const splitIdx = tokens.findIndex((t) => /^\d/.test(t));
+    if (splitIdx > 0) {
+      result.insuredName = tokens.slice(0, splitIdx).join(" ");
+      result.insuredAddress = tokens.slice(splitIdx).join(" ");
+    } else if (splitIdx === -1 && block) {
+      result.insuredName = block;
+    }
   }
 
   return result;

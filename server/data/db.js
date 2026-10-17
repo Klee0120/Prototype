@@ -1820,6 +1820,21 @@ if (!hasColumn("vendors", "last_compliance_reminder_at")) {
   db.exec("ALTER TABLE vendors ADD COLUMN last_compliance_reminder_at TEXT");
 }
 
+// A vendor's own mailing address and where payment actually gets sent --
+// two different things in practice (a vendor's AP/remit-to address is
+// often a different office, or a bank lockbox, than their main company
+// address), so these are two separate free-text fields rather than one.
+// Neither is ever auto-filled from a document the same way coiPolicyNumber/
+// coiCarrier are on a case -- companyAddress can be *suggested* from a
+// COI's own "INSURED" box (see extractCoiStructuredFields's insuredAddress)
+// when quick-creating a vendor off a pooled document, but it's still just
+// a starting guess typed into a real, editable field before Create &
+// assign is ever clicked, never written straight to the vendor row.
+if (!hasColumn("vendors", "company_address")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN company_address TEXT DEFAULT ''");
+  db.exec("ALTER TABLE vendors ADD COLUMN bill_to_address TEXT DEFAULT ''");
+}
+
 // Per-case fields the redesigned onboarding cases need beyond the existing
 // free-text status/reference_number/note/as_of: an expiration date (every
 // case and any linked waiver needs one, no "no expiration" option), the
@@ -2546,6 +2561,8 @@ function presentVendorRowBase(v) {
     coverageOutsideMidwest: v.coverage_outside_midwest,
     phone: v.phone,
     email: v.email,
+    companyAddress: v.company_address || "",
+    billToAddress: v.bill_to_address || "",
     onlineSourceUrl: v.online_source_url,
     notes: v.notes,
     coiMeetsRequiredLimits: Boolean(v.coi_meets_required_limits),
@@ -2824,6 +2841,8 @@ function createVendor(fields) {
     "coverage_outside_midwest",
     "phone",
     "email",
+    "company_address",
+    "bill_to_address",
     "online_source_url",
     "notes",
     "coi_meets_required_limits",
@@ -2854,6 +2873,8 @@ function createVendor(fields) {
     fields.coverageOutsideMidwest || "",
     fields.phone || "",
     fields.email || "",
+    fields.companyAddress || "",
+    fields.billToAddress || "",
     fields.onlineSourceUrl || "",
     fields.notes || "",
     fields.coiMeetsRequiredLimits ? 1 : 0,
@@ -2909,7 +2930,7 @@ function updateVendor(id, fields) {
       name = ?, jde_vendor_number = ?, cw_status = ?, toyota_status = ?, forms_status = ?,
       raw_status_text = ?, po_email = ?, invoiced_previously = ?, successful_invoice_records = ?,
       successful_since_date = ?, midwest_sites_seen = ?, services = ?, tracker_work_examples = ?,
-      coverage_outside_midwest = ?, phone = ?, email = ?, online_source_url = ?, notes = ?,
+      coverage_outside_midwest = ?, phone = ?, email = ?, company_address = ?, bill_to_address = ?, online_source_url = ?, notes = ?,
       coi_meets_required_limits = ?, coi_meets_language_requirements = ?,
       ${VENDOR_COI_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
       ${VENDOR_FORM_CHECK_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
@@ -2935,6 +2956,8 @@ function updateVendor(id, fields) {
     fields.coverageOutsideMidwest || "",
     fields.phone || "",
     fields.email || "",
+    fields.companyAddress || "",
+    fields.billToAddress || "",
     fields.onlineSourceUrl || "",
     fields.notes || "",
     fields.coiMeetsRequiredLimits ? 1 : 0,

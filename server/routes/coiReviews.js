@@ -19,6 +19,21 @@ router.get("/queue", (req, res) => {
   });
 });
 
+// Read-only extraction preview for a still-unassigned pooled file -- no
+// review row is created, nothing is written, so this is safe to call every
+// time an admin opens "Assign to vendor..." (even repeatedly). Lets the
+// vendor picker prefill its search box with whatever name the document's
+// own "INSURED" box seems to say, which is often enough to jump straight
+// to the right match instead of typing it out by hand -- same spirit as
+// extractedFields on a real review, just read before a vendor's even been
+// picked.
+router.get("/pool/:fileId/preview", async (req, res) => {
+  const file = db.getFile(req.params.fileId);
+  if (!file || file.relatedType !== "coi_pool") return res.status(404).json({ error: "Pooled file not found" });
+  const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, file.storedName));
+  res.json({ extractedText, extractionHints: coiExtractionHints(extractedText), extractedFields: extractCoiStructuredFields(extractedText) });
+});
+
 // Moves a pooled file onto a real vendor (same row -- see db.reassignFile)
 // and immediately starts its review, same as the per-vendor Review COI
 // action, so picking a vendor here lands the admin straight in the review

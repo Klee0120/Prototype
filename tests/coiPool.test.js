@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const { PDFDocument, StandardFonts } = require("pdf-lib");
 
 test("COI pool: an unmatched COI can be uploaded, queued, and assigned onto a vendor", async (t) => {
   const server = await startServer();
@@ -87,4 +88,52 @@ test("COI pool: an unmatched COI can be uploaded, queued, and assigned onto a ve
     });
     assert.equal(res.status, 400);
   });
+});
+
+test("COI pool: the preview route reads extraction without matching or creating anything", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  let y = 740;
+  for (const line of ["INSURED Acme Facilities Maintenance LLC 123 Main St", "CL1234567890 01/01/2025 01/01/2026"]) {
+    page.drawText(line, { x: 40, y, size: 10, font, maxWidth: 530 });
+    y -= 16;
+  }
+  const pdfBytes = Buffer.from(await doc.save());
+
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "coi_pool", relatedId: "pool", category: "coi" },
+    fileName: "unmatched-with-name.pdf",
+    fileContent: pdfBytes,
+    mimeType: "application/pdf",
+  });
+
+  const preview = await server.call("GET", `/api/admin/coi-reviews/pool/${upload.body.id}/preview`, { userId: "ADMIN" });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.extractedFields.insuredName, "Acme Facilities Maintenance LLC");
+  // Regression check: pdfjs's getTextContent joins every text run on a page
+  // with a single space by default, with no line breaks at all, unless the
+  // extraction explicitly honors each run's own hasEOL flag -- without
+  // that, this would swallow the *next* drawn line ("CL1234567890 ...")
+  // straight into the address.
+  assert.equal(preview.body.extractedFields.insuredAddress, "123 Main St");
+  assert.equal(preview.body.extractedFields.policyNumber, "CL1234567890");
+
+  // Read-only -- the file is still sitting in the pool, unassigned, and
+  // calling it again gives the identical result (nothing was consumed or
+  // mutated by looking).
+  const queue = await server.call("GET", "/api/admin/coi-reviews/queue", { userId: "ADMIN" });
+  assert.ok(queue.body.pool.some((f) => f.id === upload.body.id));
+  const secondPreview = await server.call("GET", `/api/admin/coi-reviews/pool/${upload.body.id}/preview`, { userId: "ADMIN" });
+  assert.deepEqual(secondPreview.body.extractedFields, preview.body.extractedFields);
+
+  const notPooled = await server.call("GET", "/api/admin/coi-reviews/pool/999999/preview", { userId: "ADMIN" });
+  assert.equal(notPooled.status, 404);
+
+  const techRes = await server.call("GET", `/api/admin/coi-reviews/pool/${upload.body.id}/preview`, { userId: "T1001" });
+  assert.equal(techRes.status, 403);
 });

@@ -252,25 +252,37 @@ test("coi document review: a technician can't start, approve, or reject a review
   assert.equal(res.status, 403);
 });
 
-test("extractCoiStructuredFields: pulls policy #, carrier, and expiration out of a flattened ACORD row, and stays empty with nothing to find", () => {
+test("extractCoiStructuredFields: pulls policy #, carrier, expiration, and the insured's name/address out of a flattened ACORD row, and stays empty with nothing to find", () => {
   const sample = [
     "ACORD CERTIFICATE OF LIABILITY INSURANCE",
+    "INSURED Acme Facilities Maintenance LLC 123 Main St Springfield IL 62704",
     "INSURER(S) AFFORDING COVERAGE NAIC #",
     "INSURER A : Travelers Casualty and Surety Company 19038",
     "INSR LTR TYPE OF INSURANCE POLICY NUMBER POLICY EFF (MM/DD/YYYY) POLICY EXP (MM/DD/YYYY) LIMITS",
     "A GENERAL LIABILITY CL1234567890 01/01/2025 01/01/2026 EACH OCCURRENCE 1,000,000",
+    "ADDITIONAL INSURED: C&W Facility Services, Inc.",
   ].join("\n");
 
   const fields = extractCoiStructuredFields(sample);
   assert.equal(fields.policyNumber, "CL1234567890");
   assert.equal(fields.carrier, "Travelers Casualty and Surety Company");
   assert.equal(fields.expirationDate, "2026-01-01");
+  assert.equal(fields.insuredName, "Acme Facilities Maintenance LLC", "should pick the vendor's own INSURED box, never ADDITIONAL INSURED (that's C&W/Toyota)");
+  assert.equal(fields.insuredAddress, "123 Main St Springfield IL 62704", "should split the address off at the first street-number-looking token");
 
-  assert.deepEqual(extractCoiStructuredFields(""), { policyNumber: null, carrier: null, expirationDate: null });
+  assert.deepEqual(extractCoiStructuredFields(""), {
+    policyNumber: null,
+    carrier: null,
+    expirationDate: null,
+    insuredName: null,
+    insuredAddress: null,
+  });
   assert.deepEqual(extractCoiStructuredFields("a scanned image with no useful text"), {
     policyNumber: null,
     carrier: null,
     expirationDate: null,
+    insuredName: null,
+    insuredAddress: null,
   });
 });
 

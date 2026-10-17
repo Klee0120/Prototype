@@ -2553,6 +2553,48 @@ happen.
     same way we do for onboarding" — so an admin can tell from the queue
     alone whether a pending document is a vendor's first COI ever or a
     re-review of a case already in some other state.
+  - **Dropping a COI into the pool never auto-matches or auto-creates
+    anything on its own** — it just sits there as "no vendor match yet"
+    until an admin explicitly assigns it, the same "never auto-trust"
+    rule this whole feature follows for coverage data. What changed:
+    "Assign to vendor…" now reads a best-effort `insuredName` guess off
+    the document (`extractCoiStructuredFields`, via a new read-only
+    `GET /pool/:fileId/preview` route that extracts without creating a
+    review or touching the file) and prefills the vendor picker's search
+    box with it — the same lookup-by-name picker the PO Tracker's own
+    "Confirm vendor" flow uses (type a name, click a match), just
+    pre-filled instead of starting blank. A miss just leaves the box
+    empty, same as before. If nothing in the Vendor Directory matches,
+    "+ No match? Create a new vendor" is right there in the same modal —
+    creates a real profile (prefilled with the search term, editable)
+    and assigns the file to it in one step, instead of a separate trip
+    to the Vendor Directory and back. The resulting case always takes
+    its name from that real vendor profile, never from the document
+    text — the document's name is only ever a search hint, never the
+    record of truth.
+  - **Vendor profiles now carry a Company address and a Bill-to/remit-to
+    address** (`companyAddress`/`billToAddress` — new `company_address`/
+    `bill_to_address` columns on `vendors`), editable on the vendor edit
+    form alongside phone/email. They're two separate fields on purpose —
+    a vendor's AP or remit-to address is often a different office (or a
+    bank lockbox) than their main company address. The quick-add-vendor
+    shortcut above also reads a best-effort `insuredAddress` off the
+    COI's own "INSURED" box (`extractCoiStructuredFields`, splitting the
+    captured block on the first street-number-looking token so "Acme LLC
+    123 Main St" becomes name "Acme LLC" / address "123 Main St") and
+    prefills the quick-add form's address field with it — still just a
+    starting guess in a real, editable field, never written to the
+    vendor row until Create & assign is actually clicked.
+  - **Fixed a real extraction bug found while building this**:
+    `extractCoiDocumentText` used to join every text run on a page with a
+    single space, no line breaks at all — pdfjs's `getTextContent` gives
+    each run its own `hasEOL` flag marking a real line end, which wasn't
+    being read. Without it, a field like `insuredAddress` had no way to
+    tell where the INSURED box's address line actually stopped and would
+    run straight into whatever text came next on the page. Now joins on
+    `hasEOL` instead, which also makes the admin's own "what we could
+    read off the document" text pane in the review modal read as actual
+    lines instead of one run-on paragraph.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have

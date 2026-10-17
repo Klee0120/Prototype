@@ -784,6 +784,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       coverageOutsideMidwest: v.coverageOutsideMidwest,
       phone: v.phone,
       email: v.email,
+      companyAddress: v.companyAddress,
+      billToAddress: v.billToAddress,
       onlineSourceUrl: v.onlineSourceUrl,
       notes: v.notes,
       coiMeetsRequiredLimits: v.coiMeetsRequiredLimits,
@@ -2059,6 +2061,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             phone: form.phone.value.trim(),
             email: form.email.value.trim(),
             poEmail: form.poEmail.value.trim(),
+            companyAddress: form.companyAddress.value.trim(),
+            billToAddress: form.billToAddress.value.trim(),
             onlineSourceUrl: form.onlineSourceUrl.value.trim(),
             midwestSitesSeen: form.midwestSitesSeen.value.trim(),
             services: selectedServicesValue(form.services),
@@ -2644,23 +2648,49 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   // A small search-and-pick modal over the vendor list -- not a full
   // combobox component, just a text filter over vendorsCache and a click
-  // to choose, matching the Vendor Directory's own search box.
-  async function openVendorPickerModal(title, onPick) {
+  // to choose, matching the Vendor Directory's own search box (the same
+  // lookup-by-name pattern the PO Tracker's own vendor-confirm picker
+  // uses). opts.initialSearch pre-fills and pre-filters the search box --
+  // used by the COI pool's "Assign to vendor..." flow to seed it with
+  // whatever name the document's own text suggested (see
+  // extractCoiStructuredFields's insuredName), so the common case is just
+  // confirming a match instead of typing the name out by hand. No result
+  // (or the wrong vendor entirely) is always one click from "+ No match?
+  // Create a new vendor", which creates a real profile on the spot and
+  // picks it immediately -- same as always having had to leave, create
+  // the vendor in the Directory, and come back to assign.
+  async function openVendorPickerModal(title, onPick, opts = {}) {
     if (!vendorsCache) vendorsCache = await api.get("/api/admin/vendors");
     const { body, close } = openModal({
       title,
       bodyHtml: `
         <input type="text" class="vendor-picker-search" placeholder="Vendor name" autofocus />
         <div class="review-list vendor-picker-results"></div>
+        <div class="vendor-picker-create">
+          <button type="button" class="btn btn-link vendor-picker-create-toggle">+ No match? Create a new vendor</button>
+          <div class="vendor-picker-create-form modal-form" hidden>
+            <input type="text" class="vendor-picker-create-name" placeholder="New vendor name" />
+            <input type="text" class="vendor-picker-create-address" placeholder="Company address (optional)" />
+            <button type="button" class="btn btn-secondary vendor-picker-create-btn">Create &amp; assign</button>
+          </div>
+        </div>
       `,
     });
     const searchInput = body.querySelector(".vendor-picker-search");
     const results = body.querySelector(".vendor-picker-results");
+    const createToggle = body.querySelector(".vendor-picker-create-toggle");
+    const createForm = body.querySelector(".vendor-picker-create-form");
+    const createNameInput = body.querySelector(".vendor-picker-create-name");
+    const createAddressInput = body.querySelector(".vendor-picker-create-address");
+    const createBtn = body.querySelector(".vendor-picker-create-btn");
+
     function renderResults() {
       const term = searchInput.value.trim().toLowerCase();
       const matches = term ? vendorsCache.filter((v) => v.name.toLowerCase().includes(term)) : vendorsCache;
       if (matches.length === 0) {
-        results.innerHTML = `<p class="empty-note">No vendor matches.</p>`;
+        results.innerHTML = term
+          ? `<p class="empty-note">No vendor profile matches &ldquo;${escapeHtml(searchInput.value.trim())}&rdquo; -- create one below.</p>`
+          : `<p class="empty-note">No vendors yet.</p>`;
         return;
       }
       results.innerHTML = matches
@@ -2679,6 +2709,33 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       });
     }
     searchInput.addEventListener("input", renderResults);
+
+    createToggle.addEventListener("click", () => {
+      createForm.hidden = !createForm.hidden;
+      if (!createForm.hidden) {
+        createNameInput.value = searchInput.value.trim();
+        createAddressInput.value = opts.initialAddress || "";
+      }
+    });
+    createBtn.addEventListener("click", async () => {
+      const name = createNameInput.value.trim();
+      if (!name) {
+        window.alert("Enter a vendor name.");
+        return;
+      }
+      createBtn.disabled = true;
+      try {
+        const vendor = await api.post("/api/admin/vendors", { name, companyAddress: createAddressInput.value.trim() });
+        vendorsCache = null; // stale until the next fetch -- this vendor is brand new
+        close();
+        await onPick(vendor.id);
+      } catch (err) {
+        window.alert(err.message);
+        createBtn.disabled = false;
+      }
+    });
+
+    if (opts.initialSearch) searchInput.value = opts.initialSearch;
     renderResults();
   }
 
@@ -2744,15 +2801,32 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       categories: [{ value: "coi", label: "COI (Certificate of Insurance)" }],
       canUpload: true,
       emptyText: "No unmatched COI documents right now.",
-      onAssignVendor: (file) => {
-        openVendorPickerModal(`Assign "${file.originalName}" to a vendor`, async (vendorId) => {
-          try {
-            const result = await api.post(`/api/admin/coi-reviews/pool/${file.id}/assign-vendor`, { vendorId });
-            openVendorProfile(result.review.vendorId, "documents");
-          } catch (err) {
-            window.alert(err.message);
-          }
-        });
+      onAssignVendor: async (file) => {
+        // Best-effort name/address suggestion off the document itself, read
+        // without creating anything -- a miss just leaves the fields blank,
+        // same as before this existed (see extractCoiStructuredFields's
+        // own comment on why these are weaker than policy#/carrier/exp).
+        let initialSearch = "";
+        let initialAddress = "";
+        try {
+          const preview = await api.get(`/api/admin/coi-reviews/pool/${file.id}/preview`);
+          initialSearch = (preview.extractedFields && preview.extractedFields.insuredName) || "";
+          initialAddress = (preview.extractedFields && preview.extractedFields.insuredAddress) || "";
+        } catch {
+          // No preview, no prefill -- the picker still works, just empty.
+        }
+        openVendorPickerModal(
+          `Assign "${file.originalName}" to a vendor`,
+          async (vendorId) => {
+            try {
+              const result = await api.post(`/api/admin/coi-reviews/pool/${file.id}/assign-vendor`, { vendorId });
+              openVendorProfile(result.review.vendorId, "documents");
+            } catch (err) {
+              window.alert(err.message);
+            }
+          },
+          { initialSearch, initialAddress }
+        );
       },
     });
   }
@@ -3060,6 +3134,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <label class="profile-field"><span>Phone</span><input name="phone" value="${escapeHtml(v.phone || "")}" /></label>
           <label class="profile-field"><span>Email</span><input name="email" value="${escapeHtml(v.email || "")}" /></label>
           <label class="profile-field"><span>PO email</span><input name="poEmail" value="${escapeHtml(v.poEmail || "")}" /></label>
+          <label class="profile-field"><span>Company address</span><textarea name="companyAddress" rows="2">${escapeHtml(v.companyAddress || "")}</textarea></label>
+          <label class="profile-field"><span>Bill-to / remit-to address</span><textarea name="billToAddress" rows="2">${escapeHtml(v.billToAddress || "")}</textarea></label>
           <label class="profile-field"><span>Online source URL</span><input name="onlineSourceUrl" value="${escapeHtml(v.onlineSourceUrl || "")}" /></label>
           <label class="profile-field"><span>Midwest sites seen</span><input name="midwestSitesSeen" value="${escapeHtml(v.midwestSitesSeen || "")}" /></label>
           <label class="profile-field"><span>Services</span>${renderServicesSelect(v.services || "")}</label>

@@ -1209,3 +1209,42 @@ test("vendors: Invoice History rolls up reconciled GL lines by vendor", async (t
     assert.equal(res.body.length, 2, "still just this vendor's two lines -- the other vendor's GL hit is excluded");
   });
 });
+
+test("vendors: companyAddress and billToAddress persist and survive unrelated saves", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const created = await server.call("POST", "/api/admin/vendors", {
+    userId: "ADMIN",
+    body: { name: "Addressed Co", companyAddress: "123 Main St, Springfield IL 62704" },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.companyAddress, "123 Main St, Springfield IL 62704");
+  assert.equal(created.body.billToAddress, "", "defaults to empty, not null, when never set");
+  const vendorId = created.body.id;
+
+  const withBillTo = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+    userId: "ADMIN",
+    body: { name: "Addressed Co", companyAddress: "123 Main St, Springfield IL 62704", billToAddress: "PO Box 55, Chicago IL 60601" },
+  });
+  assert.equal(withBillTo.status, 200);
+  assert.equal(withBillTo.body.billToAddress, "PO Box 55, Chicago IL 60601");
+
+  // An unrelated edit through the same PATCH route (e.g. just changing the
+  // phone number) must echo both addresses back unchanged -- updateVendor
+  // rewrites the whole row on every save, so any caller that forgets to
+  // resend these would silently blank them.
+  const unrelatedEdit = await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+    userId: "ADMIN",
+    body: {
+      name: "Addressed Co",
+      companyAddress: "123 Main St, Springfield IL 62704",
+      billToAddress: "PO Box 55, Chicago IL 60601",
+      phone: "555-0100",
+    },
+  });
+  assert.equal(unrelatedEdit.status, 200);
+  assert.equal(unrelatedEdit.body.companyAddress, "123 Main St, Springfield IL 62704");
+  assert.equal(unrelatedEdit.body.billToAddress, "PO Box 55, Chicago IL 60601");
+  assert.equal(unrelatedEdit.body.phone, "555-0100");
+});
