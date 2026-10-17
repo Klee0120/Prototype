@@ -2457,6 +2457,43 @@ happen.
   - Both are final for that review: a corrected document gets reviewed
     fresh (a new row against the new file) rather than reopening an old
     decision.
+  - **Approving or rejecting drives the vendor's `coiMeetsRequiredLimits`/
+    `coiMeetsLanguageRequirements`/`coiIsAcord25_2016_03`/`coiMatchesW9`
+    flags automatically now** (`applyCoiReviewOutcomeToVendor` in
+    `server/data/db.js`) — these used to be separate manual checkboxes on
+    the vendor's Document Compliance form (an editable limits grid, plus
+    two checkbox pairs) that duplicated exactly what a real per-document
+    review now decides; that manual form has been removed. Approving sets
+    all four true; rejecting clears only the ones the chosen reasons
+    actually implicate (a coverage-limit reason clears
+    `coiMeetsRequiredLimits`, `"language"` clears
+    `coiMeetsLanguageRequirements`, `"acord25"` clears
+    `coiIsAcord25_2016_03`, `"certHolder"` clears `coiMatchesW9`), leaving
+    the others at whatever they already were. Nothing that reads these
+    flags (e.g. the VPO waiver requirement) had to change.
+- **COI Reviews queue** (Vendors → **COI Reviews**,
+  `server/routes/coiReviews.js`). Cross-vendor visibility the per-vendor
+  routes above don't give on their own — before this, the only way to
+  know a COI review existed was to already be on that specific vendor's
+  Documents tab. Two sections:
+  - **Unmatched COI** — a document that's come in with no vendor match
+    yet (today, uploaded here directly, since inbound email capture isn't
+    built; later, this is where an inbound document that couldn't be
+    auto-matched would land). Files live under a new `files.related_type`
+    value, `"coi_pool"` (one fixed bucket, `related_id` always the
+    literal string `"pool"`, admin-only read/write like `vendor`/`task`/
+    `po`) rather than requiring a task to exist first just to hold them.
+    **Assign to vendor…** opens a search-and-pick modal over the vendor
+    list; picking one repoints the same file row onto that vendor
+    (`db.reassignFile` — same `id`/`storedName`/`uploadedAt`, not a
+    re-upload) and immediately starts its review, landing the admin
+    straight on that vendor's Documents tab.
+  - **Pending Review** — every still-open review across every vendor
+    (`db.listPendingCoiReviewsAcrossVendors`), each linking straight into
+    that vendor's Documents tab.
+  - A COI's row on its own vendor's Documents tab also shows a Pending
+    Review/Approved/Rejected badge now, so the outcome doesn't require
+    reopening Review COI to see.
 - **SMS was considered but isn't built.** It needs a paid third-party
   provider (e.g. Twilio) and a phone number on file for every technician —
   a bigger decision than email, which most workplaces already have
