@@ -2471,6 +2471,26 @@ happen.
     `coiIsAcord25_2016_03`, `"certHolder"` clears `coiMatchesW9`), leaving
     the others at whatever they already were. Nothing that reads these
     flags (e.g. the VPO waiver requirement) had to change.
+  - **The W-9 and ACH document checks got the same treatment.** The
+    vendor's Document Compliance form used to also have "W-9 document
+    checks" (5 checkboxes) and "ACH document checks" (3 checkboxes) --
+    redundant with the W-9 and Payment/ACH onboarding cases' own existing
+    "Review notes · select issues" checklist (`REVIEW_NOTES_OPTIONS` in
+    `adminReview.js`), which already covered the same ground per-case.
+    Both checkbox sections are gone; `applyCaseReviewOutcomeToVendorFormChecks`
+    in `server/data/db.js` now drives `w9SignedDated`/`w9CorrectVersion`
+    (from the W-9 case) and `achBankLetterhead`/`achHasW9Name`/
+    `achHasW9Address` (from the Payment/ACH case) the same way COI's do —
+    approving the case sets its mapped flags true, picking a specific
+    review-note issue (`not_signed_dated`, `incorrect_version`,
+    `not_on_bank_letterhead`, `doesnt_match_w9_name`,
+    `doesnt_match_w9_address`) clears only that one. Three narrower W-9
+    checks (`w9HasPhone`/`w9HasRemitToAddress`/`w9HasName`) had no
+    matching review-note option to drive them from and were dropped
+    outright, not just unchecked — they're no longer in
+    `VENDOR_FORM_CHECK_FIELDS`, so `formChecksComplete` no longer waits on
+    them. What's left on the Document Compliance form is just the blank
+    invoice date, which never had a case-level or review-level home.
 - **COI Reviews queue** (Vendors → **COI Reviews**,
   `server/routes/coiReviews.js`). Cross-vendor visibility the per-vendor
   routes above don't give on their own — before this, the only way to

@@ -2839,24 +2839,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
   }
 
-  // Matches VENDOR_FORM_CHECK_FIELDS' camelCase keys in server/data/db.js --
-  // each is a checkbox <input name="..."> in the vendor edit form below.
-  // The two COI checks (ACORD 25 form, matches W-9) used to live here as
-  // manual checkboxes but are now driven automatically by the real COI
-  // Review workflow (approve/reject on the actual document -- see
-  // db.js's approveCoiDocumentReview/rejectCoiDocumentReview), so they're
-  // not in this list or this form at all anymore.
-  const FORM_CHECK_KEYS = [
-    "w9SignedDated",
-    "w9CorrectVersion",
-    "w9HasPhone",
-    "w9HasRemitToAddress",
-    "w9HasName",
-    "achBankLetterhead",
-    "achHasW9Name",
-    "achHasW9Address",
-  ];
-
   // A vendor can do more than one kind of work (electrical AND HVAC, say)
   // -- currentValue is the stored "|"-joined string (see splitServices
   // above). This just reserves the spot in the form's markup; the actual
@@ -2908,37 +2890,26 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // db.js's approveCoiDocumentReview/rejectCoiDocumentReview for where
   // coiMeetsRequiredLimits/coiMeetsLanguageRequirements/coiIsAcord25_2016_03/
   // coiMatchesW9 get set now -- automatically, from that real decision.
+  // The only thing left here now that COI/W-9/ACH document checks have all
+  // moved to real per-document workflows (COI Review for COI; the W-9 and
+  // Payment/ACH onboarding cases' own "Review notes · select issues"
+  // checklist for those two, see applyCaseReviewOutcomeToVendorFormChecks
+  // in db.js) is the blank invoice date -- there's no case-level or
+  // review-level home for that one, it's just tracked here directly.
   function renderVendorDocChecksForm(v) {
     return `
       <form class="vendor-doc-checks-form">
-        <h4>W-9 document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual W-9 document uploaded on the vendor's Documents panel.</p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="w9SignedDated" ${v.formChecks.w9SignedDated ? "checked" : ""} /> Signed and dated</label>
-          <label><input type="checkbox" name="w9CorrectVersion" ${v.formChecks.w9CorrectVersion ? "checked" : ""} /> October 2018 or March 2024 version</label>
-          <label><input type="checkbox" name="w9HasPhone" ${v.formChecks.w9HasPhone ? "checked" : ""} /> Has phone number</label>
-          <label><input type="checkbox" name="w9HasRemitToAddress" ${v.formChecks.w9HasRemitToAddress ? "checked" : ""} /> Has remit-to address</label>
-          <label><input type="checkbox" name="w9HasName" ${v.formChecks.w9HasName ? "checked" : ""} /> Has vendor name</label>
-        </div>
         <label class="profile-field vendor-w9-invoice-field">
           <span>Blank invoice date on file${v.w9InvoiceStale ? ` <span class="badge badge-rejected">Over 2 years old</span>` : ""}</span>
           <input type="date" name="w9InvoiceDate" value="${v.w9InvoiceDate || ""}" />
         </label>
-
-        <h4>ACH document checks</h4>
-        <p class="review-checklist-hint">Verified against the actual ACH/bank letter uploaded on the vendor's Documents panel.</p>
-        <div class="vendor-coi-checks">
-          <label><input type="checkbox" name="achBankLetterhead" ${v.formChecks.achBankLetterhead ? "checked" : ""} /> On bank letterhead</label>
-          <label><input type="checkbox" name="achHasW9Name" ${v.formChecks.achHasW9Name ? "checked" : ""} /> Has W-9 name</label>
-          <label><input type="checkbox" name="achHasW9Address" ${v.formChecks.achHasW9Address ? "checked" : ""} /> Has W-9 address</label>
-        </div>
         ${
           !v.formChecksComplete || v.w9InvoiceStale || v.poEmailMismatch
-            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks above aren't confirmed yet. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old. " : ""}${v.poEmailMismatch ? `The email on a generated PO didn't match what's on file (saw ${escapeHtml(v.poEmailMismatchExtracted || "")}).` : ""}</p>`
+            ? `<p class="split-row-warning">${!v.formChecksComplete ? "One or more document checks (COI/W-9/ACH) aren't confirmed yet -- see the COI/W-9/Payment cases above. " : ""}${v.w9InvoiceStale ? "The blank invoice on file is over 2 years old. " : ""}${v.poEmailMismatch ? `The email on a generated PO didn't match what's on file (saw ${escapeHtml(v.poEmailMismatchExtracted || "")}).` : ""}</p>`
             : ""
         }
         <div class="vendor-edit-actions">
-          <button type="submit" class="btn btn-primary">Save document checks</button>
+          <button type="submit" class="btn btn-primary">Save</button>
           <span class="save-message doc-checks-save-message"></span>
         </div>
       </form>
@@ -2949,28 +2920,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // Compliance modal (its only caller now) gets the same save behavior
   // without duplicating it. `onSaved(updatedVendor)` lets the caller decide
   // what else needs refreshing (the vendors cache, a badge elsewhere).
+  // formChecks is never overridden here -- nothing in this form edits any
+  // COI/W-9/ACH check anymore, so vendorFullPayload's own default (echoing
+  // v.formChecks unchanged) is exactly right.
   function wireVendorDocChecksForm(docChecksForm, v, onSaved) {
     docChecksForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = docChecksForm.querySelector(".save-message");
       try {
-        const updated = await api.patch(
-          `/api/admin/vendors/${v.id}`,
-          vendorFullPayload(v, {
-            // formChecks is rewritten whole on every save (see
-            // updateVendor) -- the two COI keys aren't in this form
-            // anymore (see renderVendorDocChecksForm's comment), so they
-            // have to be echoed back from the vendor's current value or
-            // saving the W-9/ACH checks here would silently blank
-            // whatever the real COI Review workflow just set.
-            formChecks: {
-              coiIsAcord25_2016_03: v.formChecks.coiIsAcord25_2016_03,
-              coiMatchesW9: v.formChecks.coiMatchesW9,
-              ...Object.fromEntries(FORM_CHECK_KEYS.map((key) => [key, docChecksForm[key].checked])),
-            },
-            w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null,
-          })
-        );
+        const updated = await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { w9InvoiceDate: docChecksForm.w9InvoiceDate.value || null }));
         msg.textContent = "Saved.";
         onSaved(updated);
       } catch (err) {

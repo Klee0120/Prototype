@@ -2429,14 +2429,27 @@ const VENDOR_COI_FIELDS = [
 // (coverage amounts) above, and from formsStatus (currency/expiration).
 // A vendor with any of these unchecked shows up as needing attention
 // (formChecksComplete below), same idea as an outdated form.
+// w9HasPhone/w9HasRemitToAddress/w9HasName used to be in this list too --
+// dropped (not just unchecked) once their only UI, the manual "W-9
+// document checks" section, was removed as redundant with the W-9 case's
+// own review-notes checklist (see applyCaseReviewOutcomeToVendorFormChecks
+// below), which has no equivalent for these three narrower checks. Leaving
+// them in the list with no way to ever set them again would have
+// permanently blocked formChecksComplete for every vendor that didn't
+// already have all three true.
+// w9HasPhone/w9HasRemitToAddress/w9HasName used to be in this list too --
+// dropped (not just unchecked) once their only UI, the manual "W-9
+// document checks" section, was removed as redundant with the W-9 case's
+// own review-notes checklist (see applyCaseReviewOutcomeToVendorFormChecks
+// further down), which has no equivalent for these three narrower checks.
+// Leaving them in the list with no way to ever set them again would have
+// permanently blocked formChecksComplete for every vendor that didn't
+// already have all three true.
 const VENDOR_FORM_CHECK_FIELDS = [
   ["coiIsAcord25_2016_03", "coi_is_acord25_2016_03"],
   ["coiMatchesW9", "coi_matches_w9"],
   ["w9SignedDated", "w9_signed_dated"],
   ["w9CorrectVersion", "w9_correct_version"],
-  ["w9HasPhone", "w9_has_phone"],
-  ["w9HasRemitToAddress", "w9_has_remit_to_address"],
-  ["w9HasName", "w9_has_name"],
   ["achBankLetterhead", "ach_bank_letterhead"],
   ["achHasW9Name", "ach_has_w9_name"],
   ["achHasW9Address", "ach_has_w9_address"],
@@ -4044,6 +4057,44 @@ function listOnboardingCaseSummaries() {
   return summaries;
 }
 
+// Drives the same vendor-level form-check columns the old manual "W-9
+// document checks"/"ACH document checks" checkboxes used to set by hand --
+// now set automatically from the real W-9/Payment onboarding case
+// (approving it, or the specific issues picked on its "Review notes ·
+// select issues" checklist), mirroring applyCoiReviewOutcomeToVendor's
+// approach for the COI case. Only w9/payment cases have a mapping here;
+// coi and blank_invoice cases are no-ops (COI's own equivalent is the real
+// COI Review workflow, not this case-save path; blank_invoice never had
+// form-check columns of its own).
+const CASE_REVIEW_NOTE_TO_FORM_CHECK = {
+  [ONBOARDING_CASE_TYPE_BY_KEY.w9]: {
+    not_signed_dated: "w9_signed_dated",
+    incorrect_version: "w9_correct_version",
+  },
+  [ONBOARDING_CASE_TYPE_BY_KEY.payment]: {
+    not_on_bank_letterhead: "ach_bank_letterhead",
+    doesnt_match_w9_name: "ach_has_w9_name",
+    doesnt_match_w9_address: "ach_has_w9_address",
+  },
+};
+
+function applyCaseReviewOutcomeToVendorFormChecks(vendorId, requestType, { status, reviewNotesSelected = [] }) {
+  const mapping = CASE_REVIEW_NOTE_TO_FORM_CHECK[requestType];
+  if (!mapping) return;
+  const now = new Date().toISOString();
+  if (status === "Approved") {
+    const sets = Object.values(mapping).map((col) => `${col} = 1`);
+    db.prepare(`UPDATE vendors SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`).run(now, Number(vendorId));
+    return;
+  }
+  const sets = [];
+  for (const [noteKey, col] of Object.entries(mapping)) {
+    if (reviewNotesSelected.includes(noteKey)) sets.push(`${col} = 0`);
+  }
+  if (sets.length === 0) return;
+  db.prepare(`UPDATE vendors SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`).run(now, Number(vendorId));
+}
+
 function addVendorRequest(vendorId, requestType, fields = {}) {
   const now = new Date().toISOString();
   const {
@@ -4081,6 +4132,7 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     now,
     now
   );
+  applyCaseReviewOutcomeToVendorFormChecks(vendorId, requestType, { status: finalStatus, reviewNotesSelected });
   touchVendorActivity(vendorId);
   syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
@@ -4126,6 +4178,7 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     requestId,
     vendorId
   );
+  applyCaseReviewOutcomeToVendorFormChecks(vendorId, requestType, { status: finalStatus, reviewNotesSelected });
   touchVendorActivity(vendorId);
   syncParentStage(vendorId);
   syncOnboardingStage(vendorId);

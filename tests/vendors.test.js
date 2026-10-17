@@ -200,6 +200,71 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     assert.equal(fresh.body.w9InvoiceStale, false);
   });
 
+  // The W-9/ACH document checks above used to be separate manual
+  // checkboxes -- now the real W-9/Payment onboarding cases drive the same
+  // columns automatically (see applyCaseReviewOutcomeToVendorFormChecks in
+  // db.js), same precedent as the COI case driving its own two flags.
+  await t.test("approving the W-9 case sets w9SignedDated/w9CorrectVersion true", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - W8/W9", status: "Approved" },
+    });
+    assert.equal(res.status, 201);
+
+    const vendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendorId);
+    assert.equal(vendor.formChecks.w9SignedDated, true);
+    assert.equal(vendor.formChecks.w9CorrectVersion, true);
+  });
+
+  await t.test("flagging a specific W-9 review-note issue clears only that one flag", async () => {
+    const w9Request = (await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" })).body.find(
+      (r) => r.requestType === "Onboarding - W8/W9"
+    );
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${w9Request.id}`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - W8/W9", status: "Revisions needed", reviewNotesSelected: ["not_signed_dated"] },
+    });
+    assert.equal(res.status, 200);
+
+    const vendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendorId);
+    assert.equal(vendor.formChecks.w9SignedDated, false);
+    // Not implicated by "not_signed_dated" -- stays whatever it already was (true, from the Approved save above).
+    assert.equal(vendor.formChecks.w9CorrectVersion, true);
+  });
+
+  await t.test("approving the Payment/ACH case sets all three ACH checks true", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - Payment Details", status: "Approved" },
+    });
+    assert.equal(res.status, 201);
+
+    const vendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendorId);
+    assert.equal(vendor.formChecks.achBankLetterhead, true);
+    assert.equal(vendor.formChecks.achHasW9Name, true);
+    assert.equal(vendor.formChecks.achHasW9Address, true);
+  });
+
+  await t.test("flagging two ACH review-note issues clears just those two flags", async () => {
+    const achRequest = (await server.call("GET", `/api/admin/vendors/${vendorId}/requests`, { userId: "ADMIN" })).body.find(
+      (r) => r.requestType === "Onboarding - Payment Details"
+    );
+    const res = await server.call("PATCH", `/api/admin/vendors/${vendorId}/requests/${achRequest.id}`, {
+      userId: "ADMIN",
+      body: {
+        requestType: "Onboarding - Payment Details",
+        status: "Revisions needed",
+        reviewNotesSelected: ["not_on_bank_letterhead", "doesnt_match_w9_name"],
+      },
+    });
+    assert.equal(res.status, 200);
+
+    const vendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendorId);
+    assert.equal(vendor.formChecks.achBankLetterhead, false);
+    assert.equal(vendor.formChecks.achHasW9Name, false);
+    assert.equal(vendor.formChecks.achHasW9Address, true, "not implicated by either chosen reason");
+  });
+
   await t.test("editing an unknown vendor 404s", async () => {
     const res = await server.call("PATCH", "/api/admin/vendors/999999", {
       userId: "ADMIN",
