@@ -57,6 +57,51 @@ function accessBadge(f) {
 }
 
 /**
+ * A document that arrived before it was clear which record it belonged to
+ * gets parked on a task instead (see tasks.js's own Documents panel) -- this
+ * widget is the other end of that: once the record is known, assign the
+ * file here rather than re-uploading it, which moves the same file (not a
+ * copy) from the task onto this record. options: { relatedType, relatedId,
+ * categories: [{value,label}], actionLabel }
+ */
+export async function renderAssignTaskDocumentControl(host, opts, onAssigned) {
+  let pending = [];
+  try {
+    pending = await api.get("/api/files/task-documents");
+  } catch {
+    pending = [];
+  }
+  if (pending.length === 0) {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML = `
+    <div class="vendor-assign-task-doc">
+      <select class="vendor-assign-task-doc-select">
+        ${pending
+          .map((f) => `<option value="${escapeHtml(f.id)}">${escapeHtml(f.originalName)} — from task: ${escapeHtml(f.taskTitle || "(task deleted)")}</option>`)
+          .join("")}
+      </select>
+      <select class="vendor-assign-task-doc-category">
+        ${opts.categories.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
+      </select>
+      <button type="button" class="btn btn-secondary vendor-assign-task-doc-btn">${escapeHtml(opts.actionLabel || "Assign to this record")}</button>
+    </div>
+  `;
+  host.querySelector(".vendor-assign-task-doc-btn").addEventListener("click", async () => {
+    const fileId = host.querySelector(".vendor-assign-task-doc-select").value;
+    const category = host.querySelector(".vendor-assign-task-doc-category").value;
+    try {
+      await api.patch(`/api/files/${fileId}/relocate`, { relatedType: opts.relatedType, relatedId: opts.relatedId, category });
+      await onAssigned();
+      await renderAssignTaskDocumentControl(host, opts, onAssigned);
+    } catch (err) {
+      window.alert(err.message);
+    }
+  });
+}
+
+/**
  * Renders a self-contained document manager (compliance cards, search +
  * category filter, a unified table, and a drag-and-drop upload zone) into
  * `host`. options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,

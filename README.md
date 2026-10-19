@@ -527,6 +527,22 @@ Demo logins:
     vendor it belonged to, relocated here via `PATCH
     /api/files/:id/relocate` -- same bytes on disk, no re-upload), and
     Vendor Info (name, statuses, contact fields).
+  - **"Assign a pending task document" isn't vendor-only.** The widget
+    itself is `renderAssignTaskDocumentControl` in `attachments.js`
+    (shared, not duplicated) -- it takes `relatedType`/`relatedId`/
+    `categories` rather than being hardcoded to a vendor, backed by the
+    already-generic `GET /api/files/task-documents` (every file still
+    sitting on some task, across the whole app) and `PATCH /api/files/
+    :id/relocate` (which already validated any `relatedType` via
+    `CATEGORY_BY_RELATED`, including `technician: ["tech_form",
+    "document"]`). The Technician profile's **Forms on File** tab
+    (`drawForms` in `technicianProfile.js`) mounts the same control next
+    to its Forms & Certifications panel, so a form/cert that came in
+    before anyone filed it against a specific technician -- a
+    certification emailed in cold, say -- moves onto that technician's
+    own record the same way a COI moves onto a vendor's, with no
+    re-upload. Admin-only, same as the vendor case (`GET
+    /task-documents` 403s for a non-admin).
   - **Onboarding & Compliance tab** (`VENDOR_PROFILE_TABS`,
     `renderVendorOnboardingTab`) on the vendor's own profile page holds
     **Onboarding cases** (the approval badge, the welcome-email checkbox,

@@ -352,6 +352,53 @@ test("files: assigning a task-parked document onto a vendor", async (t) => {
   });
 });
 
+// Same mechanism, the other direction the Technician profile's Forms on
+// File tab uses it from: a form/cert that arrived before it was filed
+// against a specific technician moves onto that technician's own record.
+test("files: assigning a task-parked document onto a technician", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const task = await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "File cert once technician confirmed" } });
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "task", relatedId: String(task.body.id), category: "document" },
+    fileName: "osha-cert.pdf",
+    mimeType: "application/pdf",
+  });
+  const fileId = upload.body.id;
+
+  await t.test("assigning it onto the technician moves it there, off the task", async () => {
+    const res = await server.call("PATCH", `/api/files/${fileId}/relocate`, {
+      userId: "ADMIN",
+      body: { relatedType: "technician", relatedId: "T1001", category: "tech_form" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.relatedType, "technician");
+    assert.equal(res.body.relatedId, "T1001");
+
+    const onTech = await server.call("GET", "/api/files?relatedType=technician&relatedId=T1001", { userId: "ADMIN" });
+    assert.ok(onTech.body.some((f) => f.originalName === "osha-cert.pdf"), "expected the relocated file on T1001's record");
+
+    const onTask = await server.call("GET", `/api/files?relatedType=task&relatedId=${task.body.id}`, { userId: "ADMIN" });
+    assert.equal(onTask.body.length, 0);
+  });
+
+  await t.test("rejects relocating onto a technician that doesn't exist", async () => {
+    const upload2 = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "task", relatedId: String(task.body.id), category: "document" },
+      fileName: "second.pdf",
+      mimeType: "application/pdf",
+    });
+    const res = await server.call("PATCH", `/api/files/${upload2.body.id}/relocate`, {
+      userId: "ADMIN",
+      body: { relatedType: "technician", relatedId: "T9999", category: "tech_form" },
+    });
+    assert.equal(res.status, 404);
+  });
+});
+
 test("files: restricted access", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

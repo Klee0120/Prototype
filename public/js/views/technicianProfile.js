@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { state, escapeHtml, setUser, refreshHeader } from "../app.js";
-import { renderAttachments } from "./attachments.js";
+import { renderAttachments, renderAssignTaskDocumentControl } from "./attachments.js";
 import { wireDateMaskInput, usFromIso, isoFromUs } from "../dateMask.js";
 import { openModal } from "../modal.js";
 import { getTerritory } from "../globalFilters.js";
@@ -1091,15 +1091,32 @@ export function renderTechniciansTab(content, openTo) {
   }
 
   async function drawForms(tabContent, tech) {
-    await renderAttachments(tabContent, {
-      title: "Forms & Certifications",
-      relatedType: "technician",
-      relatedId: tech.id,
-      categories: [{ value: "tech_form", label: "Form / Certification" }],
-      canUpload: true,
-      emptyText: "No forms on file.",
-      trackExpiration: true,
-    });
+    tabContent.innerHTML = `<div class="tech-forms-panel"></div><div class="tech-assign-task-doc-host"></div>`;
+    const formsPanel = tabContent.querySelector(".tech-forms-panel");
+    const refreshForms = () =>
+      renderAttachments(formsPanel, {
+        title: "Forms & Certifications",
+        relatedType: "technician",
+        relatedId: tech.id,
+        categories: [{ value: "tech_form", label: "Form / Certification" }],
+        canUpload: true,
+        emptyText: "No forms on file.",
+        trackExpiration: true,
+      });
+    await refreshForms();
+    await renderAssignTaskDocumentControl(
+      tabContent.querySelector(".tech-assign-task-doc-host"),
+      {
+        relatedType: "technician",
+        relatedId: tech.id,
+        categories: [
+          { value: "tech_form", label: "Form / Certification" },
+          { value: "document", label: "Document" },
+        ],
+        actionLabel: "Assign to this technician",
+      },
+      refreshForms
+    );
   }
 
   async function drawRemarks(tabContent, tech) {

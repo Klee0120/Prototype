@@ -1,7 +1,7 @@
 import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
-import { renderAttachments } from "./attachments.js";
+import { renderAttachments, renderAssignTaskDocumentControl } from "./attachments.js";
 import { renderTechniciansTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
@@ -1988,49 +1988,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     { value: "vendor_other", label: "Other Vendor Document" },
   ];
 
-  // A COI (or other document) that arrived before it was clear which
-  // vendor it belonged to gets parked on a task instead (see tasks.js's
-  // own Documents panel) -- this is the other end of that: once the
-  // vendor's known, assign it here rather than re-uploading it, which
-  // moves the same file (not a copy) from the task onto this vendor's
-  // own record.
-  async function renderAssignTaskDocumentControl(host, v, onAssigned) {
-    let pending = [];
-    try {
-      pending = await api.get("/api/files/task-documents");
-    } catch {
-      pending = [];
-    }
-    if (pending.length === 0) {
-      host.innerHTML = "";
-      return;
-    }
-    host.innerHTML = `
-      <div class="vendor-assign-task-doc">
-        <select class="vendor-assign-task-doc-select">
-          ${pending
-            .map((f) => `<option value="${escapeHtml(f.id)}">${escapeHtml(f.originalName)} — from task: ${escapeHtml(f.taskTitle || "(task deleted)")}</option>`)
-            .join("")}
-        </select>
-        <select class="vendor-assign-task-doc-category">
-          ${VENDOR_DOC_CATEGORIES.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
-        </select>
-        <button type="button" class="btn btn-secondary vendor-assign-task-doc-btn">Assign to this vendor</button>
-      </div>
-    `;
-    host.querySelector(".vendor-assign-task-doc-btn").addEventListener("click", async () => {
-      const fileId = host.querySelector(".vendor-assign-task-doc-select").value;
-      const category = host.querySelector(".vendor-assign-task-doc-category").value;
-      try {
-        await api.patch(`/api/files/${fileId}/relocate`, { relatedType: "vendor", relatedId: v.id, category });
-        await onAssigned();
-        await renderAssignTaskDocumentControl(host, v, onAssigned);
-      } catch (err) {
-        window.alert(err.message);
-      }
-    });
-  }
-
   // The profile's "Edit vendor" button -- just the editable fields, in a
   // focused modal, rather than a giant form embedded in the page itself.
   // Onboarding/cost-history/documents each have their own profile tab now,
@@ -2485,7 +2442,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       });
     };
     await refreshDocumentsPanel();
-    await renderAssignTaskDocumentControl(host.querySelector(".vendor-assign-task-doc-host"), v, refreshDocumentsPanel);
+    await renderAssignTaskDocumentControl(
+      host.querySelector(".vendor-assign-task-doc-host"),
+      { relatedType: "vendor", relatedId: v.id, categories: VENDOR_DOC_CATEGORIES, actionLabel: "Assign to this vendor" },
+      refreshDocumentsPanel
+    );
   }
 
   // The admin-review half of the COI workflow: start (or resume) a review
