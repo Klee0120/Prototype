@@ -15,6 +15,7 @@ const CATEGORY_LABELS = {
   coi: "COI (Certificate of Insurance)",
   w9: "W-9",
   ach: "ACH / Bank Letter",
+  check: "Canceled/Voided Check",
   vpo_waiver: "VPO Waiver",
   vendor_other: "Other Vendor Document",
   po_doc: "PO Document",
@@ -22,6 +23,7 @@ const CATEGORY_LABELS = {
   quote_revision: "Approved Quote Revision",
   invoice: "Invoice Document",
   blank_invoice: "Blank Invoice Template",
+  hold_harmless: "Hold Harmless Agreement",
 };
 
 function formatSize(bytes) {
@@ -107,10 +109,12 @@ export async function renderAssignTaskDocumentControl(host, opts, onAssigned) {
  * `host`. options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,
  *            trackExpiration: true adds Type + Expiration date fields to the upload form and
  *            shows them (with an Expired/Expires badge) on each file row -- used for Forms on File.
- *            requiredCategories: [value, ...] -- categories that should always have at least one
- *            file on file; each gets a compliance card up top with a "Missing" badge when it
- *            doesn't (e.g. a vendor's COI/W-9/ACH/VPO waiver). Omit where there's no fixed
- *            compliance set to check against.
+ *            requiredCategories: [value | {anyOf: [value,...], label}, ...] -- categories that
+ *            should always have at least one file on file; each gets a compliance card up top
+ *            with a "Missing" badge when it doesn't (e.g. a vendor's COI/W-9/VPO waiver). An
+ *            {anyOf, label} entry is one card satisfied by ANY of several categories having a
+ *            file (e.g. an ACH form OR a canceled check both count as proof of payment method).
+ *            Omit where there's no fixed compliance set to check against.
  *            groupByCategory was the old grouped-sections layout; the unified table + category
  *            filter below replaces it, so this option is no longer read. }
  */
@@ -180,9 +184,17 @@ export async function renderAttachments(host, opts) {
     const cardsHost = host.querySelector(".attachments-compliance-cards");
     if (!cardsHost) return;
     cardsHost.innerHTML = opts.requiredCategories
-      .map((catValue) => {
-        const label = (opts.categories.find((c) => c.value === catValue) || {}).label || CATEGORY_LABELS[catValue] || catValue;
-        const count = allFiles.filter((f) => f.category === catValue).length;
+      .map((entry) => {
+        // A plain string is one required category; { anyOf, label } is a
+        // requirement satisfied by ANY of several categories (e.g. an ACH
+        // form OR a canceled check both count as proof of payment method)
+        // -- one card, missing only if none of them has a file.
+        const catValues = typeof entry === "string" ? [entry] : entry.anyOf;
+        const label =
+          typeof entry === "string"
+            ? (opts.categories.find((c) => c.value === entry) || {}).label || CATEGORY_LABELS[entry] || entry
+            : entry.label;
+        const count = allFiles.filter((f) => catValues.includes(f.category)).length;
         return `
           <div class="compliance-card${count === 0 ? " compliance-card-missing" : ""}">
             <span class="compliance-card-label">${escapeHtml(label)}</span>

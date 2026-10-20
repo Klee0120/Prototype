@@ -25,7 +25,12 @@ const CATEGORY_BY_RELATED = {
   // orphaned by a relatedType change -- "labor_report" the type now covers
   // four report kinds, distinguished by category, all filed by month/year.
   labor_report: new Set(["labor_report", "wom_report", "financial_report", "gl_report"]),
-  vendor: new Set(["coi", "w9", "ach", "vpo_waiver", "blank_invoice", "vendor_other"]),
+  // "check" is a canceled/voided check, the alternate proof of payment
+  // method to an ACH form -- either satisfies the same requirement (see
+  // adminReview.js's requiredCategories anyOf entry). "hold_harmless" is
+  // never required -- an optional agreement some vendors have on file at
+  // onboarding, available the same way Blank Invoice is.
+  vendor: new Set(["coi", "w9", "ach", "check", "vpo_waiver", "blank_invoice", "hold_harmless", "vendor_other"]),
   // A document that's come in (e.g. a COI from Aon) but isn't ready to be
   // filed against a specific vendor's own record yet -- attach it to a
   // task instead, so it's tracked and doesn't get lost, without the file

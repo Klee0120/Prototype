@@ -152,6 +152,50 @@ test("coi document review: approve creates a ServiceEdge task naming the vendor'
   assert.ok(audit.body.some((e) => e.action === "VENDOR_COI_REVIEW_APPROVED" && e.details.includes("Territory Co")));
 });
 
+// Approving used to call db.createTask directly with no sourceKey, so
+// every COI approval for the same vendor (an annual renewal reviewed and
+// approved the same way as the first submission) created a brand new
+// "Submit approved COI to ServiceEdge" task that never replaced the
+// earlier one -- these stacked up as duplicates with nothing to tell them
+// apart, which is exactly what Krista reported seeing.
+test("coi document review: approving a renewal reuses the same ServiceEdge task instead of creating a duplicate", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Renewal Task Co" } });
+  const vendor = vendorRes.body;
+
+  async function reviewAndApprove() {
+    const upload = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+      fileName: "coi.pdf",
+      fileContent: await buildFakePdf(["placeholder"]),
+      mimeType: "application/pdf",
+    });
+    const review = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload.body.id}/coi-review`, { userId: "ADMIN" })).body;
+    return server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review.id}/approve`, { userId: "ADMIN" });
+  }
+
+  const first = await reviewAndApprove();
+  assert.equal(first.status, 200);
+  const firstTaskId = first.body.task.id;
+
+  // Mark it done, the way an admin would once they'd actually entered it
+  // in ServiceEdge -- the next renewal should REOPEN this same task, not
+  // leave it completed and spawn a second one.
+  await server.call("PATCH", `/api/admin/tasks/${firstTaskId}`, { userId: "ADMIN", body: { status: "completed" } });
+
+  const second = await reviewAndApprove();
+  assert.equal(second.status, 200);
+  assert.equal(second.body.task.id, firstTaskId, "the renewal's approval reuses the same task row, not a new one");
+  assert.equal(second.body.task.status, "open", "reopened, not left completed");
+
+  const allTasks = await server.call("GET", "/api/tasks?view=unassigned", { userId: "ADMIN" });
+  const serviceEdgeTasks = allTasks.body.filter((t) => t.category === "coi_review_serviceedge" && t.relatedVendorId === vendor.id);
+  assert.equal(serviceEdgeTasks.length, 1, "exactly one ServiceEdge task for this vendor, not one per approval");
+});
+
 test("coi document review: reject requires reasons from the review's own checklist, and emails the vendor", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
@@ -193,13 +237,14 @@ test("coi document review: reject requires reasons from the review's own checkli
   assert.match(entry.details, /Certificate Holder/);
 
   // Only the two legacy flags implicated by the chosen reasons flip false
-  // -- "Meets required limits"/"meets language" are untouched since
-  // neither a limit key nor "language" was picked.
+  // -- "Meets required limits"/"meets language" are untouched (stay at
+  // their assumed-compliant default) since neither a limit key nor
+  // "language" was picked.
   const rejectedVendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendor.id);
   assert.equal(rejectedVendor.formChecks.coiIsAcord25_2016_03, false);
   assert.equal(rejectedVendor.formChecks.coiMatchesW9, false);
-  assert.equal(rejectedVendor.coiMeetsRequiredLimits, false, "defaults false, never set true for this vendor");
-  assert.equal(rejectedVendor.coiMeetsLanguageRequirements, false, "defaults false, never set true for this vendor");
+  assert.equal(rejectedVendor.coiMeetsRequiredLimits, true, "untouched by this rejection -- stays at the assumed-compliant default");
+  assert.equal(rejectedVendor.coiMeetsLanguageRequirements, true, "untouched by this rejection -- stays at the assumed-compliant default");
 });
 
 test("coi document review: rejecting a coverage-limit reason clears only coiMeetsRequiredLimits", async (t) => {
@@ -230,8 +275,9 @@ test("coi document review: rejecting a coverage-limit reason clears only coiMeet
 
   const rejectedVendor = (await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" })).body.find((v) => v.id === vendor.id);
   assert.equal(rejectedVendor.coiMeetsRequiredLimits, false);
-  // Nothing else was implicated by this one reason.
-  assert.equal(rejectedVendor.coiMeetsLanguageRequirements, false, "defaults false, never set true for this vendor");
+  // Nothing else was implicated by this one reason -- stays at the
+  // assumed-compliant default.
+  assert.equal(rejectedVendor.coiMeetsLanguageRequirements, true, "untouched by this rejection -- stays at the assumed-compliant default");
   assert.equal(rejectedVendor.formChecks.coiIsAcord25_2016_03, false, "defaults false, never set true for this vendor");
 });
 

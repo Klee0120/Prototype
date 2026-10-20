@@ -605,6 +605,59 @@ Demo logins:
   clears the other -- and the same `reinstateVendor`/"Reinstate" (worded
   "Reopen onboarding" in this context) clears whichever is set and lets
   the stage resume deriving from real case history.
+- **Documents tab compliance checklist: ACH-or-Check, a real VPO default,
+  the real waiver reasons, and a Hold Harmless category.** Four fixes to
+  the vendor Documents tab's "missing" checklist:
+  - **ACH is no longer hard-required on its own** -- it's "ACH or Check"
+    (`requiredCategories` can now take an `{anyOf, label}` entry alongside
+    a plain category string, satisfied by either having a file --
+    `renderAttachments`'s own compliance-card renderer handles both
+    shapes), since a canceled/voided check is just as valid proof of
+    payment method. New `check` upload category alongside it.
+  - **The VPO Waiver card used to default to "missing" for almost every
+    vendor.** `coiMeetsRequiredLimits`/`coiMeetsLanguageRequirements` only
+    ever flip true once a COI is actually approved through COI Review --
+    fine for vendors onboarded that way, but the vast majority of the
+    292+ vendor base predates that feature entirely and was reading as
+    "doesn't meet requirements" just because no one had run their COI
+    through this specific review, not because anything was ever actually
+    found wrong with it. Both `createVendor` and `updateVendor` had the
+    same underlying bug: `fields.x ? 1 : 0` silently wrote `false` for
+    *every* vendor creation and *every* unrelated profile edit that
+    didn't happen to round-trip the field (the Edit vendor modal does via
+    `vendorFullPayload`, but nothing guaranteed every other caller would)
+    -- wiping out a real approval the next time someone just fixed a
+    phone number. Both now default/preserve to `true` unless a caller
+    explicitly says otherwise, and the schema default + a one-time
+    startup backfill flip every vendor currently stuck at the old `false`
+    default to `true`, *except* a vendor with an actual rejected COI
+    Review on file implicating that specific reason (read from
+    `coi_document_reviews.rejected_reasons_json`) -- those keep their
+    real `false`.
+  - **The VPO waiver reason dropdown now uses the real standardized
+    wording** (`VPO_WAIVER_REASONS` in both `db.js` and `adminReview.js`)
+    instead of the earlier placeholder "Limits/Missing Coverage/Both":
+    A) E&O/Professional Liability not applicable to the services
+    provided, B) carrier doesn't offer it, C) cost-prohibitive, D) Other
+    (explanation goes in the waiver's own Notes field).
+  - **New optional `hold_harmless` category** ("Hold Harmless Agreement")
+    -- available to upload like Blank Invoice, never flagged as missing;
+    not every vendor has one on file, but it's common enough at
+    onboarding to deserve its own category instead of living under
+    "Other Vendor Document."
+- **COI approval reuses one ServiceEdge task per vendor, not one per
+  approval.** `POST /:id/coi-reviews/:reviewId/approve`'s "Submit
+  approved COI to ServiceEdge" task used to call `db.createTask` directly
+  with no `sourceKey` -- so every COI approval for the same vendor (an
+  annual renewal reviewed and approved the same way as the first
+  submission, especially now that "Start new COI case" above makes
+  renewals a repeatable action) created a brand-new, never-deduplicated
+  task that piled up alongside the others with nothing to tell them
+  apart. Now goes through `upsertTaskBySourceKey` with a stable
+  `VENDOR-{id}-COI-SERVICEEDGE` key, same as the vendor compliance
+  follow-up task already did -- a renewal's approval reopens the same
+  task (with that approval's own date/territory text) if the earlier one
+  was already completed, instead of spawning a second one.
 - **Vendor edit modal is the general profile; onboarding and compliance
   live in their own profile tab.** These used to be two intermixed
   concerns on the same scrolling page (case status, document-compliance

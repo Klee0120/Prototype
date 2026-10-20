@@ -395,7 +395,14 @@ router.post("/:id/coi-reviews/:reviewId/approve", (req, res) => {
   const updated = db.approveCoiDocumentReview(review.id, { reviewerId: req.user.id, reviewerName: req.user.name, policyNumber, carrier, expirationDate });
   const territories = db.getVendorTerritories(vendor.id);
   const territoryText = territories.length ? territories.join(", ") : "no territory on file yet from PO/WOM history -- confirm manually";
-  const task = db.createTask({
+  // One task per vendor (not one per review/approval) -- this used to call
+  // db.createTask directly with no sourceKey, so every COI approval for
+  // the same vendor (an annual renewal, a reject-then-reapprove cycle)
+  // created a brand new, never-deduplicated task, stacking up duplicates
+  // the admin had no way to tell apart. upsertTaskBySourceKey reopens the
+  // same task (with this approval's own details) if a prior one was
+  // already completed, instead of creating a second one.
+  const task = db.upsertTaskBySourceKey(`VENDOR-${vendor.id}-COI-SERVICEEDGE`, {
     title: `Submit approved COI to ServiceEdge for ${vendor.name}`,
     description: `${req.user.name} approved this vendor's COI on ${new Date().toLocaleDateString()}. ServiceEdge has no API today, so this still needs to be entered there by hand as an Onboarding - COI case. Territory (from this vendor's PO/WOM invoice history): ${territoryText}.`,
     category: "coi_review_serviceedge",

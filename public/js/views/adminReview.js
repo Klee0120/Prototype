@@ -1595,8 +1595,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       </details>
     `;
   }
+  // Mirrors db.js's VPO_WAIVER_REASONS exactly -- the real, standardized
+  // reasons a vendor gives for not meeting the E&O/Professional Liability
+  // coverage requirement. "other" always needs its own explanation,
+  // entered in the waiver's own Notes box below rather than a separate
+  // field.
+  const VPO_WAIVER_REASONS = [
+    { key: "not_applicable", label: "A. E&O/Professional Liability coverage is not applicable to the type of services our company provides." },
+    { key: "carrier_unavailable", label: "B. Our insurance carrier does not offer E&O/Professional Liability coverage for our type of operations." },
+    { key: "cost_prohibitive", label: "C. Obtaining E&O/Professional Liability coverage solely to meet this requirement would be cost-prohibitive based on our company size and/or scope of work." },
+    { key: "other", label: "D. Other -- please provide a brief explanation." },
+  ];
   function vpoWaiverReasonLabel(reason) {
-    return { limits: "Limits", missing_coverage: "Missing Coverage", both: "Limits & Missing Coverage" }[reason] || "Not set";
+    const found = VPO_WAIVER_REASONS.find((r) => r.key === reason);
+    return found ? found.label : "Not set";
   }
   const VPO_WAIVER_STATUS_OPTIONS = ["not_started", "in_review", "approved", "denied"];
   const VPO_WAIVER_STATUS_LABELS = { not_started: "Not started", in_review: "In review", approved: "Approved", denied: "Denied" };
@@ -1609,18 +1621,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return `
       <div class="onboarding-vpo-waiver-panel">
         <div class="onboarding-vpo-waiver-heading">VPO Waiver</div>
+        <p class="review-checklist-hint">Which best describes why this vendor can't meet the E&amp;O/Professional Liability requirement? Pick A, B, C, or D.</p>
         <select class="onboarding-vpo-waiver-reason">
           <option value="">Reason…</option>
-          <option value="limits" ${w && w.reason === "limits" ? "selected" : ""}>Limits</option>
-          <option value="missing_coverage" ${w && w.reason === "missing_coverage" ? "selected" : ""}>Missing Coverage</option>
-          <option value="both" ${w && w.reason === "both" ? "selected" : ""}>Limits & Missing Coverage</option>
+          ${VPO_WAIVER_REASONS.map((r) => `<option value="${r.key}" ${w && w.reason === r.key ? "selected" : ""}>${escapeHtml(r.label)}</option>`).join("")}
         </select>
         <input type="text" class="onboarding-vpo-waiver-case-number" placeholder="Waiver case # (optional)" value="${escapeHtml(w ? w.caseNumber || "" : "")}" />
         <select class="onboarding-vpo-waiver-status">
           ${VPO_WAIVER_STATUS_OPTIONS.map((s) => `<option value="${s}" ${w && w.status === s ? "selected" : ""}>${VPO_WAIVER_STATUS_LABELS[s]}</option>`).join("")}
         </select>
         <label class="onboarding-vpo-waiver-expiration-label">Expiration <input type="date" class="onboarding-vpo-waiver-expiration" value="${w && w.expirationDate ? w.expirationDate.slice(0, 10) : ""}" /></label>
-        <textarea class="onboarding-vpo-waiver-notes" placeholder="Waiver notes (optional)">${escapeHtml(w ? w.notes || "" : "")}</textarea>
+        <textarea class="onboarding-vpo-waiver-notes" placeholder="${w && w.reason === "other" ? "Brief explanation (required for Other)" : "Waiver notes (optional)"}">${escapeHtml(w ? w.notes || "" : "")}</textarea>
         <button type="button" class="btn btn-secondary onboarding-vpo-waiver-save">Save Waiver</button>
         ${w ? `<span class="wom-desc">Waiver: ${escapeHtml(vpoWaiverReasonLabel(w.reason))} — <span class="badge badge-${caseStatusBadgeClass(w.status === "approved" ? "Approved" : w.status === "denied" ? "Denied" : "")}">${VPO_WAIVER_STATUS_LABELS[w.status]}</span></span>` : ""}
       </div>
@@ -2188,8 +2199,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     { value: "coi", label: "COI (Certificate of Insurance)" },
     { value: "w9", label: "W-9" },
     { value: "ach", label: "ACH / Bank Letter" },
+    { value: "check", label: "Canceled/Voided Check" },
     { value: "vpo_waiver", label: "VPO Waiver" },
     { value: "blank_invoice", label: "Blank Invoice Template" },
+    { value: "hold_harmless", label: "Hold Harmless Agreement" },
     { value: "vendor_other", label: "Other Vendor Document" },
   ];
 
@@ -2617,8 +2630,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const documentsPanel = host.querySelector(".vendor-documents-panel");
     // A VPO waiver is only needed when the vendor's COI falls short of the
     // standard required limits or language requirements -- it's the sign-off
-    // on that exception, not a blanket requirement every vendor needs.
-    const requiredCategories = ["coi", "w9", "ach", "blank_invoice"];
+    // on that exception, not a blanket requirement every vendor needs. These
+    // two flags default true (assumed compliant) and only ever go false from
+    // a real COI Review rejection implicating that specific reason -- see
+    // applyCoiReviewOutcomeToVendor in db.js -- so a vendor who's simply
+    // never had a COI reviewed here doesn't show this as missing.
+    const requiredCategories = ["coi", "w9", { anyOf: ["ach", "check"], label: "ACH or Check (payment method)" }, "blank_invoice"];
     if (!v.coiMeetsRequiredLimits || !v.coiMeetsLanguageRequirements) requiredCategories.push("vpo_waiver");
     const refreshDocumentsPanel = async () => {
       // The latest review per file, so a COI's row shows whether it's

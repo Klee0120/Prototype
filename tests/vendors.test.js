@@ -152,6 +152,45 @@ test("vendors: onboarding/compliance tracker CRUD + authorization", async (t) =>
     assert.equal(vendor.formChecks.coiIsAcord25_2016_03, false);
   });
 
+  // coiMeetsRequiredLimits/coiMeetsLanguageRequirements drive the Documents
+  // tab's VPO Waiver compliance card -- the vast majority of the vendor
+  // base predates COI Review entirely and will never have these touched by
+  // applyCoiReviewOutcomeToVendor, so they must default (and stay) true,
+  // or the card reads "this COI falls short" for a vendor nothing was ever
+  // actually found wrong with.
+  await t.test("a freshly created vendor is assumed to meet COI limits/language requirements", async () => {
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.coiMeetsRequiredLimits, true);
+    assert.equal(vendor.coiMeetsLanguageRequirements, true);
+  });
+
+  await t.test("an unrelated profile edit never silently resets those two flags", async () => {
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", phone: "555-0111" },
+    });
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.coiMeetsRequiredLimits, true, "an edit that doesn't mention this field must not reset it");
+    assert.equal(vendor.coiMeetsLanguageRequirements, true, "an edit that doesn't mention this field must not reset it");
+  });
+
+  await t.test("explicitly setting one of them false sticks through a later unrelated edit", async () => {
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", coiMeetsRequiredLimits: false },
+    });
+    await server.call("PATCH", `/api/admin/vendors/${vendorId}`, {
+      userId: "ADMIN",
+      body: { name: "Momentum Mechanical", phone: "555-0122" },
+    });
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.coiMeetsRequiredLimits, false, "a real false value must survive an unrelated later edit");
+    assert.equal(vendor.coiMeetsLanguageRequirements, true, "untouched by either edit");
+  });
+
   await t.test("checking every document box makes formChecksComplete true", async () => {
     const allChecked = {
       coiIsAcord25_2016_03: true,

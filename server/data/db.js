@@ -254,8 +254,8 @@ db.exec(`
     email TEXT DEFAULT '',
     online_source_url TEXT DEFAULT '',
     notes TEXT DEFAULT '',
-    coi_meets_required_limits INTEGER NOT NULL DEFAULT 0,
-    coi_meets_language_requirements INTEGER NOT NULL DEFAULT 0,
+    coi_meets_required_limits INTEGER NOT NULL DEFAULT 1,
+    coi_meets_language_requirements INTEGER NOT NULL DEFAULT 1,
     coi_gl_liability_occ TEXT DEFAULT '',
     coi_gl_liability_agg TEXT DEFAULT '',
     coi_auto_liability TEXT DEFAULT '',
@@ -1487,11 +1487,44 @@ for (const col of VENDOR_COI_TEXT_COLUMNS) {
   }
 }
 if (!hasColumn("vendors", "coi_meets_required_limits")) {
-  db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_required_limits INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_required_limits INTEGER NOT NULL DEFAULT 1");
 }
 if (!hasColumn("vendors", "coi_meets_language_requirements")) {
-  db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_language_requirements INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE vendors ADD COLUMN coi_meets_language_requirements INTEGER NOT NULL DEFAULT 1");
 }
+// One-time backfill for every vendor stuck at the OLD default (0/false)
+// from before these two flipped to defaulting true -- the Documents tab's
+// "VPO Waiver" compliance card used to read every never-reviewed vendor
+// (the vast majority of the 292+ vendor base, which predates COI Review
+// entirely) as "doesn't meet requirements" just because no one had run
+// their COI through this system's own review yet, not because anything
+// was actually ever found wrong with it. Only a vendor with a REAL
+// rejected COI review implicating these specific reasons (see
+// applyCoiReviewOutcomeToVendor's own COI_LIMIT_KEY_RE) has a genuine 0
+// to preserve; every other 0 here is backfilled to 1 (assume compliant
+// unless actually proven otherwise). Safe to run on every startup --
+// it only ever touches a vendor currently at 0 with no such review.
+db.prepare(
+  `UPDATE vendors SET coi_meets_required_limits = 1
+   WHERE coi_meets_required_limits = 0
+   AND id NOT IN (
+     SELECT vendor_id FROM coi_document_reviews
+     WHERE status = 'rejected' AND rejected_reasons_json IS NOT NULL
+     AND (rejected_reasons_json LIKE '%glOcc%' OR rejected_reasons_json LIKE '%glAgg%'
+          OR rejected_reasons_json LIKE '%auto%' OR rejected_reasons_json LIKE '%wc%'
+          OR rejected_reasons_json LIKE '%exs%' OR rejected_reasons_json LIKE '%eAndO%'
+          OR rejected_reasons_json LIKE '%pol%' OR rejected_reasons_json LIKE '%crime%'
+          OR rejected_reasons_json LIKE '%productsComplOpAgg%')
+   )`
+).run();
+db.prepare(
+  `UPDATE vendors SET coi_meets_language_requirements = 1
+   WHERE coi_meets_language_requirements = 0
+   AND id NOT IN (
+     SELECT vendor_id FROM coi_document_reviews
+     WHERE status = 'rejected' AND rejected_reasons_json LIKE '%language%'
+   )`
+).run();
 
 // Specific per-document compliance checks admin verifies against the real
 // attached file (COI/W-9/ACH) -- separate from coi_meets_required_limits
@@ -2920,8 +2953,14 @@ function createVendor(fields) {
     fields.billToAddress || "",
     fields.onlineSourceUrl || "",
     fields.notes || "",
-    fields.coiMeetsRequiredLimits ? 1 : 0,
-    fields.coiMeetsLanguageRequirements ? 1 : 0,
+    // Assumed compliant (true) unless the caller explicitly says
+    // otherwise -- these should only ever go false from a real COI Review
+    // rejection implicating that specific reason (applyCoiReviewOutcome
+    // ToVendor), never just because a vendor was created with no opinion
+    // on the subject yet. A plain `fields.x ? 1 : 0` would silently
+    // default to 0 (false) for every ordinary vendor creation.
+    fields.coiMeetsRequiredLimits === false ? 0 : 1,
+    fields.coiMeetsLanguageRequirements === false ? 0 : 1,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
     // Defaults to "not_started", same as every vendor imported before this
@@ -3008,8 +3047,21 @@ function updateVendor(id, fields) {
     fields.billToAddress || "",
     fields.onlineSourceUrl || "",
     fields.notes || "",
-    fields.coiMeetsRequiredLimits ? 1 : 0,
-    fields.coiMeetsLanguageRequirements ? 1 : 0,
+    // Preserve the existing value unless the caller explicitly includes
+    // this field -- a plain `fields.x ? 1 : 0` would silently reset it to
+    // false on EVERY unrelated profile edit that doesn't happen to round-
+    // trip it (vendorFullPayload does, but nothing guarantees every
+    // caller will), wiping out a real COI Review approval/rejection the
+    // next time someone just fixes a phone number. Same preserve-if-
+    // omitted pattern as onboardingStage/deniedReason below.
+    fields.coiMeetsRequiredLimits != null ? (fields.coiMeetsRequiredLimits ? 1 : 0) : existing.coiMeetsRequiredLimits ? 1 : 0,
+    fields.coiMeetsLanguageRequirements != null
+      ? fields.coiMeetsLanguageRequirements
+        ? 1
+        : 0
+      : existing.coiMeetsLanguageRequirements
+        ? 1
+        : 0,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
     ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : existing.onboardingStage,
@@ -4035,7 +4087,18 @@ const FORM_STATUS_COLUMN_BY_KEY = {
 };
 const FORM_STATUSES = ["not_requested", "requested", "gathering", "received", "not_required"];
 const PARENT_STAGES = ["gathering_forms", "cases_started", "document_review", "ready_for_toyota", "submitted_to_toyota", "approved"];
-const VPO_WAIVER_REASONS = ["limits", "missing_coverage", "both"];
+// The real, standardized reasons a vendor gives for not meeting the
+// E&O/Professional Liability coverage requirement -- what the VPO waiver
+// is actually waiving. "other" always needs its own explanation, stored
+// on the waiver's own `notes` field (the same free-text box the form
+// already has), not a separate column.
+const VPO_WAIVER_REASONS = [
+  { key: "not_applicable", label: "A. E&O/Professional Liability coverage is not applicable to the type of services our company provides." },
+  { key: "carrier_unavailable", label: "B. Our insurance carrier does not offer E&O/Professional Liability coverage for our type of operations." },
+  { key: "cost_prohibitive", label: "C. Obtaining E&O/Professional Liability coverage solely to meet this requirement would be cost-prohibitive based on our company size and/or scope of work." },
+  { key: "other", label: "D. Other -- please provide a brief explanation." },
+];
+const VPO_WAIVER_REASON_KEYS = VPO_WAIVER_REASONS.map((r) => r.key);
 const VPO_WAIVER_STATUSES = ["not_started", "in_review", "approved", "denied"];
 
 function presentVpoWaiver(w) {
@@ -4063,7 +4126,7 @@ function getVpoWaiverForRequest(vendorRequestId) {
 function addOrUpdateVpoWaiver(vendorRequestId, { reason, caseNumber, status, expirationDate, notes } = {}) {
   const now = new Date().toISOString();
   const existing = db.prepare("SELECT id FROM vpo_waivers WHERE vendor_request_id = ?").get(vendorRequestId);
-  const safeReason = VPO_WAIVER_REASONS.includes(reason) ? reason : "";
+  const safeReason = VPO_WAIVER_REASON_KEYS.includes(reason) ? reason : "";
   const safeStatus = VPO_WAIVER_STATUSES.includes(status) ? status : "not_started";
   if (existing) {
     db.prepare(
