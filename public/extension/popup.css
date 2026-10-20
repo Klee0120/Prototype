@@ -213,6 +213,20 @@ textarea.note-input {
   margin-bottom: 4px;
 }
 
+.ref-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ref-input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
 .search-results {
   display: flex;
   flex-direction: column;

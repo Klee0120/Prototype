@@ -2,6 +2,7 @@ import {
   TIME_LOG_CATEGORIES,
   INSTANT_LOG_CATEGORIES,
   ESTIMATED_LOG_CATEGORIES,
+  REF_FIELD_DEFS,
   STALE_WARNING_SECONDS,
   getSession,
   setSession,
@@ -39,12 +40,15 @@ let afterStartCategory = null;
 let resolveSearchResults = [];
 let resolveSearchTimer = null;
 let resolveFreeText = "";
+// The resolve-stop form's own copy of the reference fields -- not saved
+// live like the running-entry panel's copy, only sent along with the rest
+// of the stop. Reset alongside resolveFreeText at the same points.
+let resolveRefFields = {};
 
 let poSearchResults = [];
 let poSearchTimer = null;
 
 let lastInstantEntry = null;
-let instantNoteSaveTimer = null;
 let instantPoSearchResults = [];
 let instantPoSearchTimer = null;
 
@@ -92,6 +96,44 @@ function categoryRequiresLink(key) {
 }
 function instantCategoryDef(key) {
   return INSTANT_LOG_CATEGORIES.find((c) => c.key === key) || null;
+}
+
+// Mirrors timeTracker.js's renderRefFieldsHtml/wireRefFields exactly --
+// shared markup/wiring for the 5 optional reference-number inputs across
+// the three places they show up (running-entry card, instant-log confirm
+// card, stop-link resolve form).
+function renderRefFieldsHtml(values = {}) {
+  return `
+    <div class="ref-grid">
+      ${REF_FIELD_DEFS.map(
+        (f) => `<input type="text" class="ref-input" data-field="${f.key}" placeholder="${escapeHtml(t(f.label))}" value="${escapeHtml(values[f.key] || "")}" />`
+      ).join("")}
+    </div>
+  `;
+}
+// save(fields) persists one field's value; debounced per-field (keyed by
+// `${namespace}:${field}`, since the running-entry card and the instant-
+// log confirm card can both be on screen at once, each needs its own save
+// function and its own timer namespace) so typing in one box never
+// clobbers another's pending save.
+const refFieldSaveTimers = {};
+function wireRefFields(host, save, namespace) {
+  host.querySelectorAll(".ref-input").forEach((input) => {
+    const key = input.dataset.field;
+    const timerKey = `${namespace}:${key}`;
+    const commit = () => {
+      clearTimeout(refFieldSaveTimers[timerKey]);
+      save({ [key]: input.value.trim() });
+    };
+    input.addEventListener("input", () => {
+      clearTimeout(refFieldSaveTimers[timerKey]);
+      refFieldSaveTimers[timerKey] = setTimeout(commit, 700);
+    });
+    input.addEventListener("blur", commit);
+  });
+}
+function resolveHasAnyRef() {
+  return Boolean(resolveFreeText.trim()) || REF_FIELD_DEFS.some((f) => (resolveRefFields[f.key] || "").trim());
 }
 
 function liveElapsedSeconds() {
@@ -241,6 +283,7 @@ async function stopCurrent(fields = {}) {
     current = null;
     resolvingStop = null;
     resolveFreeText = "";
+    resolveRefFields = {};
     resolveSearchResults = [];
     await setCachedCurrent(null);
     notifyBadge();
@@ -261,13 +304,23 @@ async function stopCurrent(fields = {}) {
 function requestStop(continueToCategory) {
   if (!current) return;
   afterStartCategory = continueToCategory || null;
-  const needsLink = categoryRequiresLink(current.category) && !current.relatedPoId && !current.relatedVendorId;
+  // A PO category's link requirement is also satisfied by having typed any
+  // of the reference-number fields already (while running, via the
+  // current-entry card) -- only a vendor category still requires a real
+  // vendor pick. Mirrors timeTracker.js's requestStop exactly.
+  const hasRefField = REF_FIELD_DEFS.some((f) => current[f.key]);
+  const needsLink =
+    categoryRequiresLink(current.category) &&
+    !current.relatedPoId &&
+    !current.relatedVendorId &&
+    !(categoryTracksPo(current.category) && hasRefField);
   if (!needsLink) {
     stopCurrent();
     return;
   }
   resolvingStop = current;
   resolveFreeText = "";
+  resolveRefFields = {};
   resolveSearchResults = [];
   renderApp();
 }
@@ -277,6 +330,7 @@ function cancelResolveStop() {
   afterStartCategory = null;
   armedCategory = null;
   resolveFreeText = "";
+  resolveRefFields = {};
   resolveSearchResults = [];
   renderApp();
 }
@@ -503,12 +557,13 @@ function renderResolveForm() {
       <div class="resolve-results"></div>
       ${
         !isVendor
-          ? `<p class="resolve-or">${escapeHtml(t("No matching PO? Describe it instead:"))}</p>
-             <input type="text" class="link-search-input resolve-freetext-input" placeholder="${escapeHtml(t("PO description or code..."))}" value="${escapeHtml(resolveFreeText)}" />`
+          ? `<p class="resolve-or">${escapeHtml(t("No matching PO? Describe it and/or fill in whatever reference numbers you have -- any one is enough to sync it later:"))}</p>
+             <input type="text" class="link-search-input resolve-freetext-input" placeholder="${escapeHtml(t("Description (optional)"))}" value="${escapeHtml(resolveFreeText)}" />
+             ${renderRefFieldsHtml(resolveRefFields)}`
           : ""
       }
       <div class="resolve-actions">
-        <button type="button" class="btn btn-primary resolve-confirm-btn" ${!isVendor && !resolveFreeText.trim() ? "disabled" : ""}>${escapeHtml(t("Stop & save"))}</button>
+        <button type="button" class="btn btn-primary resolve-confirm-btn" ${!isVendor && !resolveHasAnyRef() ? "disabled" : ""}>${escapeHtml(t("Stop & save"))}</button>
         <button type="button" class="btn btn-secondary resolve-cancel-btn">${escapeHtml(t("Cancel"))}</button>
       </div>
     </div>
@@ -572,13 +627,25 @@ function renderApp() {
       freeTextInput.addEventListener("input", () => {
         resolveFreeText = freeTextInput.value;
         const confirmBtn = document.querySelector(".resolve-confirm-btn");
-        if (confirmBtn) confirmBtn.disabled = !resolveFreeText.trim();
+        if (confirmBtn) confirmBtn.disabled = !resolveHasAnyRef();
       });
     }
+    document.querySelectorAll(".ref-input").forEach((input) => {
+      input.addEventListener("input", () => {
+        resolveRefFields[input.dataset.field] = input.value;
+        const confirmBtn = document.querySelector(".resolve-confirm-btn");
+        if (confirmBtn) confirmBtn.disabled = !resolveHasAnyRef();
+      });
+    });
     document.querySelector(".resolve-confirm-btn")?.addEventListener("click", () => {
       const isVendor = categoryDef(resolvingStop.category).tracksVendor;
       if (isVendor) return;
-      stopCurrent({ note: resolveFreeText.trim() });
+      const refFields = {};
+      for (const f of REF_FIELD_DEFS) {
+        const v = (resolveRefFields[f.key] || "").trim();
+        if (v) refFields[f.key] = v;
+      }
+      stopCurrent({ note: resolveFreeText.trim(), ...refFields });
     });
     document.querySelector(".resolve-cancel-btn")?.addEventListener("click", cancelResolveStop);
     if (current) startTicking();
@@ -600,6 +667,7 @@ function renderApp() {
           <span class="current-elapsed">${formatElapsed(liveElapsedSeconds())}</span>
         </div>
         <textarea class="note-input" placeholder="${escapeHtml(t("Note (optional)"))}">${escapeHtml(current.note || "")}</textarea>
+        ${renderRefFieldsHtml(current)}
         ${
           categoryTracksTech(current.category)
             ? `
@@ -681,7 +749,7 @@ function renderApp() {
           <p class="instant-confirm-text">&#10003; ${escapeHtml(t("Logged"))} ${escapeHtml(t(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category))} &middot; ${
               instantCategoryDef(lastInstantEntry.category)?.minutes ?? ""
             } min</p>
-          <input type="text" class="link-search-input instant-ref-input" placeholder="${escapeHtml(t("Reference # (Request #, Maximo #...)"))}" value="${escapeHtml(lastInstantEntry.note || "")}" />
+          ${renderRefFieldsHtml(lastInstantEntry)}
           <div class="link-block">
             ${
               lastInstantEntry.relatedPoId
@@ -783,6 +851,9 @@ function wireApp() {
   const poUnlinkBtn = document.querySelector(".po-unlink-btn");
   if (poUnlinkBtn) poUnlinkBtn.addEventListener("click", async () => { await saveCurrentDetails({ relatedPoId: null }); renderApp(); });
 
+  const currentCardHost = document.querySelector(".current-card");
+  if (currentCardHost) wireRefFields(currentCardHost, saveCurrentDetails, "current");
+
   const techSearchInput = document.querySelector(".tech-search-input");
   if (techSearchInput) {
     searchTechs(techSearchQuery);
@@ -791,17 +862,9 @@ function wireApp() {
   const techUnlinkBtn = document.querySelector(".tech-unlink-btn");
   if (techUnlinkBtn) techUnlinkBtn.addEventListener("click", async () => { await saveCurrentDetails({ relatedTechId: null }); renderApp(); });
 
-  const instantRefInput = document.querySelector(".instant-ref-input");
-  if (instantRefInput) {
-    instantRefInput.addEventListener("input", () => {
-      clearTimeout(instantNoteSaveTimer);
-      instantNoteSaveTimer = setTimeout(() => saveInstantDetails({ note: instantRefInput.value }), 700);
-    });
-    instantRefInput.addEventListener("blur", () => {
-      clearTimeout(instantNoteSaveTimer);
-      saveInstantDetails({ note: instantRefInput.value });
-    });
-  }
+  const instantConfirmHost = document.querySelector(".instant-confirm");
+  if (instantConfirmHost) wireRefFields(instantConfirmHost, saveInstantDetails, "instant");
+
   const instantPoSearchInput = document.querySelector(".instant-po-search-input");
   if (instantPoSearchInput) {
     instantPoSearchInput.addEventListener("input", () => {

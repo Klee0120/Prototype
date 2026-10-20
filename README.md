@@ -2696,6 +2696,38 @@ happen.
   labor report will need to be matched up against; the rest is a bigger
   "site directory" feature to build only if/when it's actually needed for
   reconciliation or reporting.
+- **Time Tracker: separate optional reference-number fields, not one
+  combined note.** Stopping a PO-tracking category (or confirming a Quick
+  Log entry) used to ask for a single freeform "Reference #" string --
+  fine for a human to read, unparseable for any future job that needs to
+  match this segment against another system. Five distinct, optional
+  columns now exist instead: PO #, Request #, PO Track #, Maximo #,
+  Invoice # (`server/data/db.js`'s `TIME_LOG_REF_FIELDS`,
+  `timeTracker.js`'s `REF_FIELD_DEFS`) -- shown as a small 2-column grid
+  everywhere the old single field used to be (the running-entry details
+  panel, the Quick Log confirm panel, and the stop-link resolve form for a
+  PO category with no PO record on file yet), each saved independently so
+  filling in one never touches another. A PO category's stop-link
+  requirement is now also satisfied by having any one of these filled in
+  while running (not just a real linked PO record), so an admin who typed
+  the Maximo # as they went never hits the resolve prompt at all. The
+  resolve form's old single "PO description or code" field is now split
+  into an optional free-text description (still saved as `note`) plus the
+  same 5-field grid, and "Stop & save" enables the moment any one of the
+  six has something in it. Mirrored exactly in the Chrome extension
+  (`public/extension/popup.js`, `shared.js`'s `REF_FIELD_DEFS`) -- the one
+  thing that didn't port over is the stop-button-on-the-collapsed-tab fix
+  below, since the extension popup has no collapsed/expanded state to
+  begin with.
+- **Time Tracker: Stop button also lives on the collapsed tab.** The
+  widget starts collapsed to a small tab in the corner; Stop used to only
+  exist inside the expanded panel, past the full category grid, Quick Log
+  buttons, and end-of-day log -- easy to lose track of once something's
+  actually running. A `time-tracker-tab-stop` button now sits right next
+  to the elapsed-time label on the tab itself whenever a category is
+  running, one click away with no need to expand first (clicking it still
+  expands the panel afterward, so either the resolve form or the now-idle
+  state is visible to confirm the stop went through).
 - **Browser-toolbar time tracker extension (`public/extension/`).** A
   Manifest V3 Chrome/Edge extension that puts the admin Time Tracker widget
   (`public/js/views/timeTracker.js`) in the browser toolbar instead of only

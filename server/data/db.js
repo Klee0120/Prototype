@@ -1939,6 +1939,22 @@ if (!hasColumn("time_log_entries", "related_tech_id")) {
   db.exec("ALTER TABLE time_log_entries ADD COLUMN related_tech_id TEXT");
 }
 
+// Free-text reference numbers for syncing a segment against another system
+// (the Budget PO Tracker, a request-tracking tool, Maximo, an AP invoice) --
+// distinct from related_po_id/related_vendor_id, which only ever point at a
+// real record *in this app*. A lot of what gets tracked (PO Entered,
+// Reclasses, Invoicing, Order Supplies/Parts...) references a number from
+// one of those outside systems before -- or instead of -- a matching PO
+// record exists here, and cramming all of them into the one `note` field
+// made it unparseable for any future sync job. Each is its own optional
+// column rather than one combined field so a later matching pass can query
+// on exactly the number it has (e.g. "find every entry with this Maximo #").
+for (const col of ["po_number", "request_number", "po_track_number", "maximo_number", "invoice_number"]) {
+  if (!hasColumn("time_log_entries", col)) {
+    db.exec(`ALTER TABLE time_log_entries ADD COLUMN ${col} TEXT`);
+  }
+}
+
 // The one annual R&M planning number per site -- set by finance once a
 // year, never derived from GL activity (GL tells you what was actually
 // spent, not what was approved to spend) -- so it's its own small
@@ -10868,10 +10884,23 @@ const ESTIMATED_LOG_CATEGORIES = [{ key: "vendor_correspondence", label: "Vendor
 const ESTIMATED_LOG_CATEGORY_KEYS = ESTIMATED_LOG_CATEGORIES.map((c) => c.key);
 const ESTIMATED_LOG_MAX_MINUTES = 600; // 10 hours -- a generous ceiling against a fat-fingered entry, not a real limit
 
+// Shared by every write path below so the five optional reference-number
+// columns (see their migration's own comment) stay in sync without
+// repeating the same five-column dance in start/stop/instant/update.
+const TIME_LOG_REF_FIELDS = [
+  ["poNumber", "po_number"],
+  ["requestNumber", "request_number"],
+  ["poTrackNumber", "po_track_number"],
+  ["maximoNumber", "maximo_number"],
+  ["invoiceNumber", "invoice_number"],
+];
+
 function presentTimeLogEntry(row) {
   if (!row) return null;
   const endedAt = row.ended_at || null;
   const durationSeconds = Math.max(0, Math.round((new Date(endedAt || Date.now()).getTime() - new Date(row.started_at).getTime()) / 1000));
+  const refs = {};
+  for (const [camel, col] of TIME_LOG_REF_FIELDS) refs[camel] = row[col] || "";
   return {
     id: row.id,
     adminId: row.admin_id,
@@ -10883,6 +10912,7 @@ function presentTimeLogEntry(row) {
     relatedVendorId: row.related_vendor_id || null,
     relatedWomCode: row.related_wom_code || null,
     relatedTechId: row.related_tech_id || null,
+    ...refs,
     durationSeconds,
   };
 }
@@ -10929,10 +10959,12 @@ function startTimeLogEntry(adminId, category, fields = {}) {
   const running = db.prepare("SELECT id FROM time_log_entries WHERE admin_id = ? AND ended_at IS NULL").get(adminId);
   if (running) db.prepare("UPDATE time_log_entries SET ended_at = ? WHERE id = ?").run(now, running.id);
   const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = fields;
+  const refCols = TIME_LOG_REF_FIELDS.map(([, col]) => col);
+  const refVals = TIME_LOG_REF_FIELDS.map(([camel]) => fields[camel] || null);
   db.prepare(
-    `INSERT INTO time_log_entries (admin_id, category, started_at, note, related_po_id, related_vendor_id, related_wom_code, related_tech_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(adminId, category, now, note || "", relatedPoId || null, relatedVendorId || null, relatedWomCode || null, relatedTechId || null, now);
+    `INSERT INTO time_log_entries (admin_id, category, started_at, note, related_po_id, related_vendor_id, related_wom_code, related_tech_id, ${refCols.join(", ")}, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${refCols.map(() => "?").join(", ")}, ?)`
+  ).run(adminId, category, now, note || "", relatedPoId || null, relatedVendorId || null, relatedWomCode || null, relatedTechId || null, ...refVals, now);
   return getRunningTimeLogEntry(adminId);
 }
 
@@ -10950,12 +10982,14 @@ function logInstantTimeEntry(adminId, category, fields = {}) {
   const endedAt = new Date(startedAt.getTime() + def.minutes * 60 * 1000);
   const { note, relatedPoId } = fields;
   const nowIso = startedAt.toISOString();
+  const refCols = TIME_LOG_REF_FIELDS.map(([, col]) => col);
+  const refVals = TIME_LOG_REF_FIELDS.map(([camel]) => fields[camel] || null);
   const result = db
     .prepare(
-      `INSERT INTO time_log_entries (admin_id, category, started_at, ended_at, note, related_po_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO time_log_entries (admin_id, category, started_at, ended_at, note, related_po_id, ${refCols.join(", ")}, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ${refCols.map(() => "?").join(", ")}, ?)`
     )
-    .run(adminId, category, nowIso, endedAt.toISOString(), note || "", relatedPoId || null, nowIso);
+    .run(adminId, category, nowIso, endedAt.toISOString(), note || "", relatedPoId || null, ...refVals, nowIso);
   return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(Number(result.lastInsertRowid)));
 }
 
@@ -11009,6 +11043,12 @@ function stopTimeLogEntry(adminId, fields = {}) {
     sets.push("related_tech_id = ?");
     params.push(relatedTechId || null);
   }
+  for (const [camel, col] of TIME_LOG_REF_FIELDS) {
+    if (fields[camel] !== undefined) {
+      sets.push(`${col} = ?`);
+      params.push(fields[camel] || null);
+    }
+  }
   params.push(running.id);
   db.prepare(`UPDATE time_log_entries SET ${sets.join(", ")} WHERE id = ?`).run(...params);
   return presentTimeLogEntry(db.prepare("SELECT * FROM time_log_entries WHERE id = ?").get(running.id));
@@ -11050,6 +11090,12 @@ function updateTimeLogEntry(adminId, id, fields = {}) {
   if (relatedTechId !== undefined) {
     sets.push("related_tech_id = ?");
     params.push(relatedTechId || null);
+  }
+  for (const [camel, col] of TIME_LOG_REF_FIELDS) {
+    if (fields[camel] !== undefined) {
+      sets.push(`${col} = ?`);
+      params.push(fields[camel] || null);
+    }
   }
   if (startedAt !== undefined || endedAt !== undefined) {
     const nextStartedAt = startedAt !== undefined ? new Date(startedAt) : new Date(row.started_at);

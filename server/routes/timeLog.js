@@ -34,12 +34,30 @@ router.get("/", (req, res) => {
   res.json(db.listTimeLogEntries(req.user.id, { from, to }));
 });
 
+// Reference numbers a segment can be synced against in another system
+// (the Budget PO Tracker, a request-tracking tool, Maximo, an AP invoice) --
+// see db.js's TIME_LOG_REF_FIELDS for why these are separate columns
+// instead of folded into `note`.
+const TIME_LOG_REF_KEYS = ["poNumber", "requestNumber", "poTrackNumber", "maximoNumber", "invoiceNumber"];
+function refFields(body) {
+  const out = {};
+  for (const key of TIME_LOG_REF_KEYS) if (body[key] !== undefined) out[key] = body[key];
+  return out;
+}
+
 router.post("/start", (req, res) => {
   const { category, note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = req.body || {};
   if (!db.TIME_LOG_CATEGORIES.some((c) => c.key === category)) {
     return res.status(400).json({ error: `category must be one of: ${db.TIME_LOG_CATEGORIES.map((c) => c.key).join(", ")}` });
   }
-  const entry = db.startTimeLogEntry(req.user.id, category, { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId });
+  const entry = db.startTimeLogEntry(req.user.id, category, {
+    note,
+    relatedPoId,
+    relatedVendorId,
+    relatedWomCode,
+    relatedTechId,
+    ...refFields(req.body || {}),
+  });
   res.status(201).json(entry);
 });
 
@@ -51,7 +69,7 @@ router.post("/instant", (req, res) => {
     return res.status(400).json({ error: `category must be one of: ${db.INSTANT_LOG_CATEGORIES.map((c) => c.key).join(", ")}` });
   }
   try {
-    const entry = db.logInstantTimeEntry(req.user.id, category, { note, relatedPoId });
+    const entry = db.logInstantTimeEntry(req.user.id, category, { note, relatedPoId, ...refFields(req.body || {}) });
     res.status(201).json(entry);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -75,7 +93,14 @@ router.post("/estimated", (req, res) => {
 
 router.post("/stop", (req, res) => {
   const { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId } = req.body || {};
-  const entry = db.stopTimeLogEntry(req.user.id, { note, relatedPoId, relatedVendorId, relatedWomCode, relatedTechId });
+  const entry = db.stopTimeLogEntry(req.user.id, {
+    note,
+    relatedPoId,
+    relatedVendorId,
+    relatedWomCode,
+    relatedTechId,
+    ...refFields(req.body || {}),
+  });
   if (!entry) return res.status(400).json({ error: "Nothing is currently running" });
   res.json(entry);
 });
@@ -96,6 +121,7 @@ router.patch("/:id", (req, res) => {
       relatedTechId,
       startedAt,
       endedAt,
+      ...refFields(req.body || {}),
     });
     if (!entry) return res.status(404).json({ error: "Entry not found" });
     res.json(entry);

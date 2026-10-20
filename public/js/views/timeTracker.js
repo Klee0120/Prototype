@@ -18,12 +18,21 @@ import { t } from "../i18n.js";
 //   deliberate Stop, now applied symmetrically to Start.
 // - Stopping a category that tracks a PO or a vendor (TIME_LOG_CATEGORIES'
 //   tracksPo/tracksVendor flags) requires resolving that link first --
-//   search-and-select a real PO/vendor, or (PO only) type a free-text
-//   description if no PO record exists yet. If it's already linked (set
-//   earlier while running), Stop just stops immediately, no re-prompt.
-//   Switching categories while one of these is running goes through the
-//   same resolution before the new category is allowed to start, since a
-//   switch silently stops the old one exactly like an explicit Stop would.
+//   search-and-select a real PO/vendor, or (PO only) fill in a description
+//   and/or any of the separate, optional reference-number fields (PO #,
+//   Request #, PO Track #, Maximo #, Invoice #; see REF_FIELD_DEFS and
+//   server/data/db.js's TIME_LOG_REF_FIELDS) if no PO record exists yet --
+//   kept as distinct fields, not one combined note, so a later sync job can
+//   query on exactly the number it has. If it's already linked, or any
+//   reference field was already filled in while running (same fields show
+//   on the running-entry panel too), Stop just stops immediately, no
+//   re-prompt. Switching categories while one of these is running goes
+//   through the same resolution before the new category is allowed to
+//   start, since a switch silently stops the old one exactly like an
+//   explicit Stop would.
+// - A Stop button also sits right on the collapsed tab itself (not just
+//   inside the expanded panel) -- Krista found the expand-then-scroll path
+//   too easy to miss when something's running.
 // - A running entry past STALE_WARNING_SECONDS gets a visible warning
 //   (amber tab/banner) so a forgotten timer is impossible to miss instead
 //   of silently ticking in the background -- backed up server-side by a
@@ -53,6 +62,11 @@ export function mountTimeTracker() {
   let resolveSearchResults = [];
   let resolveSearchTimer = null;
   let resolveFreeText = "";
+  // The resolve-stop form's own copy of the reference fields -- not saved
+  // live like the running-details-panel's copy (there's no entry to PATCH
+  // once mid-resolve could be mid-switch into a category that isn't
+  // "current" yet), only sent along with the rest of the stop.
+  let resolveRefFields = {};
 
   let poSearchResults = [];
   let poSearchTimer = null;
@@ -61,7 +75,6 @@ export function mountTimeTracker() {
   // whole point of instant logging is never blocking on that at the moment
   // of the click (see logInstant below).
   let lastInstantEntry = null;
-  let instantNoteSaveTimer = null;
   let instantPoSearchResults = [];
   let instantPoSearchTimer = null;
   // The active technician roster, fetched once and filtered client-side as
@@ -139,6 +152,44 @@ export function mountTimeTracker() {
     return categoryTracksPo(key) || categoryTracksVendor(key);
   }
 
+  // Optional, separate reference-number fields for syncing a segment
+  // against another system (the Budget PO Tracker, a request-tracking
+  // tool, Maximo, an AP invoice) -- see server/data/db.js's
+  // TIME_LOG_REF_FIELDS for why these are kept as distinct columns
+  // instead of one combined free-text field. Shared markup/wiring across
+  // all three places they show up: the running-entry details panel, the
+  // stop-link resolve form, and the instant-log confirm panel.
+  function renderRefFieldsHtml(values = {}) {
+    return `
+      <div class="time-tracker-ref-grid">
+        ${REF_FIELD_DEFS.map(
+          (f) => `<input type="text" class="time-tracker-ref-input" data-field="${f.key}" placeholder="${escapeHtml(t(f.label))}" value="${escapeHtml(values[f.key] || "")}" />`
+        ).join("")}
+      </div>
+    `;
+  }
+  // save(fields) persists one field's value; debounced per-field (keyed by
+  // `${namespace}:${field}`, since the running-entry panel and the instant-
+  // log confirm panel can both be on screen at once, each with its own set
+  // of these inputs and its own save function) so typing in one box never
+  // clobbers another's pending save.
+  const refFieldSaveTimers = {};
+  function wireRefFields(host, save, namespace) {
+    host.querySelectorAll(".time-tracker-ref-input").forEach((input) => {
+      const key = input.dataset.field;
+      const timerKey = `${namespace}:${key}`;
+      const commit = () => {
+        clearTimeout(refFieldSaveTimers[timerKey]);
+        save({ [key]: input.value.trim() });
+      };
+      input.addEventListener("input", () => {
+        clearTimeout(refFieldSaveTimers[timerKey]);
+        refFieldSaveTimers[timerKey] = setTimeout(commit, 700);
+      });
+      input.addEventListener("blur", commit);
+    });
+  }
+
   function instantCategoryDef(key) {
     return INSTANT_LOG_CATEGORIES.find((c) => c.key === key) || null;
   }
@@ -207,6 +258,7 @@ export function mountTimeTracker() {
       current = null;
       resolvingStop = null;
       resolveFreeText = "";
+      resolveRefFields = {};
       resolveSearchResults = [];
       refreshRecent();
       if (afterStartCategory) {
@@ -228,13 +280,25 @@ export function mountTimeTracker() {
   function requestStop(continueToCategory) {
     if (!current) return;
     afterStartCategory = continueToCategory || null;
-    const needsLink = categoryRequiresLink(current.category) && !current.relatedPoId && !current.relatedVendorId;
+    // A PO category's link requirement is also satisfied by having typed
+    // any of the reference-number fields already (while running, via the
+    // details panel) -- only a vendor category still requires a real
+    // vendor pick, since those need real syncing to a vendor profile, not
+    // just a number. See renderResolveForm's own comment for the fallback
+    // shown when neither is true yet.
+    const hasRefField = REF_FIELD_DEFS.some((f) => current[f.key]);
+    const needsLink =
+      categoryRequiresLink(current.category) &&
+      !current.relatedPoId &&
+      !current.relatedVendorId &&
+      !(categoryTracksPo(current.category) && hasRefField);
     if (!needsLink) {
       stopCurrent();
       return;
     }
     resolvingStop = current;
     resolveFreeText = "";
+    resolveRefFields = {};
     resolveSearchResults = [];
     render();
   }
@@ -244,6 +308,7 @@ export function mountTimeTracker() {
     afterStartCategory = null;
     armedCategory = null;
     resolveFreeText = "";
+    resolveRefFields = {};
     resolveSearchResults = [];
     render();
   }
@@ -509,18 +574,22 @@ export function mountTimeTracker() {
         </div>
         ${
           !isVendor
-            ? `<p class="time-tracker-resolve-or">${escapeHtml(t("No matching PO? Describe it instead:"))}</p>
-               <input type="text" class="time-tracker-resolve-freetext" placeholder="${escapeHtml(t("PO description or code..."))}" value="${escapeHtml(resolveFreeText)}" />`
+            ? `<p class="time-tracker-resolve-or">${escapeHtml(t("No matching PO? Describe it and/or fill in whatever reference numbers you have -- any one is enough to sync it later:"))}</p>
+               <input type="text" class="time-tracker-resolve-freetext" placeholder="${escapeHtml(t("Description (optional)"))}" value="${escapeHtml(resolveFreeText)}" />
+               ${renderRefFieldsHtml(resolveRefFields)}`
             : ""
         }
         <div class="time-tracker-resolve-actions">
           <button type="button" class="btn btn-secondary time-tracker-resolve-confirm" ${
-            !isVendor && !resolveFreeText.trim() ? "disabled" : ""
+            !isVendor && !resolveHasAnyRef() ? "disabled" : ""
           }>${escapeHtml(t("Stop & save"))}</button>
           <button type="button" class="btn btn-link time-tracker-resolve-cancel">${escapeHtml(t("Cancel"))}</button>
         </div>
       </div>
     `;
+  }
+  function resolveHasAnyRef() {
+    return Boolean(resolveFreeText.trim()) || REF_FIELD_DEFS.some((f) => (resolveRefFields[f.key] || "").trim());
   }
 
   function render() {
@@ -534,6 +603,11 @@ export function mountTimeTracker() {
       <div class="time-tracker-tab ${current ? "time-tracker-tab-active" : ""} ${stale ? "time-tracker-tab-stale" : ""}">
         <span class="time-tracker-tab-dot" aria-hidden="true"></span>
         <span class="time-tracker-tab-label">${tabLabel}</span>
+        ${
+          current
+            ? `<button type="button" class="time-tracker-tab-stop" title="${escapeHtml(t("Stop"))}">${escapeHtml(t("Stop"))}</button>`
+            : ""
+        }
         <span class="time-tracker-tab-chevron">${expanded ? "&#9660;" : "&#9650;"}</span>
       </div>
       <div class="time-tracker-panel" ${expanded ? "" : "hidden"}>
@@ -574,7 +648,7 @@ export function mountTimeTracker() {
                   &#10003; ${escapeHtml(t("Logged"))} ${escapeHtml(t(instantCategoryDef(lastInstantEntry.category)?.label || lastInstantEntry.category))}
                   &middot; ${instantCategoryDef(lastInstantEntry.category)?.minutes ?? ""} min
                 </p>
-                <input type="text" class="time-tracker-instant-ref" placeholder="${escapeHtml(t("Reference # (Request #, Maximo #...)"))}" value="${escapeHtml(lastInstantEntry.note || "")}" />
+                ${renderRefFieldsHtml(lastInstantEntry)}
                 <div class="time-tracker-po-link">
                   ${
                     lastInstantEntry.relatedPoId
@@ -614,6 +688,7 @@ export function mountTimeTracker() {
               }
               <div class="time-tracker-details">
                 <textarea class="time-tracker-note" placeholder="${escapeHtml(t("Note (optional)"))}">${escapeHtml(current.note || "")}</textarea>
+                ${renderRefFieldsHtml(current)}
                 ${
                   categoryTracksTech(current.category)
                     ? `
@@ -687,6 +762,15 @@ export function mountTimeTracker() {
       expanded = !expanded;
       render();
     });
+    // One click to stop from the collapsed tab -- no expand-then-scroll-
+    // then-click needed for the common case. Always expands afterward so
+    // either the resolve form (if a link's still needed) or the now-idle
+    // state is visible, confirming the stop went through.
+    el.querySelector(".time-tracker-tab-stop")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      expanded = true;
+      requestStop();
+    });
 
     if (resolvingStop) {
       const searchInput = el.querySelector(".time-tracker-resolve-search");
@@ -724,13 +808,25 @@ export function mountTimeTracker() {
         freeTextInput.addEventListener("input", () => {
           resolveFreeText = freeTextInput.value;
           const confirmBtn = el.querySelector(".time-tracker-resolve-confirm");
-          if (confirmBtn) confirmBtn.disabled = !resolveFreeText.trim();
+          if (confirmBtn) confirmBtn.disabled = !resolveHasAnyRef();
         });
       }
+      el.querySelectorAll(".time-tracker-resolve .time-tracker-ref-input").forEach((input) => {
+        input.addEventListener("input", () => {
+          resolveRefFields[input.dataset.field] = input.value;
+          const confirmBtn = el.querySelector(".time-tracker-resolve-confirm");
+          if (confirmBtn) confirmBtn.disabled = !resolveHasAnyRef();
+        });
+      });
       el.querySelector(".time-tracker-resolve-confirm")?.addEventListener("click", () => {
         const isVendor = categoryDef(resolvingStop.category).tracksVendor;
         if (isVendor) return; // vendor path only resolves via a picked result
-        confirmResolveStop({ note: resolveFreeText.trim() });
+        const refFields = {};
+        for (const f of REF_FIELD_DEFS) {
+          const v = (resolveRefFields[f.key] || "").trim();
+          if (v) refFields[f.key] = v;
+        }
+        confirmResolveStop({ note: resolveFreeText.trim(), ...refFields });
       });
       el.querySelector(".time-tracker-resolve-cancel")?.addEventListener("click", cancelResolveStop);
       if (current) startTicking();
@@ -746,17 +842,8 @@ export function mountTimeTracker() {
       btn.addEventListener("click", () => logInstant(btn.dataset.key));
     });
 
-    const instantRefInput = el.querySelector(".time-tracker-instant-ref");
-    if (instantRefInput) {
-      instantRefInput.addEventListener("input", () => {
-        clearTimeout(instantNoteSaveTimer);
-        instantNoteSaveTimer = setTimeout(() => saveInstantDetails({ note: instantRefInput.value }), 700);
-      });
-      instantRefInput.addEventListener("blur", () => {
-        clearTimeout(instantNoteSaveTimer);
-        saveInstantDetails({ note: instantRefInput.value });
-      });
-    }
+    const instantConfirmHost = el.querySelector(".time-tracker-instant-confirm");
+    if (instantConfirmHost) wireRefFields(instantConfirmHost, saveInstantDetails, "instant");
 
     const instantPoSearchInput = el.querySelector(".time-tracker-instant-po-search");
     if (instantPoSearchInput) {
@@ -795,6 +882,8 @@ export function mountTimeTracker() {
         saveCurrentDetails({ note: noteInput.value });
       });
     }
+    const detailsHost = el.querySelector(".time-tracker-details");
+    if (detailsHost) wireRefFields(detailsHost, saveCurrentDetails, "current");
 
     const poSearchInput = el.querySelector(".time-tracker-po-search");
     if (poSearchInput) {
@@ -900,3 +989,12 @@ const INSTANT_LOG_CATEGORIES = [
 
 // Mirrors db.js's ESTIMATED_LOG_CATEGORIES exactly.
 const ESTIMATED_LOG_CATEGORIES = [{ key: "vendor_correspondence", label: "Vendor Correspondence" }];
+
+// Mirrors server/routes/timeLog.js's TIME_LOG_REF_KEYS exactly.
+const REF_FIELD_DEFS = [
+  { key: "poNumber", label: "PO #" },
+  { key: "requestNumber", label: "Request #" },
+  { key: "poTrackNumber", label: "PO Track #" },
+  { key: "maximoNumber", label: "Maximo #" },
+  { key: "invoiceNumber", label: "Invoice #" },
+];

@@ -43,6 +43,20 @@ export const INSTANT_LOG_CATEGORIES = [
 
 export const ESTIMATED_LOG_CATEGORIES = [{ key: "vendor_correspondence", label: "Vendor Correspondence" }];
 
+// Optional, separate reference-number fields for syncing a segment against
+// another system (the Budget PO Tracker, a request-tracking tool, Maximo,
+// an AP invoice) -- mirrors server/routes/timeLog.js's TIME_LOG_REF_KEYS
+// and timeTracker.js's REF_FIELD_DEFS exactly. Kept as distinct fields
+// (not one combined note) so a later sync job can query on exactly the
+// number it has.
+export const REF_FIELD_DEFS = [
+  { key: "poNumber", label: "PO #" },
+  { key: "requestNumber", label: "Request #" },
+  { key: "poTrackNumber", label: "PO Track #" },
+  { key: "maximoNumber", label: "Maximo #" },
+  { key: "invoiceNumber", label: "Invoice #" },
+];
+
 export async function getSession() {
   const stored = await chrome.storage.local.get(STORAGE_KEYS.session);
   return stored[STORAGE_KEYS.session] || null;

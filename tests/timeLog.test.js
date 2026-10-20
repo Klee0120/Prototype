@@ -372,3 +372,71 @@ test("Time Log: category tracksPo/tracksVendor flags, the 12h auto-stop cap, and
     assert.equal(current.body, null);
   });
 });
+
+// The five optional reference-number fields (PO #, Request #, PO Track #,
+// Maximo #, Invoice #) -- kept as distinct columns instead of folded into
+// `note`, so a later sync job can query on exactly the number it has. See
+// server/data/db.js's TIME_LOG_REF_FIELDS and timeTracker.js's REF_FIELD_DEFS.
+test("Time Log: optional reference-number fields on start/stop/instant/PATCH", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("start accepts and returns the reference fields", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/start", {
+      userId: "ADMIN",
+      body: { category: "reclasses", poNumber: "PO-100", requestNumber: "REQ-200" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.poNumber, "PO-100");
+    assert.equal(res.body.requestNumber, "REQ-200");
+    assert.equal(res.body.poTrackNumber, "", "an omitted ref field reads back as an empty string, not null/undefined");
+  });
+
+  await t.test("PATCH can set the remaining fields independently without touching the ones already set", async () => {
+    const current = await server.call("GET", "/api/admin/time-log/current", { userId: "ADMIN" });
+    const res = await server.call("PATCH", `/api/admin/time-log/${current.body.id}`, {
+      userId: "ADMIN",
+      body: { poTrackNumber: "TRK-300", maximoNumber: "MX-400" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.poNumber, "PO-100", "setting other ref fields doesn't clobber this one");
+    assert.equal(res.body.requestNumber, "REQ-200");
+    assert.equal(res.body.poTrackNumber, "TRK-300");
+    assert.equal(res.body.maximoNumber, "MX-400");
+  });
+
+  await t.test("stop accepts the invoice number and a note together, and both persist", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/stop", {
+      userId: "ADMIN",
+      body: { invoiceNumber: "INV-500", note: "Change order from Toyota" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.invoiceNumber, "INV-500");
+    assert.equal(res.body.note, "Change order from Toyota");
+    assert.equal(res.body.poNumber, "PO-100", "stop's own field updates don't wipe out what start/PATCH already set");
+  });
+
+  await t.test("instant log accepts and returns the reference fields", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/instant", {
+      userId: "ADMIN",
+      body: { category: "enter_wom", maximoNumber: "MX-999" },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.maximoNumber, "MX-999");
+
+    const patched = await server.call("PATCH", `/api/admin/time-log/${res.body.id}`, {
+      userId: "ADMIN",
+      body: { requestNumber: "REQ-999" },
+    });
+    assert.equal(patched.body.maximoNumber, "MX-999", "PATCHing one ref field on an instant entry doesn't clobber another");
+    assert.equal(patched.body.requestNumber, "REQ-999");
+  });
+
+  await t.test("a technician still can't reach any of this", async () => {
+    const res = await server.call("POST", "/api/admin/time-log/start", {
+      userId: "T1001",
+      body: { category: "general", poNumber: "PO-1" },
+    });
+    assert.equal(res.status, 403);
+  });
+});
