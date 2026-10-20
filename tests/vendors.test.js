@@ -791,7 +791,7 @@ test("vendors: explicit denial (cost/service, not just a document case) + reinst
     const res = await server.call("GET", "/api/admin/vendors/denial-reasons", { userId: "ADMIN" });
     assert.equal(res.status, 200);
     const keys = res.body.map((r) => r.key);
-    assert.deepEqual(keys, ["insurance", "document_chasing", "unacceptable_service", "cost", "other"]);
+    assert.deepEqual(keys, ["insurance", "payment_ach", "document_chasing", "unacceptable_service", "cost", "other"]);
   });
 
   await t.test("set up a vendor with all four required cases approved and Toyota's approval recorded (fully onboarded)", async () => {
@@ -1529,4 +1529,50 @@ test("vendors: companyAddress and billToAddress persist and survive unrelated sa
   assert.equal(unrelatedEdit.body.companyAddress, "123 Main St, Springfield IL 62704");
   assert.equal(unrelatedEdit.body.billToAddress, "PO Box 55, Chicago IL 60601");
   assert.equal(unrelatedEdit.body.phone, "555-0100");
+});
+
+test("vendors: audit-history is scoped to one vendor and tags case-specific entries", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorA = (await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "History Vendor A" } })).body;
+  const vendorB = (await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "History Vendor B" } })).body;
+
+  await server.call("POST", `/api/admin/vendors/${vendorA.id}/requests`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - COI", referenceNumber: "REF-1", status: "In review" },
+  });
+  await server.call("POST", `/api/admin/vendors/${vendorA.id}/deny`, { userId: "ADMIN", body: { category: "payment_ach", reason: "bad ACH form" } });
+
+  await t.test("a technician cannot read it", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorA.id}/audit-history`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("only this vendor's own entries come back, newest first, with case-specific entries tagged", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorA.id}/audit-history`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    const actions = res.body.map((e) => e.action);
+    // Logging a COI case also moves the vendor not_started -> in_progress,
+    // which gets its own "(case update)" stage-change entry in addition to
+    // the later explicit deny -- both land under the same action type.
+    assert.deepEqual(actions, [
+      "VENDOR_ONBOARDING_STAGE_CHANGED",
+      "VENDOR_ONBOARDING_STAGE_CHANGED",
+      "VENDOR_REQUEST_ADDED",
+      "VENDOR_CREATED",
+    ]);
+    assert.ok(res.body.every((e) => !e.details.includes("History Vendor B")), "no cross-talk from the other vendor's own activity");
+    const caseEntry = res.body.find((e) => e.action === "VENDOR_REQUEST_ADDED");
+    assert.equal(caseEntry.caseType, "coi", "tagged so the UI can jump straight to the matching case pill");
+    const denyEntry = res.body.find((e) => e.details.includes("denied"));
+    assert.equal(denyEntry.caseType, "", "a vendor-level action (not about one specific case) carries no case tag");
+    assert.match(denyEntry.details, /Payment Details \(ACH\)/);
+  });
+
+  await t.test("vendor B's history has only its own creation -- vendor A's activity never leaked in", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorB.id}/audit-history`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.map((e) => e.action), ["VENDOR_CREATED"]);
+  });
 });

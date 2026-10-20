@@ -3217,6 +3217,12 @@ h1, h2, h3, h4 {
   border-radius: 8px;
   padding: 8px 10px;
   background: var(--neutral-bg);
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.onboarding-case-jump-highlight {
+  background: #fff3cd;
+  border-color: #f0ad4e;
 }
 
 .onboarding-case-summary {

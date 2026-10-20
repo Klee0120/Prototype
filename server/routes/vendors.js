@@ -132,7 +132,7 @@ router.post("/", (req, res) => {
   if (error) return res.status(400).json({ error });
 
   const vendor = db.createVendor({ ...req.body, name: String(req.body.name).trim(), createdBy: req.user.id });
-  db.addAudit(req.user.id, "VENDOR_CREATED", `${req.user.name} added vendor ${vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_CREATED", `${req.user.name} added vendor ${vendor.name}`, vendor.id);
   res.status(201).json(vendor);
 });
 
@@ -148,10 +148,11 @@ router.patch("/:id", (req, res) => {
     db.addAudit(
       req.user.id,
       "VENDOR_ONBOARDING_STAGE_CHANGED",
-      `${req.user.name} moved ${vendor.name} to ${vendor.onboardingStage}${vendor.onboardingStage === "denied" && vendor.deniedReason ? ` (${vendor.deniedReason})` : ""}`
+      `${req.user.name} moved ${vendor.name} to ${vendor.onboardingStage}${vendor.onboardingStage === "denied" && vendor.deniedReason ? ` (${vendor.deniedReason})` : ""}`,
+      vendor.id
     );
   }
-  db.addAudit(req.user.id, "VENDOR_UPDATED", `${req.user.name} updated vendor ${vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_UPDATED", `${req.user.name} updated vendor ${vendor.name}`, vendor.id);
   res.json(vendor);
 });
 
@@ -169,7 +170,7 @@ router.delete("/:id", (req, res) => {
     });
   }
 
-  db.addAudit(req.user.id, "VENDOR_DELETED", `${req.user.name} removed vendor ${result.vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_DELETED", `${req.user.name} removed vendor ${result.vendor.name}`, result.vendor.id);
   res.json({ ok: true });
 });
 
@@ -203,7 +204,8 @@ router.patch("/:id/preferred", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_PREFERRED_CHANGED",
-    `${req.user.name} ${preferred ? "marked" : "unmarked"} ${vendor.name} as a preferred vendor`
+    `${req.user.name} ${preferred ? "marked" : "unmarked"} ${vendor.name} as a preferred vendor`,
+    vendor.id
   );
   res.json(updated);
 });
@@ -222,7 +224,8 @@ router.patch("/:id/compliance-reminders-enabled", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_COMPLIANCE_REMINDERS_ENABLED_CHANGED",
-    `${req.user.name} turned ${enabled ? "on" : "off"} compliance reminder emails for ${vendor.name}`
+    `${req.user.name} turned ${enabled ? "on" : "off"} compliance reminder emails for ${vendor.name}`,
+    vendor.id
   );
   res.json(updated);
 });
@@ -256,7 +259,8 @@ router.post("/:id/notify-expired-docs", async (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_NOTIFIED_EXPIRED_DOCS",
-    `${req.user.name} notified ${vendor.name} (${vendor.email}) about expired ${labels.join(", ")}${result.sent ? "" : " (SMTP not configured -- not actually delivered)"}`
+    `${req.user.name} notified ${vendor.name} (${vendor.email}) about expired ${labels.join(", ")}${result.sent ? "" : " (SMTP not configured -- not actually delivered)"}`,
+    vendor.id
   );
   res.json({ ok: true, sent: result.sent, categories: expiredCategories });
 });
@@ -278,7 +282,8 @@ router.post("/:id/deny", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_ONBOARDING_STAGE_CHANGED",
-    `${req.user.name} marked ${updated.name} denied (${label})${updated.deniedReason ? `: ${updated.deniedReason}` : ""}`
+    `${req.user.name} marked ${updated.name} denied (${label})${updated.deniedReason ? `: ${updated.deniedReason}` : ""}`,
+    updated.id
   );
   res.json(updated);
 });
@@ -296,7 +301,8 @@ router.post("/:id/not-required", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_ONBOARDING_STAGE_CHANGED",
-    `${req.user.name} marked ${updated.name}'s onboarding Not Required${updated.notRequiredReason ? `: ${updated.notRequiredReason}` : ""}`
+    `${req.user.name} marked ${updated.name}'s onboarding Not Required${updated.notRequiredReason ? `: ${updated.notRequiredReason}` : ""}`,
+    updated.id
   );
   res.json(updated);
 });
@@ -308,7 +314,8 @@ router.post("/:id/reinstate", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_ONBOARDING_STAGE_CHANGED",
-    `${req.user.name} reinstated ${updated.name} (now ${updated.onboardingStage})`
+    `${req.user.name} reinstated ${updated.name} (now ${updated.onboardingStage})`,
+    updated.id
   );
   res.json(updated);
 });
@@ -413,7 +420,7 @@ router.post("/:id/coi-reviews/:reviewId/approve", (req, res) => {
     workflowRule: "coi_review_approved",
     createdBy: req.user.id,
   });
-  db.addAudit(req.user.id, "VENDOR_COI_REVIEW_APPROVED", `${req.user.name} approved a COI review for ${vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_COI_REVIEW_APPROVED", `${req.user.name} approved a COI review for ${vendor.name}`, vendor.id, "coi");
   res.json({ review: updated, task });
 });
 
@@ -460,7 +467,9 @@ router.post("/:id/coi-reviews/:reviewId/reject", async (req, res) => {
     req.user.id,
     "VENDOR_COI_REVIEW_REJECTED",
     `${req.user.name} rejected a COI review for ${vendor.name}: ${reasonLabels.join("; ")}` +
-      (vendor.email ? (sent ? "" : " (SMTP not configured -- denial email not actually delivered)") : " (no email on file -- denial email not sent)")
+      (vendor.email ? (sent ? "" : " (SMTP not configured -- denial email not actually delivered)") : " (no email on file -- denial email not sent)"),
+    vendor.id,
+    "coi"
   );
   res.json({ review: updated, emailed: sent, emailSkippedNoAddress: !vendor.email });
 });
@@ -494,6 +503,16 @@ router.get("/:id/requests", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
   res.json(db.listVendorRequests(vendor.id));
+});
+
+// This vendor's own slice of the audit trail -- who approved/denied/
+// updated them and when -- surfaced inline on the Onboarding tab/vendor
+// profile instead of needing the separate, global Audit Log tab. See
+// db.getVendorAuditHistory's own comment for why this is forward-only.
+router.get("/:id/audit-history", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.getVendorAuditHistory(vendor.id));
 });
 
 // Every compliance follow-up task this vendor has ever had (open and
@@ -541,9 +560,19 @@ function auditStageChangeIfAny(req, vendorBefore) {
     db.addAudit(
       req.user.id,
       "VENDOR_ONBOARDING_STAGE_CHANGED",
-      `${req.user.name} moved ${after.name} to ${after.onboardingStage} (case update)`
+      `${req.user.name} moved ${after.name} to ${after.onboardingStage} (case update)`,
+      after.id
     );
   }
+}
+
+// Maps a case's full ServiceEdge-style type string (e.g. "Onboarding -
+// COI") back to its short key (e.g. "coi") for tagging audit_log.case_type
+// -- lets the vendor's onboarding history jump straight to the matching
+// case pill instead of just saying something happened.
+function caseTypeKey(requestType) {
+  const match = db.ONBOARDING_CASE_TYPES.find((c) => c.type === requestType);
+  return match ? match.key : "";
 }
 
 // "Waiting on VPO Waiver" is a case-status value, offered only for COI --
@@ -601,7 +630,9 @@ router.post("/:id/requests", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_REQUEST_ADDED",
-    `${req.user.name} logged a ${requestType} case${referenceNumber ? ` (#${referenceNumber})` : ""} for ${vendor.name}`
+    `${req.user.name} logged a ${requestType} case${referenceNumber ? ` (#${referenceNumber})` : ""} for ${vendor.name}`,
+    vendor.id,
+    caseTypeKey(requestType.trim())
   );
   auditStageChangeIfAny(req, vendor);
   res.status(201).json(requests);
@@ -621,7 +652,13 @@ router.patch("/:id/requests/:requestId", (req, res) => {
     updatedBy: req.user.id,
     ...requestFieldsFromBody(req.body),
   });
-  db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated a case for ${vendor.name}`);
+  db.addAudit(
+    req.user.id,
+    "VENDOR_REQUEST_UPDATED",
+    `${req.user.name} updated a case for ${vendor.name}`,
+    vendor.id,
+    caseTypeKey(requestType.trim())
+  );
   auditStageChangeIfAny(req, vendor);
   res.json(requests);
 });
@@ -631,7 +668,7 @@ router.delete("/:id/requests/:requestId", (req, res) => {
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
 
   const requests = db.deleteVendorRequest(vendor.id, Number(req.params.requestId));
-  db.addAudit(req.user.id, "VENDOR_REQUEST_REMOVED", `${req.user.name} removed a case for ${vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_REQUEST_REMOVED", `${req.user.name} removed a case for ${vendor.name}`, vendor.id);
   auditStageChangeIfAny(req, vendor);
   res.json(requests);
 });
@@ -650,7 +687,7 @@ router.patch("/:id/requests/:requestId/vpo-waiver", (req, res) => {
   }
   const { reason, caseNumber, status, expirationDate, notes } = req.body || {};
   const waiver = db.addOrUpdateVpoWaiver(requestRow.id, { reason, caseNumber, status, expirationDate, notes });
-  db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated the VPO Waiver for ${vendor.name}`);
+  db.addAudit(req.user.id, "VENDOR_REQUEST_UPDATED", `${req.user.name} updated the VPO Waiver for ${vendor.name}`, vendor.id, "coi");
   res.json(waiver);
 });
 
@@ -663,7 +700,8 @@ router.patch("/:id/welcome-email", (req, res) => {
   db.addAudit(
     req.user.id,
     "VENDOR_REQUEST_UPDATED",
-    `${req.user.name} marked the welcome email ${updated.welcomeEmailSentAt ? "sent" : "not sent"} for ${vendor.name}`
+    `${req.user.name} marked the welcome email ${updated.welcomeEmailSentAt ? "sent" : "not sent"} for ${vendor.name}`,
+    vendor.id
   );
   auditStageChangeIfAny(req, vendor);
   res.json(updated);

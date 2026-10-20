@@ -2047,6 +2047,25 @@ Demo logins:
   PO Tracker rows stuck on "Needs Matching" forever, with nothing to
   re-check them short of a future re-import touching that exact row again.
   Now runs on every vendor save
+- **Vendor denial reasons split "COI Issues" out from a new "Payment
+  Details (ACH)" category**, and renamed "Document chasing" to "Document
+  Errors & Lack of Response" -- matches how denials are actually talked
+  about day to day. Existing denied vendors keep their stored category key;
+  only the label text and the new option changed
+- **Vendor Directory is now filterable by onboarding stage**, with a
+  second "denial reason" dropdown that appears once "Denied" is picked --
+  next to the existing C&W/Toyota/forms-status filters
+- **New "Onboarding history" panel, right in the Onboarding
+  tab/vendor profile** (next to the existing "Full case history" toggle,
+  inside the same case-pills section) -- "who approved/denied/updated this
+  vendor, and when," without having to cross-reference the separate, global
+  Audit Log tab by vendor name. Entries about one specific case (COI/W-9/
+  Payment/Blank Invoice) get a "View [case] case" button that scrolls to
+  and briefly highlights that case's own pill, right there on the same
+  screen. Backed by a new `vendor_id`/`case_type` tag on `audit_log`,
+  populated going forward on every vendor-related audit entry -- forward-
+  only, since matching older rows up to a vendor after the fact would mean
+  fragile free-text name-matching
 
 ## Data model
 

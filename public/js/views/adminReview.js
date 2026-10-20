@@ -316,7 +316,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const fresh = vendorsCache.find((x) => x.id === v.id);
     if (fresh) Object.assign(v, fresh);
   }
-  const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "" };
+  const vendorFilters = { search: "", cwStatus: "", toyotaStatus: "", formsStatus: "", onboardingStage: "", deniedReasonCategory: "" };
   const vendorRequestEditing = new Set(); // vendor case-log request ids currently showing their edit form
   // Onboarding board rows: which vendor IDs currently have their "Details"
   // section expanded -- every field in there autosaves, which re-renders
@@ -706,8 +706,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // business calls no onboarding case status captures, so this exists
   // alongside (not instead of) a case being denied.
   const VENDOR_DENIAL_REASONS = [
-    { key: "insurance", label: "Insurance" },
-    { key: "document_chasing", label: "Document chasing" },
+    { key: "insurance", label: "COI Issues" },
+    { key: "payment_ach", label: "Payment Details (ACH)" },
+    { key: "document_chasing", label: "Document Errors & Lack of Response" },
     { key: "unacceptable_service", label: "Unacceptable work or service" },
     { key: "cost", label: "Cost" },
     { key: "other", label: "Other" },
@@ -1918,6 +1919,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       </div>
       <button type="button" class="btn btn-link vendor-case-history-toggle">Full case history</button>
       <div class="onboarding-case-log" hidden></div>
+      <button type="button" class="btn btn-link vendor-onboarding-history-toggle">Onboarding history (who did what, when)</button>
+      <div class="onboarding-history-log" hidden></div>
     `;
     wireWelcomeEmailLine(host, v, () => renderVendorCasesSection(host, v));
     wireParentCase(host, v, () => renderVendorCasesSection(host, v));
@@ -1937,6 +1940,68 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         await renderCaseLog(historyHost, v);
       }
     });
+    wireOnboardingHistory(host, v);
+  }
+
+  // "Who approved/denied/updated this vendor, and when" -- a vendor-scoped
+  // slice of the global audit log (see db.getVendorAuditHistory), right
+  // here in the Onboarding tab/vendor profile instead of making an admin
+  // go cross-reference the separate Audit Log tab by vendor name. Each
+  // entry reuses addAudit's already-human-readable sentence (actor named
+  // by hand, not resolved from an id) -- same convention the rest of the
+  // app's audit trail already uses.
+  function wireOnboardingHistory(host, v) {
+    const toggle = host.querySelector(".vendor-onboarding-history-toggle");
+    const logHost = host.querySelector(".onboarding-history-log");
+    let loaded = false;
+    toggle.addEventListener("click", async () => {
+      logHost.hidden = !logHost.hidden;
+      toggle.textContent = logHost.hidden ? "Onboarding history (who did what, when)" : "Hide onboarding history";
+      if (!logHost.hidden && !loaded) {
+        loaded = true;
+        await renderOnboardingHistoryLog(host, logHost, v);
+      }
+    });
+  }
+
+  async function renderOnboardingHistoryLog(host, logHost, v) {
+    logHost.innerHTML = `<p class="review-checklist-hint">Loading…</p>`;
+    const entries = await api.get(`/api/admin/vendors/${v.id}/audit-history`);
+    logHost.innerHTML = `
+      <div class="onboarding-case-entries">
+        ${
+          entries.length === 0
+            ? `<p class="empty-note">No onboarding activity on file yet for this vendor.</p>`
+            : entries
+                .map((e) => {
+                  const ct = ONBOARDING_CASE_TYPES.find((c) => c.key === e.caseType);
+                  return `
+                <p class="onboarding-case-entry">
+                  ${escapeHtml(e.details)}
+                  <span class="task-comment-time">${new Date(e.timestamp).toLocaleString()}</span>
+                  ${ct ? `<button type="button" class="btn btn-link onboarding-history-view-case-btn" data-case-key="${ct.key}">View ${escapeHtml(ct.label)} case</button>` : ""}
+                </p>
+              `;
+                })
+                .join("")
+        }
+      </div>
+    `;
+    logHost.querySelectorAll(".onboarding-history-view-case-btn").forEach((btn) => {
+      btn.addEventListener("click", () => jumpToCasePill(host, btn.dataset.caseKey));
+    });
+  }
+
+  // Scrolls to and briefly highlights a case pill that's already rendered
+  // in this same cases section -- "pulling up the case" an onboarding
+  // history entry is about, without a separate modal/detail view to build
+  // and keep in sync.
+  function jumpToCasePill(host, caseKey) {
+    const caseEl = host.querySelector(`.onboarding-case[data-case-key="${caseKey}"]`);
+    if (!caseEl) return;
+    caseEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    caseEl.classList.add("onboarding-case-jump-highlight");
+    setTimeout(() => caseEl.classList.remove("onboarding-case-jump-highlight"), 2000);
   }
 
   async function renderCaseLog(host, v) {
@@ -1971,6 +2036,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (vendorFilters.cwStatus && v.cwStatus !== vendorFilters.cwStatus) return false;
       if (vendorFilters.toyotaStatus && v.toyotaStatus !== vendorFilters.toyotaStatus) return false;
       if (vendorFilters.formsStatus && v.formsStatus !== vendorFilters.formsStatus) return false;
+      if (vendorFilters.onboardingStage && v.onboardingStage !== vendorFilters.onboardingStage) return false;
+      if (vendorFilters.deniedReasonCategory && v.deniedReasonCategory !== vendorFilters.deniedReasonCategory) return false;
       if (vendorFilters.search) {
         const q = vendorFilters.search.toLowerCase();
         const haystack = `${v.name} ${v.jdeVendorNumber || ""} ${v.services || ""}`.toLowerCase();
@@ -1994,6 +2061,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return ["current", "outdated", "unknown"]
       .map((s) => `<option value="${s}" ${vendorFilters.formsStatus === s ? "selected" : ""}>${escapeHtml(FORMS_STATUS_LABELS[s])}</option>`)
       .join("");
+  }
+  function onboardingStageFilterOptions() {
+    return ["not_started", "in_progress", "onboarded", "denied", "not_required"]
+      .map((s) => `<option value="${s}" ${vendorFilters.onboardingStage === s ? "selected" : ""}>${escapeHtml(ONBOARDING_STAGE_LABELS[s])}</option>`)
+      .join("");
+  }
+  function deniedReasonFilterOptions() {
+    return VENDOR_DENIAL_REASONS.map(
+      (r) => `<option value="${r.key}" ${vendorFilters.deniedReasonCategory === r.key ? "selected" : ""}>${escapeHtml(r.label)}</option>`
+    ).join("");
   }
 
   // Renders the toolbar shell once per visit/mutation; the search input's
@@ -2048,6 +2125,18 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <option value="">All forms statuses</option>
           ${formsFilterOptions()}
         </select>
+        <select class="vendor-stage-filter">
+          <option value="">All onboarding stages</option>
+          ${onboardingStageFilterOptions()}
+        </select>
+        ${
+          vendorFilters.onboardingStage === "denied"
+            ? `<select class="vendor-denied-reason-filter">
+                <option value="">All denial reasons</option>
+                ${deniedReasonFilterOptions()}
+              </select>`
+            : ""
+        }
         <button class="btn btn-secondary vendor-add-toggle" type="button">+ Add vendor</button>
       </div>
       <p class="vendor-count"></p>
@@ -2070,6 +2159,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       vendorFilters.formsStatus = e.target.value;
       refreshVendorList(content);
     });
+    content.querySelector(".vendor-stage-filter").addEventListener("change", (e) => {
+      vendorFilters.onboardingStage = e.target.value;
+      if (vendorFilters.onboardingStage !== "denied") vendorFilters.deniedReasonCategory = "";
+      // Full re-render, not just refreshVendorList -- the denied-reason
+      // sub-filter needs to appear/disappear along with this choice.
+      // (renderVendorsUI calls refreshVendorList itself at the end.)
+      renderVendorsUI(content);
+    });
+    const deniedReasonFilterEl = content.querySelector(".vendor-denied-reason-filter");
+    if (deniedReasonFilterEl) {
+      deniedReasonFilterEl.addEventListener("change", (e) => {
+        vendorFilters.deniedReasonCategory = e.target.value;
+        refreshVendorList(content);
+      });
+    }
     content.querySelector(".vendor-add-toggle").addEventListener("click", () => {
       openAddVendorModal(content);
     });
@@ -2307,8 +2411,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     { key: "costs", label: "Work & Costs" },
     { key: "activity", label: "Activity" },
   ];
-  const ONBOARDING_STAGE_LABELS = { not_started: "Not Started", in_progress: "In Progress", denied: "Denied", onboarded: "Onboarded" };
-  const ONBOARDING_STAGE_BADGE_CLASS = { not_started: "draft", in_progress: "draft", denied: "rejected", onboarded: "approved" };
+  const ONBOARDING_STAGE_LABELS = {
+    not_started: "Not Started",
+    in_progress: "In Progress",
+    denied: "Denied",
+    onboarded: "Onboarded",
+    not_required: "Not Required",
+  };
+  const ONBOARDING_STAGE_BADGE_CLASS = {
+    not_started: "draft",
+    in_progress: "draft",
+    denied: "rejected",
+    onboarded: "approved",
+    not_required: "draft",
+  };
 
   // The full vendor profile page -- replaces the old single long edit
   // modal. Read-only Overview by default; Edit vendor opens just the

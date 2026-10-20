@@ -158,7 +158,9 @@ db.exec(`
     timestamp TEXT NOT NULL,
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
-    details TEXT NOT NULL
+    details TEXT NOT NULL,
+    vendor_id INTEGER,
+    case_type TEXT DEFAULT ''
   );
 
   CREATE TABLE IF NOT EXISTS files (
@@ -1581,6 +1583,28 @@ if (!hasColumn("vendors", "denied_reason")) {
 if (!hasColumn("vendors", "denied_reason_category")) {
   db.exec("ALTER TABLE vendors ADD COLUMN denied_reason_category TEXT DEFAULT ''");
 }
+// Lets a vendor's own profile/onboarding history show "who did what, when"
+// inline (addAudit already writes a human-readable sentence naming the
+// actor by name into `details`) without having to cross-reference the
+// global Audit Log tab by vendor name. Forward-only: existing audit_log
+// rows predating this column have no reliable vendor_id (matching them up
+// after the fact would mean fragile free-text name-matching), so history
+// before this point just isn't there -- new activity populates it going
+// forward. case_type tags entries that are about one specific case
+// (COI/W-9/Payment/Blank Invoice) so the vendor's case pills can be jumped
+// to directly from a history entry; it's blank for vendor-level actions
+// (deny/reinstate/profile edits) that aren't about any one case.
+if (!hasColumn("audit_log", "vendor_id")) {
+  db.exec("ALTER TABLE audit_log ADD COLUMN vendor_id INTEGER");
+}
+if (!hasColumn("audit_log", "case_type")) {
+  db.exec("ALTER TABLE audit_log ADD COLUMN case_type TEXT DEFAULT ''");
+}
+// Added after the column itself exists (via the ALTERs above) rather than
+// in the main schema block up top -- that block's own CREATE INDEX runs
+// unconditionally on every startup, including against an existing
+// database that hasn't run these ALTERs yet, which would fail outright.
+db.exec("CREATE INDEX IF NOT EXISTS idx_audit_log_vendor_id ON audit_log(vendor_id)");
 // The other manual, sticky override -- for a vendor that's already fine
 // (usually one that predates this tracker, or whose paperwork lives
 // outside it) but keeps getting pulled onto the Onboarding board as
@@ -3176,7 +3200,7 @@ function mergeVendors(primaryId, duplicateId, actorId, actorName) {
   syncOnboardingStage(pId);
 
   const deleteResult = deleteVendor(dId);
-  addAudit(actorId, "VENDORS_MERGED", `${actorName} merged vendor "${duplicate.name}" (#${dId}) into "${primary.name}" (#${pId})`);
+  addAudit(actorId, "VENDORS_MERGED", `${actorName} merged vendor "${duplicate.name}" (#${dId}) into "${primary.name}" (#${pId})`, pId);
 
   return { ok: true, vendor: findVendor(pId), deleteResult };
 }
@@ -4012,8 +4036,9 @@ function createReclassSmartsheetUpdateTask(item) {
 // document case -- "unacceptable_service" and "cost" in particular reflect
 // a business decision ServiceEdge's own case types don't capture at all.
 const VENDOR_DENIAL_REASONS = [
-  { key: "insurance", label: "Insurance" },
-  { key: "document_chasing", label: "Document chasing" },
+  { key: "insurance", label: "COI Issues" },
+  { key: "payment_ach", label: "Payment Details (ACH)" },
+  { key: "document_chasing", label: "Document Errors & Lack of Response" },
   { key: "unacceptable_service", label: "Unacceptable work or service" },
   { key: "cost", label: "Cost" },
   { key: "other", label: "Other" },
@@ -7895,15 +7920,26 @@ function consumePasswordReset(token) {
 
 // ---- Audit log ----
 
-function addAudit(actor, action, details) {
+function addAudit(actor, action, details, vendorId = null, caseType = "") {
   const result = db
-    .prepare("INSERT INTO audit_log (timestamp, actor, action, details) VALUES (?, ?, ?, ?)")
-    .run(new Date().toISOString(), actor, action, details);
+    .prepare("INSERT INTO audit_log (timestamp, actor, action, details, vendor_id, case_type) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(new Date().toISOString(), actor, action, details, vendorId != null ? Number(vendorId) : null, caseType || "");
   return db.prepare("SELECT * FROM audit_log WHERE id = ?").get(Number(result.lastInsertRowid));
 }
 
 function listAudit() {
   return db.prepare("SELECT * FROM audit_log ORDER BY id DESC").all();
+}
+
+// One vendor's own slice of the audit trail -- "who approved/denied/
+// updated this vendor, and when," surfaced inline on the Onboarding tab
+// instead of making an admin cross-reference the separate, global Audit
+// Log tab by vendor name. See the vendor_id/case_type migration comment
+// above for why this is forward-only (no retroactive backfill).
+function getVendorAuditHistory(vendorId) {
+  return db
+    .prepare("SELECT id, timestamp, actor, action, details, case_type AS caseType FROM audit_log WHERE vendor_id = ? ORDER BY id DESC")
+    .all(Number(vendorId));
 }
 
 // ---- Files ----
@@ -12250,6 +12286,7 @@ module.exports = {
   consumePasswordReset,
   addAudit,
   listAudit,
+  getVendorAuditHistory,
   insertFile,
   listFiles,
   getFile,
