@@ -709,6 +709,22 @@ db.exec(`
   -- tech, every work day, every WOM split), unindexed before this.
   CREATE INDEX IF NOT EXISTS idx_allocations_wom_code ON allocations(wom_code);
   CREATE INDEX IF NOT EXISTS idx_allocations_tech_week ON allocations(tech_id, week_monday);
+  -- wom_lifecycle_steps backs getWomLifecycleSteps (SELECT * ... WHERE
+  -- wom_code = ?), and that's called TWICE per row by presentWom
+  -- (db.computeWomChangeOrder, then the raw lifecycleSteps field itself) --
+  -- so every GET /api/woms does up to 2 full scans of this table per WOM
+  -- returned. Unindexed before this, it only ever grows (one row per
+  -- completed step per WOM), so this degraded quietly over time rather
+  -- than failing outright -- exactly the kind of "it was fine, now it's
+  -- slow" regression the gl_entries indexes above were added for.
+  CREATE INDEX IF NOT EXISTS idx_wom_lifecycle_steps_wom_code ON wom_lifecycle_steps(wom_code);
+  -- Same story for the three per-vendor-id lookups every vendor profile
+  -- open fires in parallel (Onboarding tab's case history, COI Reviews,
+  -- Manager Remarks) -- each was a full table scan with no way to seek
+  -- straight to this vendor's rows.
+  CREATE INDEX IF NOT EXISTS idx_vendor_requests_vendor_id ON vendor_requests(vendor_id);
+  CREATE INDEX IF NOT EXISTS idx_coi_document_reviews_vendor_id ON coi_document_reviews(vendor_id);
+  CREATE INDEX IF NOT EXISTS idx_vendor_remarks_vendor_id ON vendor_remarks(vendor_id);
 `);
 
 // One-time cleanup for any vendor's JDE Vendor # saved with a stray
@@ -4919,9 +4935,25 @@ const TOYOTA_PO_STATUSES = ["open", "closed"];
 // (same cost_applied-done-and-applied-over-estimate logic), factored out
 // here so both that workflow and the Toyota PO leftover display (see
 // routes/woms.js's presentWom) stay in sync off one source of truth.
-function computeWomChangeOrder(w) {
-  const costAppliedDone = Boolean(getWomLifecycleSteps(w.code).find((s) => s.key === "cost_applied" && s.completedAt));
+// `steps` lets a caller that already fetched this WOM's lifecycle steps
+// (presentWom does, for its own `lifecycleSteps` field) pass them straight
+// through instead of this function re-querying the same rows a second
+// time -- every other call site just omits it and gets the lookup done
+// here, same as before.
+function computeWomChangeOrder(w, steps) {
+  const lifecycleSteps = steps || getWomLifecycleSteps(w.code);
+  const costAppliedDone = Boolean(lifecycleSteps.find((s) => s.key === "cost_applied" && s.completedAt));
   return costAppliedDone && w.applied_price != null && w.estimated_price != null && w.applied_price > w.estimated_price;
+}
+
+// Just the id/name pairs, for resolving a batch of WOMs' vendor names in
+// one query instead of each row pulling db.findVendor's full single-vendor
+// presentation (which itself fires 4 more queries -- see presentVendorRow's
+// own comment). Built once per request by a list route, not per row.
+function getVendorNameMap() {
+  const map = new Map();
+  for (const r of db.prepare("SELECT id, name FROM vendors").all()) map.set(r.id, r.name);
+  return map;
 }
 
 function setWomStatus(code, status, { changedBy, source } = {}) {
@@ -11971,6 +12003,7 @@ module.exports = {
   setWomStatus,
   TOYOTA_PO_STATUSES,
   computeWomChangeOrder,
+  getVendorNameMap,
   setWomToyotaPo,
   getPseReviewerId,
   setPseReviewer,

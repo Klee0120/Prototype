@@ -50,7 +50,12 @@ function summarizeReclassTarget(raw) {
   return { type: "note", label: trimmed };
 }
 
-function presentWom(w) {
+// vendorNameById: an optional Map (db.getVendorNameMap()) a list route
+// builds once and passes to every row, instead of this falling back to
+// db.findVendor's full single-vendor presentation per row -- see that
+// function's own comment for why that fallback is expensive at list scale.
+// Single-WOM routes just omit it and get the same correct name either way.
+function presentWom(w, vendorNameById) {
   let smartsheetData = null;
   if (w.smartsheet_raw_data) {
     try {
@@ -59,6 +64,7 @@ function presentWom(w) {
       smartsheetData = null;
     }
   }
+  const lifecycleSteps = db.getWomLifecycleSteps(w.code);
   return {
     code: w.code,
     description: w.description,
@@ -127,16 +133,16 @@ function presentWom(w) {
     toyotaPoNumber: w.toyota_po_number,
     toyotaRep: w.toyota_rep,
     toyotaPoStatus: w.toyota_po_status,
-    changeOrder: db.computeWomChangeOrder(w),
+    changeOrder: db.computeWomChangeOrder(w, lifecycleSteps),
     // The linked C&W PO # from the Budget PO Tracker (pos.wom_number), for
     // the WOM grid view -- null if this WOM has no PO on file yet.
     poNumber: w.poNumber || null,
     vendorId: w.vendor_id,
-    vendorName: w.vendor_id ? (db.findVendor(w.vendor_id) || {}).name || null : null,
+    vendorName: w.vendor_id ? (vendorNameById ? vendorNameById.get(w.vendor_id) || null : (db.findVendor(w.vendor_id) || {}).name || null) : null,
     // The WOM lifecycle checklist -- every step, in order, with its
     // completion state. Empty until the WOM has actually entered the
     // checklist (see db.checkWomLifecycleAutoSteps, called on every sync).
-    lifecycleSteps: db.getWomLifecycleSteps(w.code),
+    lifecycleSteps,
     // Verbatim Status/Work Completed/Billing/Requested-By values straight
     // from the Smartsheet tracker -- see the woms.source_status_raw
     // migration comment in db.js for why these are separate from `status`.
@@ -185,7 +191,8 @@ function presentWom(w) {
 }
 
 router.get("/", requireAuth, (req, res) => {
-  res.json(db.listWoms().map(presentWom));
+  const vendorNameById = db.getVendorNameMap();
+  res.json(db.listWoms().map((w) => presentWom(w, vendorNameById)));
 });
 
 // The WOM lifecycle checklist: the Financials-wide list of WOMs still
@@ -199,10 +206,11 @@ router.get("/", requireAuth, (req, res) => {
 // found" (code="lifecycle"), which breaks Task Manager's filters panel
 // (loadStaff in tasks.js fetches this unguarded) on every single page load.
 router.get("/lifecycle/tasks", requireAuth, requireAdmin, (req, res) => {
+  const vendorNameById = db.getVendorNameMap();
   res.json({
     reviewerAdminId: db.getPseReviewerId(),
     steps: db.WOM_LIFECYCLE_STEPS,
-    tasks: db.listWomLifecycleTasks(req.user).map(presentWom),
+    tasks: db.listWomLifecycleTasks(req.user).map((w) => presentWom(w, vendorNameById)),
   });
 });
 
@@ -460,9 +468,10 @@ router.get("/cost-summary", requireAuth, requireAdmin, requireFinancialsAccess, 
 // calls out explicitly per WOM rather than leaving it implicit.
 router.get("/invoicing-queue", requireAuth, requireAdmin, requireFinancialsAccess, (req, res) => {
   const woms = db.listWomsNeedingInvoicing();
+  const vendorNameById = db.getVendorNameMap();
   res.json(
     woms.map((w) => {
-      const presented = presentWom(w);
+      const presented = presentWom(w, vendorNameById);
       const hasInvoiceDocument = db.hasWomInvoiceDocument(w.code);
       const missingRequirements = [];
       if (!presented.invoiceNumber) missingRequirements.push("Invoice #");
