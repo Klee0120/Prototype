@@ -3372,7 +3372,7 @@ function approveCoiDocumentReview(id, { reviewerId, reviewerName, policyNumber, 
     Number(id)
   );
   applyCoiReviewOutcomeToVendor(review.vendorId, { approved: true });
-  syncCoiCaseFromReview(review.vendorId, { approved: true, policyNumber, carrier, expirationDate });
+  syncCoiCaseFromReview(review.vendorId, { approved: true, policyNumber, carrier, expirationDate, updatedBy: reviewerId });
   return findCoiDocumentReview(id);
 }
 
@@ -3382,7 +3382,7 @@ function rejectCoiDocumentReview(id, { reviewerId, reviewerName, reasonKeys, pol
     "UPDATE coi_document_reviews SET status = 'rejected', rejected_reasons_json = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ? WHERE id = ?"
   ).run(JSON.stringify(reasonKeys || []), reviewerId, reviewerName, new Date().toISOString(), Number(id));
   applyCoiReviewOutcomeToVendor(review.vendorId, { approved: false, reasonKeys: reasonKeys || [] });
-  syncCoiCaseFromReview(review.vendorId, { approved: false, reasonKeys: reasonKeys || [], policyNumber, carrier, expirationDate });
+  syncCoiCaseFromReview(review.vendorId, { approved: false, reasonKeys: reasonKeys || [], policyNumber, carrier, expirationDate, updatedBy: reviewerId });
   return findCoiDocumentReview(id);
 }
 
@@ -4202,6 +4202,7 @@ function presentVendorRequestRow(r) {
     w9PreviouslyApproved: Boolean(r.w9_previously_approved),
     coiPolicyNumber: r.coi_policy_number || "",
     coiCarrier: r.coi_carrier || "",
+    updatedBy: r.updated_by || null,
   };
 }
 
@@ -4403,7 +4404,7 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     referenceNumber, status, note, asOf,
     expirationDate, reviewNotesSelected, reviewNotesFreeText,
     w9Name, w9Address, w9PreviouslyApproved,
-    coiPolicyNumber, coiCarrier,
+    coiPolicyNumber, coiCarrier, updatedBy,
   } = fields;
   const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
   const isCoi = requestType === ONBOARDING_CASE_TYPE_BY_KEY.coi;
@@ -4418,8 +4419,8 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     `INSERT INTO vendor_requests
       (vendor_id, request_type, reference_number, status, note, as_of,
        expiration_date, review_notes_selected, review_notes_free_text,
-       w9_name, w9_address, w9_previously_approved, coi_policy_number, coi_carrier, requested_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       w9_name, w9_address, w9_previously_approved, coi_policy_number, coi_carrier, requested_at, updated_at, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     vendorId,
     requestType,
@@ -4436,7 +4437,8 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     isCoi ? coiPolicyNumber || "" : "",
     isCoi ? coiCarrier || "" : "",
     now,
-    now
+    now,
+    updatedBy || null
   );
   applyCaseReviewOutcomeToVendorFormChecks(vendorId, requestType, { status: finalStatus, reviewNotesSelected });
   touchVendorActivity(vendorId);
@@ -4515,7 +4517,7 @@ function coiReviewReasonKeysToReviewNotes(reasonKeys = []) {
   return Array.from(notes);
 }
 
-function syncCoiCaseFromReview(vendorId, { approved, reasonKeys = [], policyNumber, carrier, expirationDate } = {}) {
+function syncCoiCaseFromReview(vendorId, { approved, reasonKeys = [], policyNumber, carrier, expirationDate, updatedBy } = {}) {
   const latest = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
   // An already-Approved case is a closed record of a specific policy
   // period -- a new COI coming through review (a renewal, a new policy
@@ -4536,6 +4538,7 @@ function syncCoiCaseFromReview(vendorId, { approved, reasonKeys = [], policyNumb
     coiPolicyNumber: policyNumber !== undefined ? policyNumber : !latestIsApproved && latest ? latest.coi_policy_number || "" : "",
     coiCarrier: carrier !== undefined ? carrier : !latestIsApproved && latest ? latest.coi_carrier || "" : "",
     expirationDate: expirationDate !== undefined ? expirationDate : !latestIsApproved && latest ? latest.expiration_date || null : null,
+    updatedBy,
   };
   if (latest && !latestIsApproved) {
     return updateVendorRequest(vendorId, latest.id, { requestType: ONBOARDING_CASE_TYPE_BY_KEY.coi, ...fields });

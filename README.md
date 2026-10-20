@@ -2066,6 +2066,12 @@ Demo logins:
   populated going forward on every vendor-related audit entry -- forward-
   only, since matching older rows up to a vendor after the fact would mean
   fragile free-text name-matching
+- **Onboarding board is filterable to "My cases" vs. "All cases"** --
+  per case type (`vendor_requests.updated_by`, now captured the moment a
+  case is first logged, not just on a later edit), since two admins can
+  each own a different case on the very same vendor. "All cases" (the
+  default) still marks each case pill "Mine" where it applies, so
+  ownership stays visible without narrowing the list
 
 ## Data model
 

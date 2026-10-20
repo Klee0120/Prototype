@@ -241,6 +241,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // table of the same filtered WOM set, for scanning/filtering across many
   // WOMs at once instead of one at a time. Same data, same filters above;
   // this only changes how the result renders. See WOM_GRID_COLUMNS.
+  // Onboarding board: "mine" narrows In Progress/Denied/Not Required down
+  // to vendors with at least one case this admin personally logged or last
+  // touched (vendor_requests.updated_by) -- per case type, since two
+  // admins can each own a different case on the very same vendor. "all"
+  // (the default) shows everyone's, with each case pill still marked
+  // "Mine" where it applies so ownership stays visible either way.
+  let onboardingCaseFilter = "all";
   let womViewMode = "cards";
   let womGridSortKey = null;
   let womGridSortDir = "asc";
@@ -838,12 +845,23 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const caseTypes = ONBOARDING_CASE_TYPES;
     const { summaries } = await api.get("/api/admin/vendors/onboarding/case-summary");
 
+    // "Mine" matches per case type (summaries[v.id][key].updatedBy), not
+    // the vendor as a whole -- two admins can each own a different case on
+    // the same vendor, so a vendor shows up for either of them as soon as
+    // ANY one of its cases is theirs.
+    const myId = state.user && state.user.id;
+    const hasMyCase = (v) => Object.values(summaries[v.id] || {}).some((c) => c.updatedBy === myId);
     const notStarted = vendors.filter((v) => v.onboardingStage === "not_started");
-    const inProgress = vendors
+    let inProgress = vendors
       .filter((v) => v.onboardingStage === "in_progress")
       .sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
-    const denied = vendors.filter((v) => v.onboardingStage === "denied").sort((a, b) => a.name.localeCompare(b.name));
-    const notRequired = vendors.filter((v) => v.onboardingStage === "not_required").sort((a, b) => a.name.localeCompare(b.name));
+    let denied = vendors.filter((v) => v.onboardingStage === "denied").sort((a, b) => a.name.localeCompare(b.name));
+    let notRequired = vendors.filter((v) => v.onboardingStage === "not_required").sort((a, b) => a.name.localeCompare(b.name));
+    if (onboardingCaseFilter === "mine") {
+      inProgress = inProgress.filter(hasMyCase);
+      denied = denied.filter(hasMyCase);
+      notRequired = notRequired.filter(hasMyCase);
+    }
     const complianceNeeded = vendors
       .filter(
         (v) =>
@@ -864,6 +882,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         to Denied. A vendor with no case update in ${ONBOARDING_STALE_DAYS}+ days is flagged so nothing
         quietly sits untouched. This board shows case status only, never a vendor's actual documents.
       </p>
+      <div class="onboarding-case-filter-toggle">
+        <button type="button" class="btn ${onboardingCaseFilter === "all" ? "btn-primary" : "btn-secondary"} onboarding-case-filter-all-btn">All cases</button>
+        <button type="button" class="btn ${onboardingCaseFilter === "mine" ? "btn-primary" : "btn-secondary"} onboarding-case-filter-mine-btn">My cases</button>
+        <span class="review-checklist-hint">
+          ${
+            onboardingCaseFilter === "mine"
+              ? "Showing only vendors with at least one case you personally logged or last touched."
+              : "Showing every admin's ongoing cases and history -- each case pill is still marked “Mine” where it's yours."
+          }
+        </span>
+      </div>
       <h3>Start Onboarding</h3>
       <p class="review-checklist-hint">
         ${notStarted.length} vendor${notStarted.length === 1 ? "" : "s"} on file ${notStarted.length === 1 ? "hasn't" : "haven't"}
@@ -935,23 +964,33 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     renderStartResults("");
     searchInput.addEventListener("input", () => renderStartResults(searchInput.value));
 
+    content.querySelector(".onboarding-case-filter-all-btn").addEventListener("click", () => {
+      onboardingCaseFilter = "all";
+      drawVendorOnboarding(content);
+    });
+    content.querySelector(".onboarding-case-filter-mine-btn").addEventListener("click", () => {
+      onboardingCaseFilter = "mine";
+      drawVendorOnboarding(content);
+    });
+
+    const mineSuffix = onboardingCaseFilter === "mine" ? " with a case of yours" : "";
     const inProgressList = content.querySelector("#onboarding-in-progress-list");
     if (inProgress.length === 0) {
-      inProgressList.innerHTML = `<p class="empty-note">Nothing currently being onboarded.</p>`;
+      inProgressList.innerHTML = `<p class="empty-note">Nothing currently being onboarded${mineSuffix}.</p>`;
     } else {
       inProgress.forEach((v) => inProgressList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
     }
 
     const deniedList = content.querySelector("#onboarding-denied-list");
     if (denied.length === 0) {
-      deniedList.innerHTML = `<p class="empty-note">No denied vendors.</p>`;
+      deniedList.innerHTML = `<p class="empty-note">No denied vendors${mineSuffix}.</p>`;
     } else {
       denied.forEach((v) => deniedList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
     }
 
     const notRequiredList = content.querySelector("#onboarding-not-required-list");
     if (notRequired.length === 0) {
-      notRequiredList.innerHTML = `<p class="empty-note">No vendors marked Not Required.</p>`;
+      notRequiredList.innerHTML = `<p class="empty-note">No vendors marked Not Required${mineSuffix}.</p>`;
     } else {
       notRequired.forEach((v) => notRequiredList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
     }
@@ -1661,6 +1700,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="onboarding-case ${locked ? "onboarding-case-locked" : ""}" data-case-key="${ct.key}">
         <div class="onboarding-case-header">
           <span class="onboarding-case-label">${escapeHtml(ct.label)}</span>
+          ${effectiveLatest && effectiveLatest.updatedBy === (state.user && state.user.id) ? `<span class="badge badge-draft onboarding-case-mine-badge">Mine</span>` : ""}
           ${
             locked
               ? `<button type="button" class="btn btn-secondary onboarding-case-start-new-btn">Start new ${escapeHtml(ct.label)} case</button>`

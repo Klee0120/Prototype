@@ -1531,6 +1531,29 @@ test("vendors: companyAddress and billToAddress persist and survive unrelated sa
   assert.equal(unrelatedEdit.body.phone, "555-0100");
 });
 
+test("vendors: a case tracks which admin logged/last touched it, for the Onboarding board's mine-vs-all filter", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendor = (await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Ownership Test Co" } })).body;
+
+  await t.test("logging a case captures who logged it, immediately -- not just on a later edit", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendor.id}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - COI", referenceNumber: "REF-1", status: "In review" },
+    });
+    assert.equal(res.status, 201);
+    const coiRequest = res.body.find((r) => r.requestType === "Onboarding - COI");
+    assert.equal(coiRequest.updatedBy, "ADMIN");
+  });
+
+  await t.test("the bulk onboarding case-summary endpoint (what the board's mine/all filter reads) carries it too", async () => {
+    const res = await server.call("GET", "/api/admin/vendors/onboarding/case-summary", { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.summaries[vendor.id].coi.updatedBy, "ADMIN");
+  });
+});
+
 test("vendors: audit-history is scoped to one vendor and tags case-specific entries", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

@@ -626,7 +626,7 @@ router.post("/:id/requests", (req, res) => {
   const statusError = validateCaseStatus(requestType.trim(), req.body.status);
   if (statusError) return res.status(400).json({ error: statusError });
 
-  const requests = db.addVendorRequest(vendor.id, requestType.trim(), requestFieldsFromBody(req.body));
+  const requests = db.addVendorRequest(vendor.id, requestType.trim(), { ...requestFieldsFromBody(req.body), updatedBy: req.user.id });
   db.addAudit(
     req.user.id,
     "VENDOR_REQUEST_ADDED",

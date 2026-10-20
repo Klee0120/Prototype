@@ -5096,6 +5096,18 @@ tr.gl-import-shrink-row {
   margin-bottom: 8px;
 }
 
+.onboarding-case-filter-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.onboarding-case-mine-badge {
+  margin-left: 6px;
+}
+
 .vendor-toolbar .vendor-search {
   flex: 1 1 260px;
   padding: 9px 10px;
