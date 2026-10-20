@@ -409,3 +409,59 @@ test("coi review -> case sync: a second review updates the SAME case rather than
   // rejection's "POL-111" should still be on file, not blanked.
   assert.equal(coiCases2[0].coiPolicyNumber, "POL-111");
 });
+
+test("coi review -> case sync: once a case is Approved, the next review starts a NEW case instead of overwriting it", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Annual Renewal Co" } });
+  const vendor = vendorRes.body;
+
+  const upload1 = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi-2025.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review1 = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload1.body.id}/coi-review`, { userId: "ADMIN" })).body;
+  await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review1.id}/approve`, {
+    userId: "ADMIN",
+    body: { policyNumber: "POL-2025", carrier: "Acme Insurance", expirationDate: "2025-12-31" },
+  });
+
+  const afterFirst = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  const coiCases1 = afterFirst.filter((r) => r.requestType === "Onboarding - COI");
+  assert.equal(coiCases1.length, 1);
+  assert.equal(coiCases1[0].status, "Approved");
+  assert.equal(coiCases1[0].coiPolicyNumber, "POL-2025");
+
+  // The policy renews -- a new COI comes in for the next policy year and
+  // gets reviewed/approved the same way.
+  const upload2 = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendor.id), category: "coi" },
+    fileName: "coi-2026.pdf",
+    fileContent: await buildFakePdf(["placeholder"]),
+    mimeType: "application/pdf",
+  });
+  const review2 = (await server.call("POST", `/api/admin/vendors/${vendor.id}/files/${upload2.body.id}/coi-review`, { userId: "ADMIN" })).body;
+  await server.call("POST", `/api/admin/vendors/${vendor.id}/coi-reviews/${review2.id}/approve`, {
+    userId: "ADMIN",
+    body: { policyNumber: "POL-2026", carrier: "Acme Insurance", expirationDate: "2026-12-31" },
+  });
+
+  const afterSecond = (await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" })).body;
+  const coiCases2 = afterSecond.filter((r) => r.requestType === "Onboarding - COI");
+  assert.equal(coiCases2.length, 2, "the approved 2025 case stays on file, a new case was created for the 2026 renewal");
+
+  const oldCase = coiCases2.find((c) => c.coiPolicyNumber === "POL-2025");
+  const newCase = coiCases2.find((c) => c.coiPolicyNumber === "POL-2026");
+  assert.ok(oldCase, "the 2025 case's own data is untouched");
+  assert.equal(oldCase.status, "Approved");
+  assert.equal(oldCase.expirationDate ? oldCase.expirationDate.slice(0, 10) : null, "2025-12-31");
+  assert.ok(newCase, "a distinct new case holds the 2026 renewal");
+  assert.equal(newCase.status, "Approved");
+  assert.equal(newCase.expirationDate ? newCase.expirationDate.slice(0, 10) : null, "2026-12-31");
+  assert.notEqual(oldCase.id, newCase.id);
+});

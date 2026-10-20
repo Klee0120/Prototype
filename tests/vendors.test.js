@@ -300,10 +300,10 @@ test("vendors: onboarding tracker (stage, denied reason, case log)", async (t) =
   t.after(() => server.close());
   let vendorId;
 
-  await t.test("a newly added vendor defaults to In Progress -- adding one here is starting to onboard it", async () => {
+  await t.test("a newly added vendor defaults to Not Started -- adding a profile isn't itself a decision to start onboarding", async () => {
     const res = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Momentum Mechanical" } });
     assert.equal(res.status, 201);
-    assert.equal(res.body.onboardingStage, "in_progress");
+    assert.equal(res.body.onboardingStage, "not_started");
     assert.equal(res.body.deniedReason, "");
     vendorId = res.body.id;
   });
@@ -402,8 +402,8 @@ test("vendors: onboarding stage derives from COI/W-9/Payment/Blank Invoice case 
   const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Morley and Associates" } });
   const vendorId = create.body.id;
 
-  await t.test("no cases yet -- defaults to In Progress from creation, not Not Started", async () => {
-    assert.equal(create.body.onboardingStage, "in_progress");
+  await t.test("no cases yet -- defaults to Not Started from creation", async () => {
+    assert.equal(create.body.onboardingStage, "not_started");
   });
 
   async function logCase(requestType, status, referenceNumber) {

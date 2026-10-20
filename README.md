@@ -510,8 +510,18 @@ Demo logins:
   client-side (already-loaded `vendorsCache`, no extra request); **Start
   Onboarding** checks the Welcome Email Sent box for that vendor, which is
   enough activity on its own to move it to `in_progress` and onto the
-  board below. A vendor added fresh through **+ Add vendor** still skips
-  this step entirely and starts `in_progress` immediately, same as before.
+  board below. **A vendor added fresh through + Add vendor also now
+  defaults to `not_started`** (it used to jump straight to `in_progress`,
+  on the theory that adding a profile here was itself the start of
+  onboarding it) -- that assumption broke the moment COI matching got its
+  own "+ No match? Create a new vendor" shortcut (same `POST /api/admin/
+  vendors` endpoint, see the COI pool matching section below), since that
+  button only ever says "Create & assign," nothing about onboarding, and
+  was silently kicking off a full onboarding track as a side effect every
+  time an admin quick-added a vendor while filing an incoming COI.
+  Onboarding now only ever starts as its own deliberate step, either
+  through Start Onboarding here or the first real case activity against
+  that vendor (`deriveOnboardingStage`).
   The **Vendor Compliance** dashboard has the equivalent search for the
   other direction -- **"Update a Vendor's Compliance Case"** finds any
   vendor at all (onboarded or not, flagged or not) and opens the same
@@ -526,6 +536,49 @@ Demo logins:
   Onboarding board) to do it. This is for exactly that: a vendor emails
   new bank details and you just need to log the ACH case, no document, no
   flagged issue, no full onboarding flow.
+- **A case that's already Approved starts a new case on renewal, instead
+  of being overwritten.** A COI's annual renewal, a re-signed W-9, a new
+  ACH after a vendor switches banks -- each of these used to silently
+  overwrite that case type's one existing row (`updateVendorRequest` on
+  whatever `latestRequestOfType` returned), wiping out the prior
+  approval's own policy #/carrier/expiration/dates with no trace it ever
+  existed. Both the places a case gets touched now check whether the
+  latest one is already `Approved` first: `syncCoiCaseFromReview` (the
+  COI Review document path) starts a fresh case row instead of patching
+  the approved one the moment a newly-reviewed COI gets approved against
+  a vendor whose COI is already Approved; the manual case pill
+  (`renderCasePillHtml`/`wireCasePill`) locks an Approved case's fields
+  (still fully visible, just disabled) and shows a **"Start new \[Type\]
+  case"** button in its place -- clicking it treats the pill as if no
+  case existed yet (same lazy-creation behavior a vendor's very first
+  case already had: nothing's actually created until a real field gets
+  saved), so the old approved case stays on file as its own closed
+  record and the new one becomes its own row once work on it begins. Every
+  past case of a type is still there via "Full case history," same as
+  before -- this only changes what a *save* does, not what's retained.
+- **"Mark Vendor Denied" moved to the top, and works from a vendor's own
+  profile now too.** Previously this only existed on the Onboarding
+  board's own rows (buried behind Details -> "Other outcome: mark vendor
+  denied"); the vendor profile's Onboarding & Compliance tab rendered the
+  same disclosure markup but never actually wired up its buttons, so
+  clicking Confirm denial there silently did nothing. Both are now one
+  shared component (`renderDenyPanelHtml`/`wireDenyPanel`), shown as the
+  first thing in both places (not after the case pills), with the same
+  built-in friction as before against an accidental click: the disclosure
+  has to be opened, a reason picked (required), Confirm clicked, and a
+  browser confirm() accepted -- four real steps, not a stray one-click.
+  Denying a vendor only ever touches that vendor's own `onboarding_stage`/
+  denial-reason columns -- their cases, remarks, and documents are
+  untouched and stay exactly where they are, so reinstating later (also
+  now reachable from the profile) picks up with full history intact.
+  Fixed alongside this: `wireDenyPanel`'s deny/reinstate handlers now
+  `Object.assign` the server's response back onto the local vendor object
+  before re-rendering, matching the pattern `wireWelcomeEmailLine`/
+  `wireParentCase` already used -- without it, a deny/reinstate action on
+  the vendor's own profile page would re-render using the stale
+  pre-change vendor object (since that page's own refresh only re-fetches
+  case data, not the vendor's own top-level fields), showing the pre-deny
+  UI again right after confirming the denial.
 - **Vendor edit modal is the general profile; onboarding and compliance
   live in their own profile tab.** These used to be two intermixed
   concerns on the same scrolling page (case status, document-compliance

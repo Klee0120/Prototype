@@ -1247,6 +1247,97 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const remaining = total - approved;
     return `${remaining} required case${remaining === 1 ? "" : "s"} pending approval.`;
   }
+  // Giving up on a vendor's onboarding -- shared between the Onboarding
+  // board's own rows and the vendor profile's Cases section (previously
+  // this only existed on the board; the profile rendered nothing at all
+  // for it, so there was no way to deny -- or reinstate -- a vendor from
+  // their own page). Deliberately placed at the TOP of whichever section
+  // renders it (not buried after the case pills, where it used to sit) so
+  // it's easy to find, but still takes a few real clicks to actually fire:
+  // open the collapsed "Mark Vendor Denied" disclosure, pick a reason
+  // (required), then Confirm -- no single click denies a vendor by
+  // accident.
+  function renderDenyPanelHtml(v) {
+    if (v.onboardingStage === "denied") {
+      return `
+        <div class="onboarding-denied-reason onboarding-deny-panel-top">
+          ${v.deniedReasonCategory ? `<span class="badge badge-rejected">${escapeHtml(denialReasonLabel(v.deniedReasonCategory))}</span>` : ""}
+          <input type="text" class="onboarding-denied-reason-input" placeholder="Note (optional, e.g. which case and why)" value="${escapeHtml(v.deniedReason)}" />
+          <button type="button" class="btn btn-link onboarding-denied-reason-save">Save note</button>
+          <button type="button" class="btn btn-link onboarding-reinstate-btn">Reinstate vendor</button>
+        </div>
+      `;
+    }
+    return `
+      <details class="onboarding-deny-action onboarding-deny-panel-top">
+        <summary class="onboarding-other-outcome-toggle btn btn-secondary danger-link">Mark Vendor Denied</summary>
+        <div class="onboarding-deny-panel">
+          <select class="onboarding-deny-reason-select">
+            <option value="">Reason for denial…</option>
+            ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
+          </select>
+          <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
+          <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
+        </div>
+      </details>
+    `;
+  }
+  function wireDenyPanel(el, v, onLogged) {
+    const deniedReasonSave = el.querySelector(".onboarding-denied-reason-save");
+    if (deniedReasonSave) {
+      deniedReasonSave.addEventListener("click", async () => {
+        const reasonInput = el.querySelector(".onboarding-denied-reason-input");
+        try {
+          const updated = await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
+          Object.assign(v, updated);
+          invalidateVendorsCache();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+    const reinstateBtn = el.querySelector(".onboarding-reinstate-btn");
+    if (reinstateBtn) {
+      reinstateBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Reinstate ${v.name}? This clears the denial and re-checks their onboarding cases.`)) return;
+        try {
+          const updated = await api.post(`/api/admin/vendors/${v.id}/reinstate`, {});
+          // onLogged (renderVendorCasesSection on a vendor's own profile,
+          // drawVendorOnboarding on the board) only ever re-fetches case
+          // data, never this vendor's own top-level fields -- without
+          // patching `v` in place here first, a re-render in the SAME
+          // context (not a fresh page load) would still read the stale
+          // pre-reinstate onboardingStage and show the denied UI again.
+          Object.assign(v, updated);
+          invalidateVendorsCache();
+          await onLogged();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+    const denyConfirmBtn = el.querySelector(".onboarding-deny-confirm-btn");
+    if (denyConfirmBtn) {
+      denyConfirmBtn.addEventListener("click", async () => {
+        const category = el.querySelector(".onboarding-deny-reason-select").value;
+        const detail = el.querySelector(".onboarding-deny-detail-input").value.trim();
+        if (!category) {
+          window.alert("Pick a reason for the denial first.");
+          return;
+        }
+        if (!window.confirm(`Mark ${v.name} denied? This stops technicians from seeing or using this vendor until reinstated. Their cases, remarks, and documents all stay on file.`)) return;
+        try {
+          const updated = await api.post(`/api/admin/vendors/${v.id}/deny`, { category, reason: detail });
+          Object.assign(v, updated);
+          invalidateVendorsCache();
+          await onLogged();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+  }
+
   function renderParentCaseHtml(v, caseSummary) {
     return `
       <div class="onboarding-parent-case">
@@ -1357,6 +1448,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <button class="btn btn-link onboarding-row-details-toggle" type="button">Details</button>
       </div>
       <div class="onboarding-row-details" ${onboardingRowDetailsExpanded.has(v.id) ? "" : "hidden"}>
+        ${renderDenyPanelHtml(v)}
         ${renderWelcomeEmailLine(v)}
         ${renderParentCaseHtml(v, caseSummary)}
         <div class="onboarding-cases-heading">
@@ -1366,26 +1458,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="onboarding-cases">
           ${caseTypes.map((ct) => renderCasePillHtml(v, ct, caseSummary[ct.key])).join("")}
         </div>
-        ${
-          v.onboardingStage === "denied"
-            ? `<div class="onboarding-denied-reason">
-                 ${v.deniedReasonCategory ? `<span class="badge badge-rejected">${escapeHtml(denialReasonLabel(v.deniedReasonCategory))}</span>` : ""}
-                 <input type="text" class="onboarding-denied-reason-input" placeholder="Note (optional, e.g. which case and why)" value="${escapeHtml(v.deniedReason)}" />
-                 <button type="button" class="btn btn-link onboarding-denied-reason-save">Save note</button>
-                 <button type="button" class="btn btn-link onboarding-reinstate-btn">Reinstate vendor</button>
-               </div>`
-            : `<details class="onboarding-deny-action">
-                 <summary class="onboarding-other-outcome-toggle">Other outcome: mark vendor denied</summary>
-                 <div class="onboarding-deny-panel">
-                   <select class="onboarding-deny-reason-select">
-                     <option value="">Reason for denial…</option>
-                     ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
-                   </select>
-                   <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
-                   <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
-                 </div>
-               </details>`
-        }
       </div>
       <div class="review-row-detail onboarding-case-log" hidden></div>
     `;
@@ -1406,52 +1478,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
     wireWelcomeEmailLine(el, v, () => drawVendorOnboarding(content));
     wireParentCase(el, v, () => drawVendorOnboarding(content));
-
-    const deniedReasonSave = el.querySelector(".onboarding-denied-reason-save");
-    if (deniedReasonSave) {
-      deniedReasonSave.addEventListener("click", async () => {
-        const reasonInput = el.querySelector(".onboarding-denied-reason-input");
-        try {
-          await api.patch(`/api/admin/vendors/${v.id}`, vendorFullPayload(v, { deniedReason: reasonInput.value.trim() }));
-          invalidateVendorsCache();
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
-    }
-
-    const reinstateBtn = el.querySelector(".onboarding-reinstate-btn");
-    if (reinstateBtn) {
-      reinstateBtn.addEventListener("click", async () => {
-        if (!window.confirm(`Reinstate ${v.name}? This clears the denial and re-checks their onboarding cases.`)) return;
-        try {
-          await api.post(`/api/admin/vendors/${v.id}/reinstate`, {});
-          invalidateVendorsCache();
-          await drawVendorOnboarding(content);
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
-    }
-
-    const denyConfirmBtn = el.querySelector(".onboarding-deny-confirm-btn");
-    if (denyConfirmBtn) {
-      denyConfirmBtn.addEventListener("click", async () => {
-        const category = el.querySelector(".onboarding-deny-reason-select").value;
-        const detail = el.querySelector(".onboarding-deny-detail-input").value.trim();
-        if (!category) {
-          window.alert("Pick a reason for the denial first.");
-          return;
-        }
-        try {
-          await api.post(`/api/admin/vendors/${v.id}/deny`, { category, reason: detail });
-          invalidateVendorsCache();
-          await drawVendorOnboarding(content);
-        } catch (err) {
-          window.alert(err.message);
-        }
-      });
-    }
+    wireDenyPanel(el, v, () => drawVendorOnboarding(content));
 
     caseTypes.forEach((ct) => {
       const caseEl = el.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
@@ -1540,34 +1567,55 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       </div>
     `;
   }
-  function renderCasePillHtml(v, ct, latest) {
+  // Once a case is Approved it's a closed record of one policy/form period
+  // -- a renewal (a new COI for the next policy year, a re-signed W-9, a
+  // new ACH after a vendor switches banks) is a fresh case, not a
+  // correction to that one, so the pill locks (every field disabled, the
+  // approved data still fully visible) and offers "Start new case"
+  // instead of letting a stray edit silently overwrite the old approval.
+  // Still-open cases (gathering/in review/revisions needed/denied) keep
+  // editing in place exactly like before -- that's the same submission
+  // still being worked, not a new period.
+  function renderCasePillHtml(v, ct, latest, startingNew) {
     const coiRef = ct.key === "coi" ? coiRequirementLine(v) : "";
     const formStatus = v[FORM_STATUS_KEY_BY_CASE_KEY[ct.key]] || "not_requested";
     const isW9 = ct.key === "w9";
     const isCoi = ct.key === "coi";
     const statusOptions = caseStatusOptionsFor(ct.key);
-    const currentStatus = latest ? latest.status || "" : "";
+    const effectiveLatest = startingNew ? null : latest;
+    const currentStatus = effectiveLatest ? effectiveLatest.status || "" : "";
+    const locked = !startingNew && currentStatus === "Approved";
+    const disabledAttr = locked ? "disabled" : "";
     return `
-      <div class="onboarding-case" data-case-key="${ct.key}">
+      <div class="onboarding-case ${locked ? "onboarding-case-locked" : ""}" data-case-key="${ct.key}">
         <div class="onboarding-case-header">
           <span class="onboarding-case-label">${escapeHtml(ct.label)}</span>
-          <span class="onboarding-case-type-tag">Individual document case</span>
+          ${
+            locked
+              ? `<button type="button" class="btn btn-secondary onboarding-case-start-new-btn">Start new ${escapeHtml(ct.label)} case</button>`
+              : `<span class="onboarding-case-type-tag">Individual document case</span>`
+          }
         </div>
+        ${
+          locked
+            ? `<p class="onboarding-case-locked-hint">This ${escapeHtml(ct.label)} case is Approved and closed -- a record of this policy/form period. Click "Start new ${escapeHtml(ct.label)} case" above for a renewal or update, rather than editing this one.</p>`
+            : ""
+        }
         ${coiRef ? `<div class="onboarding-case-coi-ref">${escapeHtml(coiRef)}</div>` : ""}
         <div class="onboarding-case-grid">
           <label class="onboarding-field">
             Form status
-            <select class="onboarding-form-status-select">
+            <select class="onboarding-form-status-select" ${disabledAttr}>
               ${FORM_STATUS_OPTIONS.map((s) => `<option value="${s}" ${formStatus === s ? "selected" : ""}>${FORM_STATUS_LABELS[s]}</option>`).join("")}
             </select>
           </label>
           <label class="onboarding-field">
             Case number
-            <input type="text" class="onboarding-case-ref-input" placeholder="Case number" value="${escapeHtml(latest ? latest.referenceNumber || "" : "")}" />
+            <input type="text" class="onboarding-case-ref-input" placeholder="Case number" value="${escapeHtml(effectiveLatest ? effectiveLatest.referenceNumber || "" : "")}" ${disabledAttr} />
           </label>
           <label class="onboarding-field">
             Case status
-            <select class="onboarding-case-status-select">
+            <select class="onboarding-case-status-select" ${disabledAttr}>
               ${statusOptions
                 .map((s) => `<option value="${s}" ${currentStatus ? (currentStatus === s ? "selected" : "") : s === statusOptions[0] ? "selected" : ""}>${s}</option>`)
                 .join("")}
@@ -1575,24 +1623,24 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           </label>
           <label class="onboarding-field">
             Expiration date
-            <input type="date" class="onboarding-case-expiration-input" value="${latest && latest.expirationDate ? latest.expirationDate.slice(0, 10) : ""}" />
+            <input type="date" class="onboarding-case-expiration-input" value="${effectiveLatest && effectiveLatest.expirationDate ? effectiveLatest.expirationDate.slice(0, 10) : ""}" ${disabledAttr} />
           </label>
         </div>
         ${
           isW9
             ? `
           <label class="onboarding-w9-prev-approved-label">
-            <input type="checkbox" class="onboarding-w9-prev-approved-checkbox" ${latest && latest.w9PreviouslyApproved ? "checked" : ""} />
+            <input type="checkbox" class="onboarding-w9-prev-approved-checkbox" ${effectiveLatest && effectiveLatest.w9PreviouslyApproved ? "checked" : ""} ${disabledAttr} />
             Previously approved in ServiceEdge
           </label>
           <div class="onboarding-case-w9-grid">
             <label class="onboarding-field">
               Name on W-9
-              <input type="text" class="onboarding-w9-name-input" placeholder="Enter name exactly as shown on the form" value="${escapeHtml(latest ? latest.w9Name || "" : "")}" />
+              <input type="text" class="onboarding-w9-name-input" placeholder="Enter name exactly as shown on the form" value="${escapeHtml(effectiveLatest ? effectiveLatest.w9Name || "" : "")}" ${disabledAttr} />
             </label>
             <label class="onboarding-field">
               Address on W-9
-              <input type="text" class="onboarding-w9-address-input" placeholder="Street, city, state, ZIP" value="${escapeHtml(latest ? latest.w9Address || "" : "")}" />
+              <input type="text" class="onboarding-w9-address-input" placeholder="Street, city, state, ZIP" value="${escapeHtml(effectiveLatest ? effectiveLatest.w9Address || "" : "")}" ${disabledAttr} />
             </label>
           </div>
         `
@@ -1604,22 +1652,22 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <div class="onboarding-case-w9-grid">
             <label class="onboarding-field">
               Policy #
-              <input type="text" class="onboarding-coi-policy-input" placeholder="Policy number" value="${escapeHtml(latest ? latest.coiPolicyNumber || "" : "")}" />
+              <input type="text" class="onboarding-coi-policy-input" placeholder="Policy number" value="${escapeHtml(effectiveLatest ? effectiveLatest.coiPolicyNumber || "" : "")}" ${disabledAttr} />
             </label>
             <label class="onboarding-field">
               Carrier
-              <input type="text" class="onboarding-coi-carrier-input" placeholder="Insurance carrier" value="${escapeHtml(latest ? latest.coiCarrier || "" : "")}" />
+              <input type="text" class="onboarding-coi-carrier-input" placeholder="Insurance carrier" value="${escapeHtml(effectiveLatest ? effectiveLatest.coiCarrier || "" : "")}" ${disabledAttr} />
             </label>
           </div>
         `
             : ""
         }
-        ${renderReviewNotesChecklistHtml(ct, latest)}
+        ${locked ? "" : renderReviewNotesChecklistHtml(ct, effectiveLatest)}
         <label class="onboarding-field onboarding-case-notes-field">
           Document-case notes
-          <textarea class="onboarding-case-note-input" placeholder="Additional notes for ${escapeHtml(ct.label)}">${latest ? escapeHtml(latest.note || "") : ""}</textarea>
+          <textarea class="onboarding-case-note-input" placeholder="Additional notes for ${escapeHtml(ct.label)}" ${disabledAttr}>${effectiveLatest ? escapeHtml(effectiveLatest.note || "") : ""}</textarea>
         </label>
-        ${ct.key === "coi" && currentStatus.trim() === COI_ONLY_STATUS ? renderVpoWaiverPanelHtml(latest) : ""}
+        ${ct.key === "coi" && currentStatus.trim() === COI_ONLY_STATUS ? renderVpoWaiverPanelHtml(effectiveLatest) : ""}
       </div>
     `;
   }
@@ -1634,8 +1682,30 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // active keystroke -- see persist() vs persistAndRefresh() below). The
   // first save for a case that doesn't exist yet POSTs (creates it);
   // every save after that PATCHes the same row in place.
-  function wireCasePill(caseEl, v, ct, onLogged, latest) {
-    let editingId = latest ? latest.id : null;
+  function wireCasePill(caseEl, v, ct, onLogged, latest, startingNew) {
+    const startNewBtn = caseEl.querySelector(".onboarding-case-start-new-btn");
+    if (startNewBtn) {
+      // Locked (Approved) state -- nothing else on this pill is live, just
+      // the one button. Clicking it re-renders this same element as a
+      // blank, fully-editable pill (treating `latest` as if no case
+      // existed yet, same as a vendor's very first case of this type) --
+      // nothing is actually created until a real field gets saved, so
+      // clicking this by itself and navigating away leaves no empty row
+      // behind.
+      startNewBtn.addEventListener("click", () => {
+        // Scoped to this pill's own parent, not a document-wide query --
+        // the Onboarding board shows every vendor's cases at once, so a
+        // global `data-case-key` lookup would grab the first match on the
+        // whole page instead of this specific vendor's row.
+        const container = caseEl.parentNode;
+        caseEl.outerHTML = renderCasePillHtml(v, ct, latest, true);
+        const freshEl = container.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
+        wireCasePill(freshEl, v, ct, onLogged, null, true);
+      });
+      return;
+    }
+
+    let editingId = startingNew ? null : latest ? latest.id : null;
     let saveTimer = null;
 
     const statusSelect = caseEl.querySelector(".onboarding-case-status-select");
@@ -1766,6 +1836,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const entries = await api.get(`/api/admin/vendors/${v.id}/requests`);
     const caseSummary = caseSummaryFromEntries(entries);
     host.innerHTML = `
+      ${renderDenyPanelHtml(v)}
       ${renderWelcomeEmailLine(v)}
       ${renderParentCaseHtml(v, caseSummary)}
       <div class="onboarding-cases-heading">
@@ -1780,6 +1851,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     `;
     wireWelcomeEmailLine(host, v, () => renderVendorCasesSection(host, v));
     wireParentCase(host, v, () => renderVendorCasesSection(host, v));
+    wireDenyPanel(host, v, () => renderVendorCasesSection(host, v));
     ONBOARDING_CASE_TYPES.forEach((ct) => {
       const caseEl = host.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
       wireCasePill(caseEl, v, ct, () => renderVendorCasesSection(host, v), caseSummary[ct.key]);

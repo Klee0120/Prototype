@@ -2905,10 +2905,17 @@ function createVendor(fields) {
     fields.coiMeetsLanguageRequirements ? 1 : 0,
     ...VENDOR_COI_FIELDS.map(([key]) => coiLimits[key] || ""),
     ...VENDOR_FORM_CHECK_FIELDS.map(([key]) => (formChecks[key] ? 1 : 0)),
-    // Adding a vendor here is, in practice, the start of onboarding it --
-    // default to "in_progress" rather than "not_started" so it shows up on
-    // the Onboarding tab immediately, without an extra step.
-    ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : "in_progress",
+    // Defaults to "not_started", same as every vendor imported before this
+    // tracker existed -- adding a profile (whether through the main + Add
+    // vendor dialog or the "Create & assign" shortcut inside COI matching,
+    // which shares this same endpoint) isn't itself a decision to start
+    // onboarding; that's still its own deliberate step via the Onboarding
+    // board's own Start Onboarding search. This used to default straight
+    // to "in_progress" so a manually-added vendor appeared on the board
+    // immediately, but that meant the COI-matching shortcut -- whose
+    // button only ever says "Create & assign," nothing about onboarding --
+    // silently started a full onboarding track as a side effect too.
+    ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : "not_started",
     fields.deniedReason || "",
     fields.createdBy || null,
     now,
@@ -4382,20 +4389,27 @@ function coiReviewReasonKeysToReviewNotes(reasonKeys = []) {
 
 function syncCoiCaseFromReview(vendorId, { approved, reasonKeys = [], policyNumber, carrier, expirationDate } = {}) {
   const latest = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
+  // An already-Approved case is a closed record of a specific policy
+  // period -- a new COI coming through review (a renewal, a new policy
+  // year) is a fresh case, not a correction to the old one, so it starts
+  // a new row instead of overwriting the prior approval's own data. A
+  // still-open case (gathering/in review/revisions needed) is still the
+  // same submission being worked, so that one keeps updating in place.
+  const latestIsApproved = Boolean(latest) && latest.status === "Approved";
   const status = approved ? "Approved" : "Revisions needed";
   const reviewNotesSelected = approved ? [] : coiReviewReasonKeysToReviewNotes(reasonKeys);
   const fields = {
     status,
     reviewNotesSelected,
-    reviewNotesFreeText: latest ? latest.review_notes_free_text || "" : "",
-    referenceNumber: latest ? latest.reference_number || "" : "",
-    note: latest ? latest.note || "" : "",
-    asOf: latest ? latest.as_of : undefined,
-    coiPolicyNumber: policyNumber !== undefined ? policyNumber : latest ? latest.coi_policy_number || "" : "",
-    coiCarrier: carrier !== undefined ? carrier : latest ? latest.coi_carrier || "" : "",
-    expirationDate: expirationDate !== undefined ? expirationDate : latest ? latest.expiration_date || null : null,
+    reviewNotesFreeText: !latestIsApproved && latest ? latest.review_notes_free_text || "" : "",
+    referenceNumber: !latestIsApproved && latest ? latest.reference_number || "" : "",
+    note: !latestIsApproved && latest ? latest.note || "" : "",
+    asOf: !latestIsApproved && latest ? latest.as_of : undefined,
+    coiPolicyNumber: policyNumber !== undefined ? policyNumber : !latestIsApproved && latest ? latest.coi_policy_number || "" : "",
+    coiCarrier: carrier !== undefined ? carrier : !latestIsApproved && latest ? latest.coi_carrier || "" : "",
+    expirationDate: expirationDate !== undefined ? expirationDate : !latestIsApproved && latest ? latest.expiration_date || null : null,
   };
-  if (latest) {
+  if (latest && !latestIsApproved) {
     return updateVendorRequest(vendorId, latest.id, { requestType: ONBOARDING_CASE_TYPE_BY_KEY.coi, ...fields });
   }
   return addVendorRequest(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi, fields);
