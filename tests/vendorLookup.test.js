@@ -70,12 +70,20 @@ test("vendor lookup (technician-facing): gated on real-world status, not the cas
     assert.equal(v.lastInvoicedAt, null, "a vendor with no invoiced WOMs yet should read null, not undefined or missing");
   });
 
+  const notRequiredId = await makeVendor("Already Established Vendor Co");
+  await server.call("POST", `/api/admin/vendors/${notRequiredId}/not-required`, { userId: "ADMIN", body: {} });
+
+  await t.test("a vendor marked Not Required is still visible -- unlike denied, it's not a rejection", async () => {
+    const res = await server.call("GET", "/api/vendors", { userId: "T1001" });
+    assert.ok(res.body.some((v) => v.id === notRequiredId));
+  });
+
   await t.test("an admin sees the same filtered list through this endpoint too", async () => {
     const res = await server.call("GET", "/api/vendors", { userId: "ADMIN" });
     assert.equal(res.status, 200);
     assert.deepEqual(
-      res.body.map((v) => v.id).sort(),
-      [legacyId].sort()
+      res.body.map((v) => v.id).sort((a, b) => a - b),
+      [legacyId, notRequiredId].sort((a, b) => a - b)
     );
   });
 });

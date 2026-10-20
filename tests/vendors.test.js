@@ -825,6 +825,86 @@ test("vendors: explicit denial (cost/service, not just a document case) + reinst
   });
 });
 
+// "Not Required" -- a vendor that's already fine (usually one that
+// predates this tracker) but keeps getting pulled onto the Onboarding
+// board as "in_progress" by routine case activity. Distinct from denied:
+// never blocks a technician from using the vendor (isReadyForTechs),
+// never implies rejection, but is just as sticky against being silently
+// re-derived by case activity.
+test("vendors: mark onboarding Not Required -- the non-denial way to close a case", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Legacy Landscaping Co" } });
+  const vendorId = create.body.id;
+  assert.equal(create.body.onboardingStage, "not_started");
+
+  // Routine case activity (a COI renewal, say) pulls them onto the board.
+  await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - COI", status: "Approved" },
+  });
+  const afterCase = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  assert.equal(afterCase.body.find((v) => v.id === vendorId).onboardingStage, "in_progress");
+
+  await t.test("a technician cannot mark a vendor not required", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/not-required`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("marking it Not Required closes it out, with an optional note", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/not-required`, {
+      userId: "ADMIN",
+      body: { reason: "Predates the tracker, real paperwork on file outside this system" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.onboardingStage, "not_required");
+    assert.equal(res.body.notRequiredReason, "Predates the tracker, real paperwork on file outside this system");
+    assert.equal(res.body.deniedReasonCategory, "", "not a denial -- no denial reason set");
+  });
+
+  await t.test("the mark is audited", async () => {
+    const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = res.body.find((e) => e.action === "VENDOR_ONBOARDING_STAGE_CHANGED" && /Not Required/.test(e.details));
+    assert.ok(entry, "expected an audit entry naming the Not Required mark");
+  });
+
+  await t.test("more case activity afterward does not silently clear the Not Required mark", async () => {
+    await server.call("POST", `/api/admin/vendors/${vendorId}/requests`, {
+      userId: "ADMIN",
+      body: { requestType: "Onboarding - W8/W9", status: "Approved" },
+    });
+    const vendor = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    assert.equal(vendor.body.find((v) => v.id === vendorId).onboardingStage, "not_required");
+  });
+
+  await t.test("reinstate (the same route denied uses) clears it and re-derives from real case history", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/reinstate`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.notRequiredReason, "");
+    // Two of the four required cases are Approved (COI, W-9) -- not enough for onboarded, but real activity exists.
+    assert.equal(res.body.onboardingStage, "in_progress");
+  });
+
+  await t.test("not-required and deny are mutually exclusive -- denying clears a prior Not Required mark", async () => {
+    await server.call("POST", `/api/admin/vendors/${vendorId}/not-required`, { userId: "ADMIN", body: {} });
+    const denyRes = await server.call("POST", `/api/admin/vendors/${vendorId}/deny`, { userId: "ADMIN", body: { category: "cost" } });
+    assert.equal(denyRes.body.onboardingStage, "denied");
+    assert.equal(denyRes.body.notRequiredReason, "", "the earlier Not Required mark is cleared by denying");
+  });
+
+  await t.test("and marking not-required clears a prior denial", async () => {
+    const res = await server.call("POST", `/api/admin/vendors/${vendorId}/not-required`, { userId: "ADMIN", body: { reason: "Reconsidered" } });
+    assert.equal(res.body.onboardingStage, "not_required");
+    assert.equal(res.body.deniedReasonCategory, "", "the earlier denial is cleared by marking not-required");
+  });
+
+  await t.test("marking an unknown vendor not required 404s", async () => {
+    const res = await server.call("POST", "/api/admin/vendors/999999/not-required", { userId: "ADMIN", body: {} });
+    assert.equal(res.status, 404);
+  });
+});
+
 test("vendors: notify vendor of an expired COI/W-9/ACH document", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

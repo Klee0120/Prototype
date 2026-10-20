@@ -283,6 +283,24 @@ router.post("/:id/deny", (req, res) => {
   res.json(updated);
 });
 
+// The other manual override -- a vendor that's already fine (usually one
+// that predates this tracker) but keeps getting pulled onto the board as
+// "in_progress" by routine case activity. Unlike deny, never blocks a
+// technician from using the vendor. Sticks the same way deny does, until
+// reinstate below.
+router.post("/:id/not-required", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const { reason } = req.body || {};
+  const updated = db.markVendorNotRequired(vendor.id, { reason });
+  db.addAudit(
+    req.user.id,
+    "VENDOR_ONBOARDING_STAGE_CHANGED",
+    `${req.user.name} marked ${updated.name}'s onboarding Not Required${updated.notRequiredReason ? `: ${updated.notRequiredReason}` : ""}`
+  );
+  res.json(updated);
+});
+
 router.post("/:id/reinstate", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });

@@ -1548,6 +1548,23 @@ if (!hasColumn("vendors", "denied_reason")) {
 if (!hasColumn("vendors", "denied_reason_category")) {
   db.exec("ALTER TABLE vendors ADD COLUMN denied_reason_category TEXT DEFAULT ''");
 }
+// The other manual, sticky override -- for a vendor that's already fine
+// (usually one that predates this tracker, or whose paperwork lives
+// outside it) but keeps getting pulled onto the Onboarding board as
+// "in_progress" by routine case activity (a COI renewal getting reviewed
+// is enough to trigger that -- see deriveOnboardingStage's own case-row
+// check). Distinct from denied_reason_category: this is a neutral "this
+// vendor doesn't need the pipeline," never a rejection, so (see
+// isReadyForTechs in vendorLookup.js) it never blocks a technician from
+// using them the way denied does. not_required_at non-empty marks it
+// sticky the same way denied_reason_category does; clears via the same
+// reinstateVendor an admin uses to undo a denial.
+if (!hasColumn("vendors", "not_required_at")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN not_required_at TEXT");
+}
+if (!hasColumn("vendors", "not_required_reason")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN not_required_reason TEXT DEFAULT ''");
+}
 // Krista's own "this is who we go to first" flag for a vendor -- distinct
 // from C&W/Toyota approval status (which is about whether they're allowed
 // to work at all, not whether they're who she'd pick first).
@@ -2600,6 +2617,8 @@ function presentVendorRowBase(v) {
     onboardingStage: v.onboarding_stage,
     deniedReason: v.denied_reason || "",
     deniedReasonCategory: v.denied_reason_category || "",
+    notRequiredReason: v.not_required_reason || "",
+    notRequiredAt: v.not_required_at || null,
     preferred: Boolean(v.preferred),
     complianceRemindersEnabled: Boolean(v.compliance_reminders_enabled),
     createdBy: v.created_by || null,
@@ -2638,7 +2657,7 @@ function presentVendorRow(v) {
   };
 }
 
-const ONBOARDING_STAGES = ["not_started", "in_progress", "denied", "onboarded"];
+const ONBOARDING_STAGES = ["not_started", "in_progress", "denied", "onboarded", "not_required"];
 
 // Same output as vendors.map(presentVendorRow), but each of the four
 // query-backed extras is fetched ONCE for every vendor at once (a handful
@@ -3955,17 +3974,33 @@ const VENDOR_DENIAL_REASON_KEYS = VENDOR_DENIAL_REASONS.map((r) => r.key);
 function denyVendor(vendorId, { category, reason } = {}) {
   const cat = VENDOR_DENIAL_REASON_KEYS.includes(category) ? category : "other";
   db.prepare(
-    "UPDATE vendors SET onboarding_stage = 'denied', denied_reason_category = ?, denied_reason = ?, updated_at = ? WHERE id = ?"
+    "UPDATE vendors SET onboarding_stage = 'denied', denied_reason_category = ?, denied_reason = ?, not_required_at = NULL, not_required_reason = '', updated_at = ? WHERE id = ?"
   ).run(cat, (reason || "").trim(), new Date().toISOString(), Number(vendorId));
   return findVendor(vendorId);
 }
 
-// Clears a manual denial and lets onboarding stage resume being derived
-// from actual case history (see deriveOnboardingStage) -- may land back on
-// in_progress, onboarded, or even denied again if a case is itself denied.
+// The other manual override, for a vendor that's already fine (usually
+// one that predates this tracker, or whose real paperwork lives outside
+// it) but keeps getting pulled onto the Onboarding board as "in_progress"
+// by routine case activity -- a COI renewal getting reviewed is enough to
+// trigger that (see deriveOnboardingStage's own case-row check). Unlike
+// denyVendor, this never blocks a technician from using the vendor (see
+// isReadyForTechs in vendorLookup.js) -- it's a neutral "this vendor
+// doesn't need the pipeline," not a rejection.
+function markVendorNotRequired(vendorId, { reason } = {}) {
+  db.prepare(
+    "UPDATE vendors SET onboarding_stage = 'not_required', not_required_at = ?, not_required_reason = ?, denied_reason_category = '', denied_reason = '', updated_at = ? WHERE id = ?"
+  ).run(new Date().toISOString(), (reason || "").trim(), new Date().toISOString(), Number(vendorId));
+  return findVendor(vendorId);
+}
+
+// Clears either manual override (a denial or a not-required mark) and
+// lets onboarding stage resume being derived from actual case history
+// (see deriveOnboardingStage) -- may land back on in_progress, onboarded,
+// not_started, or even denied again if a case is itself denied.
 function reinstateVendor(vendorId) {
   db.prepare(
-    "UPDATE vendors SET denied_reason_category = '', denied_reason = '', updated_at = ? WHERE id = ?"
+    "UPDATE vendors SET denied_reason_category = '', denied_reason = '', not_required_at = NULL, not_required_reason = '', updated_at = ? WHERE id = ?"
   ).run(new Date().toISOString(), Number(vendorId));
   syncParentStage(vendorId);
   syncOnboardingStage(vendorId);
@@ -4114,13 +4149,18 @@ function latestRequestOfType(vendorId, requestType) {
 // syncParentStage(vendorId) first and only then syncOnboardingStage(vendorId)
 // -- never the other order -- or this sees a stale parent_stage.
 function deriveOnboardingStage(vendorId) {
-  // An explicit manual denial (see denyVendor) always wins -- it's a
-  // standing business decision, not a document-case outcome, so no amount
-  // of case activity below should silently clear it.
+  // Two explicit manual overrides always win over whatever case activity
+  // below would otherwise derive -- a standing business decision (denied)
+  // or a standing "this vendor doesn't need the pipeline" call
+  // (not_required, see markVendorNotRequired), neither a document-case
+  // outcome, so no amount of case activity (even just a routine COI
+  // renewal getting reviewed) should silently clear either one. Both only
+  // ever clear via an explicit reinstateVendor.
   const vendorRow = db
-    .prepare("SELECT denied_reason_category, welcome_email_sent_at, parent_stage FROM vendors WHERE id = ?")
+    .prepare("SELECT denied_reason_category, not_required_at, welcome_email_sent_at, parent_stage FROM vendors WHERE id = ?")
     .get(vendorId);
   if (vendorRow && vendorRow.denied_reason_category) return "denied";
+  if (vendorRow && vendorRow.not_required_at) return "not_required";
   const coi = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.coi);
   const w9 = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.w9);
   const payment = latestRequestOfType(vendorId, ONBOARDING_CASE_TYPE_BY_KEY.payment);
@@ -11977,6 +12017,7 @@ module.exports = {
   setVendorComplianceRemindersEnabled,
   VENDOR_DENIAL_REASONS,
   denyVendor,
+  markVendorNotRequired,
   reinstateVendor,
   listExpiredVendorComplianceCategories,
   listVendorsNeedingComplianceReminder,

@@ -3121,7 +3121,13 @@ h1, h2, h3, h4 {
   font-size: 14px;
 }
 
-.onboarding-deny-action {
+.onboarding-outcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.onboarding-deny-action,
+.onboarding-not-required-action {
   margin-top: 8px;
 }
 .onboarding-deny-panel {

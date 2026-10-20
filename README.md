@@ -579,6 +579,32 @@ Demo logins:
   pre-change vendor object (since that page's own refresh only re-fetches
   case data, not the vendor's own top-level fields), showing the pre-deny
   UI again right after confirming the denial.
+- **"Mark Not Required" -- the non-denial way to close an onboarding
+  case.** A vendor that's already fine (usually one that predates this
+  tracker) kept getting pulled back onto the Onboarding board as
+  `in_progress` by routine case activity alone -- a COI renewal getting
+  reviewed is enough to trigger `deriveOnboardingStage`'s "any case row
+  exists" rule, with no way back short of either running them through the
+  full real onboarding pipeline (pointless busywork for paperwork that
+  already exists outside this system) or marking them Denied, which is
+  the wrong tool: it means something different (failed verification) and
+  -- see `isReadyForTechs` in `vendorLookup.js` -- actively blocks
+  technicians from using them, which would break a vendor currently in
+  active use. `not_required` is a third, neutral `onboardingStage` (vendors
+  table's `not_required_at`/`not_required_reason` columns,
+  `db.markVendorNotRequired`/`POST /api/admin/vendors/:id/not-required`)
+  that's just as sticky against silent re-derivation as a denial
+  (`deriveOnboardingStage` checks it right alongside `denied_reason_category`)
+  but never excludes the vendor from the technician-facing lookup. Shown
+  as its own "Mark Not Required" disclosure right next to "Mark Vendor
+  Denied" (`renderDenyPanelHtml`), same few-clicks-not-one friction
+  (open -> optional note -> Confirm -> browser confirm()); the Onboarding
+  board gets its own "Not Required" section (same treatment as Denied) so
+  these vendors stay visible for audit/reopening, not just silently gone.
+  Denied and Not Required are mutually exclusive -- marking either one
+  clears the other -- and the same `reinstateVendor`/"Reinstate" (worded
+  "Reopen onboarding" in this context) clears whichever is set and lets
+  the stage resume deriving from real case history.
 - **Vendor edit modal is the general profile; onboarding and compliance
   live in their own profile tab.** These used to be two intermixed
   concerns on the same scrolling page (case status, document-compliance

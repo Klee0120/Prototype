@@ -842,6 +842,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       .filter((v) => v.onboardingStage === "in_progress")
       .sort((a, b) => daysSince(b.updatedAt) - daysSince(a.updatedAt));
     const denied = vendors.filter((v) => v.onboardingStage === "denied").sort((a, b) => a.name.localeCompare(b.name));
+    const notRequired = vendors.filter((v) => v.onboardingStage === "not_required").sort((a, b) => a.name.localeCompare(b.name));
     const complianceNeeded = vendors
       .filter(
         (v) =>
@@ -865,10 +866,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <h3>Start Onboarding</h3>
       <p class="review-checklist-hint">
         ${notStarted.length} vendor${notStarted.length === 1 ? "" : "s"} on file ${notStarted.length === 1 ? "hasn't" : "haven't"}
-        had onboarding started yet -- every vendor already on file before this tracker existed
-        defaults here rather than to In Progress. Search by name and click Start to record the
-        welcome email and move one onto the board below. A brand new vendor (Vendors tab -- Add
-        vendor) starts as In Progress automatically instead.
+        had onboarding started yet -- every vendor already on file before this tracker existed,
+        and every newly-added vendor, defaults here. Search by name and click Start to record the
+        welcome email and move one onto the board below.
       </p>
       <div class="onboarding-start-search">
         <input type="text" id="onboarding-start-search-input" placeholder="Search vendor name to start onboarding..." />
@@ -878,6 +878,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       <div class="review-list" id="onboarding-in-progress-list"></div>
       <h3>Denied (${denied.length})</h3>
       <div class="review-list" id="onboarding-denied-list"></div>
+      <h3>Not Required (${notRequired.length})</h3>
+      <p class="review-checklist-hint">
+        A vendor that's already fine as-is -- usually one that predates this tracker -- but kept
+        getting pulled back onto this board as In Progress by routine case activity (a COI renewal
+        getting reviewed is enough to trigger that). Unlike Denied, this never stops a technician
+        from using the vendor -- see "Mark Not Required" on a vendor's own Onboarding &amp;
+        Compliance tab.
+      </p>
+      <div class="review-list" id="onboarding-not-required-list"></div>
       <h3>Compliance Needed (${complianceNeeded.length})</h3>
       <p class="review-checklist-hint">
         Already-onboarded vendors whose forms have gone out of date -- vendor document compliance
@@ -937,6 +946,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       deniedList.innerHTML = `<p class="empty-note">No denied vendors.</p>`;
     } else {
       denied.forEach((v) => deniedList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
+    }
+
+    const notRequiredList = content.querySelector("#onboarding-not-required-list");
+    if (notRequired.length === 0) {
+      notRequiredList.innerHTML = `<p class="empty-note">No vendors marked Not Required.</p>`;
+    } else {
+      notRequired.forEach((v) => notRequiredList.appendChild(renderOnboardingRow(v, content, caseTypes, summaries[v.id] || {})));
     }
 
     const complianceList = content.querySelector("#onboarding-compliance-list");
@@ -1268,18 +1284,42 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>
       `;
     }
-    return `
-      <details class="onboarding-deny-action onboarding-deny-panel-top">
-        <summary class="onboarding-other-outcome-toggle btn btn-secondary danger-link">Mark Vendor Denied</summary>
-        <div class="onboarding-deny-panel">
-          <select class="onboarding-deny-reason-select">
-            <option value="">Reason for denial…</option>
-            ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
-          </select>
-          <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
-          <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
+    // A vendor that's already fine (usually one that predates this
+    // tracker) but keeps getting pulled onto the board as "in_progress"
+    // by routine case activity -- see markVendorNotRequired's own
+    // comment. Reuses the same reinstate button/route as denied (it
+    // clears either override), just worded as "Reopen" since nothing was
+    // ever rejected here.
+    if (v.onboardingStage === "not_required") {
+      return `
+        <div class="onboarding-denied-reason onboarding-deny-panel-top">
+          <span class="badge badge-draft">Not Required</span>
+          ${v.notRequiredReason ? `<span class="wom-desc">${escapeHtml(v.notRequiredReason)}</span>` : ""}
+          <button type="button" class="btn btn-link onboarding-reinstate-btn">Reopen onboarding</button>
         </div>
-      </details>
+      `;
+    }
+    return `
+      <div class="onboarding-deny-panel-top onboarding-outcome-actions">
+        <details class="onboarding-deny-action">
+          <summary class="onboarding-other-outcome-toggle btn btn-secondary danger-link">Mark Vendor Denied</summary>
+          <div class="onboarding-deny-panel">
+            <select class="onboarding-deny-reason-select">
+              <option value="">Reason for denial…</option>
+              ${VENDOR_DENIAL_REASONS.map((r) => `<option value="${r.key}">${escapeHtml(r.label)}</option>`).join("")}
+            </select>
+            <input type="text" class="onboarding-deny-detail-input" placeholder="Detail (optional)" />
+            <button type="button" class="btn btn-secondary danger-link onboarding-deny-confirm-btn">Confirm denial</button>
+          </div>
+        </details>
+        <details class="onboarding-not-required-action">
+          <summary class="onboarding-other-outcome-toggle btn btn-secondary">Mark Not Required</summary>
+          <div class="onboarding-deny-panel">
+            <input type="text" class="onboarding-not-required-note-input" placeholder="Note (optional, e.g. pre-existing vendor, paperwork on file elsewhere)" />
+            <button type="button" class="btn btn-secondary onboarding-not-required-confirm-btn">Confirm — Not Required</button>
+          </div>
+        </details>
+      </div>
     `;
   }
   function wireDenyPanel(el, v, onLogged) {
@@ -1299,7 +1339,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const reinstateBtn = el.querySelector(".onboarding-reinstate-btn");
     if (reinstateBtn) {
       reinstateBtn.addEventListener("click", async () => {
-        if (!window.confirm(`Reinstate ${v.name}? This clears the denial and re-checks their onboarding cases.`)) return;
+        const confirmMsg =
+          v.onboardingStage === "not_required"
+            ? `Reopen onboarding for ${v.name}? This clears the Not Required mark and re-checks their onboarding cases.`
+            : `Reinstate ${v.name}? This clears the denial and re-checks their onboarding cases.`;
+        if (!window.confirm(confirmMsg)) return;
         try {
           const updated = await api.post(`/api/admin/vendors/${v.id}/reinstate`, {});
           // onLogged (renderVendorCasesSection on a vendor's own profile,
@@ -1328,6 +1372,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         if (!window.confirm(`Mark ${v.name} denied? This stops technicians from seeing or using this vendor until reinstated. Their cases, remarks, and documents all stay on file.`)) return;
         try {
           const updated = await api.post(`/api/admin/vendors/${v.id}/deny`, { category, reason: detail });
+          Object.assign(v, updated);
+          invalidateVendorsCache();
+          await onLogged();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+    const notRequiredConfirmBtn = el.querySelector(".onboarding-not-required-confirm-btn");
+    if (notRequiredConfirmBtn) {
+      notRequiredConfirmBtn.addEventListener("click", async () => {
+        const note = el.querySelector(".onboarding-not-required-note-input").value.trim();
+        if (!window.confirm(`Mark ${v.name}'s onboarding Not Required? This takes them off the active Onboarding board -- unlike denying, it does NOT stop technicians from using this vendor. Their cases, remarks, and documents all stay on file.`)) return;
+        try {
+          const updated = await api.post(`/api/admin/vendors/${v.id}/not-required`, { reason: note });
           Object.assign(v, updated);
           invalidateVendorsCache();
           await onLogged();
@@ -2216,6 +2275,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${!v.phone || !v.email ? `<span class="badge badge-rejected" title="Missing ${!v.phone && !v.email ? "phone and email" : !v.phone ? "phone" : "email"}">Update Profile</span>` : ""}
         ${v.onboardingStage === "in_progress" ? `<span class="badge badge-draft">Onboarding: In Progress</span>` : ""}
         ${v.onboardingStage === "denied" ? `<span class="badge badge-rejected">Onboarding: Denied</span>` : ""}
+        ${v.onboardingStage === "not_required" ? `<span class="badge badge-draft">Onboarding: Not Required</span>` : ""}
         ${v.openTaskCount > 0 ? `<span class="chip">${v.openTaskCount} open task${v.openTaskCount === 1 ? "" : "s"}</span>` : ""}
         <button class="btn btn-secondary vendor-open-btn" type="button">Open</button>
       </div>
