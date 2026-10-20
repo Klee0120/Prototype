@@ -512,6 +512,20 @@ Demo logins:
   enough activity on its own to move it to `in_progress` and onto the
   board below. A vendor added fresh through **+ Add vendor** still skips
   this step entirely and starts `in_progress` immediately, same as before.
+  The **Vendor Compliance** dashboard has the equivalent search for the
+  other direction -- **"Update a Vendor's Compliance Case"** finds any
+  vendor at all (onboarded or not, flagged or not) and opens the same
+  inline case pills (`renderVendorCasesSection`, the exact component the
+  Onboarding board's own rows and the vendor profile's Cases section both
+  already share) right there on the dashboard, instead of navigating away.
+  Starting or updating a COI/W-9/ACH/Blank Invoice case was already
+  possible for any vendor from their own profile's Onboarding &
+  Compliance tab -- editing any case pill's fields creates it on first
+  save, no document upload required -- but there was no quick way to find
+  a vendor who wasn't already on a list in front of you (Needs Update, the
+  Onboarding board) to do it. This is for exactly that: a vendor emails
+  new bank details and you just need to log the ACH case, no document, no
+  flagged issue, no full onboarding flow.
 - **Vendor edit modal is the general profile; onboarding and compliance
   live in their own profile tab.** These used to be two intermixed
   concerns on the same scrolling page (case status, document-compliance
