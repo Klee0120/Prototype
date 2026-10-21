@@ -26,11 +26,13 @@
   --danger-bg: #fbe4e1;
   --violet: #6b3fa0;
   --violet-bg: #f1e9f8;
-  /* Holiday & PTO time-off chips only (see TIME_OFF_COLOR_CLASS in
+  /* Holiday & PTO / Sick time-off chips only (see TIME_OFF_COLOR_CLASS in
      schedule.js) -- no other semantic use, so a plain descriptive name
      rather than --warn/--ok/etc.'s state-based naming. */
   --yellow: #8a6d0a;
   --yellow-bg: #fbf0cf;
+  --blue: #1d5fa8;
+  --blue-bg: #e5eefa;
   --teal: #0f7a72;
   --teal-bg: #e3f5f3;
   /* The persistent left sidebar's own dark palette -- deliberately not
@@ -7092,9 +7094,9 @@ tr.gl-import-shrink-row {
   background: var(--yellow-bg);
   color: var(--yellow);
 }
-.schedule-timeoff-chip-warn {
-  background: var(--warn-bg);
-  color: var(--warn);
+.schedule-timeoff-chip-blue {
+  background: var(--blue-bg);
+  color: var(--blue);
 }
 .schedule-timeoff-chip-ok {
   background: var(--ok-bg);
@@ -7130,8 +7132,8 @@ tr.gl-import-shrink-row {
 .schedule-legend-swatch-yellow {
   background: var(--yellow);
 }
-.schedule-legend-swatch-warn {
-  background: var(--warn);
+.schedule-legend-swatch-blue {
+  background: var(--blue);
 }
 .schedule-legend-swatch-ok {
   background: var(--ok);

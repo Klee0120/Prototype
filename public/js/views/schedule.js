@@ -18,13 +18,13 @@ const WOM_STATUS_LABELS = {
 // (a tech out sick, another on PTO, a WOM still scheduled) reads at a
 // glance without opening anything -- WOM stays the app's own existing red
 // (.schedule-entry's --accent), chosen as a visibly different color from
-// Sick (orange, not red) specifically so the two don't collide on the
-// same calendar. Vacation and Holiday share "Holiday & PTO" yellow, same
-// as requested, rather than getting their own two colors.
+// Sick (blue, not red) specifically so the two don't collide on the same
+// calendar. Vacation and Holiday share "Holiday & PTO" yellow, same as
+// requested, rather than getting their own two colors.
 const TIME_OFF_COLOR_CLASS = {
   vacation: "schedule-timeoff-chip-yellow",
   holiday: "schedule-timeoff-chip-yellow",
-  sick: "schedule-timeoff-chip-warn",
+  sick: "schedule-timeoff-chip-blue",
   floating_holiday: "schedule-timeoff-chip-ok",
   bereavement: "schedule-timeoff-chip-violet",
 };
@@ -414,7 +414,7 @@ export async function renderSchedule(container, options = {}) {
       <div class="schedule-legend">
         <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-accent"></span>WOM project</span>
         <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-yellow"></span>Holiday &amp; PTO</span>
-        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-warn"></span>Sick</span>
+        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-blue"></span>Sick</span>
         <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-ok"></span>Floating Holiday</span>
         <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-violet"></span>Bereavement</span>
       </div>
