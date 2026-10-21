@@ -10755,7 +10755,6 @@ const GL_SCREENING_PPS_SUBSIDIARIES = [
 
 const GL_SCREENING_RULES = [
   { key: "large_amount", label: `Amount over $${GL_SCREENING_LARGE_AMOUNT_THRESHOLD.toLocaleString()}`, severity: "review" },
-  { key: "calero_ipad_review", label: "Calero charge -- review for iPad", severity: "review" },
   { key: "temp_labor_reclass", label: `Temp Labor (Allegis) on 605300/605400 -- reclass to ${GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE}`, severity: "action" },
   { key: "concur_reclass", label: `Concur expense not on subsidiary ${GL_SCREENING_CONCUR_TARGET_SUBSIDIARY}`, severity: "action" },
   { key: "labor_subsidiary", label: "Labor/burden not on subsidiary 20920000 or 10910000", severity: "action" },
@@ -10790,11 +10789,13 @@ function evaluateGlScreeningRules(row, location) {
   const subsidiary = row.subsidiary || "";
   const jobType = glScreeningJobType(row.businessUnit, location);
 
-  if (Math.abs(row.amount || 0) > GL_SCREENING_LARGE_AMOUNT_THRESHOLD) {
+  // A large WOM-coded line (or any line carrying a WOM subledger, even one
+  // not resolved to a WOM job by Business Unit) is already tracked through
+  // its own WOM budget -- a big number there isn't a surprise the way it is
+  // on general E&F/PPS spend, so those are excluded here rather than
+  // flagged alongside everything else.
+  if (Math.abs(row.amount || 0) > GL_SCREENING_LARGE_AMOUNT_THRESHOLD && jobType !== "wom" && !row.subledgerGl) {
     reasons.push({ ruleKey: "large_amount", detail: `$${Math.abs(row.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` });
-  }
-  if (nameAlpha.includes("CALERO")) {
-    reasons.push({ ruleKey: "calero_ipad_review", detail: row.nameAlpha });
   }
   if (nameAlpha.includes("ALLEGIS") && GL_SCREENING_ALLEGIS_OBJECT_CODES.includes(objectCode)) {
     reasons.push({ ruleKey: "temp_labor_reclass", detail: `Object ${objectCode}`, suggestedToObjectCode: GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE });

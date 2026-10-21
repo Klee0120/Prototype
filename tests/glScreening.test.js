@@ -30,7 +30,17 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     [
       // 1. Large amount -- otherwise clean.
       { glDate: "2026-03-01", objectAccount: "999000 - Gen~Misc", subsidiary: "99999999", amount: 9000, remark: "big one" },
-      // 2. Calero -- flagged for manual iPad review regardless of amount/object code.
+      // 1b. Large amount, WOM-coded -- should NOT flag large_amount. Already
+      // tracked through its own WOM budget, so a big number here isn't the
+      // same kind of surprise as on general E&F/PPS spend.
+      { glDate: "2026-03-01", objectAccount: "605250 - Gen~Sub Recur Matl", subsidiary: "99999999", amount: 9001, businessUnit: "WOM-JOB-001", subledgerGl: "W-77777" },
+      // 1c. Large amount carrying a WOM subledger but with no job-number
+      // coding at all -- should still NOT flag large_amount; the subledger
+      // alone is enough, regardless of jobType.
+      { glDate: "2026-03-01", objectAccount: "605250 - Gen~Sub Recur Matl", subsidiary: "99999999", amount: 9002, subledgerGl: "W-88888" },
+      // 2. Calero -- no longer a screening rule (Krista reviews Calero/cell
+      // phone charges through the dedicated Cell Phones tab instead); this
+      // line should come through clean, same as any other small, unremarkable line.
       { glDate: "2026-03-01", objectAccount: "647200 - Gen~Cell Phone", subsidiary: "99999999", amount: 38.21, nameAlpha: "CALERO SOFTWARE LLC", remark: "2059944582" },
       // 3. Allegis temp labor on 605300 -- the one rule with a deterministic suggested fix.
       { glDate: "2026-03-01", objectAccount: "605300 - Gen~Sub NonRecur Lab", subsidiary: "10010010", amount: 500, nameAlpha: "ALLEGIS GLOBAL SOLUTIONS" },
@@ -110,10 +120,19 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     assert.equal(cleanLine, undefined, "a small, unremarkable line should never show up flagged");
   });
 
-  await t.test("calero_ipad_review flags any Calero line regardless of amount", () => {
+  await t.test("large_amount excludes a WOM-coded line regardless of size -- already tracked through its own WOM budget", () => {
+    const womBig = byAmount(9001);
+    assert.equal(womBig, undefined, "a large WOM-coded line should not flag anything at all here");
+  });
+
+  await t.test("large_amount excludes any line carrying a WOM subledger, even without WOM job-number coding", () => {
+    const subledgerBig = items.find((it) => it.amount === 9002);
+    assert.equal(subledgerBig, undefined, "a large line with a WOM subledger should not flag large_amount");
+  });
+
+  await t.test("Calero lines are not flagged at all -- removed as a screening rule", () => {
     const calero = byAmount(38.21);
-    assert.ok(calero);
-    assert.ok(ruleKeys(calero).includes("calero_ipad_review"));
+    assert.equal(calero, undefined, "a Calero line should come through clean now that the rule is gone");
   });
 
   await t.test("temp_labor_reclass fires on Allegis + 605300/605400 only, with the suggested target pre-filled", () => {
