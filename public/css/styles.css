@@ -5171,6 +5171,20 @@ tr.gl-import-shrink-row {
   grid-column: 1 / -1;
 }
 
+.vendor-parent-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.vendor-branches-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .vendor-edit-form textarea {
   padding: 9px 10px;
   border: 1px solid var(--border);

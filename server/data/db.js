@@ -1605,6 +1605,19 @@ if (!hasColumn("audit_log", "case_type")) {
 // unconditionally on every startup, including against an existing
 // database that hasn't run these ALTERs yet, which would fail outright.
 db.exec("CREATE INDEX IF NOT EXISTS idx_audit_log_vendor_id ON audit_log(vendor_id)");
+// Self-referencing: a branch vendor (its own full profile -- own JDE #,
+// own onboarding, own case ownership) points at another real vendor row as
+// its parent/national account, rather than a separate non-payable
+// "umbrella" record type. Matches how these actually work in ServiceEdge
+// (Tecta's national account is itself a real, payable JDE vendor that
+// other branches point to), and means a branch is never less of a real
+// vendor profile than any other. No cycle/depth enforcement beyond
+// "can't be your own parent" (see validateVendorBody) -- a shallow,
+// mostly-one-level hierarchy is all this is meant to model.
+if (!hasColumn("vendors", "parent_vendor_id")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN parent_vendor_id INTEGER");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_vendors_parent_vendor_id ON vendors(parent_vendor_id)");
 // The other manual, sticky override -- for a vendor that's already fine
 // (usually one that predates this tracker, or whose paperwork lives
 // outside it) but keeps getting pulled onto the Onboarding board as
@@ -2647,6 +2660,7 @@ function presentVendorRowBase(v) {
   return {
     id: v.id,
     name: v.name,
+    parentVendorId: v.parent_vendor_id || null,
     jdeVendorNumber: v.jde_vendor_number,
     cwStatus: v.cw_status,
     toyotaStatus: v.toyota_status,
@@ -2955,6 +2969,7 @@ function createVendor(fields) {
     "created_by",
     "created_at",
     "updated_at",
+    "parent_vendor_id",
   ];
   const values = [
     fields.name,
@@ -3002,6 +3017,7 @@ function createVendor(fields) {
     fields.createdBy || null,
     now,
     now,
+    fields.parentVendorId != null ? Number(fields.parentVendorId) : null,
   ];
   const result = db
     .prepare(`INSERT INTO vendors (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
@@ -3048,7 +3064,8 @@ function updateVendor(id, fields) {
       ${VENDOR_FORM_CHECK_FIELDS.map(([, col]) => `${col} = ?`).join(", ")},
       onboarding_stage = ?,
       denied_reason = ?,
-      updated_at = ?
+      updated_at = ?,
+      parent_vendor_id = ?
      WHERE id = ?`
   ).run(
     fields.name,
@@ -3091,6 +3108,10 @@ function updateVendor(id, fields) {
     ONBOARDING_STAGES.includes(fields.onboardingStage) ? fields.onboardingStage : existing.onboardingStage,
     fields.deniedReason != null ? fields.deniedReason : existing.deniedReason,
     new Date().toISOString(),
+    // Preserve-if-omitted, same reasoning as coiMeetsRequiredLimits above --
+    // and explicitly settable to null (unlinking from a parent) by passing
+    // parentVendorId: null, as opposed to just leaving it out of the body.
+    fields.parentVendorId !== undefined ? (fields.parentVendorId != null ? Number(fields.parentVendorId) : null) : existing.parentVendorId,
     Number(id)
   );
   linkUnmatchedPosForVendor(Number(id), fields.jdeVendorNumber);

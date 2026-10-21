@@ -1599,3 +1599,69 @@ test("vendors: audit-history is scoped to one vendor and tags case-specific entr
     assert.deepEqual(res.body.map((e) => e.action), ["VENDOR_CREATED"]);
   });
 });
+
+test("vendors: parent company / branches (Tecta-style vendor families)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const national = (await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Tecta America National" } })).body;
+  assert.equal(national.parentVendorId, null, "a plain new vendor has no parent by default");
+
+  let cincinnati;
+  await t.test("a branch can be created pointing at the national account as its parent", async () => {
+    const res = await server.call("POST", "/api/admin/vendors", {
+      userId: "ADMIN",
+      body: { name: "Tecta America Zero Company LLC", parentVendorId: national.id },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.parentVendorId, national.id);
+    cincinnati = res.body;
+  });
+
+  await t.test("a vendor can't be its own parent", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${national.id}`, {
+      userId: "ADMIN",
+      body: { name: national.name, parentVendorId: national.id },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /own parent/);
+  });
+
+  await t.test("parentVendorId must point at a real vendor", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${national.id}`, {
+      userId: "ADMIN",
+      body: { name: national.name, parentVendorId: 999999 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /real vendor/);
+  });
+
+  await t.test("no multi-level chains -- a branch can't itself become a parent", async () => {
+    const thirdVendor = (await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Another Branch Co" } })).body;
+    const res = await server.call("PATCH", `/api/admin/vendors/${thirdVendor.id}`, {
+      userId: "ADMIN",
+      body: { name: thirdVendor.name, parentVendorId: cincinnati.id },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /itself a branch/);
+  });
+
+  await t.test("an unrelated edit through PATCH preserves parentVendorId unless explicitly changed", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${cincinnati.id}`, {
+      userId: "ADMIN",
+      body: { name: cincinnati.name, phone: "555-0123" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.parentVendorId, national.id, "still points at the national account");
+    assert.equal(res.body.phone, "555-0123");
+  });
+
+  await t.test("explicitly clearing parentVendorId (null) unlinks the branch", async () => {
+    const res = await server.call("PATCH", `/api/admin/vendors/${cincinnati.id}`, {
+      userId: "ADMIN",
+      body: { name: cincinnati.name, parentVendorId: null },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.parentVendorId, null);
+  });
+});

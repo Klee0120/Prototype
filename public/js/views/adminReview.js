@@ -8,7 +8,7 @@ import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
 import { renderOnboardRequirementsForm } from "./onboardRequirementsForm.js";
 import { renderServiceCombo } from "../serviceCombo.js";
-import { renderTaskBoard, nextLifecycleStep } from "./tasks.js";
+import { renderTaskBoard, nextLifecycleStep, CATEGORY_LABELS as TASK_CATEGORY_LABELS, MANUAL_CATEGORY_OPTIONS } from "./tasks.js";
 import { renderPos } from "./pos.js";
 import { renderReclasses } from "./reclasses.js";
 import { renderInvoicing } from "./invoicing.js";
@@ -802,6 +802,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       formChecks: v.formChecks,
       onboardingStage: v.onboardingStage,
       deniedReason: v.deniedReason,
+      parentVendorId: v.parentVendorId,
       ...overrides,
     };
   }
@@ -2362,6 +2363,25 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
     const form = body.querySelector(".vendor-edit-form");
     mountServicesCombo(form);
+    const parentCurrentEl = form.querySelector(".vendor-parent-current");
+    const parentClearBtn = form.querySelector(".vendor-parent-clear-btn");
+    form.querySelector(".vendor-parent-choose-btn").addEventListener("click", () => {
+      openVendorPickerModal(
+        `Choose parent company for ${v.name}`,
+        (pickedId) => {
+          form.parentVendorId.value = pickedId;
+          const picked = vendorsCache.find((c) => c.id === pickedId);
+          parentCurrentEl.textContent = picked ? picked.name : "Unknown vendor";
+          parentClearBtn.hidden = false;
+        },
+        { allowCreate: false, excludeId: v.id }
+      );
+    });
+    parentClearBtn.addEventListener("click", () => {
+      form.parentVendorId.value = "";
+      parentCurrentEl.textContent = "None -- a top-level vendor";
+      parentClearBtn.hidden = true;
+    });
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const msg = form.querySelector(".save-message");
@@ -2370,6 +2390,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           `/api/admin/vendors/${v.id}`,
           vendorFullPayload(v, {
             name: form.name.value.trim(),
+            parentVendorId: form.parentVendorId.value ? Number(form.parentVendorId.value) : null,
             jdeVendorNumber: form.jdeVendorNumber.value.trim(),
             cwStatus: form.cwStatus.value,
             toyotaStatus: form.toyotaStatus.value,
@@ -2425,6 +2446,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           ${v.services ? `<span class="wom-desc"> — ${escapeHtml(formatServicesList(v.services))}</span>` : ""}
         </span>
         <span class="vendor-jde">${escapeHtml(v.jdeVendorNumber || "No JDE #")}</span>
+        ${
+          v.parentVendorId
+            ? `<span class="chip" title="Branch of another vendor">Branch of ${escapeHtml((vendorsCache.find((c) => c.id === v.parentVendorId) || {}).name || "another vendor")}</span>`
+            : ""
+        }
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.cwStatus]}">${escapeHtml(CW_STATUS_LABELS[v.cwStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.toyotaStatus]}">${escapeHtml(TOYOTA_STATUS_LABELS[v.toyotaStatus])}</span>
         <span class="badge badge-${VENDOR_STATUS_BADGE_CLASS[v.formsStatus]}">${escapeHtml(FORMS_STATUS_LABELS[v.formsStatus])}</span>
@@ -2562,6 +2588,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   async function renderVendorOverviewTab(host, v) {
+    const parentVendor = v.parentVendorId ? (vendorsCache || []).find((c) => c.id === v.parentVendorId) : null;
+    const branches = (vendorsCache || []).filter((c) => c.parentVendorId === v.id);
     const nextAction =
       v.onboardingStage !== "onboarded"
         ? "Continue onboarding -- see the Onboarding & Compliance tab."
@@ -2595,6 +2623,39 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           </p>
         </div>
       </div>
+      ${
+        parentVendor || branches.length > 0
+          ? `<div class="vendor-overview-card vendor-family-card">
+              <h4>${parentVendor ? "Parent company" : "Branches"}</h4>
+              ${
+                parentVendor
+                  ? `<p>Part of <button type="button" class="btn btn-link vendor-parent-link" data-id="${parentVendor.id}">${escapeHtml(parentVendor.name)}</button>${parentVendor.jdeVendorNumber ? ` (JDE #${escapeHtml(parentVendor.jdeVendorNumber)})` : ""}.</p>`
+                  : ""
+              }
+              ${
+                branches.length > 0
+                  ? `<p class="review-checklist-hint">${branches.length} branch${branches.length === 1 ? "" : "es"} on file under this vendor -- each with its own JDE #, onboarding, and case ownership.</p>
+                     <div class="vendor-branches-list">
+                       ${branches
+                         .map(
+                           (b) => `
+                         <div class="review-row">
+                           <div class="review-row-summary">
+                             <span class="review-row-name">${escapeHtml(b.name)}</span>
+                             <span class="vendor-jde">${escapeHtml(b.jdeVendorNumber || "No JDE #")}</span>
+                             <span class="badge badge-${ONBOARDING_STAGE_BADGE_CLASS[b.onboardingStage] || "draft"}">${escapeHtml(ONBOARDING_STAGE_LABELS[b.onboardingStage] || b.onboardingStage)}</span>
+                             <button type="button" class="btn btn-secondary vendor-branch-open-btn" data-id="${b.id}">Open</button>
+                           </div>
+                         </div>
+                       `
+                         )
+                         .join("")}
+                     </div>`
+                  : ""
+              }
+            </div>`
+          : ""
+      }
       <div class="vendor-overview-card vendor-remarks-card">
         <h4>Remarks</h4>
         <p class="review-checklist-hint">A running, dated log -- separate from Notes above, nothing here gets overwritten.</p>
@@ -2609,6 +2670,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const remarkForm = host.querySelector(".vendor-remark-form");
     const remarksList = host.querySelector(".vendor-remarks-list");
     const territoriesEl = host.querySelector(".vendor-territories");
+
+    const parentLinkBtn = host.querySelector(".vendor-parent-link");
+    if (parentLinkBtn) parentLinkBtn.addEventListener("click", () => openVendorProfile(Number(parentLinkBtn.dataset.id)));
+    host.querySelectorAll(".vendor-branch-open-btn").forEach((btn) => {
+      btn.addEventListener("click", () => openVendorProfile(Number(btn.dataset.id)));
+    });
 
     async function refreshTerritories() {
       let territories;
@@ -2719,6 +2786,52 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     render();
   }
 
+  // A plain task linked to this vendor, created right from its profile --
+  // covers things like "emailed ServiceEdge about Cincinnati's ACH setup"
+  // that aren't a document case or a compliance follow-up, just a one-off
+  // external request worth tracking with a status and a running log of
+  // replies (task comments, same as any other task). Defaults to "IT
+  // Request" since that's the closest existing category to a ServiceEdge
+  // ask, but any manual category is pickable.
+  function renderNewVendorTaskFormHtml() {
+    return `
+      <details class="vendor-new-task-details">
+        <summary class="btn btn-secondary">+ New task for this vendor</summary>
+        <form class="modal-form vendor-new-task-form">
+          <input type="text" name="title" placeholder="Title (e.g. ServiceEdge ACH request -- Cincinnati)" required />
+          <textarea name="description" rows="3" placeholder="Paste the email/request text here, or describe what's needed..."></textarea>
+          <select name="category">
+            ${MANUAL_CATEGORY_OPTIONS.map((c) => `<option value="${c}" ${c === "it_request" ? "selected" : ""}>${escapeHtml(TASK_CATEGORY_LABELS[c])}</option>`).join("")}
+          </select>
+          <button type="submit" class="btn btn-primary">Create task</button>
+          <span class="save-message"></span>
+        </form>
+      </details>
+    `;
+  }
+
+  function wireNewVendorTaskForm(host, v, onCreated) {
+    const details = host.querySelector(".vendor-new-task-details");
+    const form = host.querySelector(".vendor-new-task-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post("/api/tasks", {
+          title: form.title.value.trim(),
+          description: form.description.value.trim(),
+          category: form.category.value,
+          relatedVendorId: v.id,
+        });
+        details.open = false;
+        form.reset();
+        await onCreated();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
   async function renderVendorTasksTab(host, v) {
     host.innerHTML = `<p class="empty-note">Loading…</p>`;
     let tasks;
@@ -2728,29 +2841,31 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
     }
-    if (tasks.length === 0) {
-      host.innerHTML = `<p class="empty-note">No tasks linked to this vendor.</p>`;
-      return;
-    }
     const taskStatusBadgeClass = { completed: "approved", cancelled: "rejected", waiting: "warn" };
     host.innerHTML = `
-      <table class="detail-table">
-        <thead><tr><th>Task</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th></tr></thead>
-        <tbody>
-          ${tasks
-            .map(
-              (t) => `<tr>
-            <td>${escapeHtml(t.title)}</td>
-            <td>${escapeHtml(t.assignedToName)}</td>
-            <td>${escapeHtml(t.priority)}</td>
-            <td><span class="badge badge-${taskStatusBadgeClass[t.status] || "draft"}">${escapeHtml(t.status)}</span></td>
-            <td>${t.dueAt ? new Date(t.dueAt).toLocaleDateString() : "—"}</td>
-          </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
+      ${renderNewVendorTaskFormHtml()}
+      ${
+        tasks.length === 0
+          ? `<p class="empty-note">No tasks linked to this vendor.</p>`
+          : `<table class="detail-table">
+              <thead><tr><th>Task</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th></tr></thead>
+              <tbody>
+                ${tasks
+                  .map(
+                    (t) => `<tr>
+                  <td>${escapeHtml(t.title)}</td>
+                  <td>${escapeHtml(t.assignedToName)}</td>
+                  <td>${escapeHtml(t.priority)}</td>
+                  <td><span class="badge badge-${taskStatusBadgeClass[t.status] || "draft"}">${escapeHtml(t.status)}</span></td>
+                  <td>${t.dueAt ? new Date(t.dueAt).toLocaleDateString() : "—"}</td>
+                </tr>`
+                  )
+                  .join("")}
+              </tbody>
+            </table>`
+      }
     `;
+    wireNewVendorTaskForm(host, v, () => renderVendorTasksTab(host, v));
   }
 
   async function renderVendorDocumentsTab(host, v) {
@@ -3463,6 +3578,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <label class="profile-field"><span>Invoiced previously?</span><input name="invoicedPreviously" value="${escapeHtml(v.invoicedPreviously || "")}" /></label>
           <label class="profile-field"><span>Successful invoice records</span><input name="successfulInvoiceRecords" type="number" min="0" value="${v.successfulInvoiceRecords ?? ""}" /></label>
           <label class="profile-field"><span>Successful since date</span><input name="successfulSinceDate" type="date" value="${escapeHtml((v.successfulSinceDate || "").slice(0, 10))}" /></label>
+          <div class="profile-field vendor-parent-field">
+            <span>Parent company</span>
+            <div class="vendor-parent-picker">
+              <span class="vendor-parent-current">${
+                v.parentVendorId ? escapeHtml((vendorsCache.find((c) => c.id === v.parentVendorId) || {}).name || "Unknown vendor") : "None -- a top-level vendor"
+              }</span>
+              <input type="hidden" name="parentVendorId" value="${v.parentVendorId || ""}" />
+              <button type="button" class="btn btn-link vendor-parent-choose-btn">Choose&hellip;</button>
+              <button type="button" class="btn btn-link vendor-parent-clear-btn" ${v.parentVendorId ? "" : "hidden"}>Clear</button>
+            </div>
+          </div>
         </div>
 
         <label class="profile-field"><span>Tracker work examples</span><textarea name="trackerWorkExamples" rows="2">${escapeHtml(v.trackerWorkExamples || "")}</textarea></label>

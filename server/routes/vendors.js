@@ -33,8 +33,21 @@ function findDuplicateVendorNumber(jdeVendorNumber, excludeVendorId) {
 }
 
 function validateVendorBody(body, excludeVendorId) {
-  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage, jdeVendorNumber } = body || {};
+  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage, jdeVendorNumber, parentVendorId } =
+    body || {};
   if (!name || !String(name).trim()) return "name is required";
+  if (parentVendorId != null) {
+    if (excludeVendorId != null && Number(parentVendorId) === Number(excludeVendorId)) {
+      return "A vendor can't be its own parent";
+    }
+    const parent = db.findVendor(parentVendorId);
+    if (!parent) return "parentVendorId doesn't match a real vendor";
+    // No multi-level chains -- a branch's parent must itself be a "top"
+    // vendor (no parent of its own), so this never has to walk an
+    // arbitrary-depth tree anywhere else in the app (the branches list,
+    // the onboarding board, etc. all assume exactly one level).
+    if (parent.parentVendorId != null) return "That vendor is itself a branch -- pick its own parent instead";
+  }
   if (cwStatus && !db.CW_STATUSES.includes(cwStatus)) return `cwStatus must be one of: ${db.CW_STATUSES.join(", ")}`;
   if (toyotaStatus && !db.TOYOTA_STATUSES.includes(toyotaStatus)) {
     return `toyotaStatus must be one of: ${db.TOYOTA_STATUSES.join(", ")}`;

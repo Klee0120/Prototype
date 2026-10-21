@@ -69,7 +69,10 @@ const VIEW_EXPLANATIONS = {
 
 const PRIORITY_LABELS = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent", emergency: "Emergency" };
 const STATUS_LABELS = { open: "Open", in_progress: "In Progress", waiting: "Waiting", completed: "Completed", cancelled: "Cancelled" };
-const CATEGORY_LABELS = {
+// Exported so other views (e.g. adminReview.js's vendor profile Tasks tab,
+// for a quick "+ New Task" linked to that vendor) can offer the same
+// manual-category picker without duplicating this list by hand.
+export const CATEGORY_LABELS = {
   manual: "General",
   vendor_compliance: "Compliance",
   onboarding: "Onboarding",
@@ -84,7 +87,7 @@ const CATEGORY_LABELS = {
 // hand -- wom_workflow/recurring are reserved for what the PSE pipeline and
 // the recurring-task engine generate on their own, so offering them here
 // would just create a same-named but disconnected impostor category.
-const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboarding", "it_request", "financial"];
+export const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboarding", "it_request", "financial"];
 // Groups the flat category list into the handful of visually distinct,
 // color-coded sections asked for -- "visually easy to understand" without
 // turning into yet another tab to click through. Order here is the order

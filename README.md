@@ -2072,6 +2072,24 @@ Demo logins:
   each own a different case on the very same vendor. "All cases" (the
   default) still marks each case pill "Mine" where it applies, so
   ownership stays visible without narrowing the list
+- **Vendor parent company / branches.** A vendor can now point at another
+  real vendor as its parent (`parentVendorId`, self-referencing, one level
+  only -- a branch can't itself become a parent). Matches how vendor
+  families actually work in ServiceEdge: a national account (e.g. Tecta
+  America) is itself a real, payable vendor with its own JDE #, and each
+  branch (a different location, its own JDE # and Payment Detail) is a
+  full vendor profile in its own right -- own onboarding, own compliance,
+  own case ownership -- that just happens to roll up to the same parent.
+  Set from the vendor's Edit form (a vendor picker, same component the
+  "Merge duplicate" flow already uses); the parent's own profile lists
+  every branch, and a branch's profile links back to its parent. The
+  Vendor Directory row shows a "Branch of X" chip
+- **Vendor profile Tasks tab can create a task right there**, linked to
+  that vendor, defaulting to the "IT Request" category -- covers one-off
+  external asks (e.g. emailing ServiceEdge about a branch's ACH setup)
+  that aren't a document case or an auto-generated compliance follow-up,
+  just something worth tracking with a status and a running comment log
+  like any other task
 
 ## Data model
 
