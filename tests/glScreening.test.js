@@ -42,10 +42,11 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       { glDate: "2026-03-01", objectAccount: "620100 - Gen~Travel", subsidiary: "99999999", amount: 250, nameAlpha: "CONCUR TECHNOLOGIES" },
       // 4b. Concur already correctly on 10910000 -- should NOT flag.
       { glDate: "2026-03-01", objectAccount: "620100 - Gen~Travel", subsidiary: "10910000", amount: 250, nameAlpha: "CONCUR TECHNOLOGIES" },
-      // 5. Labor (object 601000) on a subsidiary that isn't 20920000/10910000 --
-      // this is the exact real-world pattern from Krista's own October findings
-      // file (Payroll Labor Distribution landing on 10010010).
-      { glDate: "2026-03-01", objectAccount: "601000 - Events~Labor", subsidiary: "10010010", amount: 376.2, nameAlpha: "Payroll Labor Distribution" },
+      // 5. Labor (object 601000) on a subsidiary that isn't 20920000/10910000/a
+      // Split code -- this is the exact real-world pattern from Krista's own
+      // October findings file (Payroll Labor Distribution landing on 10010000,
+      // a genuinely wrong code, not to be confused with Split's 10010010).
+      { glDate: "2026-03-01", objectAccount: "601000 - Events~Labor", subsidiary: "10010000", amount: 376.2, nameAlpha: "Payroll Labor Distribution" },
       // 5b. Labor correctly on 20920000 -- should NOT flag.
       { glDate: "2026-03-01", objectAccount: "601000 - Events~Labor", subsidiary: "20920000", amount: 376.2, nameAlpha: "Payroll Labor Distribution" },
       // 5c. PPS-coded labor on its own valid PPS subsidiary -- should NOT flag
@@ -61,7 +62,7 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       // from Krista's "Timekeeping Error" findings, where the Labor line and
       // its burden siblings (602100/602210/602220/602310/602410/602510/602520)
       // all carry the same bad subsidiary from one bad timesheet.
-      { glDate: "2026-03-01", objectAccount: "602100 - Support~FICA/Medi", subsidiary: "10010010", amount: 36.78, nameAlpha: "Actual Burden Journal Entries" },
+      { glDate: "2026-03-01", objectAccount: "602100 - Support~FICA/Medi", subsidiary: "10010000", amount: 36.78, nameAlpha: "Actual Burden Journal Entries" },
       // 5f. WOM-coded labor -- should NOT flag labor_subsidiary at all. WOM
       // work has its own per-project subsidiary code (woms.subsidiary_code),
       // not the fixed 20920000/10910000 standard, so it's excluded outright
@@ -69,6 +70,10 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       // wom_without_subledger doesn't also fire here, keeping this case a
       // clean test of labor_subsidiary alone.
       { glDate: "2026-03-01", objectAccount: "601000 - Gen~Labor", subsidiary: "99999999", amount: 902, nameAlpha: "Payroll Labor Distribution", businessUnit: "WOM-JOB-001", subledgerGl: "W-55555" },
+      // 5g. Labor on a Red/"Split" subsidiary (valid under either E&F or PPS)
+      // with no job-number coding at all -- should NOT flag labor_subsidiary,
+      // confirmed by Krista as an allowed code for E&F-type labor too.
+      { glDate: "2026-03-01", objectAccount: "601000 - Gen~Labor", subsidiary: "10010010", amount: 903, nameAlpha: "Payroll Labor Distribution" },
       // 6. WOM-coded (business unit = the location's own wom_job_number) with no subledger.
       { glDate: "2026-03-01", objectAccount: "605250 - Gen~Sub Recur Matl", subsidiary: "99999999", amount: 100, businessUnit: "WOM-JOB-001" },
       // 6b. Same WOM job number, but WITH a subledger -- should NOT flag rule 6.
@@ -132,12 +137,17 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     assert.equal(rightSub, undefined, "Concur already on 10910000 should not flag");
   });
 
-  await t.test("labor_subsidiary fires on object 601000 off 20920000/10910000 -- the exact real-world pattern from Krista's own findings", () => {
-    const wrongSub = items.find((it) => it.objectAccountCode === "601000" && it.subsidiary === "10010010");
+  await t.test("labor_subsidiary fires on object 601000 off 20920000/10910000/Split -- the exact real-world pattern from Krista's own findings", () => {
+    const wrongSub = items.find((it) => it.objectAccountCode === "601000" && it.subsidiary === "10010000");
     const rightSub = items.find((it) => it.objectAccountCode === "601000" && it.subsidiary === "20920000");
     assert.ok(wrongSub);
     assert.ok(ruleKeys(wrongSub).includes("labor_subsidiary"));
     assert.equal(rightSub, undefined, "Labor already on a valid subsidiary should not flag");
+  });
+
+  await t.test("labor_subsidiary treats a Red/Split subsidiary as valid too -- allowed under either E&F or PPS", () => {
+    const splitSub = items.find((it) => it.objectAccountCode === "601000" && it.subsidiary === "10010010" && it.amount === 903);
+    assert.equal(splitSub, undefined, "Labor on a Split subsidiary should not flag labor_subsidiary");
   });
 
   await t.test("labor_subsidiary excludes PPS-coded labor -- PPS has its own valid subsidiary set, checked by pps_subsidiary_mismatch instead", () => {
@@ -151,7 +161,7 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
   });
 
   await t.test("labor_subsidiary also fires on a burden/benefit object code riding the same bad subsidiary as its Labor sibling", () => {
-    const burden = items.find((it) => it.objectAccountCode === "602100" && it.subsidiary === "10010010");
+    const burden = items.find((it) => it.objectAccountCode === "602100" && it.subsidiary === "10010000");
     assert.ok(burden, "a burden line off 20920000/10910000 should flag just like its Labor line would");
     assert.ok(ruleKeys(burden).includes("labor_subsidiary"));
   });

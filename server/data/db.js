@@ -10732,12 +10732,26 @@ const GL_SCREENING_CONCUR_TARGET_SUBSIDIARY = "10910000";
 // against Krista's own "Timekeeping Error" findings (each one tags a
 // 601000 line plus its 7 same-subsidiary burden siblings).
 const GL_SCREENING_LABOR_OBJECT_CODES = ["601000", "602100", "602210", "602220", "602310", "602410", "602510", "602520"];
-const GL_SCREENING_LABOR_VALID_SUBSIDIARIES = ["20920000", "10910000"];
-// The Green/"PPS"-colored subsidiary codes from the Toyota COA's own
+// The Red/"Split"-colored subsidiary codes from the Toyota COA's own
 // Subsidiary Codes reference sheet (E1 Cost Codes tab, color legend:
-// Yellow=E&F, Green=PPS, Red=Split, Blue=Unknown) -- a PPS-coded job
-// should only ever post to one of these.
-const GL_SCREENING_PPS_SUBSIDIARIES = ["15915000", "15025000", "15027020", "30930000", "30145000", "30325000"];
+// Yellow=E&F, Green=PPS, Red=Split, Blue=Unknown) -- valid under EITHER
+// standard, confirmed by Krista. Folded into both GL_SCREENING_LABOR_
+// VALID_SUBSIDIARIES and GL_SCREENING_PPS_SUBSIDIARIES below rather than
+// kept as a separate check, so a Split code never flags under either rule.
+const GL_SCREENING_SPLIT_SUBSIDIARIES = ["10910000", "10010010", "10015000", "10010070"];
+const GL_SCREENING_LABOR_VALID_SUBSIDIARIES = ["20920000", ...GL_SCREENING_SPLIT_SUBSIDIARIES];
+// The Green/"PPS"-colored subsidiary codes from the same reference sheet --
+// a PPS-coded job should only ever post to one of these (plus any Split
+// code, which is valid here too).
+const GL_SCREENING_PPS_SUBSIDIARIES = [
+  "15915000",
+  "15025000",
+  "15027020",
+  "30930000",
+  "30145000",
+  "30325000",
+  ...GL_SCREENING_SPLIT_SUBSIDIARIES,
+];
 
 const GL_SCREENING_RULES = [
   { key: "large_amount", label: `Amount over $${GL_SCREENING_LARGE_AMOUNT_THRESHOLD.toLocaleString()}`, severity: "review" },
