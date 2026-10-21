@@ -18,6 +18,7 @@ import { renderSpendBreakdown } from "./spendBreakdown.js";
 import { renderBudgetReview } from "./budgetReview.js";
 import { renderCellPhones } from "./cellPhones.js";
 import { renderMeals } from "./meals.js";
+import { renderGlScreening } from "./glScreening.js";
 import { renderFiscalCalendar } from "./fiscalCalendar.js";
 import { renderIntegrations } from "./integrations.js";
 import { renderTimeOffAdmin } from "./timeOff.js";
@@ -96,7 +97,7 @@ const NAV_SECTIONS = [
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
   { key: "pos", label: "POs", tabs: ["pos"] },
-  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glreconciliation", "spendbreakdown", "budgetreview", "cellphones", "meals", "laborreports"] },
+  { key: "financials", label: "Financials", tabs: ["costanalysis", "invoicing", "reclasses", "glscreening", "glreconciliation", "spendbreakdown", "budgetreview", "cellphones", "meals", "laborreports"] },
   { key: "performance", label: "Performance", tabs: ["performance"] },
   { key: "audit", label: "Audit Trail", tabs: ["audit"] },
   { key: "integrations", label: "Integrations", tabs: ["integrations"] },
@@ -119,6 +120,7 @@ const TAB_LABELS = {
   budgetreview: "Budget Review",
   cellphones: "Cell Phones",
   meals: "Meals",
+  glscreening: "GL Screening",
   laborreports: "Reports",
   technicians: "Technicians",
   vendors: "Vendor Directory",
@@ -469,6 +471,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       reclassFlagPrefillWom = null;
       await renderReclasses(content, { openItemId, flagPrefillWom, onOpenWom: openWomProfile });
     }
+    else if (activeTab === "glscreening") await renderGlScreening(content);
     else if (activeTab === "glreconciliation") await renderGlReconciliation(content);
     else if (activeTab === "spendbreakdown") await renderSpendBreakdown(content);
     else if (activeTab === "budgetreview") await renderBudgetReview(content);

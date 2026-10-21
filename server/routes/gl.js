@@ -412,6 +412,21 @@ router.get("/cell-phones", (req, res) => {
   );
 });
 
+// Krista's own manual reclass-review checklist, run automatically over
+// whatever's already imported -- see db.getGlScreeningFlags for the rule
+// list. periodNumber is optional (a review is usually one month at a
+// time); omit it to screen every imported period in the fiscal year.
+router.get("/screening", (req, res) => {
+  const { territory, fiscalYear, periodNumber } = req.query || {};
+  res.json(
+    db.getGlScreeningFlags({
+      territory: territory || null,
+      fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+      periodNumber: periodNumber ? Number(periodNumber) : null,
+    })
+  );
+});
+
 // Same shape of report as /cell-phones, for the Meals Empl/Meals & Ent
 // categories (see db.getMealsCharges for why this surfaces a verbatim
 // "description" rather than a parsed-out name).

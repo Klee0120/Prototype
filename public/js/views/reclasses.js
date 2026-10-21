@@ -13,6 +13,17 @@ function codingString(job, object, subsidiary) {
   return parts.length ? parts.join(".") : "—";
 }
 
+// Mirrors db.js's reclass_items.source values ('imported' | 'manual' |
+// 'auto_flagged' -- see addReclassItem's own comment). Falls back to
+// "Manual" for a value this view doesn't recognize rather than showing
+// nothing, same spirit as the DB layer falling back to 'manual' itself
+// for an unrecognized source.
+function sourceLabel(source) {
+  if (source === "imported") return "Imported";
+  if (source === "auto_flagged") return "GL Screening";
+  return "Manual";
+}
+
 const STATUS_BADGE_CLASS = {
   flagged: "draft",
   reviewed: "submitted",
@@ -137,6 +148,7 @@ export async function renderReclasses(container, options = {}) {
           <option value="">All sources</option>
           <option value="imported" ${sourceFilter === "imported" ? "selected" : ""}>Imported</option>
           <option value="manual" ${sourceFilter === "manual" ? "selected" : ""}>Manually flagged</option>
+          <option value="auto_flagged" ${sourceFilter === "auto_flagged" ? "selected" : ""}>GL Screening</option>
         </select>
         <select class="reclass-fiscal-period-filter">
           <option value="">All months</option>
@@ -351,7 +363,7 @@ export async function renderReclasses(container, options = {}) {
               <td>${escapeHtml(r.adminName || "—")}</td>
               <td class="po-desc-cell">${escapeHtml(r.comments || "—")}</td>
               <td>${escapeHtml(r.rootCause || "—")}</td>
-              <td>${r.source === "imported" ? "Imported" : "Manual"}</td>
+              <td>${sourceLabel(r.source)}</td>
               <td><span class="badge badge-${STATUS_BADGE_CLASS[r.status] || "draft"}">${escapeHtml(meta.statuses.find((s) => s.value === r.status)?.label || r.status)}</span></td>
             </tr>`
             )
@@ -484,7 +496,7 @@ export async function renderReclasses(container, options = {}) {
             <tr><th>To</th><td>${escapeHtml(codingString(item.toJobNumber, item.toObjectCode, item.toSubsidiary))}${item.toWomNumber ? ` / <button type="button" class="btn btn-link reclass-wom-link" data-wom="${escapeHtml(item.toWomNumber)}">WOM ${escapeHtml(item.toWomNumber)}</button>` : ""}</td><th>Amount</th><td>${formatMoney(item.toAmount)}</td></tr>
             <tr><th>Vendor</th><td>${escapeHtml(item.vendor || "—")}</td><th>Impacts Final Invoice</th><td>${escapeHtml(item.impactsFinalInvoice || "—")}</td></tr>
             <tr><th>Caused By</th><td>${escapeHtml(item.causedBy || "—")}</td><th>Root Cause</th><td>${escapeHtml(item.rootCause || "—")}</td></tr>
-            <tr><th>Source</th><td>${item.source === "imported" ? "Imported" : "Manual"}</td><th>Region</th><td>${escapeHtml(item.region || "—")}</td></tr>
+            <tr><th>Source</th><td>${sourceLabel(item.source)}</td><th>Region</th><td>${escapeHtml(item.region || "—")}</td></tr>
             <tr><th>Admin</th><td colspan="3">${escapeHtml(item.adminName || "—")}</td></tr>
           </tbody>
         </table>

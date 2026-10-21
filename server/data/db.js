@@ -3791,7 +3791,7 @@ function addReclassItem(fields, createdBy) {
         vendor, comments, region, cost_center_adjusted, subledger_adjusted, object_code_adjusted, wom_adjusted,
         impacts_final_invoice, caused_by, root_cause, path_forward, source, status, related_po_id, admin_name,
         fiscal_period_number, fiscal_year, created_by, created_at, updated_at
-      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'flagged', ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       fields.fromJobNumber || null,
@@ -3815,6 +3815,12 @@ function addReclassItem(fields, createdBy) {
       fields.causedBy || null,
       fields.rootCause || null,
       fields.pathForward || null,
+      // 'auto_flagged' is the one other valid source today (the GL
+      // Screening tool adding a flagged line) -- anything else, including
+      // nothing sent at all (every pre-existing caller: the manual "+ Add
+      // finding" form, flagPosForReclass, a reclass batch import), stays
+      // 'manual' rather than trusting an arbitrary string onto the row.
+      fields.source === "auto_flagged" ? "auto_flagged" : "manual",
       fields.relatedPoId || null,
       adminName,
       fiscalPeriod ? fiscalPeriod.periodNumber : null,
@@ -10703,6 +10709,186 @@ function getMealsCharges({ territory, fiscalYear } = {}) {
   };
 }
 
+// ---- GL Screening (reclass-finding rules) ----
+// Krista's own manual review checklist (worked by hand today, one row at a
+// time, across a ~6500-line monthly GL extract split by reviewer) --
+// codified so the app surfaces candidates instead of her scanning every
+// line. Each rule below is independent and a line can match more than one
+// at once (see evaluateGlScreeningRules) -- this is a flagging tool, not
+// an auto-poster: nothing here writes to gl_entries or reclass_items on
+// its own, it only surfaces candidates for an admin to look at and
+// explicitly add to the Reclass list (see getGlScreeningFlags).
+const GL_SCREENING_LARGE_AMOUNT_THRESHOLD = 7500;
+// Temp Labor (Allegis Global Solutions) landing on either of these two
+// object codes is the one rule with a known, deterministic fix -- every
+// other rule below is "something looks off, go look," not "reclass to X."
+const GL_SCREENING_ALLEGIS_OBJECT_CODES = ["605300", "605400"];
+const GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE = "601000";
+const GL_SCREENING_CONCUR_TARGET_SUBSIDIARY = "10910000";
+const GL_SCREENING_LABOR_OBJECT_CODE = "601000";
+const GL_SCREENING_LABOR_VALID_SUBSIDIARIES = ["20920000", "10910000"];
+// The Green/"PPS"-colored subsidiary codes from the Toyota COA's own
+// Subsidiary Codes reference sheet (E1 Cost Codes tab, color legend:
+// Yellow=E&F, Green=PPS, Red=Split, Blue=Unknown) -- a PPS-coded job
+// should only ever post to one of these.
+const GL_SCREENING_PPS_SUBSIDIARIES = ["15915000", "15025000", "15027020", "30930000", "30145000", "30325000"];
+
+const GL_SCREENING_RULES = [
+  { key: "large_amount", label: `Amount over $${GL_SCREENING_LARGE_AMOUNT_THRESHOLD.toLocaleString()}`, severity: "review" },
+  { key: "calero_ipad_review", label: "Calero charge -- review for iPad", severity: "review" },
+  { key: "temp_labor_reclass", label: `Temp Labor (Allegis) on 605300/605400 -- reclass to ${GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE}`, severity: "action" },
+  { key: "concur_reclass", label: `Concur expense not on subsidiary ${GL_SCREENING_CONCUR_TARGET_SUBSIDIARY}`, severity: "action" },
+  { key: "labor_subsidiary", label: "Labor not on subsidiary 20920000 or 10910000", severity: "action" },
+  { key: "wom_without_subledger", label: "WOM-coded line missing its WOM subledger", severity: "review" },
+  { key: "ef_wom_mixed", label: "E&F job coding mixed with a WOM subledger", severity: "high" },
+  { key: "credit_wom_research", label: "Credit coded to a WOM job -- needs research", severity: "review" },
+  { key: "pps_subsidiary_mismatch", label: "PPS job coded with a non-PPS subsidiary", severity: "action" },
+];
+const GL_SCREENING_RULE_BY_KEY = Object.fromEntries(GL_SCREENING_RULES.map((r) => [r.key, r]));
+
+// Which of a location's three job-number columns (see the locations.
+// ef_job_number/pps_job_number/wom_job_number comment up top) this GL
+// line's own Business Unit actually matched -- tells several rules below
+// whether this specific line was coded as E&F, PPS, or WOM work, not just
+// that the business unit resolves to a real site at all.
+function glScreeningJobType(businessUnit, location) {
+  if (!location || !businessUnit) return null;
+  if (location.wom_job_number && location.wom_job_number === businessUnit) return "wom";
+  if (location.ef_job_number && location.ef_job_number === businessUnit) return "ef";
+  if (location.pps_job_number && location.pps_job_number === businessUnit) return "pps";
+  return null;
+}
+
+// Pure function, one GL row (+ its resolved location, if any) in, zero or
+// more matched-rule reason objects out -- kept separate from
+// getGlScreeningFlags' own SQL/aggregation so the rule logic itself is
+// easy to read and to unit test in isolation.
+function evaluateGlScreeningRules(row, location) {
+  const reasons = [];
+  const nameAlpha = (row.nameAlpha || "").toUpperCase();
+  const objectCode = row.objectAccountCode || "";
+  const subsidiary = row.subsidiary || "";
+  const jobType = glScreeningJobType(row.businessUnit, location);
+
+  if (Math.abs(row.amount || 0) > GL_SCREENING_LARGE_AMOUNT_THRESHOLD) {
+    reasons.push({ ruleKey: "large_amount", detail: `$${Math.abs(row.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` });
+  }
+  if (nameAlpha.includes("CALERO")) {
+    reasons.push({ ruleKey: "calero_ipad_review", detail: row.nameAlpha });
+  }
+  if (nameAlpha.includes("ALLEGIS") && GL_SCREENING_ALLEGIS_OBJECT_CODES.includes(objectCode)) {
+    reasons.push({ ruleKey: "temp_labor_reclass", detail: `Object ${objectCode}`, suggestedToObjectCode: GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE });
+  }
+  if (nameAlpha.includes("CONCUR") && subsidiary !== GL_SCREENING_CONCUR_TARGET_SUBSIDIARY) {
+    reasons.push({ ruleKey: "concur_reclass", detail: `Subsidiary ${subsidiary || "blank"}`, suggestedToSubsidiary: GL_SCREENING_CONCUR_TARGET_SUBSIDIARY });
+  }
+  if (objectCode === GL_SCREENING_LABOR_OBJECT_CODE && subsidiary && !GL_SCREENING_LABOR_VALID_SUBSIDIARIES.includes(subsidiary)) {
+    reasons.push({ ruleKey: "labor_subsidiary", detail: `Subsidiary ${subsidiary}` });
+  }
+  if (jobType === "wom" && !row.subledgerGl) {
+    reasons.push({ ruleKey: "wom_without_subledger", detail: `Business unit ${row.businessUnit}` });
+  }
+  if (jobType === "ef" && row.subledgerGl) {
+    reasons.push({ ruleKey: "ef_wom_mixed", detail: `Business unit ${row.businessUnit}, subledger ${row.subledgerGl}` });
+  }
+  if ((row.amount || 0) < 0 && jobType === "wom") {
+    reasons.push({ ruleKey: "credit_wom_research", detail: `Business unit ${row.businessUnit}` });
+  }
+  if (jobType === "pps" && subsidiary && !GL_SCREENING_PPS_SUBSIDIARIES.includes(subsidiary)) {
+    reasons.push({ ruleKey: "pps_subsidiary_mismatch", detail: `Subsidiary ${subsidiary}` });
+  }
+  return reasons;
+}
+
+// Runs the rules above over every gl_entries row in scope and returns just
+// the ones that matched at least one -- same territory/fiscalYear scoping
+// shape as getCellPhoneCharges/getMealsCharges, plus an optional
+// periodNumber (a reclass review is usually done one month at a time).
+// Nothing here is persisted; "add to reclass" is a separate, explicit
+// POST /api/admin/reclasses/items call the frontend makes per flagged
+// line (or a batch of them) once an admin actually picks one.
+function getGlScreeningFlags({ territory, fiscalYear, periodNumber } = {}) {
+  const conditions = [];
+  const params = [];
+  if (fiscalYear != null) {
+    conditions.push("g.fiscal_year = ?");
+    params.push(Number(fiscalYear));
+  }
+  if (periodNumber != null) {
+    conditions.push("g.period_number = ?");
+    params.push(Number(periodNumber));
+  }
+  const rows = db
+    .prepare(
+      `SELECT g.id, g.period_number AS periodNumber, g.fiscal_year AS fiscalYear, g.gl_date AS glDate,
+              g.object_account AS objectAccount, g.object_account_code AS objectAccountCode,
+              g.subsidiary, g.amount, g.remark, g.name_alpha AS nameAlpha, g.business_unit AS businessUnit,
+              g.subledger_gl AS subledgerGl, g.purchase_order AS purchaseOrder,
+              g.matched_location_code AS matchedLocationCode, g.location_code AS locationCode,
+              l.name AS locationName, l.territory AS territory,
+              l.ef_job_number AS efJobNumber, l.pps_job_number AS ppsJobNumber, l.wom_job_number AS womJobNumber
+       FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
+       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+       ORDER BY g.fiscal_year, g.period_number, g.gl_date`
+    )
+    .all(...params);
+
+  const calendar = getGlFiscalCalendar();
+  const monthFor = (pNum, fy) => {
+    const p = calendar.find((c) => c.periodNumber === pNum && c.fiscalYear === fy);
+    return p ? p.monthName : null;
+  };
+
+  const items = [];
+  const byRule = new Map();
+  for (const r of rows) {
+    const rowTerritory = r.territory || "Unassigned";
+    if (territory && rowTerritory !== territory) continue;
+    const location = r.matchedLocationCode
+      ? { ef_job_number: r.efJobNumber, pps_job_number: r.ppsJobNumber, wom_job_number: r.womJobNumber }
+      : null;
+    const reasons = evaluateGlScreeningRules(r, location);
+    if (reasons.length === 0) continue;
+    for (const reason of reasons) {
+      const rule = GL_SCREENING_RULE_BY_KEY[reason.ruleKey];
+      const b = byRule.get(reason.ruleKey) || { ruleKey: reason.ruleKey, label: rule.label, severity: rule.severity, count: 0, total: 0 };
+      b.count += 1;
+      b.total += r.amount || 0;
+      byRule.set(reason.ruleKey, b);
+    }
+    items.push({
+      id: r.id,
+      periodNumber: r.periodNumber,
+      fiscalYear: r.fiscalYear,
+      month: monthFor(r.periodNumber, r.fiscalYear),
+      glDate: r.glDate,
+      objectAccount: r.objectAccount,
+      objectAccountCode: r.objectAccountCode,
+      subsidiary: r.subsidiary,
+      amount: r.amount,
+      remark: r.remark,
+      nameAlpha: r.nameAlpha,
+      businessUnit: r.businessUnit,
+      subledgerGl: r.subledgerGl,
+      purchaseOrder: r.purchaseOrder,
+      locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
+      locationMatched: Boolean(r.matchedLocationCode),
+      territory: rowTerritory,
+      reasons: reasons.map((reason) => ({ ...reason, label: GL_SCREENING_RULE_BY_KEY[reason.ruleKey].label, severity: GL_SCREENING_RULE_BY_KEY[reason.ruleKey].severity })),
+    });
+  }
+
+  const round = (n) => Math.round(n * 100) / 100;
+  return {
+    rules: GL_SCREENING_RULES,
+    items,
+    count: items.length,
+    totalAmount: round(items.reduce((sum, it) => sum + (it.amount || 0), 0)),
+    byRule: [...byRule.values()].map((b) => ({ ...b, total: round(b.total) })).sort((a, b) => b.count - a.count),
+    unmatchedLocations: summarizeUnmatchedLocations(items),
+  };
+}
+
 function buildReconciledFilterClauses(filters) {
   const whereClauses = [`g.fiscal_year = ${GL_RECONCILIATION_FISCAL_YEAR}`];
   const havingClauses = [];
@@ -12355,6 +12541,8 @@ module.exports = {
   getGlSpendDetailPage,
   getCellPhoneCharges,
   getMealsCharges,
+  getGlScreeningFlags,
+  GL_SCREENING_RULES,
   listKnownCellPhoneNumbers,
   getReconciledPage,
   getUnmatchedEntriesPage,

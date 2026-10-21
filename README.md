@@ -2139,6 +2139,28 @@ Demo logins:
   in on one specific unmatched number's own history. The By-phone# view's
   totals/month-counts now reflect whatever's currently filtered, not
   always the full unfiltered fiscal year
+- **New "GL Screening" tab (Financials)** -- codifies Krista's own manual
+  reclass-review checklist (worked by hand today, one line at a time,
+  across a several-thousand-row monthly GL extract) into rules that run
+  automatically over whatever's already imported: amount over $7,500;
+  Calero charges (flagged for manual iPad review); Temp Labor (Allegis
+  Global Solutions) on object code 605300/605400, with a suggested
+  reclass to 601000 pre-filled; Concur expenses not on subsidiary
+  10910000; Labor (object 601000) not on subsidiary 20920000/10910000;
+  a WOM-coded line (business unit matches a location's own WOM job
+  number) missing its WOM subledger; an E&F-coded line that still
+  carries a WOM-style subledger (flagged high-severity -- the two codings
+  are supposed to be mutually exclusive); a credit coded to a WOM job
+  (needs research, no auto-fix); a PPS-coded job on a non-PPS subsidiary
+  (checked against the real Green/PPS codes from Toyota's own COA
+  Subsidiary Codes reference). Nothing here writes anywhere on its own --
+  a flagged line only becomes a real Reclass list entry once an admin
+  explicitly adds it (one at a time or several at once), via the same
+  POST /api/admin/reclasses/items route the Reclasses tab's own manual
+  "+ Add finding" form already uses, just tagged source: "auto_flagged"
+  (a value the schema already anticipated) with the suggested fix, if any,
+  pre-filled into To. The Reclasses tab's own Source column/filter now
+  shows "GL Screening" for these instead of folding them into "Manual"
 
 ## Data model
 
