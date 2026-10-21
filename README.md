@@ -2119,6 +2119,16 @@ Demo logins:
   doesn't force several lines before the real content starts. Every real
   button (not `.btn-link`, which stays inline-sized on purpose) gets a
   ~44px minimum tap target
+- **Time off is now color-coded on the Schedule calendar** (grid, Agenda,
+  and Week alike) -- Holiday &amp; PTO (vacation/holiday) in yellow, Sick in
+  orange, Floating Holiday in green, Bereavement in purple, each chip
+  showing the employee's name and hours off. WOM projects keep the app's
+  existing dark red -- deliberately a different color from Sick (not
+  another red) so the two never read as the same thing on a shared
+  calendar. A legend above the calendar spells out all five. Agenda mode
+  now also lists a date that has ONLY time off and no WOM work (it used to
+  only list dates with scheduled WOM entries, silently dropping a
+  time-off-only day)
 
 ## Data model
 

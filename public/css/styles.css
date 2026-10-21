@@ -26,6 +26,11 @@
   --danger-bg: #fbe4e1;
   --violet: #6b3fa0;
   --violet-bg: #f1e9f8;
+  /* Holiday & PTO time-off chips only (see TIME_OFF_COLOR_CLASS in
+     schedule.js) -- no other semantic use, so a plain descriptive name
+     rather than --warn/--ok/etc.'s state-based naming. */
+  --yellow: #8a6d0a;
+  --yellow-bg: #fbf0cf;
   --teal: #0f7a72;
   --teal-bg: #e3f5f3;
   /* The persistent left sidebar's own dark palette -- deliberately not
@@ -7071,8 +7076,6 @@ tr.gl-import-shrink-row {
 }
 
 .schedule-timeoff-chip {
-  background: var(--violet-bg);
-  color: var(--violet);
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 11px;
@@ -7080,6 +7083,61 @@ tr.gl-import-shrink-row {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Colored by time-off type (see TIME_OFF_COLOR_CLASS in schedule.js) --
+   Sick is orange (--warn), deliberately NOT red, so it stays visually
+   distinct from a WOM entry's own red (.schedule-entry's --accent) on the
+   same calendar. */
+.schedule-timeoff-chip-yellow {
+  background: var(--yellow-bg);
+  color: var(--yellow);
+}
+.schedule-timeoff-chip-warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.schedule-timeoff-chip-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.schedule-timeoff-chip-violet {
+  background: var(--violet-bg);
+  color: var(--violet);
+}
+
+.schedule-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.schedule-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.schedule-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.schedule-legend-swatch-accent {
+  background: var(--accent);
+}
+.schedule-legend-swatch-yellow {
+  background: var(--yellow);
+}
+.schedule-legend-swatch-warn {
+  background: var(--warn);
+}
+.schedule-legend-swatch-ok {
+  background: var(--ok);
+}
+.schedule-legend-swatch-violet {
+  background: var(--violet);
 }
 
 /* ---- Time Off ---- */

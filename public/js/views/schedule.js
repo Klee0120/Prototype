@@ -14,6 +14,47 @@ const WOM_STATUS_LABELS = {
   closed: "Closed",
 };
 
+// Mirrors db.js's TIME_OFF_TYPES. Each gets its own color so a mixed day
+// (a tech out sick, another on PTO, a WOM still scheduled) reads at a
+// glance without opening anything -- WOM stays the app's own existing red
+// (.schedule-entry's --accent), chosen as a visibly different color from
+// Sick (orange, not red) specifically so the two don't collide on the
+// same calendar. Vacation and Holiday share "Holiday & PTO" yellow, same
+// as requested, rather than getting their own two colors.
+const TIME_OFF_COLOR_CLASS = {
+  vacation: "schedule-timeoff-chip-yellow",
+  holiday: "schedule-timeoff-chip-yellow",
+  sick: "schedule-timeoff-chip-warn",
+  floating_holiday: "schedule-timeoff-chip-ok",
+  bereavement: "schedule-timeoff-chip-violet",
+};
+const TIME_OFF_TYPE_LABELS = {
+  vacation: "PTO",
+  holiday: "Holiday",
+  sick: "Sick",
+  floating_holiday: "Floating Holiday",
+  bereavement: "Bereavement",
+};
+
+// Shared by both the month grid's day cells and the Agenda/Week list --
+// one chip per time-off entry, colored by type, showing who and how many
+// hours. Hours are per-day (listApprovedTimeOffForMonth already splits a
+// multi-day request into one entry per weekday), not the request's total.
+function renderTimeOffChipsHtml(entries) {
+  if (entries.length === 0) return "";
+  return `
+    <div class="schedule-timeoff-chips">
+      ${entries
+        .map((t) => {
+          const colorClass = TIME_OFF_COLOR_CLASS[t.type] || "schedule-timeoff-chip-yellow";
+          const typeLabel = TIME_OFF_TYPE_LABELS[t.type] || t.type;
+          return `<span class="schedule-timeoff-chip ${colorClass}" title="${escapeHtml(typeLabel)}">${escapeHtml(t.techName)} &middot; ${t.hours}h</span>`;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
 function formatMoney(n) {
   if (n == null) return "—";
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -249,15 +290,7 @@ function renderAgendaListHtml(dates, byDate, timeOffByDate) {
       return `
         <div class="schedule-agenda-day">
           <div class="schedule-agenda-date">${escapeHtml(formatLongDate(dateIso))}</div>
-          ${
-            timeOffToday.length > 0
-              ? `<div class="schedule-timeoff-chips">
-                  ${timeOffToday
-                    .map((t) => `<span class="schedule-timeoff-chip" title="${escapeHtml(t.techName)} -- ${escapeHtml(t.type.replace("_", " "))}">${escapeHtml(t.techName)}</span>`)
-                    .join("")}
-                </div>`
-              : ""
-          }
+          ${renderTimeOffChipsHtml(timeOffToday)}
           ${entries
             .map((e, i) => {
               const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
@@ -371,13 +404,20 @@ export async function renderSchedule(container, options = {}) {
         <button class="btn btn-secondary" id="schedule-add-toggle">+ Schedule a WOM</button>
       </div>
       <p class="review-checklist-hint">
-        WOM projects scheduled out by date, across all technicians -- E&amp;F time and time off
-        aren't shown here (see Tech Allocation or Weekly Review for those). These are
-        <strong>tentative dates</strong> -- each technician's own planned allocation for that day, not a
-        locked commitment -- so treat them as a working plan, not a confirmed schedule. Click an entry
-        for that WOM's own details, or <strong>+ Schedule a WOM</strong> to put one on the calendar
-        ${isAdmin ? "for any technician" : "for yourself"} across one or more days at once.
+        WOM projects scheduled out by date, across all technicians, plus approved time off (color-coded
+        by type -- see the legend) -- E&amp;F time isn't shown here (see Tech Allocation or Weekly Review
+        for that). WOM dates are <strong>tentative</strong> -- each technician's own planned allocation
+        for that day, not a locked commitment -- so treat them as a working plan, not a confirmed
+        schedule. Click a WOM entry for its own details, or <strong>+ Schedule a WOM</strong> to put one
+        on the calendar ${isAdmin ? "for any technician" : "for yourself"} across one or more days at once.
       </p>
+      <div class="schedule-legend">
+        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-accent"></span>WOM project</span>
+        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-yellow"></span>Holiday &amp; PTO</span>
+        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-warn"></span>Sick</span>
+        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-ok"></span>Floating Holiday</span>
+        <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-violet"></span>Bereavement</span>
+      </div>
       <div id="schedule-calendar-host"></div>
       <div id="schedule-detail-host"></div>
     `;
@@ -494,15 +534,7 @@ export async function renderSchedule(container, options = {}) {
                   const timeOffToday = timeOffByDate[dateIso] || [];
                   return `<div class="schedule-daycell ${inMonth ? "" : "schedule-calendar-outside"}" style="grid-column:${i + 1}">
                     <div class="schedule-calendar-daynum">${dd}</div>
-                    ${
-                      timeOffToday.length > 0
-                        ? `<div class="schedule-timeoff-chips">
-                            ${timeOffToday
-                              .map((t) => `<span class="schedule-timeoff-chip" title="${escapeHtml(t.techName)} -- ${escapeHtml(t.type.replace("_", " "))}">${escapeHtml(t.techName)}</span>`)
-                              .join("")}
-                          </div>`
-                        : ""
-                    }
+                    ${renderTimeOffChipsHtml(timeOffToday)}
                   </div>`;
                 })
                 .join("");
@@ -536,7 +568,7 @@ export async function renderSchedule(container, options = {}) {
       // full project" -> onOpenWom) works identically for either shape.
       const agendaDates = isWeekMode
         ? Array.from({ length: 7 }, (_, i) => addDaysIso(state.scheduleWeekMonday, i))
-        : Object.keys(data.byDate)
+        : Array.from(new Set([...Object.keys(data.byDate), ...Object.keys(timeOffByDate)]))
             .filter((dateIso) => {
               const [dy, dm] = dateIso.split("-").map(Number);
               return dm === m && dy === y;
