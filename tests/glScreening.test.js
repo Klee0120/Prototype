@@ -56,6 +56,19 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       // flag pps_subsidiary_mismatch, but NOT labor_subsidiary (that standard
       // doesn't apply to a PPS job).
       { glDate: "2026-03-01", objectAccount: "601000 - Gen Jan~Labor", subsidiary: "99999999", amount: 901, nameAlpha: "Payroll Labor Distribution", businessUnit: "PPS-JOB-001" },
+      // 5e. A burden/benefit object code (FICA/Medi) riding the same wrong
+      // subsidiary as a mis-keyed Labor line -- the exact real-world pattern
+      // from Krista's "Timekeeping Error" findings, where the Labor line and
+      // its burden siblings (602100/602210/602220/602310/602410/602510/602520)
+      // all carry the same bad subsidiary from one bad timesheet.
+      { glDate: "2026-03-01", objectAccount: "602100 - Support~FICA/Medi", subsidiary: "10010010", amount: 36.78, nameAlpha: "Actual Burden Journal Entries" },
+      // 5f. WOM-coded labor -- should NOT flag labor_subsidiary at all. WOM
+      // work has its own per-project subsidiary code (woms.subsidiary_code),
+      // not the fixed 20920000/10910000 standard, so it's excluded outright
+      // rather than checked against either. Carries its own subledger so
+      // wom_without_subledger doesn't also fire here, keeping this case a
+      // clean test of labor_subsidiary alone.
+      { glDate: "2026-03-01", objectAccount: "601000 - Gen~Labor", subsidiary: "99999999", amount: 902, nameAlpha: "Payroll Labor Distribution", businessUnit: "WOM-JOB-001", subledgerGl: "W-55555" },
       // 6. WOM-coded (business unit = the location's own wom_job_number) with no subledger.
       { glDate: "2026-03-01", objectAccount: "605250 - Gen~Sub Recur Matl", subsidiary: "99999999", amount: 100, businessUnit: "WOM-JOB-001" },
       // 6b. Same WOM job number, but WITH a subledger -- should NOT flag rule 6.
@@ -135,6 +148,17 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     assert.ok(ppsLaborOnWrongSub, "PPS labor on a genuinely wrong subsidiary should still flag");
     assert.ok(ruleKeys(ppsLaborOnWrongSub).includes("pps_subsidiary_mismatch"));
     assert.ok(!ruleKeys(ppsLaborOnWrongSub).includes("labor_subsidiary"), "but not under the labor_subsidiary standard, which doesn't apply to PPS jobs");
+  });
+
+  await t.test("labor_subsidiary also fires on a burden/benefit object code riding the same bad subsidiary as its Labor sibling", () => {
+    const burden = items.find((it) => it.objectAccountCode === "602100" && it.subsidiary === "10010010");
+    assert.ok(burden, "a burden line off 20920000/10910000 should flag just like its Labor line would");
+    assert.ok(ruleKeys(burden).includes("labor_subsidiary"));
+  });
+
+  await t.test("labor_subsidiary excludes WOM-coded labor entirely -- WOM work has its own per-project subsidiary, not a fixed standard to check against", () => {
+    const womLabor = items.find((it) => it.businessUnit === "WOM-JOB-001" && it.amount === 902);
+    assert.equal(womLabor, undefined, "WOM-coded labor should not flag anything, regardless of its subsidiary");
   });
 
   await t.test("wom_without_subledger fires on a WOM-job-coded line with no subledger, not when one's present", () => {

@@ -10725,7 +10725,13 @@ const GL_SCREENING_LARGE_AMOUNT_THRESHOLD = 7500;
 const GL_SCREENING_ALLEGIS_OBJECT_CODES = ["605300", "605400"];
 const GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE = "601000";
 const GL_SCREENING_CONCUR_TARGET_SUBSIDIARY = "10910000";
-const GL_SCREENING_LABOR_OBJECT_CODE = "601000";
+// 601000 is Labor itself; the rest are the burden/benefit costs a payroll
+// run posts alongside it (FICA/Medi, H&W Insurance, H&W Ins Union, 401K
+// Match, Life & ADD, Workers Comp, Gen Liability) -- a mis-keyed timesheet's
+// wrong subsidiary rides all of these, not just the Labor line, confirmed
+// against Krista's own "Timekeeping Error" findings (each one tags a
+// 601000 line plus its 7 same-subsidiary burden siblings).
+const GL_SCREENING_LABOR_OBJECT_CODES = ["601000", "602100", "602210", "602220", "602310", "602410", "602510", "602520"];
 const GL_SCREENING_LABOR_VALID_SUBSIDIARIES = ["20920000", "10910000"];
 // The Green/"PPS"-colored subsidiary codes from the Toyota COA's own
 // Subsidiary Codes reference sheet (E1 Cost Codes tab, color legend:
@@ -10738,7 +10744,7 @@ const GL_SCREENING_RULES = [
   { key: "calero_ipad_review", label: "Calero charge -- review for iPad", severity: "review" },
   { key: "temp_labor_reclass", label: `Temp Labor (Allegis) on 605300/605400 -- reclass to ${GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE}`, severity: "action" },
   { key: "concur_reclass", label: `Concur expense not on subsidiary ${GL_SCREENING_CONCUR_TARGET_SUBSIDIARY}`, severity: "action" },
-  { key: "labor_subsidiary", label: "Labor not on subsidiary 20920000 or 10910000", severity: "action" },
+  { key: "labor_subsidiary", label: "Labor/burden not on subsidiary 20920000 or 10910000", severity: "action" },
   { key: "wom_without_subledger", label: "WOM-coded line missing its WOM subledger", severity: "review" },
   { key: "ef_wom_mixed", label: "E&F job coding mixed with a WOM subledger", severity: "high" },
   { key: "credit_wom_research", label: "Credit coded to a WOM job -- needs research", severity: "review" },
@@ -10785,8 +10791,11 @@ function evaluateGlScreeningRules(row, location) {
   // PPS-coded labor has its own valid subsidiary set (the PPS codes, not
   // 20920000/10910000) -- the pps_subsidiary_mismatch rule below already
   // checks those, so a PPS job is excluded here rather than double-flagged
-  // under the wrong standard.
-  if (objectCode === GL_SCREENING_LABOR_OBJECT_CODE && subsidiary && jobType !== "pps" && !GL_SCREENING_LABOR_VALID_SUBSIDIARIES.includes(subsidiary)) {
+  // under the wrong standard. A WOM job doesn't need 20920000/10910000
+  // either -- WOM work has its own subsidiary/service code per project
+  // (see woms.subsidiary_code), not a single fixed standard like E&F's, so
+  // it's excluded outright rather than checked against one.
+  if (GL_SCREENING_LABOR_OBJECT_CODES.includes(objectCode) && subsidiary && jobType !== "pps" && jobType !== "wom" && !GL_SCREENING_LABOR_VALID_SUBSIDIARIES.includes(subsidiary)) {
     reasons.push({ ruleKey: "labor_subsidiary", detail: `Subsidiary ${subsidiary}` });
   }
   if (jobType === "wom" && !row.subledgerGl) {
