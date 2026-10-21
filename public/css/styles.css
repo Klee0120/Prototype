@@ -535,6 +535,28 @@ h1, h2, h3, h4 {
   display: none;
 }
 
+/* The actual single-row, horizontally-scrollable strip of tabs within
+   .subtab-band -- kept as its own flex child (rather than .subtab-band
+   itself scrolling) so a page's own context picker (.subtab-context-
+   picker, pushed right via margin-left:auto -- e.g. Tech Allocation's
+   technician/week fields) can still wrap onto its own row below on a
+   narrow screen via .subtab-band's flex-wrap, instead of getting swept
+   into the same scroll strip as the tabs. flex:1 1 auto + min-width:0 is
+   what lets it actually shrink below its natural (all-tabs-laid-out) width
+   and start scrolling, rather than forcing the row wider. */
+.subtab-tabs {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.subtab-tabs::-webkit-scrollbar {
+  display: none;
+}
+
 /* A page-context picker (right now, just Tech Allocation's technician/week
    selectors) pushed to the right of this same band's pill tabs, rather than
    sitting separately up in the dark top bar -- reads easier right next to
@@ -592,6 +614,34 @@ h1, h2, h3, h4 {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* Mobile-only trigger for the search field (see the mobile .topbar-search
+   rules below) -- hidden at desktop widths, where the search field is
+   always visible inline instead. */
+.topbar-search-toggle {
+  display: none;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 18px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.topbar-search-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.topbar-search-close {
+  display: none;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
 }
 
 .topbar-search {
@@ -888,6 +938,13 @@ h1, h2, h3, h4 {
 .sidebar-nav-item .tab-badge {
   background: rgba(255, 255, 255, 0.9);
   color: var(--accent-dark);
+}
+
+/* Mobile-only (see the max-width:768px rule below) -- territory + language,
+   moved here out of the topbar since there's no room for them there on a
+   phone. Hidden at desktop widths, where both stay inline in the topbar. */
+.sidebar-mobile-tools {
+  display: none;
 }
 
 .sidebar-user {
@@ -1660,6 +1717,11 @@ h1, h2, h3, h4 {
   margin-bottom: 16px;
   padding-bottom: 4px;
   overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
@@ -1672,6 +1734,8 @@ h1, h2, h3, h4 {
   color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
+  flex-shrink: 0;
+  scroll-snap-align: center;
   transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -6160,34 +6224,75 @@ tr.gl-import-shrink-row {
     background: rgba(255, 255, 255, 0.12);
   }
 
+  /* Compact header row: hamburger, brand name, bell -- nothing else.
+     Search collapses behind its icon (.topbar-search-toggle) instead of
+     taking a full row of its own, and territory/language move out of the
+     topbar entirely into the hamburger drawer (see app.js's
+     renderMobileSidebarTools + .sidebar-mobile-tools below). */
   .app-topbar {
     padding: 12px 16px;
-    gap: 12px;
+    gap: 10px;
   }
   .topbar-brand-sub {
     display: none;
   }
+  /* Row 1 is hamburger + brand name + global tools (search icon, bell) --
+     packed together in that order regardless of where they fall in the
+     DOM, by giving each an explicit order. topbar-context (a view's own
+     picker, e.g. a week/date nav -- empty most of the time) comes last so
+     it wraps onto its own row below when it actually has something in it,
+     instead of pushing the bell down with it. Language moves to the
+     drawer entirely (see .sidebar-mobile-tools) -- .topbar-lang-tools
+     stays in the DOM (app.js always fills it) but is hidden here. */
+  .mobile-nav-toggle {
+    order: 1;
+  }
+  .topbar-brand-text {
+    order: 2;
+  }
+  .topbar-global-tools {
+    order: 3;
+    gap: 4px;
+  }
   .topbar-context {
+    order: 4;
     width: 100%;
     justify-content: space-between;
   }
+  .topbar-lang-tools {
+    display: none;
+  }
+  .topbar-search-toggle {
+    display: inline-flex;
+    align-items: center;
+  }
+  .topbar-territory-field {
+    display: none;
+  }
   .topbar-search {
+    display: none;
+  }
+  /* Opened via the search icon (see renderGlobalTopbarTools) -- takes over
+     as a full-width overlay row anchored under the topbar rather than
+     squeezing in next to the brand name/bell, with its own close (X) to
+     collapse back to just the icon. Positioned off .app-topbar itself
+     (not .topbar-global-tools, which is only as wide as the icon/bell
+     cluster it sits in) so left/right:0 spans the real topbar width. */
+  .app-topbar {
+    position: relative;
+  }
+  .topbar-global-tools.topbar-search-open .topbar-search {
+    display: flex;
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    top: 100%;
     width: auto;
-    flex: 1 1 auto;
-    min-width: 0;
+    z-index: 40;
+    background: var(--sidebar-bg);
   }
-  /* .topbar-global-tools (search + territory + bell) has no wrap of its
-     own, and the territory <select> doesn't shrink below its own text --
-     confirmed on a real phone: "All territories" was running off the right
-     edge of the screen instead of dropping to its own line. Letting the
-     group wrap, and giving the search field a full-width row to itself
-     first, is the same fix already used for .week-nav/.wom-filter-bar. */
-  .topbar-global-tools {
-    flex-wrap: wrap;
-    width: 100%;
-  }
-  .topbar-search {
-    flex-basis: 100%;
+  .topbar-search-close {
+    display: inline-flex;
   }
 
   .app-sidebar {
@@ -6216,6 +6321,44 @@ tr.gl-import-shrink-row {
   }
   .sidebar-backdrop.visible {
     display: block;
+  }
+
+  .sidebar-mobile-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .sidebar-mobile-territory {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+  }
+  .sidebar-mobile-territory select {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 13px;
+    min-width: 0;
+  }
+  .sidebar-mobile-territory select:focus {
+    outline: none;
+  }
+  .sidebar-mobile-territory select option {
+    color: var(--ink);
+  }
+  .sidebar-mobile-lang .lang-toggle {
+    width: 100%;
+  }
+  .sidebar-mobile-lang .lang-toggle .tab {
+    flex: 1;
+    text-align: center;
   }
 
   .content {
@@ -6720,10 +6863,35 @@ tr.gl-import-shrink-row {
 }
 
 @media (max-width: 640px) {
+  /* A true edge-to-edge bottom bar on a phone, not a floating card --
+     matches the mobile "compact bottom control" everything else in this
+     media query is built around. The collapsed .time-tracker-tab row is
+     the only thing visible until tapped open; .content's own bottom
+     padding (below) reserves room for it so it never sits on top of
+     whatever's last on the page. */
   .time-tracker {
-    right: 10px;
-    width: calc(100vw - 20px);
-    max-width: 360px;
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: none;
+  }
+  .time-tracker-tab {
+    padding: 8px 12px;
+    border-radius: 0;
+  }
+  .time-tracker-panel {
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+
+  /* Reserves room for the collapsed bar above (roughly its own height
+     plus a little breathing room) so it never overlaps the last real item
+     on whatever page is showing. :has(.time-tracker) scopes this to when
+     the bar actually exists in the shell (admin role only -- see
+     timeTracker.js's mountTimeTracker) rather than padding every page for
+     a control that isn't even there. */
+  .app-shell:has(.time-tracker) .content {
+    padding-bottom: 72px;
   }
 }
 

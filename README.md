@@ -2090,6 +2090,18 @@ Demo logins:
   that aren't a document case or an auto-generated compliance follow-up,
   just something worth tracking with a status and a running comment log
   like any other task
+- **Mobile layout pass (admin shell).** The topbar now compacts to just
+  hamburger + "ServiceWorks" + bell on one row below 768px -- search
+  collapses behind its own icon (opens as a full-width overlay row), and
+  territory + language move out of the topbar entirely into the hamburger
+  drawer (new "mobile sidebar tools" section, admin-only for territory).
+  The section sub-tabs band (and the vendor profile's own tab row) are now
+  a single horizontally-scrollable strip instead of wrapping onto several
+  rows, and the selected tab scrolls itself into view on every tab switch.
+  The time tracker's collapsed bar becomes a true edge-to-edge bottom bar
+  below 640px (was a floating 320px card), with the page content getting
+  matching bottom padding so the bar never sits on top of the last real
+  item on screen
 
 ## Data model
 

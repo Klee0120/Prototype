@@ -394,9 +394,19 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // part of the page's chrome, same reasoning as the sidebar nav and the
     // top bar's context picker. Empty (and collapses via CSS :empty) for a
     // single-tab section.
+    // .subtab-tabs (not .subtab-band itself) is the actual horizontal-
+    // scroll strip -- keeping that one level in lets a page-context picker
+    // (e.g. Tech Allocation's technician/week fields, appended into
+    // .subtab-band separately) wrap onto its own row below on a narrow
+    // screen instead of getting swept into the same scrollable strip as
+    // the tabs. See scrollActiveTabIntoView below for why a horizontally-
+    // scrollable row needs its own explicit "stay on the selected one"
+    // behavior -- overflow-x:auto alone doesn't do that for you.
     subtabHost.innerHTML =
       currentSection.tabs.length > 1
-        ? currentSection.tabs.map((tab) => `<button class="tab ${activeTab === tab ? "active" : ""}" data-tab="${tab}">${escapeHtml(tx(TAB_LABELS[tab]))}</button>`).join("")
+        ? `<div class="subtab-tabs">${currentSection.tabs
+            .map((tab) => `<button class="tab ${activeTab === tab ? "active" : ""}" data-tab="${tab}">${escapeHtml(tx(TAB_LABELS[tab]))}</button>`)
+            .join("")}</div>`
         : "";
 
     container.innerHTML = `<div id="tab-content" class="tab-content"></div>`;
@@ -410,6 +420,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     subtabHost.querySelectorAll(".tab").forEach((btn) => {
       btn.addEventListener("click", () => goTo(btn.dataset.tab));
     });
+    scrollActiveTabIntoView(subtabHost.querySelector(".subtab-tabs"));
 
     const content = container.querySelector("#tab-content");
     // Every tab fetches its own data before rendering real content, so one
@@ -809,6 +820,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
 
   function daysSince(iso) {
     return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  }
+
+  // A horizontally-scrollable single-row tab strip (see .subtab-tabs --
+  // the mobile-friendly reshaping of what used to just wrap onto several
+  // rows) doesn't keep the active tab in view on its own: switching to a
+  // tab near the end of a long row can leave it scrolled out of sight
+  // behind whatever's still showing from before. Scrolls it back into the
+  // middle of the strip, "smooth" so it reads as a deliberate swipe rather
+  // than a jump cut. Safe to call with no active tab (nothing to do) or a
+  // strip that isn't actually scrolling (scrollIntoView is a no-op then).
+  function scrollActiveTabIntoView(stripEl) {
+    if (!stripEl) return;
+    const active = stripEl.querySelector(".tab.active");
+    if (active) active.scrollIntoView({ inline: "center", block: "nearest" });
   }
 
   // Mirrors ServiceEdge's own onboarding model: a vendor being onboarded
@@ -2577,6 +2602,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         renderVendorProfile(content, v);
       });
     });
+    scrollActiveTabIntoView(content.querySelector(".vendor-profile-tabs"));
 
     const body = content.querySelector(".vendor-profile-body");
     if (vendorProfileTab === "onboarding") await renderVendorOnboardingTab(body, v);
@@ -3999,9 +4025,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   function renderGlobalTopbarTools(host) {
     if (!host) return;
     host.innerHTML = `
+      <button type="button" class="topbar-search-toggle" aria-label="Search">&#128269;</button>
       <div class="topbar-search" id="topbar-search">
         <span class="search-field-icon">&#128269;</span>
         <input type="search" class="topbar-search-input" placeholder="Search WOMs, vendors, POs..." autocomplete="off" />
+        <button type="button" class="topbar-search-close" aria-label="Close search">&times;</button>
         <div class="topbar-search-dropdown" hidden></div>
       </div>
       <label class="topbar-territory-field">
@@ -4019,6 +4047,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="topbar-bell-dropdown" hidden></div>
       </div>
     `;
+
+    // Mobile only (see styles.css's mobile .topbar-* rules) -- at desktop
+    // widths the search field is always visible inline and this toggle
+    // stays hidden. host.querySelector(".topbar-search-input") is the same
+    // field either way, just shown/hidden via this class rather than two
+    // separate implementations.
+    const searchToggle = host.querySelector(".topbar-search-toggle");
+    const searchCloseBtn = host.querySelector(".topbar-search-close");
+    searchToggle.addEventListener("click", () => {
+      host.classList.add("topbar-search-open");
+      host.querySelector(".topbar-search-input").focus();
+    });
+    searchCloseBtn.addEventListener("click", () => {
+      host.classList.remove("topbar-search-open");
+    });
 
     const searchInput = host.querySelector(".topbar-search-input");
     const searchDropdown = host.querySelector(".topbar-search-dropdown");
@@ -4121,8 +4164,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (e.key === "Escape") searchDropdown.hidden = true;
     });
 
-    host.querySelector(".topbar-territory-select").addEventListener("change", (e) => {
+    const territorySelect = host.querySelector(".topbar-territory-select");
+    territorySelect.addEventListener("change", (e) => {
       setTerritory(e.target.value);
+    });
+    // Kept in sync with the mobile drawer's own territory select (see
+    // app.js's renderMobileSidebarTools) -- only one of the two is ever
+    // visible at a given width, but a live window resize across that
+    // breakpoint mid-session shouldn't leave this one showing a stale value.
+    onTerritoryChange((value) => {
+      territorySelect.value = value;
     });
 
     const bellBtn = host.querySelector(".topbar-bell-btn");

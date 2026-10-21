@@ -5,6 +5,8 @@ import { renderTechHome } from "./views/techHome.js";
 import { renderAdminReview } from "./views/adminReview.js";
 import { mountTimeTracker } from "./views/timeTracker.js";
 import { t, onLanguageChange, renderLanguageToggle } from "./i18n.js";
+import { TERRITORIES } from "./constants.js";
+import { getTerritory, setTerritory, onTerritoryChange } from "./globalFilters.js";
 
 // Every string on screen depends on the current language, so the simplest
 // correct response to a toggle is just redrawing the whole shell the same
@@ -210,6 +212,7 @@ function renderSidebar() {
     </div>
     <nav class="sidebar-nav" id="sidebar-nav"></nav>
   `;
+  sidebar.appendChild(renderMobileSidebarTools());
   sidebar.appendChild(renderSidebarUser());
   // Delegated rather than bound to individual nav items: adminReview.js/
   // techHome.js own #sidebar-nav's actual content and redraw it on every
@@ -221,6 +224,46 @@ function renderSidebar() {
     if (e.target.closest(".sidebar-nav-item")) closeMobileNav();
   });
   return sidebar;
+}
+
+// Territory and language live inline in the topbar at desktop widths, but
+// there's no room for them there on a phone (see the mobile .topbar-*
+// rules in styles.css, which hide those inline instances below 768px) --
+// this is the mobile-only home for both, shown inside the hamburger drawer
+// instead. Territory is admin-only (techs never had the topbar picker
+// either); language applies to everyone, same as the topbar's own toggle.
+// Both read/write the same shared state the desktop controls use
+// (globalFilters.js's getTerritory/setTerritory, i18n.js's own listeners),
+// so a change here takes effect everywhere immediately, not just in this
+// drawer.
+function renderMobileSidebarTools() {
+  const el = document.createElement("div");
+  el.className = "sidebar-mobile-tools";
+  el.innerHTML = `
+    ${
+      state.user.role === "admin"
+        ? `<label class="sidebar-mobile-territory">
+             <span class="search-field-icon">&#127760;</span>
+             <select class="sidebar-mobile-territory-select">
+               <option value="">${escapeHtml(t("All territories"))}</option>
+               ${TERRITORIES.map(
+                 (terr) => `<option value="${escapeHtml(terr)}" ${getTerritory() === terr ? "selected" : ""}>${escapeHtml(terr)}</option>`
+               ).join("")}
+             </select>
+           </label>`
+        : ""
+    }
+    <div class="sidebar-mobile-lang"></div>
+  `;
+  const territorySelect = el.querySelector(".sidebar-mobile-territory-select");
+  if (territorySelect) {
+    territorySelect.addEventListener("change", (e) => setTerritory(e.target.value));
+    onTerritoryChange((value) => {
+      territorySelect.value = value;
+    });
+  }
+  el.querySelector(".sidebar-mobile-lang").appendChild(renderLanguageToggle());
+  return el;
 }
 
 function renderSidebarUser() {
