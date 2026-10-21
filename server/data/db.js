@@ -10725,6 +10725,10 @@ const GL_SCREENING_LARGE_AMOUNT_THRESHOLD = 7500;
 const GL_SCREENING_ALLEGIS_OBJECT_CODES = ["605300", "605400"];
 const GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE = "601000";
 const GL_SCREENING_CONCUR_TARGET_SUBSIDIARY = "10910000";
+// Per Krista: the Concur rule only applies to Airfare and Lodging --
+// Concur-named lines on other object codes (Taxi & Car, Rental Car,
+// Meals, Gas, Toll & Park) aren't part of this reclass check.
+const GL_SCREENING_CONCUR_OBJECT_CODES = ["616100", "616200"];
 // 601000 is Labor itself; the rest are the burden/benefit costs a payroll
 // run posts alongside it (FICA/Medi, H&W Insurance, H&W Ins Union, 401K
 // Match, Life & ADD, Workers Comp, Gen Liability) -- a mis-keyed timesheet's
@@ -10808,7 +10812,7 @@ function evaluateGlScreeningRules(row, location) {
   if (nameAlpha.includes("ALLEGIS") && GL_SCREENING_ALLEGIS_OBJECT_CODES.includes(objectCode)) {
     reasons.push({ ruleKey: "temp_labor_reclass", detail: `Object ${objectCode}`, suggestedToObjectCode: GL_SCREENING_ALLEGIS_TARGET_OBJECT_CODE });
   }
-  if (nameAlpha.includes("CONCUR") && subsidiary !== GL_SCREENING_CONCUR_TARGET_SUBSIDIARY) {
+  if (nameAlpha.includes("CONCUR") && GL_SCREENING_CONCUR_OBJECT_CODES.includes(objectCode) && subsidiary !== GL_SCREENING_CONCUR_TARGET_SUBSIDIARY) {
     reasons.push({ ruleKey: "concur_reclass", detail: `Subsidiary ${subsidiary || "blank"}`, suggestedToSubsidiary: GL_SCREENING_CONCUR_TARGET_SUBSIDIARY });
   }
   // PPS-coded labor has its own valid subsidiary set (the PPS codes, not

@@ -57,10 +57,16 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       { glDate: "2026-03-01", objectAccount: "605400 - Gen~Sub NonRecur Lab", subsidiary: "10010010", amount: 500, nameAlpha: "ALLEGIS GLOBAL SOLUTIONS" },
       // 3c. Allegis on an unrelated object code -- should NOT flag (confirms the rule needs both name AND code).
       { glDate: "2026-03-01", objectAccount: "601000 - Gen~Labor", subsidiary: "20920000", amount: 500, nameAlpha: "ALLEGIS GLOBAL SOLUTIONS" },
-      // 4. Concur not on subsidiary 10910000.
-      { glDate: "2026-03-01", objectAccount: "620100 - Gen~Travel", subsidiary: "99999999", amount: 250, nameAlpha: "CONCUR TECHNOLOGIES" },
-      // 4b. Concur already correctly on 10910000 -- should NOT flag.
-      { glDate: "2026-03-01", objectAccount: "620100 - Gen~Travel", subsidiary: "10910000", amount: 250, nameAlpha: "CONCUR TECHNOLOGIES" },
+      // 4. Concur (Airfare, 616100) not on subsidiary 10910000.
+      { glDate: "2026-03-01", objectAccount: "616100 - Gen~Airfare", subsidiary: "99999999", amount: 250, nameAlpha: "CONCUR TECHNOLOGIES" },
+      // 4b. Concur (Lodging, 616200) not on subsidiary 10910000 -- the rule's other listed object code.
+      { glDate: "2026-03-01", objectAccount: "616200 - Gen~Lodging", subsidiary: "99999999", amount: 251, nameAlpha: "CONCUR TECHNOLOGIES" },
+      // 4c. Concur already correctly on 10910000 -- should NOT flag.
+      { glDate: "2026-03-01", objectAccount: "616100 - Gen~Airfare", subsidiary: "10910000", amount: 250, nameAlpha: "CONCUR TECHNOLOGIES" },
+      // 4d. Concur on an object code outside Airfare/Lodging (e.g. Taxi & Car)
+      // -- should NOT flag, even off 10910000. Per Krista, this rule only
+      // applies to Airfare and Lodging.
+      { glDate: "2026-03-01", objectAccount: "616400 - Gen~Taxi & Car", subsidiary: "99999999", amount: 252, nameAlpha: "CONCUR TECHNOLOGIES" },
       // 5. Labor (object 601000) on a subsidiary that isn't 20920000/10910000/a
       // Split code -- this is the exact real-world pattern from Krista's own
       // October findings file (Payroll Labor Distribution landing on 10010000,
@@ -168,12 +174,20 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     assert.equal(allegisWrongCode, undefined, "Allegis on an object code outside 605300/605400 should not trigger this rule");
   });
 
-  await t.test("concur_reclass fires only when the subsidiary isn't already 10910000", () => {
-    const wrongSub = items.find((it) => it.nameAlpha === "CONCUR TECHNOLOGIES" && it.subsidiary === "99999999");
+  await t.test("concur_reclass fires on Airfare/Lodging only when the subsidiary isn't already 10910000", () => {
+    const wrongSubAirfare = byAmount(250);
+    const wrongSubLodging = byAmount(251);
     const rightSub = items.find((it) => it.nameAlpha === "CONCUR TECHNOLOGIES" && it.subsidiary === "10910000");
-    assert.ok(wrongSub, "Concur not on 10910000 should flag");
-    assert.equal(wrongSub.reasons.find((r) => r.ruleKey === "concur_reclass").suggestedToSubsidiary, "10910000");
+    assert.ok(wrongSubAirfare, "Concur Airfare not on 10910000 should flag");
+    assert.equal(wrongSubAirfare.reasons.find((r) => r.ruleKey === "concur_reclass").suggestedToSubsidiary, "10910000");
+    assert.ok(wrongSubLodging, "Concur Lodging not on 10910000 should flag");
+    assert.ok(wrongSubLodging.reasons.find((r) => r.ruleKey === "concur_reclass"));
     assert.equal(rightSub, undefined, "Concur already on 10910000 should not flag");
+  });
+
+  await t.test("concur_reclass does not fire on an object code outside Airfare/Lodging", () => {
+    const otherObjectCode = byAmount(252);
+    assert.equal(otherObjectCode, undefined, "Concur on Taxi & Car (or any non-Airfare/Lodging code) should not flag, even off 10910000");
   });
 
   await t.test("labor_subsidiary fires on object 601000 off 20920000/10910000/Split -- the exact real-world pattern from Krista's own findings", () => {
