@@ -5508,6 +5508,60 @@ tr.gl-import-shrink-row {
   color: var(--warn);
 }
 
+/* Agenda/Week: the default mobile-friendly view -- see renderSchedule's
+   SCHEDULE_VIEW_MODES and renderAgendaListHtml. */
+.schedule-view-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.schedule-week-range {
+  font-weight: 700;
+  color: var(--ink);
+  text-align: center;
+  flex: 1;
+}
+
+.schedule-agenda-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.schedule-agenda-day {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.schedule-agenda-day:last-child {
+  border-bottom: none;
+}
+
+.schedule-agenda-date {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.schedule-agenda-day .empty-note {
+  margin: 0;
+}
+
+/* Roomier than the grid's own tiny cell version (.schedule-entry's base
+   11px/tight padding is sized for a calendar square, not a full-width
+   list row where there's plenty of room). */
+.schedule-agenda-entry {
+  display: block;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.schedule-agenda-entry .schedule-entry-sub {
+  font-size: 12px;
+}
+
 .schedule-detail-panel {
   margin-top: 14px;
   padding: 14px 16px;

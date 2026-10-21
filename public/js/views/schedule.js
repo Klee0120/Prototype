@@ -218,6 +218,70 @@ function buildWeekRuns(week, byDate, keyOf) {
   return { runs, laneCount: laneEnds.length };
 }
 
+// The Agenda/Week body: a flat list grouped by date instead of the grid's
+// 7-column layout -- the default view (see renderSchedule) since a phone
+// has no room to read the grid's multi-day run bars. Each row is still a
+// real .schedule-entry button with the same data-keys format the grid's
+// own click handler/entriesByKey lookup already expects (one key per row
+// here, vs. possibly several for a grid run bar spanning days), so
+// clicking it opens the exact same WOM detail panel either way -- no
+// separate click-handling or detail-rendering code needed for this view.
+// Agenda (whole month) only lists dates that actually have scheduled WOM
+// work -- a day-by-day skip-if-nothing list; Week lists all 7 days
+// including empty ones (and days with only time off, no WOM), so the
+// week reads as a complete picture rather than just its busy days.
+function renderAgendaListHtml(dates, byDate, timeOffByDate) {
+  if (dates.length === 0) {
+    return `<p class="empty-note">Nothing scheduled.</p>`;
+  }
+  const rows = dates
+    .map((dateIso) => {
+      const entries = byDate[dateIso] || [];
+      const timeOffToday = timeOffByDate[dateIso] || [];
+      if (entries.length === 0 && timeOffToday.length === 0) {
+        return `
+          <div class="schedule-agenda-day">
+            <div class="schedule-agenda-date">${escapeHtml(formatLongDate(dateIso))}</div>
+            <p class="empty-note">Nothing scheduled.</p>
+          </div>
+        `;
+      }
+      return `
+        <div class="schedule-agenda-day">
+          <div class="schedule-agenda-date">${escapeHtml(formatLongDate(dateIso))}</div>
+          ${
+            timeOffToday.length > 0
+              ? `<div class="schedule-timeoff-chips">
+                  ${timeOffToday
+                    .map((t) => `<span class="schedule-timeoff-chip" title="${escapeHtml(t.techName)} -- ${escapeHtml(t.type.replace("_", " "))}">${escapeHtml(t.techName)}</span>`)
+                    .join("")}
+                </div>`
+              : ""
+          }
+          ${entries
+            .map((e, i) => {
+              const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
+              return `
+                <button type="button" class="schedule-entry schedule-agenda-entry" data-keys="${dateIso}|${i}" title="Click for WOM details">
+                  <div class="schedule-entry-main">
+                    <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.description || e.womCode)} — ${escapeHtml(e.techName)}
+                  </div>
+                  <div class="schedule-entry-sub">
+                    ${escapeHtml(e.womCode)}${maximoLabel}
+                    ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
+                    <span class="schedule-entry-tentative">Tentative</span>
+                  </div>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      `;
+    })
+    .join("");
+  return `<div class="schedule-agenda-list">${rows}</div>`;
+}
+
 // A month calendar of WOM project work (no E&F) plus approved time off --
 // shared by the admin and technician shells, and open to any logged-in
 // user, since the point is letting anyone see what's already scheduled
@@ -232,9 +296,24 @@ function buildWeekRuns(week, byDate, keyOf) {
 // bar system below (see the /time-off endpoint's own comment in
 // server/routes/schedule.js for why merging the two shapes would be
 // wrong), and is never filtered by location -- time off isn't site-scoped.
+const SCHEDULE_VIEW_MODES = [
+  { key: "agenda", label: "Agenda" },
+  { key: "week", label: "Week" },
+  { key: "month", label: "Month" },
+];
+
 export async function renderSchedule(container, options = {}) {
   if (!state.scheduleMonth) state.scheduleMonth = currentMonthIso();
   if (state.scheduleLocation === undefined) state.scheduleLocation = "";
+  // Agenda (a flat list grouped by date) is the default -- a phone has no
+  // room to read the grid's own multi-day run bars, and a scrolling list
+  // of "what's happening when" is the more natural mobile shape anyway.
+  // Week/Month (below) are alternate ranges/shapes for the same underlying
+  // data, not separate features -- Month is the original grid, kept as-is
+  // for whoever wants the at-a-glance picture; Week is the same agenda
+  // list narrowed to 7 days with its own prev/next nav.
+  if (!state.scheduleViewMode) state.scheduleViewMode = "agenda";
+  if (!state.scheduleWeekMonday) state.scheduleWeekMonday = mondayOfIso(new Date().toISOString().slice(0, 10));
 
   const onOpenWom = options.onOpenWom || (() => {});
   const isAdmin = state.user && state.user.role === "admin";
@@ -261,19 +340,33 @@ export async function renderSchedule(container, options = {}) {
       .join("");
 
     const [scheduleYear, scheduleMonthNum] = state.scheduleMonth.split("-").map(Number);
+    const isWeekMode = state.scheduleViewMode === "week";
+    const isMonthMode = state.scheduleViewMode === "month";
+    const weekEndIso = addDaysIso(state.scheduleWeekMonday, 6);
 
     container.innerHTML = `
+      <div class="schedule-view-toggle">
+        ${SCHEDULE_VIEW_MODES.map(
+          (m) => `<button type="button" class="tab ${state.scheduleViewMode === m.key ? "active" : ""}" data-view="${m.key}">${m.label}</button>`
+        ).join("")}
+      </div>
       <div class="week-nav">
-        <button class="btn btn-ghost" id="schedule-prev-month">&larr; Prev</button>
-        <div class="report-month-year-nav">
-          <label class="report-month-picker">
-            <select id="schedule-month-select">${MONTH_NAMES.map((name, i) => `<option value="${i + 1}" ${i + 1 === scheduleMonthNum ? "selected" : ""}>${name}</option>`).join("")}</select>
-          </label>
-          <label class="report-year-picker">
-            <select id="schedule-year-select">${scheduleYearOptions(scheduleYear)}</select>
-          </label>
-        </div>
-        <button class="btn btn-ghost" id="schedule-next-month">Next &rarr;</button>
+        ${
+          isWeekMode
+            ? `<button class="btn btn-ghost" id="schedule-prev-week">&larr; Prev</button>
+               <div class="schedule-week-range">${formatLongDate(state.scheduleWeekMonday)} &ndash; ${formatLongDate(weekEndIso)}</div>
+               <button class="btn btn-ghost" id="schedule-next-week">Next &rarr;</button>`
+            : `<button class="btn btn-ghost" id="schedule-prev-month">&larr; Prev</button>
+               <div class="report-month-year-nav">
+                 <label class="report-month-picker">
+                   <select id="schedule-month-select">${MONTH_NAMES.map((name, i) => `<option value="${i + 1}" ${i + 1 === scheduleMonthNum ? "selected" : ""}>${name}</option>`).join("")}</select>
+                 </label>
+                 <label class="report-year-picker">
+                   <select id="schedule-year-select">${scheduleYearOptions(scheduleYear)}</select>
+                 </label>
+               </div>
+               <button class="btn btn-ghost" id="schedule-next-month">Next &rarr;</button>`
+        }
         <select id="schedule-location-filter"><option value="">All sites</option>${locationOptions}</select>
         <button class="btn btn-secondary" id="schedule-add-toggle">+ Schedule a WOM</button>
       </div>
@@ -289,22 +382,54 @@ export async function renderSchedule(container, options = {}) {
       <div id="schedule-detail-host"></div>
     `;
 
-    container.querySelector("#schedule-prev-month").addEventListener("click", () => {
-      state.scheduleMonth = shiftMonth(state.scheduleMonth, -1);
-      detailEntry = null;
-      draw();
+    container.querySelectorAll(".schedule-view-toggle .tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.scheduleViewMode = btn.dataset.view;
+        detailEntry = null;
+        draw();
+      });
     });
-    container.querySelector("#schedule-next-month").addEventListener("click", () => {
-      state.scheduleMonth = shiftMonth(state.scheduleMonth, 1);
-      detailEntry = null;
-      draw();
-    });
-    container.querySelector("#schedule-month-select").addEventListener("change", (e) => {
+
+    const prevWeekBtn = container.querySelector("#schedule-prev-week");
+    if (prevWeekBtn) {
+      prevWeekBtn.addEventListener("click", () => {
+        state.scheduleWeekMonday = addDaysIso(state.scheduleWeekMonday, -7);
+        detailEntry = null;
+        draw();
+      });
+    }
+    const nextWeekBtn = container.querySelector("#schedule-next-week");
+    if (nextWeekBtn) {
+      nextWeekBtn.addEventListener("click", () => {
+        state.scheduleWeekMonday = addDaysIso(state.scheduleWeekMonday, 7);
+        detailEntry = null;
+        draw();
+      });
+    }
+    const prevMonthBtn = container.querySelector("#schedule-prev-month");
+    if (prevMonthBtn) {
+      prevMonthBtn.addEventListener("click", () => {
+        state.scheduleMonth = shiftMonth(state.scheduleMonth, -1);
+        detailEntry = null;
+        draw();
+      });
+    }
+    const nextMonthBtn = container.querySelector("#schedule-next-month");
+    if (nextMonthBtn) {
+      nextMonthBtn.addEventListener("click", () => {
+        state.scheduleMonth = shiftMonth(state.scheduleMonth, 1);
+        detailEntry = null;
+        draw();
+      });
+    }
+    const monthSelect = container.querySelector("#schedule-month-select");
+    if (monthSelect) monthSelect.addEventListener("change", (e) => {
       state.scheduleMonth = `${scheduleYear}-${String(Number(e.target.value)).padStart(2, "0")}`;
       detailEntry = null;
       draw();
     });
-    container.querySelector("#schedule-year-select").addEventListener("change", (e) => {
+    const yearSelect = container.querySelector("#schedule-year-select");
+    if (yearSelect) yearSelect.addEventListener("change", (e) => {
       state.scheduleMonth = `${e.target.value}-${String(scheduleMonthNum).padStart(2, "0")}`;
       detailEntry = null;
       draw();
@@ -320,12 +445,19 @@ export async function renderSchedule(container, options = {}) {
 
     const host = container.querySelector("#schedule-calendar-host");
     const detailHost = container.querySelector("#schedule-detail-host");
+    // Week mode browses by week, which can land on a different calendar
+    // month than state.scheduleMonth -- the API is month-scoped (see
+    // server/routes/schedule.js), but its own gridStart/gridEnd already
+    // cover every FULL week touching that month, so fetching whichever
+    // month the week's Monday falls in always has that whole week's data,
+    // even when the week straddles two real months.
+    const fetchMonth = isWeekMode ? state.scheduleWeekMonday.slice(0, 7) : state.scheduleMonth;
     let data, timeOffByDate;
     try {
       const query = state.scheduleLocation ? `?location=${encodeURIComponent(state.scheduleLocation)}` : "";
       [data, timeOffByDate] = await Promise.all([
-        api.get(`/api/schedule/${state.scheduleMonth}${query}`),
-        api.get(`/api/schedule/${state.scheduleMonth}/time-off`),
+        api.get(`/api/schedule/${fetchMonth}${query}`),
+        api.get(`/api/schedule/${fetchMonth}/time-off`),
       ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -348,53 +480,70 @@ export async function renderSchedule(container, options = {}) {
     }
     const keyOf = (dateIso, i) => `${dateIso}|${i}`;
 
-    host.innerHTML = `
-      <div class="schedule-calendar-grid">
-        <div class="schedule-calendar-headerrow">${DAY_HEADERS.map((d) => `<div class="schedule-calendar-headercell">${d}</div>`).join("")}</div>
-        ${weeks
-          .map((week) => {
-            const { runs, laneCount } = buildWeekRuns(week, data.byDate, keyOf);
-            const daycells = week
-              .map((dateIso, i) => {
-                const [dy, dm, dd] = dateIso.split("-").map(Number);
-                const inMonth = dm === m && dy === y;
-                const timeOffToday = timeOffByDate[dateIso] || [];
-                return `<div class="schedule-daycell ${inMonth ? "" : "schedule-calendar-outside"}" style="grid-column:${i + 1}">
-                  <div class="schedule-calendar-daynum">${dd}</div>
-                  ${
-                    timeOffToday.length > 0
-                      ? `<div class="schedule-timeoff-chips">
-                          ${timeOffToday
-                            .map((t) => `<span class="schedule-timeoff-chip" title="${escapeHtml(t.techName)} -- ${escapeHtml(t.type.replace("_", " "))}">${escapeHtml(t.techName)}</span>`)
-                            .join("")}
-                        </div>`
-                      : ""
-                  }
-                </div>`;
-              })
-              .join("");
-            const runBars = runs
-              .map((run) => {
-                const e = run.entry;
-                const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
-                const span = run.endDay - run.startDay + 1;
-                return `<button type="button" class="schedule-entry" data-keys="${run.keys.join(",")}" title="Click for WOM details" style="grid-column: ${run.startDay + 1} / span ${span}; grid-row: ${run.lane + 2};">
-                    <div class="schedule-entry-main">
-                      <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.description || e.womCode)} — ${escapeHtml(e.techName)}
-                    </div>
-                    <div class="schedule-entry-sub">
-                      ${escapeHtml(e.womCode)}${maximoLabel}
-                      ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
-                      <span class="schedule-entry-tentative">Tentative</span>
-                    </div>
-                  </button>`;
-              })
-              .join("");
-            return `<div class="schedule-week" style="grid-template-rows: repeat(${laneCount + 1}, auto)">${daycells}${runBars}</div>`;
-          })
-          .join("")}
-      </div>
-    `;
+    if (isMonthMode) {
+      host.innerHTML = `
+        <div class="schedule-calendar-grid">
+          <div class="schedule-calendar-headerrow">${DAY_HEADERS.map((d) => `<div class="schedule-calendar-headercell">${d}</div>`).join("")}</div>
+          ${weeks
+            .map((week) => {
+              const { runs, laneCount } = buildWeekRuns(week, data.byDate, keyOf);
+              const daycells = week
+                .map((dateIso, i) => {
+                  const [dy, dm, dd] = dateIso.split("-").map(Number);
+                  const inMonth = dm === m && dy === y;
+                  const timeOffToday = timeOffByDate[dateIso] || [];
+                  return `<div class="schedule-daycell ${inMonth ? "" : "schedule-calendar-outside"}" style="grid-column:${i + 1}">
+                    <div class="schedule-calendar-daynum">${dd}</div>
+                    ${
+                      timeOffToday.length > 0
+                        ? `<div class="schedule-timeoff-chips">
+                            ${timeOffToday
+                              .map((t) => `<span class="schedule-timeoff-chip" title="${escapeHtml(t.techName)} -- ${escapeHtml(t.type.replace("_", " "))}">${escapeHtml(t.techName)}</span>`)
+                              .join("")}
+                          </div>`
+                        : ""
+                    }
+                  </div>`;
+                })
+                .join("");
+              const runBars = runs
+                .map((run) => {
+                  const e = run.entry;
+                  const maximoLabel = e.maximoNumber ? ` &middot; Maximo #${escapeHtml(e.maximoNumber)}` : "";
+                  const span = run.endDay - run.startDay + 1;
+                  return `<button type="button" class="schedule-entry" data-keys="${run.keys.join(",")}" title="Click for WOM details" style="grid-column: ${run.startDay + 1} / span ${span}; grid-row: ${run.lane + 2};">
+                      <div class="schedule-entry-main">
+                        <span class="badge badge-submitted">${e.hours}h</span> ${escapeHtml(e.description || e.womCode)} — ${escapeHtml(e.techName)}
+                      </div>
+                      <div class="schedule-entry-sub">
+                        ${escapeHtml(e.womCode)}${maximoLabel}
+                        ${e.locationName ? `<span class="schedule-entry-site">${escapeHtml(e.locationName)}</span>` : ""}
+                        <span class="schedule-entry-tentative">Tentative</span>
+                      </div>
+                    </button>`;
+                })
+                .join("");
+              return `<div class="schedule-week" style="grid-template-rows: repeat(${laneCount + 1}, auto)">${daycells}${runBars}</div>`;
+            })
+            .join("")}
+        </div>
+      `;
+    } else {
+      // Agenda/Week: a flat, date-grouped list instead of the grid --
+      // reuses the exact same entriesByKey/keyOf the grid's own click
+      // handler relies on, so .schedule-entry's click wiring just below
+      // (and renderDetail, with its reschedule/cancel actions and "View
+      // full project" -> onOpenWom) works identically for either shape.
+      const agendaDates = isWeekMode
+        ? Array.from({ length: 7 }, (_, i) => addDaysIso(state.scheduleWeekMonday, i))
+        : Object.keys(data.byDate)
+            .filter((dateIso) => {
+              const [dy, dm] = dateIso.split("-").map(Number);
+              return dm === m && dy === y;
+            })
+            .sort();
+      host.innerHTML = renderAgendaListHtml(agendaDates, data.byDate, timeOffByDate);
+    }
 
     host.querySelectorAll(".schedule-entry").forEach((btn) => {
       btn.addEventListener("click", () => {

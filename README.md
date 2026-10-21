@@ -2102,6 +2102,15 @@ Demo logins:
   below 640px (was a floating 320px card), with the page content getting
   matching bottom padding so the bar never sits on top of the last real
   item on screen
+- **Schedule tab defaults to an Agenda (list) view**, grouped by date, with
+  Week and Month as alternate ranges/shapes -- Agenda lists every date in
+  the current month that actually has scheduled WOM work (skips empty
+  days); Week lists all 7 days of the current week including empty ones,
+  with its own prev/next nav; Month is the original 7-column grid,
+  unchanged, for whoever wants the at-a-glance picture. Every agenda/week
+  row is the same underlying entry the grid's own run bars use, so
+  clicking one opens the identical WOM detail panel (status, budget,
+  reschedule/cancel, "View full project")
 
 ## Data model
 
