@@ -6418,6 +6418,32 @@ tr.gl-import-shrink-row {
   .content {
     padding: 16px;
   }
+  /* Large page titles (e.g. a vendor's name atop its profile) eat an
+     outsized share of a narrow screen at their desktop size -- same
+     weight/spirit, just scaled down to something that doesn't force a
+     two/three-line wrap before the actual content starts. */
+  .page-header-title {
+    font-size: 20px;
+  }
+  h1 {
+    font-size: 22px;
+  }
+  h2 {
+    font-size: 19px;
+  }
+  h3 {
+    font-size: 16px;
+  }
+
+  /* A comfortable tap target (roughly the 44px guideline) on every real
+     button -- .btn's own desktop padding/font-size lands a bit under that
+     in practice. .btn-link (a text-only action, e.g. "Details") stays
+     exempted -- padding it out to 44px would turn an inline link into an
+     oversized block that no longer reads as "part of the sentence." */
+  .btn:not(.btn-link) {
+    min-height: 44px;
+    padding: 11px 16px;
+  }
   .day-row {
     flex-wrap: wrap;
   }
@@ -6492,9 +6518,33 @@ tr.gl-import-shrink-row {
      filter, "+ Schedule a WOM") into one row with justify-content:
      space-between -- fine at desktop widths, but there's no room for all
      of them on a phone without wrapping. Shared with techWeek.js's and
-     adminReview.js's own week-nav bars, so this helps those too. */
+     adminReview.js's own week-nav bars, so this helps those too. Stacking
+     each control onto its own full-width row (rather than letting them
+     wrap wherever they happen to run out of room) reads as a tidy list
+     instead of a jumble, and gives every button/select a full-width,
+     comfortably tappable row instead of a cramped leftover sliver.
+     report-month-year-nav (month + year together) stays a pair, since
+     that's one logical "which month" control, not two separate ones. */
   .week-nav {
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .week-nav > * {
+    width: 100%;
+  }
+  .week-nav .btn,
+  .week-nav select {
+    min-height: 44px;
+  }
+  .report-month-year-nav {
+    width: 100%;
+  }
+  .report-month-year-nav .report-month-picker,
+  .report-month-year-nav .report-year-picker {
+    flex: 1;
+  }
+  .report-month-year-nav select {
+    width: 100%;
   }
 }
 

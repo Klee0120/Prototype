@@ -2111,6 +2111,14 @@ Demo logins:
   row is the same underlying entry the grid's own run bars use, so
   clicking one opens the identical WOM detail panel (status, budget,
   reschedule/cancel, "View full project")
+- **Responsive pass: headings, filter rows, button tap targets.** Below
+  768px, `.week-nav` (shared by Schedule, Tech Allocation, Weekly Review)
+  stacks each control onto its own full-width row instead of wrapping
+  wherever it runs out of space -- month+year stays paired as one logical
+  control. Page titles and h1-h3 scale down so a long vendor/WOM name
+  doesn't force several lines before the real content starts. Every real
+  button (not `.btn-link`, which stays inline-sized on purpose) gets a
+  ~44px minimum tap target
 
 ## Data model
 
