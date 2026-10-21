@@ -260,6 +260,17 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     assert.equal(largeAmountAgg.total, 9000);
   });
 
+  await t.test("byTerritory counts each flagged line once, even when it trips more than one rule", () => {
+    const midwest = res.body.byTerritory.find((t2) => t2.territory === "Midwest");
+    assert.ok(midwest, "every fixture line here resolves to the Midwest test site");
+    // Every flagged line in this fixture resolves to GLSCREEN-SITE (Midwest)
+    // or has no location match (Unassigned) -- Midwest's count should equal
+    // every item whose locationLabel/territory is Midwest, not the sum of
+    // reason-occurrences (a line with 2 reasons still counts once).
+    const midwestItemCount = items.filter((it) => it.territory === "Midwest").length;
+    assert.equal(midwest.count, midwestItemCount);
+  });
+
   await t.test("a technician can't reach the screening route", async () => {
     const techRes = await server.call("GET", "/api/admin/gl/screening", { userId: "T1001" });
     assert.equal(techRes.status, 403);
@@ -298,4 +309,70 @@ test("GL Screening: adding a flagged line to the Reclass list uses source=auto_f
   });
   assert.equal(bogusSource.status, 201);
   assert.equal(bogusSource.body.source, "manual", "an unrecognized source value should fall back to manual, not be trusted verbatim");
+});
+
+test("GL Screening: resolving a finding takes it off the active list and can be undone; a line already on the Reclass list is marked as such", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const db = require("../server/data/db");
+
+  const FY = 47;
+  const PERIOD = 5;
+
+  db.importGlEntries(
+    [
+      { glDate: "2026-05-01", objectAccount: "999000 - Gen~Misc", subsidiary: "99999999", amount: 8001, remark: "needs resolving" },
+      { glDate: "2026-05-01", objectAccount: "999000 - Gen~Misc", subsidiary: "99999999", amount: 8002, remark: "already on reclass list" },
+    ],
+    PERIOD,
+    FY,
+    "ADMIN",
+    "t-resolve.xlsx"
+  );
+
+  const line = { ruleKey: "large_amount", businessUnit: null, objectAccountCode: "999000", subsidiary: "99999999", amount: 8001, glDate: "2026-05-01" };
+
+  const before = await server.call("GET", `/api/admin/gl/screening?fiscalYear=${FY}&periodNumber=${PERIOD}`, { userId: "ADMIN" });
+  assert.ok(before.body.items.some((it) => it.amount === 8001), "the line should show up unresolved");
+
+  const techResolve = await server.call("POST", "/api/admin/gl/screening/resolve", { userId: "T1001", body: line });
+  assert.equal(techResolve.status, 403, "a technician can't resolve a finding");
+
+  const resolve = await server.call("POST", "/api/admin/gl/screening/resolve", { userId: "ADMIN", body: line });
+  assert.equal(resolve.status, 200);
+
+  const after = await server.call("GET", `/api/admin/gl/screening?fiscalYear=${FY}&periodNumber=${PERIOD}`, { userId: "ADMIN" });
+  assert.equal(
+    after.body.items.some((it) => it.amount === 8001),
+    false,
+    "a resolved line should drop off the default (active-only) list"
+  );
+  const largeAmountBefore = before.body.byRule.find((r) => r.ruleKey === "large_amount");
+  const largeAmountAfter = after.body.byRule.find((r) => r.ruleKey === "large_amount");
+  assert.equal(largeAmountAfter.count, largeAmountBefore.count - 1, "byRule should drop by one once the line is resolved (the other fixture line is still active)");
+
+  const withResolved = await server.call("GET", `/api/admin/gl/screening?fiscalYear=${FY}&periodNumber=${PERIOD}&includeResolved=true`, { userId: "ADMIN" });
+  const resolvedItem = withResolved.body.items.find((it) => it.amount === 8001);
+  assert.ok(resolvedItem, "includeResolved=true should still show the line");
+  assert.equal(resolvedItem.reasons.find((r) => r.ruleKey === "large_amount").resolved, true);
+
+  const unresolve = await server.call("POST", "/api/admin/gl/screening/unresolve", { userId: "ADMIN", body: line });
+  assert.equal(unresolve.status, 200);
+  const afterUndo = await server.call("GET", `/api/admin/gl/screening?fiscalYear=${FY}&periodNumber=${PERIOD}`, { userId: "ADMIN" });
+  assert.ok(afterUndo.body.items.some((it) => it.amount === 8001), "unresolving should bring it back onto the active list");
+
+  // A line matching an existing reclass_items row (same from_job_number/
+  // from_object_code/from_subsidiary/from_amount the "Add to Reclass"
+  // button itself sends) should be marked onReclassList, independent of
+  // whether anyone has resolved the finding.
+  await server.call("POST", "/api/admin/reclasses/items", {
+    userId: "ADMIN",
+    body: { fromJobNumber: "", fromObjectCode: "999000", fromSubsidiary: "99999999", fromAmount: 8002, comments: "already submitted" },
+  });
+  const reclassCheck = await server.call("GET", `/api/admin/gl/screening?fiscalYear=${FY}&periodNumber=${PERIOD}`, { userId: "ADMIN" });
+  const onList = reclassCheck.body.items.find((it) => it.amount === 8002);
+  assert.ok(onList);
+  assert.equal(onList.onReclassList, true);
+  const notOnList = reclassCheck.body.items.find((it) => it.amount === 8001);
+  assert.equal(notOnList.onReclassList, false);
 });

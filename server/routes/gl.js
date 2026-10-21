@@ -417,14 +417,35 @@ router.get("/cell-phones", (req, res) => {
 // list. periodNumber is optional (a review is usually one month at a
 // time); omit it to screen every imported period in the fiscal year.
 router.get("/screening", (req, res) => {
-  const { territory, fiscalYear, periodNumber } = req.query || {};
+  const { territory, fiscalYear, periodNumber, includeResolved } = req.query || {};
   res.json(
     db.getGlScreeningFlags({
       territory: territory || null,
       fiscalYear: fiscalYear ? Number(fiscalYear) : null,
       periodNumber: periodNumber ? Number(periodNumber) : null,
+      includeResolved: includeResolved === "true",
     })
   );
+});
+
+// "Take this off my territory's list" -- doesn't touch gl_entries or
+// reclass_items, just records that an admin has looked at this specific
+// finding (see db.resolveGlScreeningItem for why it's keyed by the line's
+// own fields rather than its gl_entries.id).
+router.post("/screening/resolve", (req, res) => {
+  const { ruleKey, businessUnit, objectAccountCode, subsidiary, amount, glDate } = req.body || {};
+  if (!ruleKey || amount == null) return res.status(400).json({ error: "ruleKey and amount are required" });
+  db.resolveGlScreeningItem({ ruleKey, businessUnit, objectAccountCode, subsidiary, amount: Number(amount), glDate }, req.user.name);
+  db.addAudit(req.user.id, "GL_SCREENING_RESOLVED", `${req.user.name} resolved a GL Screening finding (${ruleKey}, business unit ${businessUnit || "n/a"}, $${amount})`);
+  res.json({ ok: true });
+});
+
+router.post("/screening/unresolve", (req, res) => {
+  const { ruleKey, businessUnit, objectAccountCode, subsidiary, amount, glDate } = req.body || {};
+  if (!ruleKey || amount == null) return res.status(400).json({ error: "ruleKey and amount are required" });
+  db.unresolveGlScreeningItem({ ruleKey, businessUnit, objectAccountCode, subsidiary, amount: Number(amount), glDate });
+  db.addAudit(req.user.id, "GL_SCREENING_UNRESOLVED", `${req.user.name} re-opened a GL Screening finding (${ruleKey}, business unit ${businessUnit || "n/a"}, $${amount})`);
+  res.json({ ok: true });
 });
 
 // Same shape of report as /cell-phones, for the Meals Empl/Meals & Ent

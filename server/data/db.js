@@ -671,6 +671,29 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  -- An admin's "I've looked at this, take it off my territory's list" on a
+  -- GL Screening finding -- keyed by the line's own natural fields rather
+  -- than gl_entries.id, since re-importing a month's GL deletes and
+  -- re-inserts that period's rows (new IDs every time), but the same real
+  -- transaction (same job/object/subsidiary/amount/date) should stay
+  -- resolved if it shows up again in a later pull. Scoped per rule_key, not
+  -- the whole line, since a line can trigger more than one finding and
+  -- they don't necessarily get resolved together.
+  CREATE TABLE IF NOT EXISTS gl_screening_resolutions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_key TEXT NOT NULL,
+    business_unit TEXT,
+    object_account_code TEXT,
+    subsidiary TEXT,
+    amount REAL,
+    gl_date TEXT,
+    resolved_by TEXT,
+    resolved_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_gl_screening_resolutions_key ON gl_screening_resolutions(
+    rule_key, business_unit, object_account_code, subsidiary, amount, gl_date
+  );
+
   -- Without these, every GL Reconciliation page load and reclass GL-link
   -- lookup does a full table scan of gl_entries -- fine at one month's
   -- ~8,000 rows, not fine once several months have accumulated (each
@@ -10847,7 +10870,31 @@ function evaluateGlScreeningRules(row, location) {
 // Nothing here is persisted; "add to reclass" is a separate, explicit
 // POST /api/admin/reclasses/items call the frontend makes per flagged
 // line (or a batch of them) once an admin actually picks one.
-function getGlScreeningFlags({ territory, fiscalYear, periodNumber } = {}) {
+// A flagged line's natural identity for resolving/tracking it across
+// re-imports -- gl_entries.id isn't stable (a month's rows get deleted and
+// re-inserted on every re-import of that period), but the real transaction
+// (same job/object/subsidiary/amount/date) is, so resolutions and
+// reclass-list matching both key off this instead.
+function glScreeningResolutionKey(ruleKey, r) {
+  return `${ruleKey}|${r.businessUnit || ""}|${r.objectAccountCode || ""}|${r.subsidiary || ""}|${r.amount}|${r.glDate || ""}`;
+}
+
+function resolveGlScreeningItem({ ruleKey, businessUnit, objectAccountCode, subsidiary, amount, glDate }, resolvedBy) {
+  db.prepare(
+    `INSERT INTO gl_screening_resolutions (rule_key, business_unit, object_account_code, subsidiary, amount, gl_date, resolved_by, resolved_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(rule_key, business_unit, object_account_code, subsidiary, amount, gl_date)
+     DO UPDATE SET resolved_by = excluded.resolved_by, resolved_at = excluded.resolved_at`
+  ).run(ruleKey, businessUnit || null, objectAccountCode || null, subsidiary || null, amount, glDate || null, resolvedBy, new Date().toISOString());
+}
+
+function unresolveGlScreeningItem({ ruleKey, businessUnit, objectAccountCode, subsidiary, amount, glDate }) {
+  db.prepare(
+    `DELETE FROM gl_screening_resolutions WHERE rule_key = ? AND business_unit IS ? AND object_account_code IS ? AND subsidiary IS ? AND amount = ? AND gl_date IS ?`
+  ).run(ruleKey, businessUnit || null, objectAccountCode || null, subsidiary || null, amount, glDate || null);
+}
+
+function getGlScreeningFlags({ territory, fiscalYear, periodNumber, includeResolved } = {}) {
   const conditions = [];
   const params = [];
   if (fiscalYear != null) {
@@ -10879,22 +10926,52 @@ function getGlScreeningFlags({ territory, fiscalYear, periodNumber } = {}) {
     return p ? p.monthName : null;
   };
 
+  const resolvedKeys = new Set(
+    db.prepare(`SELECT rule_key AS ruleKey, business_unit AS businessUnit, object_account_code AS objectAccountCode, subsidiary, amount, gl_date AS glDate FROM gl_screening_resolutions`)
+      .all()
+      .map((row) => glScreeningResolutionKey(row.ruleKey, row))
+  );
+  // Same from_job_number/from_object_code/from_subsidiary/from_amount tuple
+  // the "Add to Reclass" button itself sends (see public/js/views/
+  // glScreening.js) -- a line already on the official reclass list (manual
+  // or auto_flagged, doesn't matter which) shows that here rather than
+  // looking like it still needs attention.
+  const reclassKeys = new Set(
+    db.prepare(`SELECT from_job_number AS jobNumber, from_object_code AS objectCode, from_subsidiary AS subsidiary, from_amount AS amount FROM reclass_items`)
+      .all()
+      .map((row) => `${row.jobNumber || ""}|${row.objectCode || ""}|${row.subsidiary || ""}|${row.amount}`)
+  );
+
   const items = [];
   const byRule = new Map();
+  const byTerritory = new Map();
   for (const r of rows) {
     const rowTerritory = r.territory || "Unassigned";
     if (territory && rowTerritory !== territory) continue;
     const location = r.matchedLocationCode
       ? { ef_job_number: r.efJobNumber, pps_job_number: r.ppsJobNumber, wom_job_number: r.womJobNumber }
       : null;
-    const reasons = evaluateGlScreeningRules(r, location);
+    let reasons = evaluateGlScreeningRules(r, location);
     if (reasons.length === 0) continue;
+    reasons = reasons.map((reason) => ({ ...reason, resolved: resolvedKeys.has(glScreeningResolutionKey(reason.ruleKey, r)) }));
+    if (!includeResolved) {
+      reasons = reasons.filter((reason) => !reason.resolved);
+      if (reasons.length === 0) continue;
+    }
     for (const reason of reasons) {
+      if (reason.resolved) continue;
       const rule = GL_SCREENING_RULE_BY_KEY[reason.ruleKey];
       const b = byRule.get(reason.ruleKey) || { ruleKey: reason.ruleKey, label: rule.label, severity: rule.severity, count: 0, total: 0 };
       b.count += 1;
       b.total += r.amount || 0;
       byRule.set(reason.ruleKey, b);
+    }
+    const onReclassList = reclassKeys.has(`${r.businessUnit || ""}|${r.objectAccountCode || ""}|${r.subsidiary || ""}|${r.amount}`);
+    if (!reasons.every((reason) => reason.resolved)) {
+      const t = byTerritory.get(rowTerritory) || { territory: rowTerritory, count: 0, total: 0 };
+      t.count += 1;
+      t.total += r.amount || 0;
+      byTerritory.set(rowTerritory, t);
     }
     items.push({
       id: r.id,
@@ -10914,18 +10991,21 @@ function getGlScreeningFlags({ territory, fiscalYear, periodNumber } = {}) {
       locationLabel: r.locationName || r.matchedLocationCode || r.locationCode,
       locationMatched: Boolean(r.matchedLocationCode),
       territory: rowTerritory,
+      onReclassList,
       reasons: reasons.map((reason) => ({ ...reason, label: GL_SCREENING_RULE_BY_KEY[reason.ruleKey].label, severity: GL_SCREENING_RULE_BY_KEY[reason.ruleKey].severity })),
     });
   }
 
   const round = (n) => Math.round(n * 100) / 100;
+  const activeItems = items.filter((it) => it.reasons.some((reason) => !reason.resolved));
   return {
     rules: GL_SCREENING_RULES,
     items,
-    count: items.length,
-    totalAmount: round(items.reduce((sum, it) => sum + (it.amount || 0), 0)),
+    count: activeItems.length,
+    totalAmount: round(activeItems.reduce((sum, it) => sum + (it.amount || 0), 0)),
     byRule: [...byRule.values()].map((b) => ({ ...b, total: round(b.total) })).sort((a, b) => b.count - a.count),
-    unmatchedLocations: summarizeUnmatchedLocations(items),
+    byTerritory: [...byTerritory.values()].map((t) => ({ ...t, total: round(t.total) })).sort((a, b) => b.count - a.count),
+    unmatchedLocations: summarizeUnmatchedLocations(activeItems),
   };
 }
 
@@ -12582,6 +12662,8 @@ module.exports = {
   getCellPhoneCharges,
   getMealsCharges,
   getGlScreeningFlags,
+  resolveGlScreeningItem,
+  unresolveGlScreeningItem,
   GL_SCREENING_RULES,
   listKnownCellPhoneNumbers,
   getReconciledPage,
