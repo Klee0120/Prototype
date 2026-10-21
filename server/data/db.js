@@ -10782,7 +10782,11 @@ function evaluateGlScreeningRules(row, location) {
   if (nameAlpha.includes("CONCUR") && subsidiary !== GL_SCREENING_CONCUR_TARGET_SUBSIDIARY) {
     reasons.push({ ruleKey: "concur_reclass", detail: `Subsidiary ${subsidiary || "blank"}`, suggestedToSubsidiary: GL_SCREENING_CONCUR_TARGET_SUBSIDIARY });
   }
-  if (objectCode === GL_SCREENING_LABOR_OBJECT_CODE && subsidiary && !GL_SCREENING_LABOR_VALID_SUBSIDIARIES.includes(subsidiary)) {
+  // PPS-coded labor has its own valid subsidiary set (the PPS codes, not
+  // 20920000/10910000) -- the pps_subsidiary_mismatch rule below already
+  // checks those, so a PPS job is excluded here rather than double-flagged
+  // under the wrong standard.
+  if (objectCode === GL_SCREENING_LABOR_OBJECT_CODE && subsidiary && jobType !== "pps" && !GL_SCREENING_LABOR_VALID_SUBSIDIARIES.includes(subsidiary)) {
     reasons.push({ ruleKey: "labor_subsidiary", detail: `Subsidiary ${subsidiary}` });
   }
   if (jobType === "wom" && !row.subledgerGl) {

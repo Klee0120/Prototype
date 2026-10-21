@@ -48,6 +48,14 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       { glDate: "2026-03-01", objectAccount: "601000 - Events~Labor", subsidiary: "10010010", amount: 376.2, nameAlpha: "Payroll Labor Distribution" },
       // 5b. Labor correctly on 20920000 -- should NOT flag.
       { glDate: "2026-03-01", objectAccount: "601000 - Events~Labor", subsidiary: "20920000", amount: 376.2, nameAlpha: "Payroll Labor Distribution" },
+      // 5c. PPS-coded labor on its own valid PPS subsidiary -- should NOT flag
+      // labor_subsidiary (PPS labor isn't held to the 20920000/10910000
+      // standard; pps_subsidiary_mismatch is what checks PPS subsidiaries).
+      { glDate: "2026-03-01", objectAccount: "601000 - Gen Jan~Labor", subsidiary: "15915000", amount: 900, nameAlpha: "Payroll Labor Distribution", businessUnit: "PPS-JOB-001" },
+      // 5d. PPS-coded labor on a genuinely wrong (non-PPS) subsidiary -- should
+      // flag pps_subsidiary_mismatch, but NOT labor_subsidiary (that standard
+      // doesn't apply to a PPS job).
+      { glDate: "2026-03-01", objectAccount: "601000 - Gen Jan~Labor", subsidiary: "99999999", amount: 901, nameAlpha: "Payroll Labor Distribution", businessUnit: "PPS-JOB-001" },
       // 6. WOM-coded (business unit = the location's own wom_job_number) with no subledger.
       { glDate: "2026-03-01", objectAccount: "605250 - Gen~Sub Recur Matl", subsidiary: "99999999", amount: 100, businessUnit: "WOM-JOB-001" },
       // 6b. Same WOM job number, but WITH a subledger -- should NOT flag rule 6.
@@ -117,6 +125,16 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     assert.ok(wrongSub);
     assert.ok(ruleKeys(wrongSub).includes("labor_subsidiary"));
     assert.equal(rightSub, undefined, "Labor already on a valid subsidiary should not flag");
+  });
+
+  await t.test("labor_subsidiary excludes PPS-coded labor -- PPS has its own valid subsidiary set, checked by pps_subsidiary_mismatch instead", () => {
+    const ppsLaborOnValidPpsSub = items.find((it) => it.businessUnit === "PPS-JOB-001" && it.amount === 900);
+    assert.equal(ppsLaborOnValidPpsSub, undefined, "PPS labor correctly coded to a real PPS subsidiary should not flag anything");
+
+    const ppsLaborOnWrongSub = items.find((it) => it.businessUnit === "PPS-JOB-001" && it.amount === 901);
+    assert.ok(ppsLaborOnWrongSub, "PPS labor on a genuinely wrong subsidiary should still flag");
+    assert.ok(ruleKeys(ppsLaborOnWrongSub).includes("pps_subsidiary_mismatch"));
+    assert.ok(!ruleKeys(ppsLaborOnWrongSub).includes("labor_subsidiary"), "but not under the labor_subsidiary standard, which doesn't apply to PPS jobs");
   });
 
   await t.test("wom_without_subledger fires on a WOM-job-coded line with no subledger, not when one's present", () => {
