@@ -2129,6 +2129,16 @@ Demo logins:
   now also lists a date that has ONLY time off and no WOM work (it used to
   only list dates with scheduled WOM entries, silently dropping a
   time-off-only day)
+- **Cell Phones tab is now filterable by employee, month, and "unidentified
+  numbers only"**, alongside the existing fiscal-year/By-month/By-phone-#
+  controls -- all three applied client-side against the already-fetched
+  scope (no new endpoint). "Unidentified numbers only" isolates lines
+  whose number doesn't match anyone's phone/device on file, which used to
+  mean scanning every row by eye for "Not on roster." The employee
+  dropdown includes "Not on roster" as a pickable value too, for zeroing
+  in on one specific unmatched number's own history. The By-phone# view's
+  totals/month-counts now reflect whatever's currently filtered, not
+  always the full unfiltered fiscal year
 
 ## Data model
 

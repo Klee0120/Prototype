@@ -14,6 +14,19 @@ function formatMoney(n) {
 let selectedFiscalYear = null; // resolved to a real year (or "all") on first render
 let groupBy = "month"; // "month" | "phone"
 let cachedFiscalYears = null;
+// Employee/month/unmatched-only are all applied client-side against
+// whatever the fiscal-year/territory fetch already pulled back (see
+// renderCellPhones) -- the dataset's never more than a few hundred rows,
+// so there's no reason to round-trip the server for a narrower slice of
+// data it already sent. "Not on roster" is a real, selectable value in
+// the employee dropdown (not just the separate checkbox) since someone
+// scanning for a specific unidentified number may still want to isolate
+// just that one line's month/amount the same way they would for a named
+// employee.
+let employeeFilter = "";
+let monthFilter = "";
+let unmatchedOnly = false;
+const UNMATCHED_LABEL = "Not on roster";
 
 async function loadFiscalYears() {
   if (cachedFiscalYears) return cachedFiscalYears;
@@ -63,11 +76,62 @@ export async function renderCellPhones(container) {
     .concat(years.map((y) => `<option value="${y}" ${!allYearsSelected && selectedFiscalYear === y ? "selected" : ""}>FY${y}</option>`))
     .join("");
 
+  // Built from this fetch's own items, not a fixed list -- an employee or
+  // month with nothing billed this scope just doesn't show up as an
+  // option, so the dropdown never offers a choice that would return
+  // "0 results" for no visible reason.
+  const employeeNames = [...new Set(data.items.map((it) => it.assignedToName || UNMATCHED_LABEL))].sort((a, b) =>
+    a === UNMATCHED_LABEL ? 1 : b === UNMATCHED_LABEL ? -1 : a.localeCompare(b)
+  );
+  const monthEntries = new Map(); // "FY-period" -> label
+  for (const it of data.items) {
+    const key = `${it.fiscalYear}-${it.periodNumber}`;
+    if (!monthEntries.has(key)) {
+      monthEntries.set(key, it.month ? `${it.month} FY${it.fiscalYear}` : `Period ${it.periodNumber} FY${it.fiscalYear}`);
+    }
+  }
+  const monthOptions = [...monthEntries.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  // Clears a filter choice that's no longer a real option in this scope
+  // (e.g. a fiscal-year switch leaves a previously-picked month that
+  // doesn't exist this year) rather than silently filtering against a
+  // value nothing can ever match.
+  if (employeeFilter && !employeeNames.includes(employeeFilter)) employeeFilter = "";
+  if (monthFilter && !monthEntries.has(monthFilter)) monthFilter = "";
+
+  const filteredItems = data.items.filter((it) => {
+    if (employeeFilter && (it.assignedToName || UNMATCHED_LABEL) !== employeeFilter) return false;
+    if (monthFilter && `${it.fiscalYear}-${it.periodNumber}` !== monthFilter) return false;
+    if (unmatchedOnly && it.assignedToName) return false;
+    return true;
+  });
+  const filteredByPhone = aggregateByPhone(filteredItems);
+  const filteredTotal = filteredItems.reduce((sum, it) => sum + (it.amount || 0), 0);
+  const filteredTerminated = filteredItems.filter((it) => it.assignedToTerminated);
+  const filtersActive = Boolean(employeeFilter || monthFilter || unmatchedOnly);
+
   container.innerHTML = `
     <div class="spend-filters-row">
       <label class="spend-fy-select-label">
         Fiscal year
         <select class="cellphone-fy-select">${yearOptions}</select>
+      </label>
+      <label class="spend-fy-select-label">
+        Employee
+        <select class="cellphone-employee-select">
+          <option value="">All employees</option>
+          ${employeeNames.map((n) => `<option value="${escapeHtml(n)}" ${employeeFilter === n ? "selected" : ""}>${escapeHtml(n)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="spend-fy-select-label">
+        Month
+        <select class="cellphone-month-select">
+          <option value="">All months</option>
+          ${monthOptions.map(([key, label]) => `<option value="${escapeHtml(key)}" ${monthFilter === key ? "selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="cellphone-unmatched-toggle">
+        <input type="checkbox" class="cellphone-unmatched-checkbox" ${unmatchedOnly ? "checked" : ""} />
+        Unidentified numbers only
       </label>
       <div class="tabs cellphone-groupby-toggle">
         <button type="button" class="tab ${groupBy === "month" ? "active" : ""}" data-group="month">By month</button>
@@ -77,23 +141,27 @@ export async function renderCellPhones(container) {
     <div class="wom-stat-cards">
       <div class="wom-stat-card">
         <span class="wom-stat-icon">&#128241;</span>
-        <div><div class="wom-stat-label">Total charged</div><div class="wom-stat-value">${formatMoney(data.totalAmount)}</div></div>
+        <div><div class="wom-stat-label">Total charged${filtersActive ? " (filtered)" : ""}</div><div class="wom-stat-value">${formatMoney(filtersActive ? filteredTotal : data.totalAmount)}</div></div>
       </div>
       <div class="wom-stat-card">
         <span class="wom-stat-icon">&#128203;</span>
-        <div><div class="wom-stat-label">GL lines</div><div class="wom-stat-value">${data.count}</div></div>
+        <div><div class="wom-stat-label">GL lines${filtersActive ? " (filtered)" : ""}</div><div class="wom-stat-value">${filtersActive ? filteredItems.length : data.count}</div></div>
       </div>
       <div class="wom-stat-card">
         <span class="wom-stat-icon">&#9742;&#65039;</span>
-        <div><div class="wom-stat-label">Distinct numbers</div><div class="wom-stat-value">${data.byPhone.length}</div></div>
+        <div><div class="wom-stat-label">Distinct numbers${filtersActive ? " (filtered)" : ""}</div><div class="wom-stat-value">${filtersActive ? filteredByPhone.length : data.byPhone.length}</div></div>
       </div>
       <div class="wom-stat-card">
         <span class="wom-stat-icon">&#128100;</span>
-        <div><div class="wom-stat-label">Matched to roster</div><div class="wom-stat-value">${data.byPhone.filter((p) => p.assignedToName).length} / ${data.byPhone.length}</div></div>
+        <div><div class="wom-stat-label">Matched to roster</div><div class="wom-stat-value">${(filtersActive ? filteredByPhone : data.byPhone).filter((p) => p.assignedToName).length} / ${(filtersActive ? filteredByPhone : data.byPhone).length}</div></div>
       </div>
-      <div class="wom-stat-card ${data.terminatedCount > 0 ? "wom-stat-card-danger" : ""}">
+      <div class="wom-stat-card ${(filtersActive ? filteredTerminated.length : data.terminatedCount) > 0 ? "wom-stat-card-danger" : ""}">
         <span class="wom-stat-icon">&#9888;&#65039;</span>
-        <div><div class="wom-stat-label">Billing a terminated employee</div><div class="wom-stat-value">${data.terminatedCount} line${data.terminatedCount === 1 ? "" : "s"}${data.terminatedCount > 0 ? ` &middot; ${formatMoney(data.terminatedTotal)}` : ""}</div></div>
+        <div><div class="wom-stat-label">Billing a terminated employee</div><div class="wom-stat-value">${
+          filtersActive
+            ? `${filteredTerminated.length} line${filteredTerminated.length === 1 ? "" : "s"}${filteredTerminated.length > 0 ? ` &middot; ${formatMoney(filteredTerminated.reduce((s, it) => s + (it.amount || 0), 0))}` : ""}`
+            : `${data.terminatedCount} line${data.terminatedCount === 1 ? "" : "s"}${data.terminatedCount > 0 ? ` &middot; ${formatMoney(data.terminatedTotal)}` : ""}`
+        }</div></div>
       </div>
     </div>
     <p class="review-checklist-hint">
@@ -107,6 +175,19 @@ export async function renderCellPhones(container) {
 
   container.querySelector(".cellphone-fy-select").addEventListener("change", (e) => {
     selectedFiscalYear = e.target.value === "all" ? "all" : Number(e.target.value);
+    monthFilter = ""; // last scope's month selection may not exist in the new one
+    renderCellPhones(container);
+  });
+  container.querySelector(".cellphone-employee-select").addEventListener("change", (e) => {
+    employeeFilter = e.target.value;
+    renderCellPhones(container);
+  });
+  container.querySelector(".cellphone-month-select").addEventListener("change", (e) => {
+    monthFilter = e.target.value;
+    renderCellPhones(container);
+  });
+  container.querySelector(".cellphone-unmatched-checkbox").addEventListener("change", (e) => {
+    unmatchedOnly = e.target.checked;
     renderCellPhones(container);
   });
   container.querySelectorAll(".cellphone-groupby-toggle [data-group]").forEach((btn) => {
@@ -117,11 +198,40 @@ export async function renderCellPhones(container) {
   });
 
   const body = container.querySelector("#cellphone-body");
-  if (data.count === 0) {
-    body.innerHTML = `<p class="empty-note">No Cell Phone GL lines for this scope.</p>`;
+  if (filteredItems.length === 0) {
+    body.innerHTML = `<p class="empty-note">${data.count === 0 ? "No Cell Phone GL lines for this scope." : "No Cell Phone GL lines match these filters."}</p>`;
     return;
   }
-  body.innerHTML = groupBy === "phone" ? renderByPhone(data.byPhone) : renderByMonth(data.items);
+  body.innerHTML = groupBy === "phone" ? renderByPhone(filteredByPhone) : renderByMonth(filteredItems);
+}
+
+// Mirrors db.js's getCellPhoneCharges own byPhone aggregation, run
+// client-side against whatever subset the employee/month/unmatched
+// filters leave -- so "By phone #" reflects the same filtered items "By
+// month" shows, rather than always summing the server's full, unfiltered
+// fiscal-year scope regardless of what's picked above.
+function aggregateByPhone(items) {
+  const byPhone = new Map();
+  for (const it of items) {
+    const key = it.phoneNumber || "Unknown #";
+    const p =
+      byPhone.get(key) ||
+      {
+        phoneNumber: key,
+        total: 0,
+        count: 0,
+        months: new Set(),
+        locationLabel: it.locationLabel,
+        assignedToName: it.assignedToName,
+        assignedToTerminated: it.assignedToTerminated,
+      };
+    p.total += it.amount || 0;
+    p.count += 1;
+    p.months.add(it.month);
+    byPhone.set(key, p);
+  }
+  const round = (n) => Math.round(n * 100) / 100;
+  return [...byPhone.values()].map((p) => ({ ...p, total: round(p.total), monthCount: p.months.size }));
 }
 
 function renderByMonth(items) {
