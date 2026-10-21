@@ -77,20 +77,25 @@ function parseCoaWorkbook(buffer) {
   const rows = [];
   for (const r of raw) {
     const description = r[descriptionCol] == null ? null : String(r[descriptionCol]).trim();
-    const sectionMatch = description && SECTION_TERRITORY_PATTERNS.find(([re]) => re.test(description));
-    if (sectionMatch) {
-      currentTerritory = sectionMatch[1];
-      continue;
-    }
     const efJobNumber = efCol ? toJobNumberString(r[efCol]) : null;
     const womJobNumber = womCol ? toJobNumberString(r[womCol]) : null;
     const ppsJobNumber = ppsCol ? toJobNumberString(r[ppsCol]) : null;
     const region = regionCol && r[regionCol] != null ? String(r[regionCol]).trim() || null : null;
+    const hasJobData = Boolean(efJobNumber || womJobNumber || ppsJobNumber || region);
+    // A section banner has no job numbers of its own -- checked first so a
+    // real data row isn't mistaken for one just because its own description
+    // happens to contain the section's words too (e.g. "General Mgt. &
+    // Admin." is a real GENERAL MGT & ADMIN job-number row, not the banner).
+    const sectionMatch = !hasJobData && description && SECTION_TERRITORY_PATTERNS.find(([re]) => re.test(description));
+    if (sectionMatch) {
+      currentTerritory = sectionMatch[1];
+      continue;
+    }
     // Most remaining non-matching rows are OTHER category headers ("TEMA
     // REGION") with no job numbers at all and no real location behind
     // them -- skipped here rather than surfaced as noise in the unmatched
     // list.
-    if (!description || !(efJobNumber || womJobNumber || ppsJobNumber || region)) continue;
+    if (!description || !hasJobData) continue;
     rows.push({ description, efJobNumber, womJobNumber, ppsJobNumber, region, territory: currentTerritory });
   }
 

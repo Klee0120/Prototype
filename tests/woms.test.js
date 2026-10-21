@@ -712,6 +712,40 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
     assert.equal(midwestSite.territory, "Midwest");
     assert.equal(generalMgt.territory, "General Mgt & Admin", "must not inherit Midwest from the section above it");
   });
+
+  // Toyota's own sheet has real job-number rows under this section whose
+  // Description text itself contains "General Mgt." and "Admin." (e.g.
+  // "General Mgt. & Admin." and "General Mgt. & Admin. Non-billable") --
+  // the same words the banner-detection regex looks for. Those rows carry
+  // real job numbers and must still be imported, not swallowed as if they
+  // were a second banner.
+  await t.test("a data row whose description echoes the GENERAL MGT & ADMIN banner text still imports its job numbers", async () => {
+    const buffer = coaWorkbook([
+      [null, null, null, null, "GENERAL MGT & ADMIN", null, null, null],
+      ["09007", 100110000653, 100110042942, null, "General Mgt. & Admin. ", "Region 9", "Nowhere", "ZZ"],
+      [null, null, null, null, "GENERAL MGT & ADMIN (Non-Billable)", null, null, null],
+      ["09008", 100110018053, null, null, "General Mgt. & Admin. Non-billable", "Region 9", "Nowhere", "ZZ"],
+    ]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.createdCount, 2, "both job-number rows must be created, not swallowed as banners");
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const genAdmin = list.body.find((l) => l.name === "General Mgt. & Admin.");
+    const genAdminNonBillable = list.body.find((l) => l.name === "General Mgt. & Admin. Non-billable");
+    assert.ok(genAdmin, "row echoing the banner text must still be imported");
+    assert.equal(genAdmin.ppsJobNumber, "100110000653");
+    assert.equal(genAdmin.efJobNumber, "100110042942");
+    assert.equal(genAdmin.territory, "General Mgt & Admin");
+    assert.ok(genAdminNonBillable, "row echoing the second banner's text must still be imported");
+    assert.equal(genAdminNonBillable.ppsJobNumber, "100110018053");
+  });
 });
 
 // WOM Profile Consolidation (Phase 4): the Labor & Financials tab's
