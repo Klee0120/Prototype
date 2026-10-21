@@ -38,6 +38,15 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
       // coding at all -- should still NOT flag large_amount; the subledger
       // alone is enough, regardless of jobType.
       { glDate: "2026-03-01", objectAccount: "605250 - Gen~Sub Recur Matl", subsidiary: "99999999", amount: 9002, subledgerGl: "W-88888" },
+      // 1d. Large amount on a labor/burden object code -- should NOT flag
+      // large_amount even with a remark and no subledger. This rule isn't
+      // meant to catch timekeeping errors; labor_subsidiary already covers
+      // labor lines.
+      { glDate: "2026-03-01", objectAccount: "601000 - Gen~Labor", subsidiary: "99999999", amount: 9003, nameAlpha: "Payroll Labor Distribution", remark: "big labor one" },
+      // 1e. Large amount, non-labor, no subledger, but a BLANK remark --
+      // should NOT flag large_amount. A blank Name - Remark Explanation is
+      // almost always an automated/system posting, not a real invoice line.
+      { glDate: "2026-03-01", objectAccount: "999000 - Gen~Misc", subsidiary: "99999999", amount: 9004 },
       // 2. Calero -- no longer a screening rule (Krista reviews Calero/cell
       // phone charges through the dedicated Cell Phones tab instead); this
       // line should come through clean, same as any other small, unremarkable line.
@@ -128,6 +137,17 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
   await t.test("large_amount excludes any line carrying a WOM subledger, even without WOM job-number coding", () => {
     const subledgerBig = items.find((it) => it.amount === 9002);
     assert.equal(subledgerBig, undefined, "a large line with a WOM subledger should not flag large_amount");
+  });
+
+  await t.test("large_amount excludes labor/burden object codes -- not meant to catch timekeeping errors", () => {
+    const laborBig = byAmount(9003);
+    assert.ok(laborBig, "the line itself should still show up (labor_subsidiary catches its bad subsidiary)");
+    assert.ok(!ruleKeys(laborBig).includes("large_amount"), "but not under large_amount");
+  });
+
+  await t.test("large_amount excludes a line with a blank Name - Remark Explanation -- almost always an automated posting", () => {
+    const blankRemarkBig = items.find((it) => it.amount === 9004);
+    assert.equal(blankRemarkBig, undefined, "a large line with no remark should not flag anything here");
   });
 
   await t.test("Calero lines are not flagged at all -- removed as a screening rule", () => {

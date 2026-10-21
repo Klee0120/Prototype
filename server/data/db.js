@@ -10789,12 +10789,20 @@ function evaluateGlScreeningRules(row, location) {
   const subsidiary = row.subsidiary || "";
   const jobType = glScreeningJobType(row.businessUnit, location);
 
-  // A large WOM-coded line (or any line carrying a WOM subledger, even one
-  // not resolved to a WOM job by Business Unit) is already tracked through
-  // its own WOM budget -- a big number there isn't a surprise the way it is
-  // on general E&F/PPS spend, so those are excluded here rather than
-  // flagged alongside everything else.
-  if (Math.abs(row.amount || 0) > GL_SCREENING_LARGE_AMOUNT_THRESHOLD && jobType !== "wom" && !row.subledgerGl) {
+  // Not meant to catch timekeeping errors (labor_subsidiary's job) or
+  // anything already tracked through its own WOM budget (a subledger
+  // alone is enough signal of that, regardless of whether Business Unit
+  // itself resolves to a WOM job) -- excluded here. A blank Name - Remark
+  // Explanation is almost always an automated/system posting (payroll
+  // distribution, burden, accruals) rather than a real invoice line worth
+  // a human looking at, so it's required too.
+  if (
+    Math.abs(row.amount || 0) > GL_SCREENING_LARGE_AMOUNT_THRESHOLD &&
+    !GL_SCREENING_LABOR_OBJECT_CODES.includes(objectCode) &&
+    !row.subledgerGl &&
+    row.remark &&
+    String(row.remark).trim()
+  ) {
     reasons.push({ ruleKey: "large_amount", detail: `$${Math.abs(row.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` });
   }
   if (nameAlpha.includes("ALLEGIS") && GL_SCREENING_ALLEGIS_OBJECT_CODES.includes(objectCode)) {
