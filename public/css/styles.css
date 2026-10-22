@@ -6195,6 +6195,62 @@ tr.gl-import-shrink-row {
   gap: 4px;
 }
 
+.glscreen-section-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink, #1a1a1a);
+  margin: 16px 0 8px;
+}
+
+.glscreen-territory-breakdown {
+  margin-bottom: 16px;
+}
+.glscreen-territory-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.glscreen-territory-row {
+  cursor: pointer;
+}
+.glscreen-territory-row:hover {
+  background: var(--row-hover, #f2f2ee);
+}
+.glscreen-territory-row.active {
+  background: var(--row-selected, #e7f0fb);
+}
+.glscreen-territory-row td {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.glscreen-territory-name {
+  font-weight: 600;
+  color: var(--ink, #1a1a1a);
+}
+.glscreen-territory-count {
+  text-align: right;
+  white-space: nowrap;
+}
+.glscreen-territory-total {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text-secondary, #666);
+}
+
+.glscreen-large-amount-banner {
+  margin-bottom: 12px;
+}
+
+.glscreen-row-resolved {
+  opacity: 0.6;
+}
+
+.glscreen-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  white-space: nowrap;
+}
+
 .spend-no-calendar-note {
   font-size: 12px;
   color: var(--text-secondary, #666);

@@ -1,7 +1,7 @@
 import { api } from "../api.js";
 import { escapeHtml } from "../app.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
-import { getTerritory } from "../globalFilters.js";
+import { getTerritory, setTerritory } from "../globalFilters.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -12,6 +12,7 @@ function formatMoney(n) {
 let selectedFiscalYear = null;
 let selectedPeriod = ""; // "" = whole fiscal year, else a period number as a string
 let ruleFilter = ""; // "" = every rule
+let showResolved = false;
 let cachedFiscalYears = null;
 let lastData = null;
 // Row ids (gl_entries.id) currently checked for the bulk "Add selected to
@@ -37,6 +38,104 @@ function resolveDefaultFiscalYear(years) {
 const SEVERITY_BADGE_CLASS = { review: "draft", action: "submitted", high: "rejected" };
 const SEVERITY_LABEL = { review: "Review", action: "Reclass", high: "High" };
 
+// The dataviz skill's validated 8-slot categorical palette (light mode --
+// this app has no dark theme), same copy spendBreakdown.js keeps -- each
+// view owns its own small copy rather than sharing one module, matching
+// how excludeBurden/etc. are already duplicated per view in this codebase.
+const PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"];
+
+function polarToCartesian(cx, cy, r, angleDeg) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+function describeDonutArc(cx, cy, rOuter, rInner, startAngle, endAngle) {
+  const startOuter = polarToCartesian(cx, cy, rOuter, endAngle);
+  const endOuter = polarToCartesian(cx, cy, rOuter, startAngle);
+  const startInner = polarToCartesian(cx, cy, rInner, endAngle);
+  const endInner = polarToCartesian(cx, cy, rInner, startAngle);
+  const largeArc = endAngle - startAngle <= 180 ? "0" : "1";
+  return [
+    `M ${startOuter.x} ${startOuter.y}`,
+    `A ${rOuter} ${rOuter} 0 ${largeArc} 0 ${endOuter.x} ${endOuter.y}`,
+    `L ${endInner.x} ${endInner.y}`,
+    `A ${rInner} ${rInner} 0 ${largeArc} 1 ${startInner.x} ${startInner.y}`,
+    "Z",
+  ].join(" ");
+}
+
+// Count-based (not dollar-based) -- "where are the most reclasses
+// happening" is a question about review volume/effort, not exposure size;
+// large_amount alone would otherwise dwarf every other slice by dollars
+// despite being one of the smaller line counts.
+function renderRuleDonut(byRule, totalCount) {
+  if (totalCount <= 0) return `<p class="empty-note">Nothing to chart yet.</p>`;
+  const cx = 110;
+  const cy = 110;
+  const rOuter = 100;
+  const rInner = 58;
+  let angle = 0;
+  const slices = byRule.map((r, i) => ({ label: r.label, count: r.count, color: PALETTE[i % PALETTE.length] }));
+  const paths = slices
+    .map((s) => {
+      const sweep = (s.count / totalCount) * 360;
+      const startAngle = angle;
+      const endAngle = angle + sweep;
+      angle = endAngle;
+      if (sweep >= 359.99) {
+        return `<circle cx="${cx}" cy="${cy}" r="${(rOuter + rInner) / 2}" fill="none" stroke="${s.color}" stroke-width="${rOuter - rInner}"><title>${escapeHtml(s.label)}: ${s.count}</title></circle>`;
+      }
+      const d = describeDonutArc(cx, cy, rOuter, rInner, startAngle, endAngle);
+      const pct = ((s.count / totalCount) * 100).toFixed(1);
+      return `<path d="${d}" fill="${s.color}"><title>${escapeHtml(s.label)}: ${s.count} (${pct}%)</title></path>`;
+    })
+    .join("");
+  const legend = slices
+    .map(
+      (s) => `
+      <div class="spend-legend-row">
+        <span class="spend-legend-swatch" style="background:${s.color}"></span>
+        <span class="spend-legend-label">${escapeHtml(s.label)}</span>
+        <span class="spend-legend-value">${s.count}</span>
+      </div>`
+    )
+    .join("");
+  return `
+    <div class="spend-donut-wrap">
+      <svg viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="Flagged lines by rule">
+        ${paths}
+        <text x="${cx}" y="${cy - 6}" text-anchor="middle" class="spend-donut-total-label">${totalCount}</text>
+        <text x="${cx}" y="${cy + 14}" text-anchor="middle" class="spend-donut-total-sublabel">flagged lines</text>
+      </svg>
+      <div class="spend-donut-legend">${legend}</div>
+    </div>
+  `;
+}
+
+function renderTerritoryBreakdown(byTerritory, activeTerritory) {
+  if (!byTerritory || byTerritory.length === 0) return "";
+  const maxCount = Math.max(...byTerritory.map((t) => t.count));
+  return `
+    <div class="glscreen-territory-breakdown">
+      <h3 class="glscreen-section-title">Lines by territory</h3>
+      <table class="glscreen-territory-table">
+        ${byTerritory
+          .map(
+            (t) => `
+          <tr class="glscreen-territory-row ${activeTerritory === t.territory ? "active" : ""}" data-territory="${escapeHtml(t.territory)}">
+            <td class="glscreen-territory-name">${escapeHtml(t.territory)}</td>
+            <td class="spend-bar-cell"><span class="spend-bar" style="width:${maxCount ? (t.count / maxCount) * 100 : 0}%"></span></td>
+            <td class="glscreen-territory-count">${t.count}</td>
+            <td class="glscreen-territory-total">${formatMoney(t.total)}</td>
+          </tr>`
+          )
+          .join("")}
+      </table>
+      ${activeTerritory ? `<button type="button" class="btn btn-link glscreen-clear-territory-btn">Clear territory filter</button>` : `<p class="review-checklist-hint">Click a territory to filter everything below to just that one.</p>`}
+    </div>
+  `;
+}
+
 // Krista's own manual reclass-review checklist (worked by hand today
 // against a ~6500-line monthly GL extract), run automatically here over
 // whatever's already imported -- see db.getGlScreeningFlags for the exact
@@ -45,7 +144,10 @@ const SEVERITY_LABEL = { review: "Review", action: "Reclass", high: "High" };
 // (one row at a time, or several at once), via the same POST
 // /api/admin/reclasses/items route the Reclasses tab's own "+ Add
 // finding" form uses, just with source: "auto_flagged" and the flagged
-// line's own coding pre-filled in.
+// line's own coding pre-filled in. "Resolve" is separate from that --
+// it just marks a finding as looked-at so it drops off the active list
+// (see db.resolveGlScreeningItem), independent of whether it was ever
+// actually submitted as a reclass.
 export async function renderGlScreening(container) {
   renderLoadingState(container, loadingLabelFor("GL Screening"));
   const territory = getTerritory();
@@ -65,6 +167,7 @@ export async function renderGlScreening(container) {
     if (territory) params.set("territory", territory);
     params.set("fiscalYear", String(selectedFiscalYear));
     if (selectedPeriod) params.set("periodNumber", selectedPeriod);
+    if (showResolved) params.set("includeResolved", "true");
     data = await api.get(`/api/admin/gl/screening?${params}`);
   } catch (err) {
     container.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
@@ -95,12 +198,21 @@ export async function renderGlScreening(container) {
         Period
         <select class="glscreen-period-select">${periodOptions}</select>
       </label>
+      <label class="cellphone-unmatched-toggle">
+        <input type="checkbox" class="glscreen-show-resolved-toggle" ${showResolved ? "checked" : ""} />
+        Show resolved
+      </label>
     </div>
     <p class="review-checklist-hint">
-      Runs Krista's own reclass-review checklist (amount, Calero/iPad, Temp Labor, Concur, Labor subsidiary, WOM
+      Runs Krista's own reclass-review checklist (amount, Temp Labor, Concur, Labor subsidiary, WOM
       subledger, E&amp;F/WOM mixing, credits on WOM jobs, PPS subsidiary) over every imported GL line in this scope.
       Nothing is added to the Reclass list until you pick a line and click Add -- this only surfaces candidates.
+      Resolving a line takes it off your active list without submitting a reclass; it stays resolved even if the
+      same transaction shows up again in a later GL pull.
     </p>
+    ${renderTerritoryBreakdown(data.byTerritory, territory)}
+    <h3 class="glscreen-section-title">Where reclasses are happening</h3>
+    ${renderRuleDonut(data.byRule, data.count)}
     <div class="glscreen-rule-chips">
       <button type="button" class="tab glscreen-rule-chip ${ruleFilter === "" ? "active" : ""}" data-rule="">All (${data.count})</button>
       ${data.byRule
@@ -112,9 +224,19 @@ export async function renderGlScreening(container) {
         )
         .join("")}
     </div>
+    ${
+      ruleFilter === "large_amount"
+        ? `<div class="wom-info-box glscreen-large-amount-banner">
+            <strong>Confirm E&amp;F vs. WOM</strong> -- every line here is over $7,500, non-labor, has no WOM subledger, and carries a real
+            invoice remark. For each one: is this genuinely E&amp;F spend, or should it have been coded to a WOM? Resolve it once you've
+            checked, whichever way it turns out.
+          </div>`
+        : ""
+    }
     <div class="glscreen-bulk-bar">
       <span class="glscreen-selected-count">0 selected</span>
       <button type="button" class="btn btn-primary glscreen-add-selected-btn" disabled>Add selected to Reclass list</button>
+      <button type="button" class="btn btn-secondary glscreen-resolve-selected-btn" disabled>Resolve selected</button>
     </div>
     <div id="glscreen-body"></div>
   `;
@@ -128,13 +250,24 @@ export async function renderGlScreening(container) {
     selectedPeriod = e.target.value;
     renderGlScreening(container);
   });
+  container.querySelector(".glscreen-show-resolved-toggle").addEventListener("change", (e) => {
+    showResolved = e.target.checked;
+    renderGlScreening(container);
+  });
   container.querySelectorAll(".glscreen-rule-chip").forEach((btn) => {
     btn.addEventListener("click", () => {
       ruleFilter = btn.dataset.rule;
       renderGlScreening(container);
     });
   });
+  container.querySelectorAll(".glscreen-territory-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      setTerritory(row.dataset.territory === territory ? null : row.dataset.territory);
+    });
+  });
+  container.querySelector(".glscreen-clear-territory-btn")?.addEventListener("click", () => setTerritory(null));
   container.querySelector(".glscreen-add-selected-btn").addEventListener("click", () => addFlaggedToReclass(container, [...selectedIds]));
+  container.querySelector(".glscreen-resolve-selected-btn").addEventListener("click", () => resolveFlagged(container, [...selectedIds]));
 
   drawBody(container);
 }
@@ -151,6 +284,7 @@ function updateBulkBar(container) {
   if (!bar) return;
   bar.querySelector(".glscreen-selected-count").textContent = `${selectedIds.size} selected`;
   bar.querySelector(".glscreen-add-selected-btn").disabled = selectedIds.size === 0;
+  bar.querySelector(".glscreen-resolve-selected-btn").disabled = selectedIds.size === 0;
 }
 
 function drawBody(container) {
@@ -176,9 +310,10 @@ function drawBody(container) {
       </thead>
       <tbody>
         ${items
-          .map(
-            (it) => `
-          <tr>
+          .map((it) => {
+            const allResolved = it.reasons.every((r) => r.resolved);
+            return `
+          <tr class="${allResolved ? "glscreen-row-resolved" : ""}">
             <td><input type="checkbox" class="glscreen-row-check" data-id="${it.id}" ${selectedIds.has(it.id) ? "checked" : ""} /></td>
             <td>${it.glDate ? escapeHtml(String(it.glDate).slice(0, 10)) : "—"}</td>
             <td>${it.nameAlpha ? escapeHtml(it.nameAlpha) : "—"}</td>
@@ -189,14 +324,22 @@ function drawBody(container) {
               ${it.reasons
                 .map(
                   (r) =>
-                    `<span class="badge badge-${SEVERITY_BADGE_CLASS[r.severity] || "draft"}" title="${escapeHtml(r.detail || "")}">${escapeHtml(r.label)}</span>`
+                    `<span class="badge badge-${r.resolved ? "draft" : SEVERITY_BADGE_CLASS[r.severity] || "draft"}" title="${escapeHtml(r.detail || "")}">${escapeHtml(r.label)}${r.resolved ? " (resolved)" : ""}</span>`
                 )
                 .join(" ")}
+              ${it.onReclassList ? `<span class="badge badge-submitted" title="A matching line already exists on the Reclass list">On Reclass list</span>` : ""}
             </td>
-            <td><button type="button" class="btn btn-link glscreen-add-one-btn" data-id="${it.id}">Add to Reclass</button></td>
+            <td class="glscreen-row-actions">
+              <button type="button" class="btn btn-link glscreen-add-one-btn" data-id="${it.id}">Add to Reclass</button>
+              ${
+                allResolved
+                  ? `<button type="button" class="btn btn-link glscreen-unresolve-one-btn" data-id="${it.id}">Unresolve</button>`
+                  : `<button type="button" class="btn btn-link glscreen-resolve-one-btn" data-id="${it.id}">Resolve</button>`
+              }
+            </td>
           </tr>
-        `
-          )
+        `;
+          })
           .join("")}
       </tbody>
     </table>
@@ -212,6 +355,12 @@ function drawBody(container) {
   });
   body.querySelectorAll(".glscreen-add-one-btn").forEach((btn) => {
     btn.addEventListener("click", () => addFlaggedToReclass(container, [Number(btn.dataset.id)]));
+  });
+  body.querySelectorAll(".glscreen-resolve-one-btn").forEach((btn) => {
+    btn.addEventListener("click", () => resolveFlagged(container, [Number(btn.dataset.id)]));
+  });
+  body.querySelectorAll(".glscreen-unresolve-one-btn").forEach((btn) => {
+    btn.addEventListener("click", () => unresolveFlagged(container, [Number(btn.dataset.id)]));
   });
 }
 
@@ -251,6 +400,65 @@ async function addFlaggedToReclass(container, ids) {
   }
   if (errors.length > 0) {
     window.alert(`Added ${items.length - errors.length} of ${items.length}. Failed:\n${errors.join("\n")}`);
+  }
+  await renderGlScreening(container);
+}
+
+// "Resolve" is independent of the Reclass list -- it's just "I looked at
+// this, take it off my active list" (see db.resolveGlScreeningItem). A
+// line can carry more than one reason; resolving the whole line resolves
+// every reason on it at once, matching the "take this off my list" mental
+// model rather than asking which specific reason to clear.
+async function resolveFlagged(container, ids) {
+  const items = lastData.items.filter((it) => ids.includes(it.id));
+  if (items.length === 0) return;
+  const errors = [];
+  for (const it of items) {
+    for (const reason of it.reasons) {
+      if (reason.resolved) continue;
+      try {
+        await api.post("/api/admin/gl/screening/resolve", {
+          ruleKey: reason.ruleKey,
+          businessUnit: it.businessUnit,
+          objectAccountCode: it.objectAccountCode,
+          subsidiary: it.subsidiary,
+          amount: it.amount,
+          glDate: it.glDate,
+        });
+      } catch (err) {
+        errors.push(`${it.businessUnit || "line"}: ${err.message}`);
+      }
+    }
+  }
+  if (errors.length > 0) {
+    window.alert(`Some lines failed to resolve:\n${errors.join("\n")}`);
+  }
+  await renderGlScreening(container);
+}
+
+async function unresolveFlagged(container, ids) {
+  const items = lastData.items.filter((it) => ids.includes(it.id));
+  if (items.length === 0) return;
+  const errors = [];
+  for (const it of items) {
+    for (const reason of it.reasons) {
+      if (!reason.resolved) continue;
+      try {
+        await api.post("/api/admin/gl/screening/unresolve", {
+          ruleKey: reason.ruleKey,
+          businessUnit: it.businessUnit,
+          objectAccountCode: it.objectAccountCode,
+          subsidiary: it.subsidiary,
+          amount: it.amount,
+          glDate: it.glDate,
+        });
+      } catch (err) {
+        errors.push(`${it.businessUnit || "line"}: ${err.message}`);
+      }
+    }
+  }
+  if (errors.length > 0) {
+    window.alert(`Some lines failed to unresolve:\n${errors.join("\n")}`);
   }
   await renderGlScreening(container);
 }
