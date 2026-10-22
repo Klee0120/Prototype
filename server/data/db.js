@@ -3586,9 +3586,13 @@ function importReclassBatch(metadata, items, importedBy, sourceFileName) {
       now
     );
   const batchId = Number(result.lastInsertRowid);
-  // Same fiscal period for every line in this one import -- the sheet
-  // itself was submitted/published as a single batch, not line by line.
-  const fiscalPeriod = resolveFiscalPeriod(now.slice(0, 10));
+  // Falls back to the import date for a line with no explicit Period value
+  // (an older-format submission that predates the 2026-09 template
+  // revision, or just a blank cell) -- otherwise every line in one import
+  // would share the same fiscal period even when individual lines name
+  // their own, different one.
+  const fallbackPeriod = resolveFiscalPeriod(now.slice(0, 10));
+  const referenceDate = metadata.revisionDate || metadata.originalDatePublished || now.slice(0, 10);
 
   const insertItem = db.prepare(
     `INSERT INTO reclass_items (
@@ -3600,6 +3604,15 @@ function importReclassBatch(metadata, items, importedBy, sourceFileName) {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', 'submitted', ?, ?, ?, ?, ?)`
   );
   for (const item of items) {
+    let periodNumber = fallbackPeriod ? fallbackPeriod.periodNumber : null;
+    let fiscalYear = fallbackPeriod ? fallbackPeriod.fiscalYear : null;
+    if (item.period != null) {
+      const resolvedYear = resolvePeriodFiscalYear(item.period, referenceDate);
+      if (resolvedYear != null) {
+        periodNumber = item.period;
+        fiscalYear = resolvedYear;
+      }
+    }
     insertItem.run(
       batchId,
       item.lineNumber || null,
@@ -3624,8 +3637,8 @@ function importReclassBatch(metadata, items, importedBy, sourceFileName) {
       item.causedBy || null,
       item.rootCause || null,
       item.pathForward || null,
-      fiscalPeriod ? fiscalPeriod.periodNumber : null,
-      fiscalPeriod ? fiscalPeriod.fiscalYear : null,
+      periodNumber,
+      fiscalYear,
       importedBy || null,
       now,
       now
@@ -9602,6 +9615,26 @@ function resolveFiscalPeriod(dateStr) {
   return match ? { periodNumber: match.periodNumber, fiscalYear: match.fiscalYear } : null;
 }
 
+// A reclass line's own "Period" column (added to the RECLASS sheet in the
+// 2026-09 template revision) names the posting month directly as a number
+// (e.g. 10 for October), not a fiscal year -- and since this app's fiscal
+// periods run Jan-Dec with periodNumber equal to the calendar month (see
+// getGlFiscalCalendar), a bare period number alone can match more than one
+// seeded year. Picks whichever seeded year's periodNumber is closest to the
+// batch's own submission date, falling back to the most recently seeded
+// year if there's no usable date to go on.
+function resolvePeriodFiscalYear(periodNumber, referenceDateStr) {
+  const candidates = getGlFiscalCalendar().filter((p) => p.periodNumber === periodNumber);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0].fiscalYear;
+  const refTime = referenceDateStr ? new Date(referenceDateStr).getTime() : NaN;
+  if (!Number.isNaN(refTime)) {
+    candidates.sort((a, b) => Math.abs(new Date(a.fiscalMonthEnd).getTime() - refTime) - Math.abs(new Date(b.fiscalMonthEnd).getTime() - refTime));
+    return candidates[0].fiscalYear;
+  }
+  return candidates[candidates.length - 1].fiscalYear;
+}
+
 // Whether the most recently-closed GL period (per the real close calendar,
 // not a guessed "percent through the month") has a report imported yet.
 // null expectedPeriod means no period has even closed yet under this
@@ -12674,6 +12707,7 @@ module.exports = {
   getGlFiscalCalendarYears,
   getGlFiscalCalendar,
   resolveFiscalPeriod,
+  resolvePeriodFiscalYear,
   TIME_LOG_CATEGORIES,
   INSTANT_LOG_CATEGORIES,
   ESTIMATED_LOG_CATEGORIES,

@@ -9,9 +9,6 @@ router.use(requireAuth, requireAdmin, requireFinancialsAccess);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
-const IMPACTING_CATEGORIES = db.RECLASS_CAUSED_BY_OPTIONS;
-const ROOT_CAUSE_CATEGORIES = db.RECLASS_ROOT_CAUSE_OPTIONS;
-
 // Label text -> metadata key, matched against Krista's real "RECLASS" sheet
 // metric block (see server/data/db.js's reclass_batches table comment).
 const METADATA_LABELS = {
@@ -56,6 +53,16 @@ function nextNonNull(row, fromIndex) {
   return null;
 }
 
+// The real checkbox-block labels -- "Automotive"/"AP"/"Other"/"Customer"
+// repeats once for impacting adjustments and once for non-impacting, and
+// the 5 root-cause labels follow after that. These don't match
+// db.RECLASS_CAUSED_BY_OPTIONS/RECLASS_ROOT_CAUSE_OPTIONS (a different,
+// unrelated taxonomy used only by the manual "+ Add finding" form's own
+// dropdowns) -- captured here as the sheet's own literal text instead of
+// forced into that list.
+const IMPACT_CATEGORY_LABELS = ["Automotive", "AP", "Other", "Customer"];
+const ROOT_CAUSE_LABELS = ["Process Failure", "Manual Mistake", "System Mistake", "Management Change", "Customer Change"];
+
 // Parses the "RECLASS" sheet of a real submission workbook -- not the
 // "Template" sheet (that's the raw JE-upload format for posting the
 // correction, a different representation of the same data) and not
@@ -94,6 +101,25 @@ function parseReclassWorkbook(buffer) {
   metadata.originalDatePublished = toIsoDate(metadata.originalDatePublished);
   metadata.revisionDate = toIsoDate(metadata.revisionDate);
 
+  // A "Period" column was inserted right after Region (index 14) in the
+  // 2026-09 template revision -- detected here, rather than assumed, so an
+  // older submission file without it still imports correctly. Every fixed
+  // column offset from here on (the Adjustment/Impacting/root-cause block)
+  // shifts right by this amount when it's present.
+  const headerRow = rows[headerRowIndex] || [];
+  const shift = typeof headerRow[15] === "string" && headerRow[15].trim() === "Period" ? 1 : 0;
+
+  // The "Automotive / AP / Other / Customer" block repeats once for
+  // impacting adjustments and once for non-impacting -- same four labels
+  // both times, distinguishable only by position: the four cells right
+  // after the Yes/No "impacts" column (19+shift), then the next four after
+  // that, then the 5 root-cause cells, confirmed against the real 2026-09
+  // template's own column order.
+  const impactingStart = 20 + shift;
+  const nonImpactingStart = 24 + shift;
+  const rootCauseStart = 28 + shift;
+  const markedCategory = (row, startIdx) => IMPACT_CATEGORY_LABELS.find((_, i) => row[startIdx + i] === "x" || row[startIdx + i] === "X") || null;
+
   const items = [];
   for (let r = headerRowIndex + 1; r < rows.length; r++) {
     const row = rows[r] || [];
@@ -102,11 +128,16 @@ function parseReclassWorkbook(buffer) {
     // template supports up to 200 lines; most submissions use far fewer).
     if (row[1] == null || row[1] === "") break;
 
-    const causedBy =
-      IMPACTING_CATEGORIES.find((_, i) => row[20 + i] === "x" || row[20 + i] === "X") ||
-      IMPACTING_CATEGORIES.find((_, i) => row[27 + i] === "x" || row[27 + i] === "X") ||
-      null;
-    const rootCause = ROOT_CAUSE_CATEGORIES.find((_, i) => row[34 + i] === "x" || row[34 + i] === "X") || null;
+    const causedBy = markedCategory(row, impactingStart) || markedCategory(row, nonImpactingStart);
+    const rootCause = ROOT_CAUSE_LABELS.find((_, i) => row[rootCauseStart + i] === "x" || row[rootCauseStart + i] === "X") || null;
+
+    const periodRaw = shift ? row[15] : null;
+    const period =
+      typeof periodRaw === "number"
+        ? periodRaw
+        : periodRaw != null && /^\d+$/.test(String(periodRaw).trim())
+          ? Number(String(periodRaw).trim())
+          : null;
 
     items.push({
       lineNumber: row[0],
@@ -123,14 +154,21 @@ function parseReclassWorkbook(buffer) {
       vendor: row[12] != null ? String(row[12]).trim() : null,
       comments: row[13] != null ? String(row[13]).trim() : null,
       region: row[14] != null ? String(row[14]).trim() : null,
-      costCenterAdjusted: row[15] === "x" || row[15] === "X",
-      subledgerAdjusted: row[16] === "x" || row[16] === "X",
-      objectCodeAdjusted: row[17] === "x" || row[17] === "X",
-      womAdjusted: row[18] === "x" || row[18] === "X",
-      impactsFinalInvoice: row[19] != null ? String(row[19]).trim() : null,
+      period,
+      costCenterAdjusted: row[15 + shift] === "x" || row[15 + shift] === "X",
+      // Fixed from the previous mapping, which had these two swapped
+      // relative to the real sheet's own column order (confirmed against
+      // the 2026-09 template: Cost Center, Object Code, Subsidiary Code,
+      // then Subledger/WOM, in that order). There's no dedicated
+      // "subsidiaryCodeAdjusted" field in the schema -- subledgerAdjusted
+      // is the closest fit of the four existing adjustment booleans.
+      objectCodeAdjusted: row[16 + shift] === "x" || row[16 + shift] === "X",
+      subledgerAdjusted: row[17 + shift] === "x" || row[17 + shift] === "X",
+      womAdjusted: row[18 + shift] === "x" || row[18 + shift] === "X",
+      impactsFinalInvoice: row[19 + shift] != null ? String(row[19 + shift]).trim() : null,
       causedBy,
       rootCause,
-      pathForward: row[39] != null ? String(row[39]).trim() : null,
+      pathForward: row[33 + shift] != null ? String(row[33 + shift]).trim() : null,
     });
   }
 

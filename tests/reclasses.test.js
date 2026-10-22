@@ -42,6 +42,31 @@ test("resolveFiscalPeriod: real fiscal period boundaries from the close calendar
   });
 });
 
+// A reclass line's own "Period" column (2026-09 template revision) names a
+// bare posting month, not a fiscal year -- resolvePeriodFiscalYear picks
+// the year from context since more than one seeded fiscal year can share
+// the same period number.
+test("resolvePeriodFiscalYear: picks the fiscal year closest to a reference date", async () => {
+  const db = require("../server/data/db");
+
+  assert.equal(
+    db.resolvePeriodFiscalYear(10, "2026-10-15"),
+    26,
+    "period 10 close to a FY26 date should resolve to FY26, not FY25's same period number"
+  );
+  assert.equal(
+    db.resolvePeriodFiscalYear(10, "2025-10-15"),
+    25,
+    "the same period number close to a FY25 date should resolve to FY25 instead"
+  );
+  assert.equal(
+    db.resolvePeriodFiscalYear(10, null),
+    26,
+    "with no reference date at all, falls back to the most recently seeded year"
+  );
+  assert.equal(db.resolvePeriodFiscalYear(99, "2026-10-15"), null, "a period number outside the seeded calendar returns null");
+});
+
 test("Reclasses tab: location/month filtering and the Midwest total", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
@@ -229,4 +254,119 @@ test("Reclasses import: a lone '-' normalizes to no job #/WOM # instead of being
   assert.equal(item.fromWomNumber, null, "a lone '-' should not be stored as a real WOM #");
   assert.equal(item.toJobNumber, "1002", "a real value on the other side should still come through untouched");
   assert.equal(item.toWomNumber, "WOM-9999");
+});
+
+// The 2026-09 template revision inserted a "Period" column right after
+// Region, pushing every Adjustment/Impacting/root-cause column one slot to
+// the right -- confirmed against the real template Krista sent
+// (2026-09_TEMPLATE_-_TMNA_Reclass_Fiscal_MONTH.xlsx). Each line names its
+// own posting month (e.g. 10 for October), independent of the batch's
+// import date, and the two lines below land in different fiscal years to
+// prove that per-line resolution -- not a single batch-wide guess -- is
+// actually happening.
+test("Reclasses import: the 2026-09 template's Period column resolves each line's own fiscal period", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const header = [
+    "#", "Job # (Cost Center or Business Unit)", "Object Acct or Code", "Subsidiary or Cost Code", "WOM Number If Needed", "Amount", "To",
+    "Job # (Cost Center or Business Unit)", "Object Acct or Code", "Subsidiary or Cost Code", "WOM Number If Needed", "Amount",
+    "Vendor", "Comments", "Region", "Period",
+    "Cost Center Adjustment", "Object Code Adjustment", "Subsidiary Code Adjustment", "Subledger (WOM#) Adjustment",
+    "Yes (Impacting)  or No (Non Impacting)", "Automotive", "AP", "Other", "Customer", "Automotive", "AP", "Other", "Customer",
+    "Process Failure", "Manual Mistake", "System Mistake", "Management Change", "Customer Change", "Comments and Path forward",
+  ];
+  const rows = [
+    header,
+    // Period 10 (October) -- only Object Code Adjustment marked (column R,
+    // the one previously swapped with Subsidiary Code Adjustment).
+    [1, "2092-1001", "605200", "20920000", "WOM-1", 1200, null, "2092-1002", "601000", "20920000", null, 1200,
+      "Acme Plumbing", "Timekeeping error", "Midwest", 10,
+      null, "x", null, null, "Yes", "x", null, null, null, null, null, null, null,
+      "x", null, null, null, null, "Fixed miscoding"],
+    // Period 2 (February) -- only Subsidiary Code Adjustment marked.
+    [2, "2092-2001", "616100", "20920000", null, 800, null, "2092-2001", "616100", "10910000", null, 800,
+      "Delta Air", "Concur reclass", "East", 2,
+      null, null, "x", null, "No", null, null, null, null, null, null, null, null,
+      null, "x", null, null, null, null],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "RECLASS");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/reclasses/batches/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "reclass.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 201, JSON.stringify(importRes.body));
+
+  const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+  const octLine = itemsRes.body.find((i) => i.vendor === "Acme Plumbing");
+  const febLine = itemsRes.body.find((i) => i.vendor === "Delta Air");
+  assert.ok(octLine && febLine, "expected both imported lines to show up");
+
+  assert.equal(octLine.fiscalPeriodNumber, 10, "line 1's own Period column (10) should drive its fiscal period, not the import date");
+  assert.equal(octLine.objectCodeAdjusted, true, "Object Code Adjustment's 'x' should land on objectCodeAdjusted, not subledgerAdjusted");
+  assert.equal(octLine.subledgerAdjusted, false);
+  assert.equal(octLine.costCenterAdjusted, false);
+  assert.equal(octLine.causedBy, "Automotive");
+  assert.equal(octLine.rootCause, "Process Failure");
+
+  assert.equal(febLine.fiscalPeriodNumber, 2, "line 2's own Period column (2) should drive its fiscal period independently of line 1's");
+  assert.equal(febLine.fiscalYear, 26, "FY26 (the more recent seeded year) should win when a bare period number matches more than one year");
+  assert.equal(febLine.subledgerAdjusted, true, "Subsidiary Code Adjustment's 'x' should land on subledgerAdjusted, not objectCodeAdjusted");
+  assert.equal(febLine.objectCodeAdjusted, false);
+  assert.equal(febLine.rootCause, "Manual Mistake");
+});
+
+// A submission file from before the 2026-09 template revision has no
+// Period column at all -- the import should still work, falling back to
+// the batch's own import date for fiscal period the same way it always
+// has, with the Adjustment columns read from their original (one column
+// to the left) positions.
+test("Reclasses import: an older submission file with no Period column still imports correctly", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const XLSX = require("xlsx");
+
+  const header = [
+    "#", "Job # (Cost Center or Business Unit)", "Object Acct or Code", "Subsidiary or Cost Code", "WOM Number If Needed", "Amount", "To",
+    "Job # (Cost Center or Business Unit)", "Object Acct or Code", "Subsidiary or Cost Code", "WOM Number If Needed", "Amount",
+    "Vendor", "Comments", "Region",
+    "Cost Center Adjustment", "Object Code Adjustment", "Subsidiary Code Adjustment", "Subledger (WOM#) Adjustment",
+    "Yes (Impacting)  or No (Non Impacting)", "Automotive", "AP", "Other", "Customer", "Automotive", "AP", "Other", "Customer",
+    "Process Failure", "Manual Mistake", "System Mistake", "Management Change", "Customer Change", "Comments and Path forward",
+  ];
+  const rows = [
+    header,
+    [1, "2092-1001", "605200", "20920000", "WOM-1", 1200, null, "2092-1002", "601000", "20920000", null, 1200,
+      "Acme Plumbing", "No Period column here", "Midwest",
+      null, "x", null, null, "Yes", "x", null, null, null, null, null, null, null,
+      "x", null, null, null, null, "Fixed miscoding"],
+  ];
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "RECLASS");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const importRes = await server.upload("/api/admin/reclasses/batches/import", {
+    userId: "ADMIN",
+    fields: {},
+    fileName: "reclass.xlsx",
+    fileContent: buffer,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  assert.equal(importRes.status, 201, JSON.stringify(importRes.body));
+
+  const itemsRes = await server.call("GET", "/api/admin/reclasses/items", { userId: "ADMIN" });
+  const item = itemsRes.body.find((i) => i.vendor === "Acme Plumbing");
+  assert.ok(item, "expected the imported row to show up");
+  assert.equal(item.objectCodeAdjusted, true, "still reads from the pre-Period column position correctly");
+  assert.equal(item.subledgerAdjusted, false);
+  assert.ok(item.fiscalPeriodNumber != null, "falls back to the import date's own fiscal period when there's no Period column");
 });
