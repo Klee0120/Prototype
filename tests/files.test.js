@@ -528,3 +528,64 @@ test("files: restricted access", async (t) => {
     assert.ok(actions.includes("FILE_ACCESS_CHANGED"));
   });
 });
+
+// Company-wide policy documents & blank forms (server/data/db.js's
+// "company_documents" related type, see Part B of the Time Off Accrual
+// Engine + Document Library plan) -- one fixed bucket everyone reads, only
+// an admin writes. Same fixed-bucket shape as the COI pool, opposite read
+// rule (everyone logged in can read it, same as "wom").
+test("files: company documents (policy library)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  await t.test("a technician cannot upload a policy document", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "T1001",
+      fields: { relatedType: "company_documents", relatedId: "library", category: "policy" },
+      fileName: "pto-policy.pdf",
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("an admin can upload a policy document and a blank form", async () => {
+    const policyRes = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "company_documents", relatedId: "library", category: "policy" },
+      fileName: "pto-policy.pdf",
+    });
+    assert.equal(policyRes.status, 201);
+
+    const formRes = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "company_documents", relatedId: "library", category: "form" },
+      fileName: "direct-deposit-form.pdf",
+    });
+    assert.equal(formRes.status, 201);
+  });
+
+  await t.test("rejects an unrelated category under company_documents", async () => {
+    const res = await server.upload("/api/files", {
+      userId: "ADMIN",
+      fields: { relatedType: "company_documents", relatedId: "library", category: "coi" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("any logged-in technician can list and read the library", async () => {
+    const res = await server.call("GET", "/api/files?relatedType=company_documents&relatedId=library", { userId: "T1001" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.length, 2);
+  });
+
+  await t.test("a technician cannot delete a policy document", async () => {
+    const list = await server.call("GET", "/api/files?relatedType=company_documents&relatedId=library", { userId: "T1001" });
+    const res = await server.call("DELETE", `/api/files/${list.body[0].id}`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("an admin can delete a policy document", async () => {
+    const list = await server.call("GET", "/api/files?relatedType=company_documents&relatedId=library", { userId: "ADMIN" });
+    const res = await server.call("DELETE", `/api/files/${list.body[0].id}`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+  });
+});

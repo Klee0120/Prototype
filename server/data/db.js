@@ -1429,6 +1429,84 @@ if (!tableExists("time_off_policy_allowances")) {
   `);
 }
 
+// Replaces the flat yearly-allowance model above with a real accrual rule,
+// modeled on PurelyHR's own "Balance Accrual" screen -- an interval
+// (frequency/interval_count), the day it posts on (accrue_on_day), a flat
+// rate per occurrence (rate_hours), and an annual cap (cap_hours, when
+// accrue_until is 'cap' rather than a flat 'none' grant like Sick time).
+// One flat rate per rule, same as PurelyHR itself shows -- moving someone
+// to the next tenure tier (per the real PTO policy's rate table) is an
+// admin reassigning their policy/rule, not something this engine advances
+// on its own; see runTimeOffAccrual's own comment for why.
+// start_rule says whether a brand-new assignment's first (partial) period
+// is pro-rated from the person's hire_date, or starts fresh at the next
+// calendar-year boundary regardless of hire date.
+if (!tableExists("time_off_accrual_rules")) {
+  db.exec(`
+    CREATE TABLE time_off_accrual_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policy_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      frequency TEXT NOT NULL,
+      interval_count INTEGER NOT NULL DEFAULT 1,
+      accrue_on_day INTEGER NOT NULL DEFAULT 1,
+      rate_hours REAL NOT NULL,
+      accrue_until TEXT NOT NULL DEFAULT 'cap',
+      cap_hours REAL,
+      start_rule TEXT NOT NULL DEFAULT 'hire_date',
+      active INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(policy_id, type)
+    );
+  `);
+  // One-time migration of whatever flat allowances already existed --
+  // approximated as a once-a-month accrual of 1/12th the old yearly amount,
+  // capped at that same yearly amount, so nobody's existing policy silently
+  // goes blank. An admin can edit these into real tiered rules afterward.
+  if (tableExists("time_off_policy_allowances")) {
+    const oldAllowances = db.prepare("SELECT * FROM time_off_policy_allowances").all();
+    const insertMigrated = db.prepare(
+      `INSERT OR IGNORE INTO time_off_accrual_rules
+        (policy_id, type, frequency, interval_count, accrue_on_day, rate_hours, accrue_until, cap_hours, start_rule, active)
+       VALUES (?, ?, 'monthly', 1, 1, ?, 'cap', ?, 'calendar_year', 1)`
+    );
+    for (const a of oldAllowances) {
+      insertMigrated.run(a.policy_id, a.type, Math.round((a.yearly_hours / 12) * 100) / 100, a.yearly_hours);
+    }
+  }
+}
+
+// The discrete, persisted entries behind the Audit Trail modal (one row
+// per 07/01, 08/01, etc, matching PurelyHR's own screen) -- never computed
+// on the fly, so a rule changing later never rewrites history. source
+// distinguishes a normal rule-driven post ('accrual') from a Jan-1
+// carryover post ('carryover', see runTimeOffAccrual) for the Accrued By
+// column. The UNIQUE constraint is what makes a re-run of the same day's
+// job a no-op instead of double-posting.
+if (!tableExists("time_off_accrual_events")) {
+  db.exec(`
+    CREATE TABLE time_off_accrual_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tech_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      accrual_date TEXT NOT NULL,
+      hours REAL NOT NULL,
+      rule_id INTEGER,
+      source TEXT NOT NULL DEFAULT 'accrual',
+      created_at TEXT NOT NULL,
+      UNIQUE(tech_id, type, accrual_date, source)
+    );
+    CREATE INDEX idx_time_off_accrual_events_tech ON time_off_accrual_events(tech_id, type);
+  `);
+}
+// Per-employee override for the one state-law exception to "use it or lose
+// it" carryover (CA/MT/NE allow carrying over up to 1.75x the annual cap
+// instead of resetting to zero every Jan 1) -- a plain admin-set flag
+// rather than inferring a work state from territory, since a technician's
+// territory (Midwest/East/West/...) doesn't map to a single US state.
+if (!hasColumn("technicians", "pto_carryover_exempt")) {
+  db.exec("ALTER TABLE technicians ADD COLUMN pto_carryover_exempt INTEGER NOT NULL DEFAULT 0");
+}
+
 // Who may approve a given person's time-off requests -- a list, not a
 // single "manager" field, since per Krista a tech's requests can have more
 // than one valid approver (both Krista and Kevin), while her own has just
@@ -12197,12 +12275,31 @@ const TIME_OFF_TYPES = [
 const TIME_OFF_TYPE_VALUES = TIME_OFF_TYPES.map((t) => t.value);
 const TIME_OFF_REQUEST_STATUSES = ["pending", "approved", "denied", "cancelled"];
 
-function presentTimeOffPolicy(row, allowanceRows) {
+const ACCRUAL_FREQUENCIES = ["monthly", "annually", "on_hire_date"];
+const ACCRUAL_UNTIL_VALUES = ["cap", "none"];
+const ACCRUAL_START_RULES = ["hire_date", "calendar_year"];
+
+function presentAccrualRule(r) {
+  return {
+    id: r.id,
+    type: r.type,
+    frequency: r.frequency,
+    intervalCount: r.interval_count,
+    accrueOnDay: r.accrue_on_day,
+    rateHours: r.rate_hours,
+    accrueUntil: r.accrue_until,
+    capHours: r.cap_hours,
+    startRule: r.start_rule,
+    active: Boolean(r.active),
+  };
+}
+
+function presentTimeOffPolicy(row, ruleRows) {
   if (!row) return null;
   return {
     id: row.id,
     name: row.name,
-    allowances: allowanceRows.filter((a) => a.policy_id === row.id).map((a) => ({ type: a.type, yearlyHours: a.yearly_hours })),
+    rules: ruleRows.filter((r) => r.policy_id === row.id).map(presentAccrualRule),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -12210,40 +12307,63 @@ function presentTimeOffPolicy(row, allowanceRows) {
 
 function listTimeOffPolicies() {
   const policies = db.prepare("SELECT * FROM time_off_policies ORDER BY name").all();
-  const allowances = db.prepare("SELECT * FROM time_off_policy_allowances").all();
-  return policies.map((p) => presentTimeOffPolicy(p, allowances));
+  const rules = db.prepare("SELECT * FROM time_off_accrual_rules").all();
+  return policies.map((p) => presentTimeOffPolicy(p, rules));
 }
 
 function findTimeOffPolicy(id) {
   const policy = db.prepare("SELECT * FROM time_off_policies WHERE id = ?").get(Number(id));
   if (!policy) return null;
-  const allowances = db.prepare("SELECT * FROM time_off_policy_allowances WHERE policy_id = ?").all(Number(id));
-  return presentTimeOffPolicy(policy, allowances);
+  const rules = db.prepare("SELECT * FROM time_off_accrual_rules WHERE policy_id = ?").all(Number(id));
+  return presentTimeOffPolicy(policy, rules);
 }
 
-function setTimeOffPolicyAllowances(policyId, allowances) {
-  db.prepare("DELETE FROM time_off_policy_allowances WHERE policy_id = ?").run(policyId);
-  const insert = db.prepare("INSERT INTO time_off_policy_allowances (policy_id, type, yearly_hours) VALUES (?, ?, ?)");
-  for (const a of allowances || []) {
-    if (!TIME_OFF_TYPE_VALUES.includes(a.type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
-    insert.run(policyId, a.type, Number(a.yearlyHours));
+// One row per (policy, type) -- same cardinality as the old flat allowance
+// table, just a richer rule per row. See the table's own comment for why
+// tenure-tier advancement is a manual rule swap, not automatic.
+function setTimeOffPolicyAccrualRules(policyId, rules) {
+  db.prepare("DELETE FROM time_off_accrual_rules WHERE policy_id = ?").run(policyId);
+  const insert = db.prepare(
+    `INSERT INTO time_off_accrual_rules
+      (policy_id, type, frequency, interval_count, accrue_on_day, rate_hours, accrue_until, cap_hours, start_rule, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  for (const r of rules || []) {
+    if (!TIME_OFF_TYPE_VALUES.includes(r.type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
+    if (!ACCRUAL_FREQUENCIES.includes(r.frequency)) throw new Error(`frequency must be one of: ${ACCRUAL_FREQUENCIES.join(", ")}`);
+    if (!(Number(r.rateHours) > 0)) throw new Error("rateHours must be a positive number");
+    const accrueUntil = ACCRUAL_UNTIL_VALUES.includes(r.accrueUntil) ? r.accrueUntil : "cap";
+    if (accrueUntil === "cap" && !(Number(r.capHours) > 0)) throw new Error("capHours is required when accrueUntil is 'cap'");
+    const startRule = ACCRUAL_START_RULES.includes(r.startRule) ? r.startRule : "hire_date";
+    insert.run(
+      policyId,
+      r.type,
+      r.frequency,
+      Number(r.intervalCount) || 1,
+      Math.min(28, Math.max(1, Number(r.accrueOnDay) || 1)),
+      Number(r.rateHours),
+      accrueUntil,
+      accrueUntil === "cap" ? Number(r.capHours) : null,
+      startRule,
+      r.active === false ? 0 : 1
+    );
   }
 }
 
-function createTimeOffPolicy({ name, allowances }) {
+function createTimeOffPolicy({ name, rules }) {
   if (!name) throw new Error("name is required");
   const now = new Date().toISOString();
   const result = db.prepare("INSERT INTO time_off_policies (name, created_at, updated_at) VALUES (?, ?, ?)").run(name, now, now);
-  setTimeOffPolicyAllowances(result.lastInsertRowid, allowances);
+  setTimeOffPolicyAccrualRules(result.lastInsertRowid, rules);
   return findTimeOffPolicy(result.lastInsertRowid);
 }
 
-function updateTimeOffPolicy(id, { name, allowances }) {
+function updateTimeOffPolicy(id, { name, rules }) {
   const existing = db.prepare("SELECT * FROM time_off_policies WHERE id = ?").get(Number(id));
   if (!existing) return null;
   const now = new Date().toISOString();
   db.prepare("UPDATE time_off_policies SET name = ?, updated_at = ? WHERE id = ?").run(name !== undefined ? name : existing.name, now, Number(id));
-  if (allowances !== undefined) setTimeOffPolicyAllowances(Number(id), allowances);
+  if (rules !== undefined) setTimeOffPolicyAccrualRules(Number(id), rules);
   return findTimeOffPolicy(id);
 }
 
@@ -12255,13 +12375,22 @@ function deleteTimeOffPolicy(id) {
   const existing = db.prepare("SELECT 1 FROM time_off_policies WHERE id = ?").get(Number(id));
   if (!existing) return false;
   db.prepare("UPDATE technicians SET time_off_policy_id = NULL WHERE time_off_policy_id = ?").run(Number(id));
-  db.prepare("DELETE FROM time_off_policy_allowances WHERE policy_id = ?").run(Number(id));
+  db.prepare("DELETE FROM time_off_accrual_rules WHERE policy_id = ?").run(Number(id));
   db.prepare("DELETE FROM time_off_policies WHERE id = ?").run(Number(id));
   return true;
 }
 
 function setTechnicianTimeOffPolicy(techId, policyId) {
   db.prepare("UPDATE technicians SET time_off_policy_id = ? WHERE id = ?").run(policyId || null, techId);
+  return findTechnician(techId);
+}
+
+// The one admin-set override to the Jan-1 "use it or lose it" default --
+// see time_off_accrual_rules's own comment and runTimeOffAccrual's
+// carryover step for why this is a flag rather than an inferred work
+// state.
+function setTechnicianPtoCarryoverExempt(techId, exempt) {
+  db.prepare("UPDATE technicians SET pto_carryover_exempt = ? WHERE id = ?").run(exempt ? 1 : 0, techId);
   return findTechnician(techId);
 }
 
@@ -12422,24 +12551,25 @@ function decideTimeOffRequest(id, status, actorId, decisionNote) {
   return updated;
 }
 
-// Allowance (from the tech's assigned policy), used (approved requests),
-// and pending (pending requests), all scoped to one calendar year -- per
-// Krista's own call, the simple version: the full yearly allowance is
-// available from day one of the year, not accrued period by period.
+// Accrued (sum of this year's posted time_off_accrual_events -- see
+// runTimeOffAccrual), used (approved requests), and pending (pending
+// requests), all scoped to one calendar year. Replaces the old "full
+// yearly allowance from day one" model: a type with an accrual rule but no
+// events posted yet (brand new assignment, before the next scheduled run)
+// correctly shows 0 accrued, not a phantom allowance.
 function computeTimeOffBalance(techId, year) {
   const tech = findTechnician(techId);
   const policy = tech && tech.time_off_policy_id ? findTimeOffPolicy(tech.time_off_policy_id) : null;
   const yearFrom = `${year}-01-01`;
   const yearTo = `${year}-12-31`;
   const requests = listTimeOffRequests({ techId, from: yearFrom, to: yearTo }).filter((r) => r.status === "approved" || r.status === "pending");
+  const accrualRows = db
+    .prepare("SELECT type, SUM(hours) AS total FROM time_off_accrual_events WHERE tech_id = ? AND accrual_date BETWEEN ? AND ? GROUP BY type")
+    .all(techId, yearFrom, yearTo);
+  const accruedByType = new Map(accrualRows.map((r) => [r.type, round2(r.total)]));
+  const ruleByType = new Map((policy ? policy.rules : []).map((r) => [r.type, r]));
 
-  const byType = new Map(TIME_OFF_TYPE_VALUES.map((t) => [t, { type: t, yearlyHours: null, used: 0, pending: 0 }]));
-  if (policy) {
-    for (const a of policy.allowances) {
-      const entry = byType.get(a.type);
-      if (entry) entry.yearlyHours = a.yearlyHours;
-    }
-  }
+  const byType = new Map(TIME_OFF_TYPE_VALUES.map((t) => [t, { type: t, accruedHours: accruedByType.get(t) || 0, used: 0, pending: 0 }]));
   for (const r of requests) {
     const entry = byType.get(r.type);
     if (!entry) continue;
@@ -12455,19 +12585,166 @@ function computeTimeOffBalance(techId, year) {
   return {
     policyId: policy ? policy.id : null,
     policyName: policy ? policy.name : null,
+    ptoCarryoverExempt: Boolean(tech && tech.pto_carryover_exempt),
     year,
-    types: TIME_OFF_TYPES.filter((t) => policy && byType.get(t.value).yearlyHours != null).map((t) => {
+    types: TIME_OFF_TYPES.filter((t) => ruleByType.has(t.value)).map((t) => {
       const entry = byType.get(t.value);
+      const rule = ruleByType.get(t.value);
       return {
         type: t.value,
         label: t.label,
-        yearlyHours: entry.yearlyHours,
+        accruedHours: entry.accruedHours,
+        capHours: rule.accrueUntil === "cap" ? rule.capHours : null,
         used: entry.used,
         pending: entry.pending,
-        balance: round2(entry.yearlyHours - entry.used - entry.pending),
+        balance: round2(entry.accruedHours - entry.used - entry.pending),
       };
     }),
   };
+}
+
+function clampDayToMonth(day, year, month) {
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return Math.min(day, daysInMonth);
+}
+
+function presentAccrualEvent(e) {
+  const SOURCE_LABELS = { accrual: "System Accrual", carryover: "Carryover" };
+  return {
+    id: e.id,
+    techId: e.tech_id,
+    type: e.type,
+    accrualDate: e.accrual_date,
+    hours: e.hours,
+    accruedBy: SOURCE_LABELS[e.source] || e.source,
+  };
+}
+
+// Backs the Audit Trail modal exactly as PurelyHR's own shows it: every
+// discrete posted entry for one person (optionally narrowed to one type/
+// year), newest first.
+function listTimeOffAccrualEvents({ techId, type, year } = {}) {
+  const clauses = ["tech_id = ?"];
+  const params = [techId];
+  if (type) {
+    clauses.push("type = ?");
+    params.push(type);
+  }
+  if (year) {
+    clauses.push("accrual_date BETWEEN ? AND ?");
+    params.push(`${year}-01-01`, `${year}-12-31`);
+  }
+  return db
+    .prepare(`SELECT * FROM time_off_accrual_events WHERE ${clauses.join(" AND ")} ORDER BY accrual_date DESC, id DESC`)
+    .all(...params)
+    .map(presentAccrualEvent);
+}
+
+// The one scheduled job behind the whole accrual engine -- modeled on
+// sendVendorComplianceReminders's own "reusable, idempotent, safe to
+// re-run" shape (see server/utils/vendorComplianceReminders.js and
+// server/scheduler.js). Posts one event per active rule per active
+// technician assigned to that rule's policy, for whichever occurrences
+// fall on `asOf` (defaults to today) -- the UNIQUE(tech_id, type,
+// accrual_date) constraint on time_off_accrual_events makes re-running the
+// same day a no-op rather than a double-post, so this is safe to call from
+// both the daily scheduler tick and the admin's on-demand "Run Accrual Now".
+//
+// Tenure-tier advancement is NOT automatic here, by design (see the rules
+// table's own comment) -- an admin moves someone to their next tier's rule
+// the same way they'd do it in PurelyHR, by reassigning the policy/rule.
+function runTimeOffAccrual({ asOf } = {}) {
+  const now = asOf ? new Date(`${asOf}T00:00:00Z`) : new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  const day = now.getUTCDate();
+  const dateIso = now.toISOString().slice(0, 10);
+  const createdAt = new Date().toISOString();
+
+  const insertEvent = db.prepare(
+    `INSERT OR IGNORE INTO time_off_accrual_events (tech_id, type, accrual_date, hours, rule_id, source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  const sumPostedThisYear = db.prepare(
+    "SELECT COALESCE(SUM(hours), 0) AS total FROM time_off_accrual_events WHERE tech_id = ? AND type = ? AND accrual_date BETWEEN ? AND ?"
+  );
+  const countPriorAccrualEvents = db.prepare(
+    "SELECT COUNT(*) AS c FROM time_off_accrual_events WHERE tech_id = ? AND type = ? AND rule_id = ? AND source = 'accrual'"
+  );
+
+  const rules = db.prepare("SELECT * FROM time_off_accrual_rules WHERE active = 1").all();
+  let posted = 0;
+
+  for (const rule of rules) {
+    const techs = db
+      .prepare("SELECT * FROM technicians WHERE time_off_policy_id = ? AND employment_status = 'active'")
+      .all(rule.policy_id);
+
+    for (const tech of techs) {
+      if (!tech.hire_date) continue; // tenure/pro-ration math has nothing to anchor to
+      const hireDate = new Date(`${tech.hire_date}T00:00:00Z`);
+      const hireYear = hireDate.getUTCFullYear();
+      const hireMonth = hireDate.getUTCMonth() + 1;
+
+      if (rule.frequency === "monthly") {
+        const postDay = clampDayToMonth(rule.accrue_on_day, year, month);
+        if (day !== postDay) continue;
+        const occurrenceDate = new Date(Date.UTC(year, month - 1, postDay));
+        if (occurrenceDate < hireDate) continue; // this month's occurrence falls before the person was even hired
+
+        let hours = rule.rate_hours;
+        // Pro-rate only the very first occurrence a newly-assigned person
+        // ever receives under this rule -- by the fraction of their hire
+        // month they were actually employed, even if that first occurrence
+        // lands in a later calendar month (e.g. hired 3/16, accrual posts
+        // on the 1st -> no March post at all, so April 1st is their first
+        // occurrence and carries March's own pro-rated fraction).
+        const priorCount = countPriorAccrualEvents.get(tech.id, rule.type, rule.id).c;
+        if (priorCount === 0) {
+          const daysInHireMonth = new Date(Date.UTC(hireYear, hireMonth, 0)).getUTCDate();
+          const daysEmployed = daysInHireMonth - hireDate.getUTCDate() + 1;
+          hours = round2(rule.rate_hours * (daysEmployed / daysInHireMonth));
+        }
+        if (rule.accrue_until === "cap" && rule.cap_hours != null) {
+          const postedThisYear = sumPostedThisYear.get(tech.id, rule.type, `${year}-01-01`, `${year}-12-31`).total;
+          hours = Math.max(0, Math.min(hours, round2(rule.cap_hours - postedThisYear)));
+        }
+        if (hours > 0 && insertEvent.run(tech.id, rule.type, dateIso, hours, rule.id, "accrual", createdAt).changes) posted += 1;
+      } else if (rule.frequency === "annually") {
+        if (month !== 1 || day !== clampDayToMonth(rule.accrue_on_day, year, 1)) continue;
+        if (year < hireYear) continue;
+        if (insertEvent.run(tech.id, rule.type, dateIso, rule.rate_hours, rule.id, "accrual", createdAt).changes) posted += 1;
+      } else if (rule.frequency === "on_hire_date") {
+        // The real Sick-time policy this mirrors: 40 hours on the actual
+        // hire date for a brand-new hire's first (partial) year, then 40
+        // hours on Jan 1 every year after -- not a hire-date anniversary
+        // every year, which would drift the grant date for no reason.
+        const isHireYear = year === hireYear;
+        if (isHireYear ? month !== hireMonth || day !== hireDate.getUTCDate() : month !== 1 || day !== 1) continue;
+        if (insertEvent.run(tech.id, rule.type, dateIso, rule.rate_hours, rule.id, "accrual", createdAt).changes) posted += 1;
+      }
+    }
+
+    // Jan-1 carryover, for accumulating ("cap") rules only -- a flat grant
+    // like Sick (accrue_until 'none') is simply re-granted, never carried.
+    // "Use it or lose it" is the default (no event posted, so the new
+    // year's balance starts at 0 accrued); the CA/MT/NE exception is the
+    // one admin-set override (technicians.pto_carryover_exempt), carrying
+    // over up to 1.75x the rule's annual cap.
+    if (month === 1 && day === 1 && rule.accrue_until === "cap") {
+      for (const tech of techs) {
+        if (!tech.pto_carryover_exempt) continue;
+        const priorYear = computeTimeOffBalance(tech.id, year - 1).types.find((t) => t.type === rule.type);
+        if (!priorYear) continue;
+        const unused = Math.max(0, priorYear.balance);
+        const carryoverCap = round2((rule.cap_hours || 0) * 1.75);
+        const carryover = round2(Math.min(unused, carryoverCap));
+        if (carryover > 0 && insertEvent.run(tech.id, rule.type, dateIso, carryover, rule.id, "carryover", createdAt).changes) posted += 1;
+      }
+    }
+  }
+
+  return { posted, asOf: dateIso };
 }
 
 // Approved time off, expanded to one entry per weekday, for the given
@@ -12922,6 +13199,7 @@ module.exports = {
   updateTimeOffPolicy,
   deleteTimeOffPolicy,
   setTechnicianTimeOffPolicy,
+  setTechnicianPtoCarryoverExempt,
   listTimeOffApprovers,
   setTimeOffApprovers,
   canApproveTimeOff,
@@ -12931,4 +13209,6 @@ module.exports = {
   decideTimeOffRequest,
   computeTimeOffBalance,
   listApprovedTimeOffForMonth,
+  listTimeOffAccrualEvents,
+  runTimeOffAccrual,
 };

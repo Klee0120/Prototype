@@ -24,6 +24,8 @@ const CATEGORY_LABELS = {
   invoice: "Invoice Document",
   blank_invoice: "Blank Invoice Template",
   hold_harmless: "Hold Harmless Agreement",
+  policy: "Company Policy",
+  form: "Blank Form",
 };
 
 function formatSize(bytes) {

@@ -1,6 +1,7 @@
 const { runSmartsheetSync } = require("./utils/smartsheetSync");
 const { runBackup } = require("./utils/backup");
 const { sendVendorComplianceReminders } = require("./utils/vendorComplianceReminders");
+const db = require("./data/db");
 
 // Krista: sync 3x on business days (Mon-Fri), 8am/12pm/4pm Eastern --
 // instead of relying on someone remembering to click "Sync WOMs." Business
@@ -18,6 +19,13 @@ const BACKUP_TIME = "02:00";
 // Once a day, business days only -- a vendor getting an automated renewal
 // nag at a normal business hour reads as a real process, not a 3am robot.
 const COMPLIANCE_REMINDER_TIME = "09:00";
+
+// Once a day, every day (not just business days -- an accrual or a Sick
+// grant landing on a hire-date anniversary or Jan 1 doesn't care what day
+// of the week it is), at a low-traffic hour -- purely an internal data
+// write (no outbound email), so unlike the vendor reminders above this is
+// safe to run unconditionally rather than gated behind an opt-in flag.
+const TIME_OFF_ACCRUAL_TIME = "01:30";
 
 // Minute-granularity, not a real cron library -- a handful of fixed times
 // a day doesn't need one, and this avoids adding a dependency for it.
@@ -130,14 +138,29 @@ function startVendorComplianceReminders() {
   });
 }
 
+function startTimeOffAccrual() {
+  return startDailyTrigger({
+    label: "time-off accrual",
+    times: [TIME_OFF_ACCRUAL_TIME],
+    timezone: TIMEZONE,
+    businessDaysOnly: false,
+    run: async (key) => {
+      const result = db.runTimeOffAccrual();
+      console.log(`[time-off accrual] ${key} ${TIMEZONE}: ${result.posted} event(s) posted for ${result.asOf}`);
+    },
+  });
+}
+
 module.exports = {
   startSmartsheetAutoSync,
   startNightlyBackup,
   startVendorComplianceReminders,
+  startTimeOffAccrual,
   fireKeyFor,
   currentPartsInTimezone,
   SYNC_TIMES,
   TIMEZONE,
   BACKUP_TIME,
   COMPLIANCE_REMINDER_TIME,
+  TIME_OFF_ACCRUAL_TIME,
 };

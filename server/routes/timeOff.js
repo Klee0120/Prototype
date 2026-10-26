@@ -55,6 +55,13 @@ router.patch("/technicians/:techId/policy", requireAdmin, (req, res) => {
   res.json(tech);
 });
 
+router.patch("/technicians/:techId/carryover-exempt", requireAdmin, (req, res) => {
+  const tech = db.setTechnicianPtoCarryoverExempt(req.params.techId, Boolean(req.body?.exempt));
+  if (!tech) return res.status(404).json({ error: "Technician not found" });
+  db.addAudit(req.user.id, "TIME_OFF_CARRYOVER_EXEMPT_SET", `${req.user.name} set ${tech.name}'s PTO carryover exception to ${Boolean(req.body?.exempt)}`);
+  res.json(tech);
+});
+
 // ---- Approvers (admin-managed) ----
 
 router.get("/approvers/:subjectId", requireAdmin, (req, res) => {
@@ -72,6 +79,23 @@ router.get("/balance/:techId", (req, res) => {
   if (!canView(req, req.params.techId)) return res.status(403).json({ error: "Not allowed to view this balance" });
   const year = req.query.year ? Number(req.query.year) : new Date().getFullYear();
   res.json(db.computeTimeOffBalance(req.params.techId, year));
+});
+
+// Backs the Audit Trail modal -- every discrete accrual event posted for
+// this person, same access rule as their balance (self or admin).
+router.get("/accrual-events/:techId", (req, res) => {
+  if (!canView(req, req.params.techId)) return res.status(403).json({ error: "Not allowed to view this history" });
+  const { type, year } = req.query || {};
+  res.json(db.listTimeOffAccrualEvents({ techId: req.params.techId, type, year: year ? Number(year) : undefined }));
+});
+
+// Admin-only, on-demand run -- same job the daily schedule calls (see
+// server/scheduler.js's startTimeOffAccrual), exposed here for testing and
+// as a manual catch-up if a scheduled run is ever missed.
+router.post("/run-accrual", requireAdmin, (req, res) => {
+  const result = db.runTimeOffAccrual(req.body || {});
+  db.addAudit(req.user.id, "TIME_OFF_ACCRUAL_RUN", `${req.user.name} manually ran time-off accrual for ${result.asOf} (${result.posted} event(s) posted)`);
+  res.json(result);
 });
 
 // ---- Requests ----

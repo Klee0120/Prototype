@@ -7308,6 +7308,40 @@ tr.gl-import-shrink-row {
   font-size: 13px;
 }
 
+.timeoff-rule-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  background: var(--bg);
+}
+
+.timeoff-rule-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.timeoff-rule-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.timeoff-audit-trail-header {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.timeoff-audit-trail-name {
+  font-weight: 600;
+  padding-top: 4px;
+}
+
 /* ---- Onboard Requirements Form (Vendors > Onboard Requirements Form) ---- */
 
 .onboard-req-page {

@@ -614,7 +614,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
   }
 
   async function drawMyDocuments(content) {
-    content.innerHTML = `<div id="tech-forms-host"></div><div id="tech-docs-host"></div>`;
+    content.innerHTML = `<div id="tech-forms-host"></div><div id="tech-docs-host"></div><div id="tech-policy-docs-host"></div>`;
     await renderAttachments(content.querySelector("#tech-forms-host"), {
       title: "My Forms & Certifications",
       relatedType: "technician",
@@ -631,6 +631,21 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
       categories: [{ value: "document", label: "Document" }],
       canUpload: false,
       emptyText: "No documents on file.",
+    });
+    // Company-wide reference documents (PTO Policy, Benefit Brochure,
+    // Employee Handbook, blank onboarding forms) -- one fixed bucket
+    // everyone reads the same copy of; admin manages this from the Time
+    // Off admin page's own Policy Documents tab.
+    await renderAttachments(content.querySelector("#tech-policy-docs-host"), {
+      title: "Company Policies & Forms",
+      relatedType: "company_documents",
+      relatedId: "library",
+      categories: [
+        { value: "policy", label: "Company Policy" },
+        { value: "form", label: "Blank Form" },
+      ],
+      canUpload: false,
+      emptyText: "No policy documents or forms published yet.",
     });
   }
 }

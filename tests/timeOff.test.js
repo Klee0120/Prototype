@@ -26,19 +26,19 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
     .run("KEVIN", "Kevin Fluegeman", "hash");
   const kevinToken = db.createSession("KEVIN");
 
-  await t.test("creating a policy with allowances, then reading it back", async () => {
+  await t.test("creating a policy with accrual rules, then reading it back", async () => {
     const res = await server.call("POST", "/api/time-off/policies", {
       userId: "ADMIN",
       body: {
         name: "2yr Policy",
-        allowances: [
-          { type: "vacation", yearlyHours: 80 },
-          { type: "sick", yearlyHours: 40 },
+        rules: [
+          { type: "vacation", frequency: "annually", accrueOnDay: 1, rateHours: 80, accrueUntil: "cap", capHours: 80, startRule: "calendar_year" },
+          { type: "sick", frequency: "on_hire_date", rateHours: 40, accrueUntil: "none" },
         ],
       },
     });
     assert.equal(res.status, 201);
-    assert.equal(res.body.allowances.length, 2);
+    assert.equal(res.body.rules.length, 2);
   });
 
   await t.test("a technician cannot manage policies", async () => {
@@ -46,21 +46,37 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
     assert.equal(res.status, 403);
   });
 
+  // T1001 has no seeded hire_date -- the accrual engine can't pro-rate or
+  // post anything for someone it has no hire anchor for, so every test
+  // below that needs real accrued hours needs this set first.
+  raw.prepare("UPDATE technicians SET hire_date = ? WHERE id = ?").run("2020-01-01", "T1001");
+
   let policyId;
-  await t.test("assigning a policy to a technician", async () => {
+  await t.test("assigning a policy to a technician, then running accrual", async () => {
     const policyRes = await server.call("POST", "/api/time-off/policies", {
       userId: "ADMIN",
-      body: { name: "New Hire", allowances: [{ type: "vacation", yearlyHours: 40 }, { type: "floating_holiday", yearlyHours: 16 }] },
+      body: {
+        name: "New Hire",
+        rules: [
+          { type: "vacation", frequency: "annually", accrueOnDay: 1, rateHours: 40, accrueUntil: "cap", capHours: 40, startRule: "calendar_year" },
+          { type: "floating_holiday", frequency: "annually", accrueOnDay: 1, rateHours: 16, accrueUntil: "cap", capHours: 16, startRule: "calendar_year" },
+        ],
+      },
     });
     policyId = policyRes.body.id;
     const assignRes = await server.call("PATCH", "/api/time-off/technicians/T1001/policy", { userId: "ADMIN", body: { policyId } });
     assert.equal(assignRes.status, 200);
 
+    const runRes = await server.call("POST", "/api/time-off/run-accrual", { userId: "ADMIN", body: { asOf: "2026-01-01" } });
+    assert.equal(runRes.status, 200);
+    assert.equal(runRes.body.posted, 2); // vacation + floating_holiday, one event each
+
     const balanceRes = await server.call("GET", "/api/time-off/balance/T1001", { userId: "ADMIN" });
     assert.equal(balanceRes.body.policyName, "New Hire");
     assert.equal(balanceRes.body.types.length, 2);
     const vacation = balanceRes.body.types.find((t2) => t2.type === "vacation");
-    assert.equal(vacation.yearlyHours, 40);
+    assert.equal(vacation.accruedHours, 40);
+    assert.equal(vacation.capHours, 40);
     assert.equal(vacation.used, 0);
     assert.equal(vacation.balance, 40);
   });

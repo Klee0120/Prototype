@@ -56,6 +56,13 @@ const CATEGORY_BY_RELATED = {
   // admin picks which vendor it belongs to -- same file row, no
   // re-upload, so its uploaded-at/expiry/etc. survive the move.
   coi_pool: new Set(["coi"]),
+  // Company-wide reference documents (PTO policy, Benefit Brochure,
+  // Employee Handbook, blank onboarding forms) -- everyone gets the same
+  // copy, not a per-employee upload, so this is one fixed bucket
+  // (relatedId is always the literal string "library"), same reasoning as
+  // the COI pool above. "policy" is a company policy document; "form" is
+  // a blank form meant to be filled out and returned (e.g. at onboarding).
+  company_documents: new Set(["policy", "form"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -71,7 +78,7 @@ function canRead(user, relatedType, relatedId) {
   // Task attachments and the COI pool follow the same rule -- they're the
   // same kind of compliance document, just not filed against a vendor yet.
   if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool") return false;
-  if (relatedType === "wom") return true;
+  if (relatedType === "wom" || relatedType === "company_documents") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
   return false;
@@ -83,7 +90,7 @@ function canRead(user, relatedType, relatedId) {
 function canWrite(user, relatedType, relatedId, category) {
   if (user.role === "admin") return true;
   if (category === "tech_form") return false;
-  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool") return false;
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool" || relatedType === "company_documents") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   return false;
@@ -101,6 +108,8 @@ function relatedRecordExists(relatedType, relatedId) {
   if (relatedType === "labor_report") return /^\d{4}-\d{2}$/.test(relatedId);
   // The COI pool is one fixed bucket, not a real record to look up.
   if (relatedType === "coi_pool") return relatedId === "pool";
+  // Same fixed-bucket shape as the COI pool above.
+  if (relatedType === "company_documents") return relatedId === "library";
   return false;
 }
 

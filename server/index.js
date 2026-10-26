@@ -3,9 +3,11 @@ const {
   startSmartsheetAutoSync,
   startNightlyBackup,
   startVendorComplianceReminders,
+  startTimeOffAccrual,
   SYNC_TIMES,
   BACKUP_TIME,
   COMPLIANCE_REMINDER_TIME,
+  TIME_OFF_ACCRUAL_TIME,
   TIMEZONE,
 } = require("./scheduler");
 
@@ -18,6 +20,8 @@ app.listen(PORT, () => {
   console.log(`Smartsheet auto-sync scheduled for ${SYNC_TIMES.join(", ")} ${TIMEZONE}, Mon-Fri`);
   startNightlyBackup();
   console.log(`Nightly backup scheduled for ${BACKUP_TIME} ${TIMEZONE}, every day`);
+  startTimeOffAccrual();
+  console.log(`Time-off accrual scheduled for ${TIME_OFF_ACCRUAL_TIME} ${TIMEZONE}, every day`);
   // Off by default -- this actually emails vendors, so it only starts once
   // someone has used the Vendor Compliance dashboard's Preview/Send Now
   // buttons to confirm the list and wording are right. Set
