@@ -3,6 +3,7 @@ const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { pinStrengthError } = require("../utils/password");
 const { requireAuth } = require("../middleware/auth");
+const { createLoginThrottle } = require("../utils/loginThrottle");
 
 const router = express.Router();
 
@@ -21,50 +22,31 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${proce
 
 // In-memory login throttling, keyed by normalized ID. Fine for a
 // single-process deployment; resets on restart.
-const attempts = new Map();
+const loginThrottle = createLoginThrottle(MAX_ATTEMPTS, LOCK_DURATION_MS);
 
 // Separate, more lenient throttle for "email me a reset link" -- this
 // isn't guarding a PIN guess, it's guarding against someone spamming a
 // real person's inbox with reset emails they didn't ask for.
 const FORGOT_MAX_ATTEMPTS = 3;
 const FORGOT_LOCK_DURATION_MS = 60 * 60 * 1000;
-const forgotAttempts = new Map();
-
-function isLocked(map, key) {
-  const entry = map.get(key);
-  return Boolean(entry && entry.lockedUntil && entry.lockedUntil > Date.now());
-}
-
-function recordFailure(map, key, maxAttempts, lockDurationMs) {
-  const entry = map.get(key) || { count: 0, lockedUntil: null };
-  entry.count += 1;
-  if (entry.count >= maxAttempts) {
-    entry.lockedUntil = Date.now() + lockDurationMs;
-    entry.count = 0;
-  }
-  map.set(key, entry);
-}
-
-function clearFailures(map, key) {
-  map.delete(key);
-}
+const forgotThrottle = createLoginThrottle(FORGOT_MAX_ATTEMPTS, FORGOT_LOCK_DURATION_MS);
 
 router.post("/login", (req, res) => {
   const { id, pin } = req.body || {};
   if (!id || !pin) return res.status(400).json({ error: "ID and PIN are required" });
 
   const key = String(id).toUpperCase();
-  if (isLocked(attempts, key)) {
+  if (loginThrottle.isLocked(key)) {
     return res.status(429).json({ error: "Too many failed attempts. Try again in 15 minutes." });
   }
 
   const user = db.verifyLogin(id, pin);
   if (!user) {
-    recordFailure(attempts, key, MAX_ATTEMPTS, LOCK_DURATION_MS);
+    loginThrottle.recordFailure(key);
     return res.status(401).json({ error: "Invalid ID or PIN" });
   }
 
-  clearFailures(attempts, key);
+  loginThrottle.clearFailures(key);
   const token = db.createSession(user.id);
   db.addAudit(user.id, "LOGIN", `${user.name} logged in`);
 
@@ -99,12 +81,12 @@ router.post("/forgot-pin", async (req, res) => {
   if (!id) return res.status(400).json({ error: "ID is required" });
 
   const key = String(id).toUpperCase();
-  if (isLocked(forgotAttempts, key)) {
+  if (forgotThrottle.isLocked(key)) {
     // Same generic shape even when throttled -- a distinct "too many
     // requests" response here would itself confirm the ID is real.
     return res.json({ ok: true, message: FORGOT_PIN_GENERIC_MESSAGE });
   }
-  recordFailure(forgotAttempts, key, FORGOT_MAX_ATTEMPTS, FORGOT_LOCK_DURATION_MS);
+  forgotThrottle.recordFailure(key);
 
   const user = db.findTechnician(id);
   if (user && user.employment_status === "active" && user.email) {

@@ -2774,6 +2774,7 @@ function presentVendorRowBase(v) {
     poEmailMismatch: Boolean(v.po_email_mismatch),
     poEmailMismatchExtracted: v.po_email_mismatch_extracted || null,
     poEmailMismatchDetectedAt: v.po_email_mismatch_detected_at || null,
+    taxId: v.tax_id || "",
     // Display-only, never stored -- see deriveParentStage. A manual denial
     // always wins, the same "denied overrides everything" rule
     // deriveOnboardingStage already applies.
@@ -8025,6 +8026,127 @@ function consumePasswordReset(token) {
   return reset.tech_id;
 }
 
+// ---- Vendor portal ----
+//
+// A wholly separate identity/session system from the one above -- a
+// vendor's own session token (vendor_sessions) is never resolvable by
+// getSessionUser, and the reverse: an internal admin/tech session token
+// means nothing to anything in this section. See server/middleware/
+// vendorAuth.js's requireVendorAuth, which is the only thing that ever
+// reads vendor_sessions.
+const VENDOR_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days, same as an internal session
+
+function findVendorByTaxId(taxId) {
+  if (!taxId || !String(taxId).trim()) return null;
+  const row = db.prepare("SELECT * FROM vendors WHERE tax_id = ?").get(String(taxId).trim());
+  return row ? presentVendorRow(row) : null;
+}
+
+// Overwrites whatever passcode this vendor already had (there's only ever
+// one live passcode per vendor, same as a technician's own PIN) -- an
+// admin "regenerating" a lost/forgotten passcode is the same call as
+// setting the first one. Returns the plain passcode once, for the admin to
+// relay to the vendor however they normally communicate (phone, the
+// welcome email, etc.) -- it is never stored or shown again after this.
+function setVendorPortalPasscode(vendorId, passcode, setBy) {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO vendor_credentials (vendor_id, passcode_hash, set_by, set_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(vendor_id) DO UPDATE SET passcode_hash = excluded.passcode_hash, set_by = excluded.set_by, set_at = excluded.set_at`
+  ).run(Number(vendorId), hashPin(passcode), setBy || null, now);
+  // A freshly-issued passcode invalidates every session logged in under
+  // the old one -- same reasoning a technician's PIN reset does, via
+  // deleteSession there (see setTechnicianPin's own callers).
+  db.prepare("DELETE FROM vendor_sessions WHERE vendor_id = ?").run(Number(vendorId));
+}
+
+// Revokes portal access outright (deletes the credential row and any live
+// sessions) -- distinct from regenerating, which keeps access but changes
+// the passcode. A vendor with no vendor_credentials row simply can't log
+// in; findVendorByTaxId/verifyVendorLogin never need to know why.
+function revokeVendorPortalAccess(vendorId) {
+  db.prepare("DELETE FROM vendor_credentials WHERE vendor_id = ?").run(Number(vendorId));
+  db.prepare("DELETE FROM vendor_sessions WHERE vendor_id = ?").run(Number(vendorId));
+}
+
+function hasVendorPortalAccess(vendorId) {
+  return Boolean(db.prepare("SELECT 1 FROM vendor_credentials WHERE vendor_id = ?").get(Number(vendorId)));
+}
+
+function verifyVendorLogin(taxId, passcode) {
+  const vendorRow = db.prepare("SELECT * FROM vendors WHERE tax_id = ?").get(String(taxId || "").trim());
+  if (!vendorRow) return null;
+  const cred = db.prepare("SELECT * FROM vendor_credentials WHERE vendor_id = ?").get(vendorRow.id);
+  if (!cred) return null;
+  if (!verifyPin(passcode, cred.passcode_hash)) return null;
+  return presentVendorRow(vendorRow);
+}
+
+function createVendorSession(vendorId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + VENDOR_SESSION_TTL_MS);
+  db.prepare("DELETE FROM vendor_sessions WHERE expires_at < ?").run(now.toISOString());
+  db.prepare("INSERT INTO vendor_sessions (token, vendor_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(
+    token,
+    vendorId,
+    now.toISOString(),
+    expiresAt.toISOString()
+  );
+  return token;
+}
+
+// Returns the same narrow {id, name} shape a portal route needs -- never
+// the full admin-facing presentVendorRow, which carries internal fields
+// (coi_*/w9_*/ach_* compliance checkboxes, notes, raw status text, etc.)
+// a vendor session has no business seeing even read-only.
+function getVendorSessionUser(token) {
+  if (!token) return null;
+  const session = db.prepare("SELECT * FROM vendor_sessions WHERE token = ?").get(token);
+  if (!session) return null;
+  if (new Date(session.expires_at) < new Date()) {
+    db.prepare("DELETE FROM vendor_sessions WHERE token = ?").run(token);
+    return null;
+  }
+  const vendorRow = db.prepare("SELECT id, name FROM vendors WHERE id = ?").get(session.vendor_id);
+  if (!vendorRow) return null;
+  return { id: vendorRow.id, name: vendorRow.name };
+}
+
+function deleteVendorSession(token) {
+  db.prepare("DELETE FROM vendor_sessions WHERE token = ?").run(token);
+}
+
+// The vendor portal's own read of "where do I stand" -- the exact same
+// approved/total math and per-case-type shape the admin Onboarding board
+// already computes (see computeApprovalBadge/caseSummaryFromEntries in
+// adminReview.js), so the two can never disagree on the number. Kept
+// server-side here rather than duplicated client-side in the portal's own
+// small JS bundle.
+function getVendorPortalChecklist(vendorId) {
+  const vendorRow = db.prepare("SELECT * FROM vendors WHERE id = ?").get(Number(vendorId));
+  if (!vendorRow) return null;
+  const items = ONBOARDING_CASE_TYPES.map((ct) => {
+    const formStatus = vendorRow[FORM_STATUS_COLUMN_BY_KEY[ct.key]];
+    const latest = latestRequestOfType(vendorId, ct.type);
+    return {
+      key: ct.key,
+      label: ct.label,
+      notRequired: formStatus === "not_required",
+      status: latest ? latest.status || "" : "",
+      expirationDate: latest ? latest.expiration_date || null : null,
+    };
+  });
+  const relevant = items.filter((i) => !i.notRequired);
+  const approved = relevant.filter((i) => String(i.status).trim().toLowerCase() === "approved").length;
+  return {
+    vendorName: vendorRow.name,
+    items,
+    approvedCount: approved,
+    totalCount: relevant.length,
+  };
+}
+
 // ---- Audit log ----
 
 function addAudit(actor, action, details, vendorId = null, caseType = "") {
@@ -12688,6 +12810,15 @@ module.exports = {
   deleteSession,
   createPasswordReset,
   consumePasswordReset,
+  findVendorByTaxId,
+  setVendorPortalPasscode,
+  revokeVendorPortalAccess,
+  hasVendorPortalAccess,
+  verifyVendorLogin,
+  createVendorSession,
+  getVendorSessionUser,
+  deleteVendorSession,
+  getVendorPortalChecklist,
   addAudit,
   listAudit,
   getVendorAuditHistory,
