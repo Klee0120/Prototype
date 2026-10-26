@@ -29,6 +29,24 @@ async function vendorCall(server, method, urlPath, { token, body } = {}) {
 // reasoning server.call's own vendor-creation helpers elsewhere give each
 // vendor a distinct name/email.
 let vendorCounter = 0;
+// Mirrors helpers.js's own server.upload, just with the vendor-portal
+// header instead of x-session-token -- same reasoning as vendorCall above.
+async function vendorUpload(server, urlPath, { token, fields = {}, fileName = "test.txt", fileContent = "test content", mimeType = "text/plain" } = {}) {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  form.append("file", new Blob([fileContent], { type: mimeType }), fileName);
+  const headers = {};
+  if (token) headers["x-vendor-session-token"] = token;
+  const res = await fetch(server.baseUrl + urlPath, { method: "POST", headers, body: form });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+  return { status: res.status, body: json };
+}
+
 async function createVendorWithPortalAccess(server, overrides = {}) {
   vendorCounter += 1;
   const vendorRes = await server.call("POST", "/api/admin/vendors", {
@@ -196,4 +214,87 @@ test("Vendor portal: two vendors can't share the same Tax ID", async (t) => {
   const secondRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Second Co", taxId: "99-1111111" } });
   assert.equal(secondRes.status, 400);
   assert.match(secondRes.body.error, /Tax ID.*already on file/);
+});
+
+test("Vendor portal: a vendor can upload their own document, which lands in the same files table an admin upload would", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const uploadRes = await vendorUpload(server, "/api/vendor-portal/documents", {
+    token,
+    fields: { category: "w9" },
+    fileName: "w9.pdf",
+    fileContent: "fake w9 content",
+    mimeType: "application/pdf",
+  });
+  assert.equal(uploadRes.status, 201, JSON.stringify(uploadRes.body));
+  assert.equal(uploadRes.body.file.category, "w9");
+  assert.equal(uploadRes.body.file.relatedType, "vendor");
+  assert.equal(uploadRes.body.file.uploadedBy, `Vendor: ${vendor.name}`);
+  assert.equal(uploadRes.body.coiReview, null, "a non-COI upload should never start a COI review");
+
+  // Visible through the exact same admin-side read an uploaded-by-admin
+  // file would use -- nothing admin-side has to change to see it.
+  const adminFilesRes = await server.call("GET", `/api/files?relatedType=vendor&relatedId=${vendor.id}`, { userId: "ADMIN" });
+  assert.equal(adminFilesRes.status, 200);
+  assert.equal(adminFilesRes.body.length, 1);
+  assert.equal(adminFilesRes.body[0].id, uploadRes.body.file.id);
+
+  const historyRes = await vendorCall(server, "GET", "/api/vendor-portal/documents", { token });
+  assert.equal(historyRes.status, 200);
+  assert.equal(historyRes.body.length, 1);
+  assert.equal(historyRes.body[0].category, "w9");
+});
+
+test("Vendor portal: a COI upload automatically starts the same review pipeline an admin's manual upload would", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server, { services: "Corporate Administrative / Marketing & Communications / Commercial Printing & Finishing" });
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const uploadRes = await vendorUpload(server, "/api/vendor-portal/documents", {
+    token,
+    fields: { category: "coi" },
+    fileName: "coi.pdf",
+    // Not a real PDF -- extraction is expected to fail quietly and return
+    // empty text (see coiDocumentReview.js's own comment on that), the
+    // same as an admin uploading a flat scan with no text layer. The
+    // review itself should still be created either way.
+    fileContent: "not a real pdf",
+    mimeType: "application/pdf",
+  });
+  assert.equal(uploadRes.status, 201, JSON.stringify(uploadRes.body));
+  assert.ok(uploadRes.body.coiReview, "a COI upload should start a review");
+  assert.equal(uploadRes.body.coiReview.status, "pending");
+  assert.equal(uploadRes.body.coiReview.vendorId, vendor.id);
+
+  const reviewsRes = await server.call("GET", `/api/admin/vendors/${vendor.id}/coi-reviews`, { userId: "ADMIN" });
+  assert.equal(reviewsRes.status, 200);
+  assert.equal(reviewsRes.body.length, 1);
+  assert.equal(reviewsRes.body[0].fileId, uploadRes.body.file.id);
+});
+
+test("Vendor portal: upload rejects a category a vendor isn't allowed to submit, and requires a logged-in session", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const badCategoryRes = await vendorUpload(server, "/api/vendor-portal/documents", {
+    token,
+    fields: { category: "vpo_waiver" },
+  });
+  assert.equal(badCategoryRes.status, 400);
+  assert.match(badCategoryRes.body.error, /category must be one of/);
+
+  const noAuthRes = await vendorUpload(server, "/api/vendor-portal/documents", { fields: { category: "w9" } });
+  assert.equal(noAuthRes.status, 401);
 });

@@ -41,9 +41,12 @@
       font-size: 18px;
     }
     main {
-      max-width: 520px;
+      max-width: 600px;
       margin: 48px auto;
       padding: 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
     }
     .card {
       background: var(--card);
@@ -88,6 +91,54 @@
       margin-bottom: 16px;
       display: none;
     }
+    .success {
+      background: #e3f3ea;
+      color: var(--ok);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 16px;
+      background: #fff;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+    h2.section-heading {
+      font-size: 15px;
+      margin: 24px 0 8px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .doc-history { list-style: none; padding: 0; margin: 0; }
+    .doc-history li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .doc-history li:last-child { border-bottom: none; }
+    .doc-history .doc-meta { color: var(--muted); font-size: 12px; }
+    #coi-review-result {
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: var(--bg);
+      font-size: 13px;
+    }
+    #coi-review-result ul { margin: 6px 0 0; padding-left: 18px; }
     .checklist { list-style: none; padding: 0; margin: 16px 0; }
     .checklist li {
       display: flex;
@@ -142,10 +193,35 @@
       </div>
       <p class="summary" id="summary-line">—</p>
       <ul class="checklist" id="checklist-items"></ul>
-      <footer class="logout">
-        <button type="button" class="secondary" id="logout-btn">Sign out</button>
-      </footer>
     </section>
+
+    <section id="upload-view" class="card" hidden>
+      <h1>Submit a document</h1>
+      <p class="hint">Upload a new or replacement COI, W-9, ACH form, voided check, blank invoice, or hold harmless agreement. A COI is checked automatically and you'll see right away if anything looks off.</p>
+      <div id="upload-error" class="error"></div>
+      <div id="upload-success" class="success"></div>
+      <form id="upload-form">
+        <label for="upload-category">Document type</label>
+        <select id="upload-category" required>
+          <option value="coi">Certificate of Insurance (COI)</option>
+          <option value="w9">W-9</option>
+          <option value="ach">ACH / banking form</option>
+          <option value="check">Voided check</option>
+          <option value="blank_invoice">Blank invoice</option>
+          <option value="hold_harmless">Hold harmless agreement</option>
+        </select>
+        <label for="upload-file">File</label>
+        <input type="file" id="upload-file" required />
+        <button type="submit" id="upload-submit">Upload</button>
+      </form>
+      <div id="coi-review-result" hidden></div>
+      <h2 class="section-heading">Previously submitted</h2>
+      <ul class="doc-history" id="doc-history-items"></ul>
+    </section>
+
+    <footer class="logout" id="logout-row" hidden>
+      <button type="button" class="secondary" id="logout-btn">Sign out</button>
+    </footer>
   </main>
   <script type="module" src="./portal.js"></script>
 </body>
