@@ -4355,6 +4355,34 @@ button.chip:hover {
   margin-top: 16px;
 }
 
+.vendor-portal-access-card {
+  margin-top: 16px;
+}
+.vendor-portal-access-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+.vendor-portal-new-passcode {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: var(--neutral-bg);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.vendor-portal-passcode-value {
+  font-size: 15px;
+  margin: 6px 0 0;
+}
+.vendor-portal-passcode-value code {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 15px;
+  letter-spacing: 1px;
+}
+
 .vendor-overview-fields {
   display: flex;
   flex-direction: column;

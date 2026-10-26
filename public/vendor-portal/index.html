@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ServiceWorks Vendor Portal</title>
+  <!--
+    Deliberately its own standalone page, not part of the main app's SPA
+    (public/js/app.js) -- a vendor's own session lives in a completely
+    separate system (vendor_sessions, not sessions; x-vendor-session-token,
+    not x-session-token) from the internal technician/admin app this same
+    server also hosts, and keeping the two in separate bundles/entry points
+    is part of that separation, not just a styling choice. No shared
+    localStorage key, no shared JS module, no shared router.
+  -->
+  <style>
+    :root {
+      --ink: #241f1f;
+      --muted: #8a7976;
+      --border: #ead9d6;
+      --bg: #f8f2ee;
+      --card: #ffffff;
+      --accent: #a3182a;
+      --accent-dark: #7d1220;
+      --accent-bg: #f8e3e1;
+      --ok: #1f7a4d;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    header {
+      background: #1a1f2b;
+      color: #fff;
+      padding: 16px 24px;
+      font-weight: 700;
+      font-size: 18px;
+    }
+    main {
+      max-width: 520px;
+      margin: 48px auto;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+    }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p.hint { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-dark); }
+    button.secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .error {
+      background: var(--accent-bg);
+      color: var(--accent-dark);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .checklist { list-style: none; padding: 0; margin: 16px 0; }
+    .checklist li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .checklist li:last-child { border-bottom: none; }
+    .status-pill {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--bg);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .status-pill.approved { background: #e3f3ea; color: var(--ok); }
+    .summary {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .expiration { font-size: 12px; color: var(--muted); }
+    .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .top-row h1 { margin: 0; }
+    footer.logout { margin-top: 20px; text-align: right; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>ServiceWorks &middot; Vendor Portal</header>
+  <main>
+    <section id="login-view" class="card">
+      <h1>Sign in</h1>
+      <p class="hint">Use the Tax ID and passcode your C&amp;W Services contact gave you.</p>
+      <div id="login-error" class="error"></div>
+      <form id="login-form">
+        <label for="tax-id">Tax ID</label>
+        <input type="text" id="tax-id" autocomplete="off" required />
+        <label for="passcode">Passcode</label>
+        <input type="password" id="passcode" autocomplete="current-password" required />
+        <button type="submit" id="login-submit">Sign in</button>
+      </form>
+    </section>
+
+    <section id="checklist-view" class="card" hidden>
+      <div class="top-row">
+        <h1 id="vendor-name">—</h1>
+      </div>
+      <p class="summary" id="summary-line">—</p>
+      <ul class="checklist" id="checklist-items"></ul>
+      <footer class="logout">
+        <button type="button" class="secondary" id="logout-btn">Sign out</button>
+      </footer>
+    </section>
+  </main>
+  <script type="module" src="./portal.js"></script>
+</body>
+</html>

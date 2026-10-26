@@ -2790,6 +2790,12 @@ function presentVendorRow(v) {
     expiredComplianceCategories: listExpiredVendorComplianceCategories(v.id),
     territories: getVendorTerritories(v.id),
     ...getVendorContractedSummary(v.id),
+    // Only computed here (the single-vendor path), not in the bulk
+    // Directory listing's own presentVendorRowBase -- a per-row extra
+    // query like the others above, not worth paying for on every vendor
+    // in a 200-row Directory load when only the vendor profile page
+    // actually shows this.
+    hasPortalAccess: hasVendorPortalAccess(v.id),
   };
 }
 
@@ -2870,6 +2876,8 @@ function listVendors() {
     lastInvoiced.set(r.vendorId, r.lastInvoicedAt);
   }
 
+  const portalAccessIds = new Set(db.prepare("SELECT vendor_id FROM vendor_credentials").all().map((r) => r.vendor_id));
+
   return vendors.map((v) => {
     const spend = contractedSpend.get(v.id) || { total: 0, womCount: 0 };
     return {
@@ -2880,6 +2888,7 @@ function listVendors() {
       totalContractedApplied: spend.total,
       contractedWomCount: spend.womCount,
       lastInvoicedAt: lastInvoiced.get(v.id) || null,
+      hasPortalAccess: portalAccessIds.has(v.id),
     };
   });
 }
@@ -3035,6 +3044,7 @@ function createVendor(fields) {
     "created_at",
     "updated_at",
     "parent_vendor_id",
+    "tax_id",
   ];
   const values = [
     fields.name,
@@ -3083,6 +3093,7 @@ function createVendor(fields) {
     now,
     now,
     fields.parentVendorId != null ? Number(fields.parentVendorId) : null,
+    String(fields.taxId || "").trim() || null,
   ];
   const result = db
     .prepare(`INSERT INTO vendors (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
@@ -3130,7 +3141,8 @@ function updateVendor(id, fields) {
       onboarding_stage = ?,
       denied_reason = ?,
       updated_at = ?,
-      parent_vendor_id = ?
+      parent_vendor_id = ?,
+      tax_id = ?
      WHERE id = ?`
   ).run(
     fields.name,
@@ -3177,6 +3189,7 @@ function updateVendor(id, fields) {
     // and explicitly settable to null (unlinking from a parent) by passing
     // parentVendorId: null, as opposed to just leaving it out of the body.
     fields.parentVendorId !== undefined ? (fields.parentVendorId != null ? Number(fields.parentVendorId) : null) : existing.parentVendorId,
+    fields.taxId !== undefined ? (String(fields.taxId || "").trim() || null) : existing.taxId || null,
     Number(id)
   );
   linkUnmatchedPosForVendor(Number(id), fields.jdeVendorNumber);

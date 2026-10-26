@@ -1,5 +1,6 @@
 const express = require("express");
 const path = require("path");
+const crypto = require("crypto");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
@@ -32,8 +33,20 @@ function findDuplicateVendorNumber(jdeVendorNumber, excludeVendorId) {
   return match;
 }
 
+// Same reasoning as findDuplicateVendorNumber above -- tax_id has no
+// UNIQUE constraint either, and the vendor portal's own login
+// (findVendorByTaxId) resolves a single row by it, so two vendors sharing
+// one Tax ID would make one of them permanently unreachable by login.
+function findDuplicateTaxId(taxId, excludeVendorId) {
+  if (!taxId || !String(taxId).trim()) return null;
+  const match = db.findVendorByTaxId(taxId);
+  if (!match) return null;
+  if (excludeVendorId != null && Number(match.id) === Number(excludeVendorId)) return null;
+  return match;
+}
+
 function validateVendorBody(body, excludeVendorId) {
-  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage, jdeVendorNumber, parentVendorId } =
+  const { name, cwStatus, toyotaStatus, formsStatus, successfulInvoiceRecords, onboardingStage, jdeVendorNumber, parentVendorId, taxId } =
     body || {};
   if (!name || !String(name).trim()) return "name is required";
   if (parentVendorId != null) {
@@ -64,6 +77,8 @@ function validateVendorBody(body, excludeVendorId) {
   }
   const duplicate = findDuplicateVendorNumber(jdeVendorNumber, excludeVendorId);
   if (duplicate) return `JDE Vendor # ${String(jdeVendorNumber).trim()} is already on file for ${duplicate.name}`;
+  const duplicateTaxId = findDuplicateTaxId(taxId, excludeVendorId);
+  if (duplicateTaxId) return `Tax ID ${String(taxId).trim()} is already on file for ${duplicateTaxId.name}`;
   return null;
 }
 
@@ -221,6 +236,41 @@ router.patch("/:id/preferred", (req, res) => {
     vendor.id
   );
   res.json(updated);
+});
+
+// Generates (or regenerates) this vendor's portal passcode and returns it
+// in plain text exactly once -- it is hashed before it ever touches the
+// database (see db.setVendorPortalPasscode) and is never retrievable
+// again after this response. The admin relays it to the vendor however
+// they'd normally communicate (phone, the welcome email, etc.), alongside
+// the Tax ID already on file. Requires a Tax ID on file first -- a
+// passcode with nothing to pair it with can never actually log in.
+// Random, not derived from anything about the vendor -- 10 characters
+// from an alphabet with the visually-ambiguous ones (0/O, 1/I/l) removed,
+// since this is meant to be read aloud or typed from a sticky note.
+const PASSCODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function generateVendorPasscode() {
+  const bytes = crypto.randomBytes(10);
+  return Array.from(bytes, (b) => PASSCODE_ALPHABET[b % PASSCODE_ALPHABET.length]).join("");
+}
+
+router.post("/:id/portal-credential", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  if (!vendor.taxId) return res.status(400).json({ error: "Add a Tax ID to this vendor's profile before setting up portal access" });
+
+  const passcode = generateVendorPasscode();
+  db.setVendorPortalPasscode(vendor.id, passcode, req.user.id);
+  db.addAudit(req.user.id, "VENDOR_PORTAL_CREDENTIAL_SET", `${req.user.name} ${vendor.hasPortalAccess ? "reset" : "set up"} portal access for ${vendor.name}`, vendor.id);
+  res.json({ taxId: vendor.taxId, passcode });
+});
+
+router.delete("/:id/portal-credential", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  db.revokeVendorPortalAccess(vendor.id);
+  db.addAudit(req.user.id, "VENDOR_PORTAL_CREDENTIAL_REVOKED", `${req.user.name} revoked portal access for ${vendor.name}`, vendor.id);
+  res.json({ ok: true });
 });
 
 // Per-vendor opt-in for the automated reminder emails (see

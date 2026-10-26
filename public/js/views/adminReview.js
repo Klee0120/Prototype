@@ -792,6 +792,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return {
       name: v.name,
       jdeVendorNumber: v.jdeVendorNumber,
+      taxId: v.taxId,
       cwStatus: v.cwStatus,
       toyotaStatus: v.toyotaStatus,
       formsStatus: v.formsStatus,
@@ -2450,6 +2451,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
             name: form.name.value.trim(),
             parentVendorId: form.parentVendorId.value ? Number(form.parentVendorId.value) : null,
             jdeVendorNumber: form.jdeVendorNumber.value.trim(),
+            taxId: form.taxId.value.trim(),
             cwStatus: form.cwStatus.value,
             toyotaStatus: form.toyotaStatus.value,
             formsStatus: form.formsStatus.value,
@@ -2682,6 +2684,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           </p>
         </div>
       </div>
+      ${renderVendorPortalAccessCardHtml(v)}
       ${
         parentVendor || branches.length > 0
           ? `<div class="vendor-overview-card vendor-family-card">
@@ -2778,8 +2781,80 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       await refreshRemarks();
     });
 
+    wireVendorPortalAccessCard(host, v);
     await refreshTerritories();
     await refreshRemarks();
+  }
+
+  // The vendor portal's own admin-facing control: generate/reset the
+  // passcode a vendor pairs with their Tax ID to log in (see
+  // public/vendor-portal/), or revoke access outright. A freshly generated
+  // passcode is shown exactly once -- it's hashed before it's ever stored
+  // (see db.setVendorPortalPasscode) and this screen is the only place it
+  // will ever appear in plain text, so the card stays open with a copy
+  // affordance until the admin dismisses it, rather than this being a
+  // one-line toast that scrolls away.
+  function renderVendorPortalAccessCardHtml(v) {
+    return `
+      <div class="vendor-overview-card vendor-portal-access-card">
+        <h4>Vendor portal access</h4>
+        ${
+          !v.taxId
+            ? `<p class="review-checklist-hint">Add a Tax ID above (Edit vendor) before setting up portal access.</p>`
+            : `
+              <p class="review-checklist-hint">
+                Tax ID on file: <strong>${escapeHtml(v.taxId)}</strong> --
+                ${v.hasPortalAccess ? "portal access is set up." : "no passcode set up yet."}
+              </p>
+              <div class="vendor-portal-access-actions">
+                <button type="button" class="btn btn-secondary vendor-portal-generate-btn">
+                  ${v.hasPortalAccess ? "Reset passcode" : "Set up portal access"}
+                </button>
+                ${v.hasPortalAccess ? `<button type="button" class="btn btn-link danger-link vendor-portal-revoke-btn">Revoke access</button>` : ""}
+              </div>
+              <div class="vendor-portal-new-passcode" hidden></div>
+            `
+        }
+      </div>
+    `;
+  }
+
+  function wireVendorPortalAccessCard(host, v) {
+    const generateBtn = host.querySelector(".vendor-portal-generate-btn");
+    const revokeBtn = host.querySelector(".vendor-portal-revoke-btn");
+    const resultEl = host.querySelector(".vendor-portal-new-passcode");
+    if (generateBtn) {
+      generateBtn.addEventListener("click", async () => {
+        const verb = v.hasPortalAccess ? "Reset" : "Set up";
+        if (!window.confirm(`${verb} portal access for ${v.name}? ${v.hasPortalAccess ? "Their current passcode will stop working immediately." : ""}`)) return;
+        try {
+          const { taxId, passcode } = await api.post(`/api/admin/vendors/${v.id}/portal-credential`, {});
+          v.hasPortalAccess = true;
+          invalidateVendorsCache();
+          resultEl.hidden = false;
+          resultEl.innerHTML = `
+            <p><strong>Give this to ${escapeHtml(v.name)} now -- it won't be shown again:</strong></p>
+            <p class="vendor-portal-passcode-value">Tax ID: ${escapeHtml(taxId)} &nbsp;&middot;&nbsp; Passcode: <code>${escapeHtml(passcode)}</code></p>
+          `;
+          generateBtn.textContent = "Reset passcode";
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
+    if (revokeBtn) {
+      revokeBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Revoke portal access for ${v.name}? They won't be able to log in until it's set up again.`)) return;
+        try {
+          await api.delete(`/api/admin/vendors/${v.id}/portal-credential`);
+          v.hasPortalAccess = false;
+          invalidateVendorsCache();
+          await renderVendorOverviewTab(host, v);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    }
   }
 
   async function renderVendorOnboardingTab(host, v) {
@@ -3623,6 +3698,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <div class="vendor-edit-grid">
           <label class="profile-field"><span>Vendor name</span><input name="name" value="${escapeHtml(v.name)}" required /></label>
           <label class="profile-field"><span>JDE Vendor #</span><input name="jdeVendorNumber" value="${escapeHtml(v.jdeVendorNumber || "")}" /></label>
+          <label class="profile-field"><span>Tax ID</span><input name="taxId" value="${escapeHtml(v.taxId || "")}" placeholder="For vendor portal login" /></label>
           <label class="profile-field"><span>C&amp;W status</span><select name="cwStatus">${cwSelect}</select></label>
           <label class="profile-field"><span>Toyota status</span><select name="toyotaStatus">${toyotaSelect}</select></label>
           <label class="profile-field"><span>Forms status</span><select name="formsStatus">${formsSelect}</select></label>

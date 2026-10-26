@@ -21,6 +21,7 @@ const glRoutes = require("./routes/gl");
 const timeLogRoutes = require("./routes/timeLog");
 const integrationRoutes = require("./routes/integrations");
 const timeOffRoutes = require("./routes/timeOff");
+const vendorPortalRoutes = require("./routes/vendorPortal");
 
 function createApp() {
   const app = express();
@@ -80,7 +81,7 @@ function createApp() {
   app.use("/api", (req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-session-token");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-session-token, x-vendor-session-token");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
   });
@@ -109,6 +110,10 @@ function createApp() {
   app.use("/api/admin/time-log", timeLogRoutes);
   app.use("/api/admin/integrations", integrationRoutes);
   app.use("/api/time-off", timeOffRoutes);
+  // Wholly separate from every route above -- a vendor's own session
+  // token is never valid on any of them, and vice versa (see
+  // server/middleware/vendorAuth.js).
+  app.use("/api/vendor-portal", vendorPortalRoutes);
 
   // Every redeploy restarts this process (see scripts/redeploy.sh), but a
   // browser tab left open from before -- or one that just hits a normal
