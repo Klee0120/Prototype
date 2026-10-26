@@ -1965,6 +1965,47 @@ if (!hasColumn("vendors", "company_address")) {
   db.exec("ALTER TABLE vendors ADD COLUMN bill_to_address TEXT DEFAULT ''");
 }
 
+// The vendor portal's own login identity -- separate from everything else
+// on this row since not every vendor has portal access set up, and a Tax
+// ID alone is never a secret (it's often public record), only ever paired
+// with the admin-issued passcode in vendor_credentials below.
+if (!hasColumn("vendors", "tax_id")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN tax_id TEXT");
+}
+
+// A vendor's own portal passcode -- kept off the already-wide vendors
+// table, same reasoning technicians.pin lives on technicians but sessions/
+// password_resets are their own tables. One row per vendor (an admin
+// "regenerates" by overwriting, never appends). Hashed with the exact same
+// scrypt helper technician PINs use (see server/utils/password.js) --
+// there's nothing PIN-specific about that function, just naming.
+if (!tableExists("vendor_credentials")) {
+  db.exec(`
+    CREATE TABLE vendor_credentials (
+      vendor_id INTEGER PRIMARY KEY,
+      passcode_hash TEXT NOT NULL,
+      set_by TEXT,
+      set_at TEXT NOT NULL
+    )
+  `);
+}
+
+// A vendor's own login session -- deliberately its own table, never the
+// technician/admin `sessions` table, so a vendor's token is structurally
+// impossible for getSessionUser/requireAuth to ever resolve (see
+// getVendorSessionUser below, and requireVendorAuth in
+// server/middleware/vendorAuth.js). Same shape as `sessions` otherwise.
+if (!tableExists("vendor_sessions")) {
+  db.exec(`
+    CREATE TABLE vendor_sessions (
+      token TEXT PRIMARY KEY,
+      vendor_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    )
+  `);
+}
+
 // Per-case fields the redesigned onboarding cases need beyond the existing
 // free-text status/reference_number/note/as_of: an expiration date (every
 // case and any linked waiver needs one, no "no expiration" option), the
