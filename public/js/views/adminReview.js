@@ -1564,6 +1564,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const age = daysSince(v.updatedAt);
     const stale = v.onboardingStage === "in_progress" && age >= ONBOARDING_STALE_DAYS;
     el.className = `review-row onboarding-row${stale ? " review-row-pending" : ""}`;
+    el.dataset.vendorId = v.id;
 
     el.innerHTML = `
       <div class="review-row-summary">
@@ -1604,13 +1605,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       else onboardingRowDetailsExpanded.add(v.id);
     });
 
-    wireWelcomeEmailLine(el, v, () => drawVendorOnboarding(content));
+    // Welcome-email/case-pill edits never move a vendor to a different
+    // board section (see refreshOnboardingRow's own comment) -- refreshed
+    // in place so typing/saving one field doesn't trigger a full board
+    // re-render and re-sort. wireParentCase's two action buttons and
+    // wireDenyPanel's deny/reinstate/not-required actions CAN move a
+    // vendor to a different section (onboarded, Denied, Not Required), so
+    // those still do a full drawVendorOnboarding.
+    wireWelcomeEmailLine(el, v, () => refreshOnboardingRow(v, content, caseTypes));
     wireParentCase(el, v, () => drawVendorOnboarding(content));
     wireDenyPanel(el, v, () => drawVendorOnboarding(content));
 
     caseTypes.forEach((ct) => {
       const caseEl = el.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
-      wireCasePill(caseEl, v, ct, () => drawVendorOnboarding(content), caseSummary[ct.key]);
+      wireCasePill(caseEl, v, ct, () => refreshOnboardingRow(v, content, caseTypes), caseSummary[ct.key]);
     });
 
     const logToggle = el.querySelector(".onboarding-log-toggle");
@@ -1626,6 +1634,28 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
 
     return el;
+  }
+
+  // In-place refresh for one board row's own case data -- used by every
+  // inline welcome-email/case-pill edit so saving a single field doesn't
+  // force a full drawVendorOnboarding (which re-sorts "In Progress" by
+  // staleness; see its own sort comment). Without this, the vendor you're
+  // actively editing becomes the freshest-updated one and immediately
+  // resorts to the very bottom of the list on every keystroke/blur -- the
+  // row you're working on jumps away from your scroll position, which
+  // reads as the page yanking you back up. Only refreshes this one row in
+  // its existing DOM position; nothing else on the board moves.
+  async function refreshOnboardingRow(v, content, caseTypes) {
+    const existingEl = content.querySelector(`.onboarding-row[data-vendor-id="${v.id}"]`);
+    if (!existingEl) {
+      // Not on screen any more (board was navigated away from, or filters
+      // changed) -- nothing to refresh in place, fall back to a full load.
+      await drawVendorOnboarding(content);
+      return;
+    }
+    const [, entries] = await Promise.all([refreshVendorFields(v), api.get(`/api/admin/vendors/${v.id}/requests`)]);
+    const freshEl = renderOnboardingRow(v, content, caseTypes, caseSummaryFromEntries(entries));
+    existingEl.replaceWith(freshEl);
   }
 
   // "As of" is a plain YYYY-MM-DD (an <input type="date">'s own value, and
