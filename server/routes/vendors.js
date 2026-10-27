@@ -807,6 +807,7 @@ function requestFieldsFromBody(body) {
     w9PreviouslyApproved,
     coiPolicyNumber,
     coiCarrier,
+    paymentContactPhone,
   } = body || {};
   return {
     referenceNumber,
@@ -821,6 +822,7 @@ function requestFieldsFromBody(body) {
     w9PreviouslyApproved,
     coiPolicyNumber,
     coiCarrier,
+    paymentContactPhone,
   };
 }
 

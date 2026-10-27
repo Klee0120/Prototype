@@ -1755,6 +1755,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const formStatus = v[FORM_STATUS_KEY_BY_CASE_KEY[ct.key]] || "not_requested";
     const isW9 = ct.key === "w9";
     const isCoi = ct.key === "coi";
+    const isPayment = ct.key === "payment";
     const statusOptions = caseStatusOptionsFor(ct.key);
     const effectiveLatest = startingNew ? null : latest;
     const currentStatus = effectiveLatest ? effectiveLatest.status || "" : "";
@@ -1837,6 +1838,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         `
             : ""
         }
+        ${
+          isPayment
+            ? `
+          <label class="onboarding-field">
+            Payment contact phone
+            <input type="text" class="onboarding-payment-phone-input" placeholder="Phone number to verify banking details" value="${escapeHtml(effectiveLatest && effectiveLatest.paymentContactPhone ? effectiveLatest.paymentContactPhone : v.phone || "")}" ${disabledAttr} />
+          </label>
+        `
+            : ""
+        }
         ${locked ? "" : renderReviewNotesChecklistHtml(ct, effectiveLatest)}
         <label class="onboarding-field onboarding-case-notes-field">
           Document-case notes
@@ -1892,6 +1903,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const w9PrevApprovedCheckbox = caseEl.querySelector(".onboarding-w9-prev-approved-checkbox");
     const coiPolicyInput = caseEl.querySelector(".onboarding-coi-policy-input");
     const coiCarrierInput = caseEl.querySelector(".onboarding-coi-carrier-input");
+    const paymentPhoneInput = caseEl.querySelector(".onboarding-payment-phone-input");
     const reviewNotesDetails = caseEl.querySelector(".onboarding-review-notes-details");
     const reviewNotesSummary = caseEl.querySelector(".onboarding-review-notes-summary");
 
@@ -1914,6 +1926,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (ct.key === "coi") {
         payload.coiPolicyNumber = coiPolicyInput.value.trim();
         payload.coiCarrier = coiCarrierInput.value.trim();
+      }
+      if (ct.key === "payment") {
+        payload.paymentContactPhone = paymentPhoneInput.value.trim();
       }
       return payload;
     }
@@ -1948,7 +1963,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     statusSelect.addEventListener("change", flushAndRefresh);
     expirationInput.addEventListener("change", flushAndRefresh);
     if (w9PrevApprovedCheckbox) w9PrevApprovedCheckbox.addEventListener("change", flushAndRefresh);
-    [refInput, noteInput, w9NameInput, w9AddressInput, coiPolicyInput, coiCarrierInput].forEach((input) => {
+    [refInput, noteInput, w9NameInput, w9AddressInput, coiPolicyInput, coiCarrierInput, paymentPhoneInput].forEach((input) => {
       if (!input) return;
       input.addEventListener("input", debouncedPersist);
       input.addEventListener("blur", flushAndRefresh);

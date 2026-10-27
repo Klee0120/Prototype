@@ -2176,6 +2176,16 @@ if (!hasColumn("vendor_requests", "coi_policy_number")) {
   db.exec("ALTER TABLE vendor_requests ADD COLUMN coi_carrier TEXT DEFAULT ''");
 }
 
+// The Payment Details case's own equivalent of W-9's name/address and
+// COI's policy#/carrier -- a phone number to call and verify banking
+// details against before ACH is actually set up, standard practice for
+// catching a wire-fraud attempt. Always admin-entered, no extraction to
+// trust here (there's no document this would come off of the way W-9/COI
+// fields do).
+if (!hasColumn("vendor_requests", "payment_contact_phone")) {
+  db.exec("ALTER TABLE vendor_requests ADD COLUMN payment_contact_phone TEXT DEFAULT ''");
+}
+
 // COI is never itself marked "Waived" -- choosing "Waiting on VPO Waiver"
 // reveals this linked sub-case instead, one per COI case (created the
 // first time that status is chosen). A pending/approved waiver never
@@ -4598,6 +4608,7 @@ function presentVendorRequestRow(r) {
     w9PreviouslyApproved: Boolean(r.w9_previously_approved),
     coiPolicyNumber: r.coi_policy_number || "",
     coiCarrier: r.coi_carrier || "",
+    paymentContactPhone: r.payment_contact_phone || "",
     updatedBy: r.updated_by || null,
   };
 }
@@ -4800,10 +4811,11 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     referenceNumber, status, note, asOf,
     expirationDate, reviewNotesSelected, reviewNotesFreeText,
     w9Name, w9Address, w9PreviouslyApproved,
-    coiPolicyNumber, coiCarrier, updatedBy,
+    coiPolicyNumber, coiCarrier, paymentContactPhone, updatedBy,
   } = fields;
   const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
   const isCoi = requestType === ONBOARDING_CASE_TYPE_BY_KEY.coi;
+  const isPayment = requestType === ONBOARDING_CASE_TYPE_BY_KEY.payment;
   // "Previously approved in ServiceEdge" is a shortcut, not a normal status
   // edit: it forces the case Approved and appends (never replaces) a dated
   // record of the historical source, while collection (form_status) stays
@@ -4815,8 +4827,8 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     `INSERT INTO vendor_requests
       (vendor_id, request_type, reference_number, status, note, as_of,
        expiration_date, review_notes_selected, review_notes_free_text,
-       w9_name, w9_address, w9_previously_approved, coi_policy_number, coi_carrier, requested_at, updated_at, updated_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       w9_name, w9_address, w9_previously_approved, coi_policy_number, coi_carrier, payment_contact_phone, requested_at, updated_at, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     vendorId,
     requestType,
@@ -4832,6 +4844,7 @@ function addVendorRequest(vendorId, requestType, fields = {}) {
     previouslyApproved ? 1 : 0,
     isCoi ? coiPolicyNumber || "" : "",
     isCoi ? coiCarrier || "" : "",
+    isPayment ? paymentContactPhone || "" : "",
     now,
     now,
     updatedBy || null
@@ -4848,12 +4861,13 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     requestType, referenceNumber, status, note, asOf, updatedBy,
     expirationDate, reviewNotesSelected, reviewNotesFreeText,
     w9Name, w9Address, w9PreviouslyApproved,
-    coiPolicyNumber, coiCarrier,
+    coiPolicyNumber, coiCarrier, paymentContactPhone,
   } = fields;
   const now = new Date().toISOString();
   const existing = db.prepare("SELECT w9_previously_approved FROM vendor_requests WHERE id = ? AND vendor_id = ?").get(requestId, vendorId);
   const isW9 = requestType === ONBOARDING_CASE_TYPE_BY_KEY.w9;
   const isCoi = requestType === ONBOARDING_CASE_TYPE_BY_KEY.coi;
+  const isPayment = requestType === ONBOARDING_CASE_TYPE_BY_KEY.payment;
   const previouslyApproved = isW9 && Boolean(w9PreviouslyApproved);
   // Only append the historical-approval note the moment the flag is first
   // checked -- not on every later save while it stays checked, or the note
@@ -4865,7 +4879,7 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     `UPDATE vendor_requests SET
       request_type = ?, reference_number = ?, status = ?, note = ?, as_of = ?, updated_at = ?, updated_by = ?,
       expiration_date = ?, review_notes_selected = ?, review_notes_free_text = ?,
-      w9_name = ?, w9_address = ?, w9_previously_approved = ?, coi_policy_number = ?, coi_carrier = ?
+      w9_name = ?, w9_address = ?, w9_previously_approved = ?, coi_policy_number = ?, coi_carrier = ?, payment_contact_phone = ?
      WHERE id = ? AND vendor_id = ?`
   ).run(
     requestType,
@@ -4883,6 +4897,7 @@ function updateVendorRequest(vendorId, requestId, fields = {}) {
     previouslyApproved ? 1 : 0,
     isCoi ? coiPolicyNumber || "" : "",
     isCoi ? coiCarrier || "" : "",
+    isPayment ? paymentContactPhone || "" : "",
     requestId,
     vendorId
   );

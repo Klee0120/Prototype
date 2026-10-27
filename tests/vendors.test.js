@@ -1554,6 +1554,41 @@ test("vendors: a case tracks which admin logged/last touched it, for the Onboard
   });
 });
 
+test("vendors: a Payment Details case captures a contact phone number, scoped to that case type only", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendor = (await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Payment Phone Co" } })).body;
+
+  const createRes = await server.call("POST", `/api/admin/vendors/${vendor.id}/requests`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - Payment Details", status: "In review", paymentContactPhone: "555-0123" },
+  });
+  assert.equal(createRes.status, 201);
+  const paymentCase = createRes.body.find((r) => r.requestType === "Onboarding - Payment Details");
+  assert.equal(paymentCase.paymentContactPhone, "555-0123");
+
+  const listRes = await server.call("GET", `/api/admin/vendors/${vendor.id}/requests`, { userId: "ADMIN" });
+  assert.equal(listRes.body.find((r) => r.requestType === "Onboarding - Payment Details").paymentContactPhone, "555-0123");
+
+  const updateRes = await server.call("PATCH", `/api/admin/vendors/${vendor.id}/requests/${paymentCase.id}`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - Payment Details", status: "Approved", paymentContactPhone: "555-9999" },
+  });
+  assert.equal(updateRes.status, 200);
+  assert.equal(updateRes.body.find((r) => r.requestType === "Onboarding - Payment Details").paymentContactPhone, "555-9999");
+
+  // A phone number posted on a different case type is simply ignored --
+  // this is a Payment-specific field, same scoping as COI's own
+  // policy#/carrier fields never landing on a W-9 case.
+  const coiRes = await server.call("POST", `/api/admin/vendors/${vendor.id}/requests`, {
+    userId: "ADMIN",
+    body: { requestType: "Onboarding - COI", status: "In review", paymentContactPhone: "555-0000" },
+  });
+  const coiCase = coiRes.body.find((r) => r.requestType === "Onboarding - COI");
+  assert.equal(coiCase.paymentContactPhone, "", "paymentContactPhone should never land on a non-Payment case");
+});
+
 test("vendors: audit-history is scoped to one vendor and tags case-specific entries", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
