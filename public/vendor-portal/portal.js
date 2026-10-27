@@ -80,6 +80,7 @@ const loginView = document.getElementById("login-view");
 const checklistView = document.getElementById("checklist-view");
 const contactView = document.getElementById("contact-view");
 const uploadView = document.getElementById("upload-view");
+const helpView = document.getElementById("help-view");
 const logoutRow = document.getElementById("logout-row");
 const loginForm = document.getElementById("login-form");
 const loginError = document.getElementById("login-error");
@@ -89,6 +90,7 @@ function showLogin(message) {
   checklistView.hidden = true;
   contactView.hidden = true;
   uploadView.hidden = true;
+  helpView.hidden = true;
   logoutRow.hidden = true;
   loginView.hidden = false;
   if (message) {
@@ -124,6 +126,7 @@ async function showChecklist() {
   checklistView.hidden = false;
   contactView.hidden = false;
   uploadView.hidden = false;
+  helpView.hidden = false;
   logoutRow.hidden = false;
   document.getElementById("vendor-name").textContent = data.vendorName;
   document.getElementById("summary-line").textContent = `${data.approvedCount}/${data.totalCount} document cases approved`;
@@ -144,6 +147,19 @@ async function showChecklist() {
         </li>`
     )
     .join("");
+
+  // Only enabled once every required case actually shows Approved -- not a
+  // free-standing "check on me" button. data.totalCount already excludes
+  // notRequired cases (see db.getVendorPortalChecklist), same filter the
+  // list above applies.
+  const submitBtn = document.getElementById("submit-for-review-btn");
+  const submitHint = document.getElementById("submit-hint");
+  const allApproved = data.totalCount > 0 && data.approvedCount === data.totalCount;
+  submitBtn.disabled = !allApproved;
+  submitHint.textContent = allApproved
+    ? "Everything's approved -- let us know you're ready for the next step."
+    : "This unlocks once every document case above shows Approved.";
+
   await loadDocHistory();
 }
 
@@ -225,6 +241,49 @@ contactForm.addEventListener("submit", async (e) => {
   }
 });
 
+const helpForm = document.getElementById("help-form");
+const helpSubmit = document.getElementById("help-submit");
+const helpError = document.getElementById("help-error");
+const helpSuccess = document.getElementById("help-success");
+
+helpForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  helpSubmit.disabled = true;
+  helpError.style.display = "none";
+  helpSuccess.style.display = "none";
+  const message = document.getElementById("help-message").value.trim();
+  try {
+    await apiRequest("POST", "/api/vendor-portal/help-request", { message });
+    helpSuccess.textContent = "Sent -- a C&W Services admin will follow up.";
+    helpSuccess.style.display = "block";
+    helpForm.reset();
+  } catch (err) {
+    helpError.textContent = err.message;
+    helpError.style.display = "block";
+  } finally {
+    helpSubmit.disabled = false;
+  }
+});
+
+const submitForReviewBtn = document.getElementById("submit-for-review-btn");
+const submitError = document.getElementById("submit-error");
+const submitSuccess = document.getElementById("submit-success");
+
+submitForReviewBtn.addEventListener("click", async () => {
+  submitForReviewBtn.disabled = true;
+  submitError.style.display = "none";
+  submitSuccess.style.display = "none";
+  try {
+    await apiRequest("POST", "/api/vendor-portal/submit-for-review");
+    submitSuccess.textContent = "Submitted -- a C&W Services admin will take it from here.";
+    submitSuccess.style.display = "block";
+  } catch (err) {
+    submitError.textContent = err.message;
+    submitError.style.display = "block";
+    submitForReviewBtn.disabled = false;
+  }
+});
+
 document.getElementById("logout-btn").addEventListener("click", async () => {
   try {
     await apiRequest("POST", "/api/vendor-portal/logout");
@@ -242,6 +301,15 @@ const uploadError = document.getElementById("upload-error");
 const uploadSuccess = document.getElementById("upload-success");
 const coiReviewResult = document.getElementById("coi-review-result");
 
+// The only two things actually verified automatically off the file itself
+// (right form, right wording) -- everything else in coiReview.checklist is
+// the full requirement list for this vendor's service type(s), the same
+// data server/utils/coiDocumentReview.js's buildCoiRequirementChecklist
+// gives the admin's own Onboarding & Compliance tab. Deliberately never
+// framed as "we checked your coverage amounts" -- this app never tries to
+// auto-read actual dollar limits off a scan (see that file's own comment:
+// a wrong auto-read risks silently clearing an under-covered vendor), so
+// showing the list as a verified checklist would be a false promise.
 function renderCoiReviewResult(coiReview) {
   if (!coiReview) {
     coiReviewResult.hidden = true;
@@ -251,11 +319,93 @@ function renderCoiReviewResult(coiReview) {
   const notes = [];
   if (hints.acord25 === false) notes.push("We couldn't confirm this is on an ACORD 25 (2016/03) form -- double check before it's reviewed.");
   if (hints.language === false) notes.push("We couldn't find the required additional-insured language -- double check it's present and matches exactly.");
+  const checklist = Array.isArray(coiReview.checklist) ? coiReview.checklist : [];
   coiReviewResult.hidden = false;
   coiReviewResult.innerHTML = `
     <strong>Your COI is in for review.</strong>
     ${notes.length ? `<ul>${notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : "<p>Nothing obviously missing from what we could read off the file -- a C&amp;W Services admin will still review it before it's approved.</p>"}
+    ${
+      checklist.length
+        ? `
+          <p class="hint" style="margin-top: 16px;">Here's the full insurance requirement list for your registered service type(s). The two notes above are the only things we can check automatically from the file you uploaded -- the specific coverage amounts below still need a human reviewer to confirm against your actual certificate.</p>
+          <ul class="checklist coi-requirement-list">
+            ${checklist
+              .map(
+                (item) => `
+                  <li class="coi-requirement-item" data-key="${escapeHtml(item.key)}" data-label="${escapeHtml(item.label)}">
+                    <span>${escapeHtml(item.label)}</span>
+                    <button type="button" class="btn-link coi-waiver-toggle">Request waiver</button>
+                  </li>
+                `
+              )
+              .join("")}
+          </ul>
+        `
+        : ""
+    }
   `;
+  wireCoiWaiverToggles();
+}
+
+// Each requirement item's "Request waiver" button toggles open a small
+// inline form (not a browser prompt() -- the rest of this portal uses real
+// forms for every other input) asking why, and which outcome the vendor is
+// asking for: a VPO waiver or a hold harmless agreement. Only one open at a
+// time, same single-mini-form-at-a-time pattern as not stacking multiple
+// COI review panels.
+function wireCoiWaiverToggles() {
+  coiReviewResult.querySelectorAll(".coi-waiver-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const item = btn.closest(".coi-requirement-item");
+      const existing = coiReviewResult.querySelector(".coi-waiver-form");
+      if (existing) existing.remove();
+      if (existing && existing.dataset.forKey === item.dataset.key) return; // toggled closed
+
+      const form = document.createElement("li");
+      form.className = "coi-waiver-form";
+      form.dataset.forKey = item.dataset.key;
+      form.innerHTML = `
+        <div class="error" style="display:none;"></div>
+        <div class="success" style="display:none;"></div>
+        <label>Why can't this be met?</label>
+        <textarea class="coi-waiver-reason" rows="2"></textarea>
+        <label>What are you requesting?</label>
+        <select class="coi-waiver-outcome">
+          <option value="vpo_waiver">VPO waiver</option>
+          <option value="hold_harmless">Hold harmless agreement</option>
+        </select>
+        <button type="button" class="coi-waiver-submit">Send request</button>
+      `;
+      item.after(form);
+
+      const errorEl = form.querySelector(".error");
+      const successEl = form.querySelector(".success");
+      form.querySelector(".coi-waiver-submit").addEventListener("click", async () => {
+        const reason = form.querySelector(".coi-waiver-reason").value.trim();
+        const outcome = form.querySelector(".coi-waiver-outcome").value;
+        errorEl.style.display = "none";
+        if (!reason) {
+          errorEl.textContent = "Let us know why this can't be met.";
+          errorEl.style.display = "block";
+          return;
+        }
+        try {
+          await apiRequest("POST", "/api/vendor-portal/coi-waiver-request", {
+            requirementKey: item.dataset.key,
+            requirementLabel: item.dataset.label,
+            reason,
+            outcome,
+          });
+          successEl.textContent = "Sent -- a C&W Services admin will follow up.";
+          successEl.style.display = "block";
+          form.querySelector(".coi-waiver-submit").disabled = true;
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.style.display = "block";
+        }
+      });
+    });
+  });
 }
 
 uploadForm.addEventListener("submit", async (e) => {

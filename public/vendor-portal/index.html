@@ -57,13 +57,15 @@
     h1 { font-size: 20px; margin: 0 0 6px; }
     p.hint { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
     label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], textarea {
       width: 100%;
       padding: 10px 12px;
       border: 1px solid var(--border);
       border-radius: 8px;
       font-size: 14px;
+      font-family: inherit;
       margin-bottom: 16px;
+      resize: vertical;
     }
     button {
       background: var(--accent);
@@ -159,6 +161,28 @@
       white-space: nowrap;
     }
     .status-pill.approved { background: #e3f3ea; color: var(--ok); }
+    .btn-link {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 0;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-link:hover { text-decoration: underline; }
+    .coi-requirement-item { gap: 12px; }
+    li.coi-waiver-form {
+      display: block;
+      margin: 0 0 14px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .coi-waiver-form label { margin-top: 10px; }
+    .coi-waiver-form label:first-child { margin-top: 0; }
     .summary {
       font-size: 15px;
       font-weight: 700;
@@ -193,6 +217,10 @@
       </div>
       <p class="summary" id="summary-line">—</p>
       <ul class="checklist" id="checklist-items"></ul>
+      <p class="hint" id="submit-hint"></p>
+      <div id="submit-error" class="error"></div>
+      <div id="submit-success" class="success"></div>
+      <button type="button" class="secondary" id="submit-for-review-btn" disabled>Submit for review</button>
     </section>
 
     <section id="contact-view" class="card" hidden>
@@ -233,6 +261,18 @@
       <div id="coi-review-result" hidden></div>
       <h2 class="section-heading">Previously submitted</h2>
       <ul class="doc-history" id="doc-history-items"></ul>
+    </section>
+
+    <section id="help-view" class="card" hidden>
+      <h1>Need help?</h1>
+      <p class="hint">Tell us what you need and a C&amp;W Services admin will follow up.</p>
+      <div id="help-error" class="error"></div>
+      <div id="help-success" class="success"></div>
+      <form id="help-form">
+        <label for="help-message">What do you need help with? (optional)</label>
+        <textarea id="help-message" rows="3"></textarea>
+        <button type="submit" id="help-submit">Request help</button>
+      </form>
     </section>
 
     <footer class="logout" id="logout-row" hidden>

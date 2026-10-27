@@ -342,6 +342,11 @@ test("Vendor portal: a COI upload automatically starts the same review pipeline 
   assert.ok(uploadRes.body.coiReview, "a COI upload should start a review");
   assert.equal(uploadRes.body.coiReview.status, "pending");
   assert.equal(uploadRes.body.coiReview.vendorId, vendor.id);
+  // The vendor-facing portal's requirement-checklist display (portal.js's
+  // renderCoiReviewResult) depends on this array being present in the
+  // response -- protects that contract.
+  assert.ok(Array.isArray(uploadRes.body.coiReview.checklist), "coiReview.checklist should be the full requirement list");
+  assert.ok(uploadRes.body.coiReview.checklist.length > 0, "a registered service type should produce at least the universal requirements");
 
   const reviewsRes = await server.call("GET", `/api/admin/vendors/${vendor.id}/coi-reviews`, { userId: "ADMIN" });
   assert.equal(reviewsRes.status, 200);
@@ -366,4 +371,85 @@ test("Vendor portal: upload rejects a category a vendor isn't allowed to submit,
 
   const noAuthRes = await vendorUpload(server, "/api/vendor-portal/documents", { fields: { category: "w9" } });
   assert.equal(noAuthRes.status, 401);
+});
+
+test("Vendor portal: 'Need help' creates an admin-visible task carrying the vendor and message", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const noAuthRes = await vendorCall(server, "POST", "/api/vendor-portal/help-request", { body: { message: "nope" } });
+  assert.equal(noAuthRes.status, 401);
+
+  const res = await vendorCall(server, "POST", "/api/vendor-portal/help-request", { token, body: { message: "Not sure which COI form to use" } });
+  assert.equal(res.status, 201);
+
+  const tasksRes = await server.call("GET", `/api/tasks?category=vendor_help_request&vendor=${vendor.id}`, { userId: "ADMIN" });
+  assert.equal(tasksRes.status, 200);
+  assert.equal(tasksRes.body.length, 1);
+  assert.equal(tasksRes.body[0].relatedVendorId, vendor.id);
+  assert.match(tasksRes.body[0].title, new RegExp(vendor.name));
+  assert.equal(tasksRes.body[0].description, "Not sure which COI form to use");
+});
+
+test("Vendor portal: COI waiver request validates reason/outcome and creates an admin-visible task", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const missingReason = await vendorCall(server, "POST", "/api/vendor-portal/coi-waiver-request", {
+    token,
+    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", outcome: "vpo_waiver" },
+  });
+  assert.equal(missingReason.status, 400);
+  assert.match(missingReason.body.error, /reason is required/);
+
+  const badOutcome = await vendorCall(server, "POST", "/api/vendor-portal/coi-waiver-request", {
+    token,
+    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", reason: "Our policy caps at $500k", outcome: "not_a_real_outcome" },
+  });
+  assert.equal(badOutcome.status, 400);
+  assert.match(badOutcome.body.error, /outcome must be one of/);
+
+  const ok = await vendorCall(server, "POST", "/api/vendor-portal/coi-waiver-request", {
+    token,
+    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", reason: "Our policy caps at $500k", outcome: "vpo_waiver" },
+  });
+  assert.equal(ok.status, 201);
+
+  const tasksRes = await server.call("GET", `/api/tasks?category=vendor_waiver_request&vendor=${vendor.id}`, { userId: "ADMIN" });
+  assert.equal(tasksRes.body.length, 1);
+  assert.equal(tasksRes.body[0].relatedVendorId, vendor.id);
+  assert.match(tasksRes.body[0].title, /VPO waiver/);
+  assert.match(tasksRes.body[0].description, /General Liability \$1M/);
+  assert.match(tasksRes.body[0].description, /Our policy caps at \$500k/);
+});
+
+test("Vendor portal: Submit for review creates one task, and resubmitting refreshes it instead of duplicating", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const noAuthRes = await vendorCall(server, "POST", "/api/vendor-portal/submit-for-review");
+  assert.equal(noAuthRes.status, 401);
+
+  const first = await vendorCall(server, "POST", "/api/vendor-portal/submit-for-review", { token });
+  assert.equal(first.status, 201);
+
+  const second = await vendorCall(server, "POST", "/api/vendor-portal/submit-for-review", { token });
+  assert.equal(second.status, 201);
+  assert.equal(second.body.taskId, first.body.taskId, "resubmitting should refresh the same task, not create a new one");
+
+  const tasksRes = await server.call("GET", `/api/tasks?category=vendor_submission&vendor=${vendor.id}`, { userId: "ADMIN" });
+  assert.equal(tasksRes.body.length, 1, "exactly one task should exist after two submits");
+  assert.equal(tasksRes.body[0].relatedVendorId, vendor.id);
 });

@@ -163,4 +163,83 @@ router.get("/documents", requireVendorAuth, (req, res) => {
   res.json(db.listFiles("vendor", String(req.vendor.id)));
 });
 
+// "Need help" -- the vendor-portal equivalent of the tech-facing "Request a
+// C&W PO" button (POST /api/tasks/request-po): gives the ask a tracked task
+// instead of leaving it as an email/phone call nobody else can see is
+// pending. No assignedTo to pick (a vendor has no admin directory to choose
+// from, unlike the tech-facing version) -- assignedRole: "admin" lets
+// db.createTask's own withAutoAssignee resolve it the same way every other
+// role-queued task already does.
+router.post("/help-request", requireVendorAuth, (req, res) => {
+  const { message } = req.body || {};
+  const vendor = db.findVendor(req.vendor.id);
+  db.createTask({
+    title: `Vendor help request from ${vendor.name}`,
+    description: message || "",
+    assignedRole: "admin",
+    category: "vendor_help_request",
+    priority: "normal",
+    relatedVendorId: vendor.id,
+    source: "vendor_portal",
+  });
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_HELP_REQUESTED", `${vendor.name} requested help via the vendor portal`, vendor.id);
+  res.status(201).json({ ok: true });
+});
+
+// A requirement the vendor can't meet (e.g. a coverage limit their actual
+// policy doesn't carry) -- prompts for why, and routes the ask to admin as
+// either a VPO waiver or a hold-harmless agreement request. Both are
+// already real document categories for relatedType "vendor" (see
+// server/routes/files.js's CATEGORY_BY_RELATED) -- an admin acts on this
+// the same way they already handle every other compliance document, by
+// filing the real waiver/hold-harmless file once they decide. This route
+// only gets the request in front of them with enough context; it doesn't
+// invent a new approval workflow.
+const COI_WAIVER_OUTCOMES = new Set(["vpo_waiver", "hold_harmless"]);
+router.post("/coi-waiver-request", requireVendorAuth, (req, res) => {
+  const { requirementKey, requirementLabel, reason, outcome } = req.body || {};
+  if (!reason || !String(reason).trim()) return res.status(400).json({ error: "reason is required" });
+  if (!COI_WAIVER_OUTCOMES.has(outcome)) return res.status(400).json({ error: `outcome must be one of: ${[...COI_WAIVER_OUTCOMES].join(", ")}` });
+
+  const vendor = db.findVendor(req.vendor.id);
+  const outcomeLabel = outcome === "vpo_waiver" ? "VPO waiver" : "hold harmless agreement";
+  const label = requirementLabel || requirementKey || "a COI requirement";
+  db.createTask({
+    title: `${vendor.name} requests a ${outcomeLabel} -- ${label}`,
+    description: `Requirement: ${label}\nRequested outcome: ${outcomeLabel}\nVendor's stated reason: ${reason.trim()}`,
+    assignedRole: "admin",
+    category: "vendor_waiver_request",
+    priority: "normal",
+    relatedVendorId: vendor.id,
+    source: "vendor_portal",
+  });
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_WAIVER_REQUESTED", `${vendor.name} requested a ${outcomeLabel} for "${label}"`, vendor.id);
+  res.status(201).json({ ok: true });
+});
+
+// "I think I'm done" -- the vendor's own signal that admin should take a
+// final look and go start the real onboarding case in ServiceEdge (see the
+// existing "Submit approved COI to ServiceEdge" reminder task this same
+// pattern already follows, server/routes/vendors.js). Deliberately NOT a
+// deriveOnboardingStage mutation -- stage stays entirely computed from the
+// 4 case statuses exactly as it already is; this only ever creates/
+// refreshes one task. upsertTaskBySourceKey (not createTask) so clicking
+// Submit again after fixing something refreshes the same task instead of
+// stacking duplicates.
+router.post("/submit-for-review", requireVendorAuth, (req, res) => {
+  const vendor = db.findVendor(req.vendor.id);
+  const checklist = db.getVendorPortalChecklist(req.vendor.id);
+  const task = db.upsertTaskBySourceKey(`VENDOR-${vendor.id}-PORTAL-SUBMIT`, {
+    title: `${vendor.name} submitted their onboarding documents for review`,
+    description: `${checklist.approvedCount}/${checklist.totalCount} document cases show Approved at submission time. Review everything and, once satisfied, start the onboarding case in ServiceEdge and continue local case tracking as usual.`,
+    assignedRole: "admin",
+    category: "vendor_submission",
+    priority: "normal",
+    relatedVendorId: vendor.id,
+    source: "vendor_portal",
+  });
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_SUBMITTED_FOR_REVIEW", `${vendor.name} clicked Submit for review in the vendor portal`, vendor.id);
+  res.status(201).json({ ok: true, taskId: task.id });
+});
+
 module.exports = router;
