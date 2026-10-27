@@ -1731,3 +1731,36 @@ test("Budget PO Tracker: manually confirming a vendor also links sibling POs sha
   assert.equal(po3.body.vendorId, null, "a different-named PO should never be swept in");
   assert.equal(po4.body.vendorId, null, "a PO with its own (different) Vendor # should be left for its own matching");
 });
+
+test("GET /:id/vendor-invoices: the admin-side view of what a vendor has self-submitted against this PO", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  const now = new Date().toISOString();
+
+  const result = raw
+    .prepare(
+      `INSERT INTO pos (composite_key, po_number, description, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+    )
+    .run("vi-1", "PO-VI-1", "Test PO", now, now, now, now);
+  const poId = Number(result.lastInsertRowid);
+
+  const empty = await server.call("GET", `/api/admin/pos/${poId}/vendor-invoices`, { userId: "ADMIN" });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, []);
+
+  const invoice = db.createPoVendorInvoice({ poId, vendorId: 1, invoiceNumber: "INV-ABC", fileId: "fake-file-id" });
+  db.recordPoVendorInvoiceEmailOutcome(invoice.id, { status: "sent" });
+
+  const res = await server.call("GET", `/api/admin/pos/${poId}/vendor-invoices`, { userId: "ADMIN" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.length, 1);
+  assert.equal(res.body[0].invoiceNumber, "INV-ABC");
+  assert.equal(res.body[0].emailStatus, "sent");
+
+  const missing = await server.call("GET", "/api/admin/pos/999999/vendor-invoices", { userId: "ADMIN" });
+  assert.equal(missing.status, 404);
+});

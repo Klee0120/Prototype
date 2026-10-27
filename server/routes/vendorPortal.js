@@ -4,6 +4,8 @@ const path = require("path");
 const crypto = require("crypto");
 const db = require("../data/db");
 const fileEncryption = require("../utils/fileEncryption");
+const mailer = require("../utils/mailer");
+const { buildApInvoiceEmail } = require("../utils/vendorInvoiceEmail");
 const { requireVendorAuth } = require("../middleware/vendorAuth");
 const { createLoginThrottle } = require("../utils/loginThrottle");
 const {
@@ -325,6 +327,145 @@ router.post("/submit-for-review", requireVendorAuth, (req, res) => {
   });
   db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_SUBMITTED_FOR_REVIEW", `${vendor.name} clicked Submit for review in the vendor portal`, vendor.id);
   res.status(201).json({ ok: true, taskId: task.id });
+});
+
+// Gates the PO/invoice section on the vendor's own Tax ID being on file --
+// per Krista, this section shouldn't exist at all for a vendor who hasn't
+// added one yet. req.vendor is deliberately only {id, name} (see
+// getVendorSessionUser's own comment), so this fetches the real vendor row
+// itself rather than trusting anything off the session. 400, not 403 --
+// this mirrors submit-for-review's own precondition gate exactly: the
+// vendor CAN do this, once they add a Tax ID, so it isn't a permissions
+// failure.
+function requireVendorTaxId(req, res, next) {
+  const vendor = db.findVendor(req.vendor.id);
+  if (!vendor || !vendor.taxId) return res.status(400).json({ error: "Add your Tax ID before you can use this" });
+  req.vendorRecord = vendor;
+  next();
+}
+
+// "My Open POs" -- every PO already linked to this vendor (pos.vendor_id)
+// whose status reads "pending vendor invoice" (see db.listVendorOpenPos's
+// own comment on why that's a LIKE against free text, not a managed enum).
+// Eventually meant to come straight from Vroozi; for now this is the
+// existing Budget PO Tracker data, which already has a reliable vendor_id
+// FK to scope off of.
+router.get("/pos", requireVendorAuth, requireVendorTaxId, (req, res) => {
+  res.json(db.listVendorOpenPos(req.vendor.id));
+});
+
+// "Can't find your PO?" -- same shape and reasoning as help-request above:
+// a vendor's own PO may not be imported yet, may not be vendor-matched yet
+// (pos.vendor_id IS NULL), or may genuinely not exist -- this doesn't try
+// to tell those apart, it just gets a tracked ask in front of admin either
+// way.
+router.post("/po-request", requireVendorAuth, requireVendorTaxId, (req, res) => {
+  const { poNumber, notes } = req.body || {};
+  if ((!poNumber || !String(poNumber).trim()) && (!notes || !String(notes).trim())) {
+    return res.status(400).json({ error: "Enter a PO number or a note describing what you're looking for" });
+  }
+  const vendor = req.vendorRecord;
+  db.createTask({
+    title: `${vendor.name} can't find a PO${poNumber ? ` -- ${String(poNumber).trim()}` : ""}`,
+    description: notes ? String(notes).trim() : "",
+    assignedRole: "admin",
+    category: "vendor_po_request",
+    priority: "normal",
+    relatedVendorId: vendor.id,
+    source: "vendor_portal",
+  });
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_PO_REQUESTED", `${vendor.name} reported a PO they couldn't find via the vendor portal`, vendor.id);
+  res.status(201).json({ ok: true });
+});
+
+// A vendor attaching their invoice (+ their own invoice #) to one of their
+// open POs -- saved and emailed to AP immediately (no admin-review gate;
+// confirmed with Krista this should be automatic). The invoice record is
+// always saved, even if the email itself fails -- see db.createPoVendorInvoice's
+// own comment. No attempt to read/validate the uploaded PDF's content:
+// the email itself auto-fills the PO #, job location, who placed the
+// order, and the vendor's own contact info (see buildApInvoiceEmail), and
+// restates the AP policy's own requirements as a written reminder, rather
+// than this app trying to guess whether an arbitrary vendor PDF satisfies
+// them (no reliable way to do that here -- see the comment on
+// buildApInvoiceEmail itself).
+router.post("/pos/:id/invoices", requireVendorAuth, requireVendorTaxId, upload.single("file"), async (req, res) => {
+  const po = db.findPo(req.params.id);
+  if (!po || Number(po.vendorId) !== Number(req.vendor.id)) {
+    return res.status(404).json({ error: "PO not found" });
+  }
+
+  const { invoiceNumber } = req.body || {};
+  if (!invoiceNumber || !String(invoiceNumber).trim()) {
+    return res.status(400).json({ error: "invoiceNumber is required" });
+  }
+  if (!req.file) return res.status(400).json({ error: "file is required" });
+  if (req.file.mimetype !== "application/pdf") {
+    return res.status(400).json({ error: "Invoices must be uploaded as a PDF" });
+  }
+  if (!fileEncryption.isConfigured()) {
+    return res.status(503).json({ error: "File encryption is not configured on this server -- uploads are disabled" });
+  }
+
+  const vendor = req.vendorRecord;
+  const id = crypto.randomUUID();
+  const ext = path.extname(req.file.originalname || "").slice(0, 10);
+  const storedName = `${id}${ext}`;
+  db.writeUploadBytes(storedName, req.file.buffer);
+
+  const file = db.insertFile({
+    id,
+    relatedType: "po",
+    relatedId: String(po.id),
+    category: "vendor_invoice",
+    originalName: req.file.originalname,
+    storedName,
+    mimeType: req.file.mimetype,
+    size: req.file.size,
+    uploadedBy: `Vendor: ${vendor.name}`,
+    uploadedAt: new Date().toISOString(),
+  });
+
+  let invoice = db.createPoVendorInvoice({
+    poId: po.id,
+    vendorId: vendor.id,
+    invoiceNumber: String(invoiceNumber).trim(),
+    fileId: file.id,
+  });
+
+  let emailOutcome;
+  try {
+    const email = buildApInvoiceEmail(po, vendor, invoice.invoiceNumber);
+    const buffer = db.readUploadBytes(storedName);
+    const result = await mailer.sendMail({ ...email, attachments: [{ filename: req.file.originalname, buffer }] });
+    emailOutcome = result.sent ? { status: "sent" } : { status: "not_configured" };
+  } catch (err) {
+    console.error(`[vendor-portal] failed to email invoice for PO ${po.id}:`, err.message);
+    emailOutcome = { status: "failed", error: err.message };
+  }
+  invoice = db.recordPoVendorInvoiceEmailOutcome(invoice.id, emailOutcome);
+
+  if (emailOutcome.status === "failed") {
+    db.createTask({
+      title: `Invoice email to AP failed -- ${vendor.name}, PO ${po.poNumber || po.id}`,
+      description: `${vendor.name} submitted invoice #${invoice.invoiceNumber} for PO ${po.poNumber || po.id}, but the email to AP failed to send: ${emailOutcome.error}. The invoice file is saved in the app -- it needs to be sent to AP manually.`,
+      assignedRole: "admin",
+      category: "vendor_invoice_email_failed",
+      priority: "high",
+      relatedVendorId: vendor.id,
+      relatedPoId: po.id,
+      source: "vendor_portal",
+    });
+  }
+
+  db.addAudit(
+    `vendor:${req.vendor.id}`,
+    "VENDOR_PORTAL_INVOICE_SUBMITTED",
+    `${vendor.name} submitted invoice #${invoice.invoiceNumber} for PO ${po.poNumber || po.id} via the vendor portal (email ${emailOutcome.status})`,
+    vendor.id
+  );
+
+  res.status(201).json({ invoice, file, emailStatus: emailOutcome.status });
 });
 
 module.exports = router;

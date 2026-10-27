@@ -172,6 +172,17 @@ router.get("/:id/tasks", (req, res) => {
   res.json(db.listPoTasks(po.id));
 });
 
+// Admin-side view of whatever the vendor has self-submitted against this
+// PO via the vendor portal (see server/routes/vendorPortal.js's
+// POST /pos/:id/invoices) -- invoice #, when, and whether the AP email
+// actually went out. The file itself downloads through the existing
+// GET /api/files/:id/download (already unconditional for any admin).
+router.get("/:id/vendor-invoices", (req, res) => {
+  const po = db.findPo(req.params.id);
+  if (!po) return res.status(404).json({ error: "PO not found" });
+  res.json(db.listPoVendorInvoices(po.id));
+});
+
 // A quick way to log a follow-up against a PO still being organized (e.g.
 // "find out who this vendor is") without it showing up anywhere in Task
 // Manager until the PO itself is moved to Active -- listTasks' own join

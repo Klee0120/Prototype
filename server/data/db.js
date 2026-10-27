@@ -654,6 +654,29 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 
+  -- A vendor's own self-service invoice submission against one of their
+  -- open POs (vendor portal -- see server/routes/vendorPortal.js's
+  -- POST /pos/:id/invoices). file_id is a files.id (a crypto.randomUUID()
+  -- string, not an int) pointing at the uploaded PDF. email_status/
+  -- email_error record whether the AP email actually went out -- 'sent',
+  -- 'failed' (a real send attempt that errored, surfaced to admin as a
+  -- vendor_invoice_email_failed task), or 'not_configured' (SendGrid isn't
+  -- set up in this environment, same no-crash-no-silent-lie convention
+  -- every other mailer.sendMail call site already follows). The row is
+  -- always written, even when the email itself fails -- the vendor's
+  -- submission is never lost just because delivery was.
+  CREATE TABLE IF NOT EXISTS po_vendor_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_id INTEGER NOT NULL,
+    vendor_id INTEGER NOT NULL,
+    invoice_number TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    email_status TEXT NOT NULL DEFAULT 'pending',
+    email_error TEXT,
+    created_at TEXT NOT NULL
+  );
+
   -- One row per completed import run -- the "last import" timestamp/summary
   -- the POs page shows, and the audit log of what each one did.
   CREATE TABLE IF NOT EXISTS po_imports (
@@ -758,6 +781,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_pos_lifecycle_status ON pos(lifecycle_status);
   CREATE INDEX IF NOT EXISTS idx_pos_vendor_id ON pos(vendor_id);
   CREATE INDEX IF NOT EXISTS idx_pos_vendor_number ON pos(vendor_number);
+  CREATE INDEX IF NOT EXISTS idx_po_vendor_invoices_po_id ON po_vendor_invoices(po_id);
+  CREATE INDEX IF NOT EXISTS idx_po_vendor_invoices_vendor_id ON po_vendor_invoices(vendor_id);
   CREATE INDEX IF NOT EXISTS idx_vendors_jde_vendor_number ON vendors(jde_vendor_number);
   -- files(related_type, related_id) backs every document-attachment lookup
   -- in the app (technician, vendor, WOM, task, labor_report records all
@@ -4393,6 +4418,24 @@ function poTerritory(p) {
     if (loc && loc.territory) return loc.territory;
   }
   return null;
+}
+
+// Who actually owns this PO -- for the vendor portal's invoice-to-AP email
+// (see server/utils/vendorInvoiceEmail.js), which needs to cc a real
+// person rather than one hardcoded address. Takes a *presented* PO row
+// (findPo's camelCase shape, already carries `territory` computed by
+// poTerritory's own admin-name-then-location fallback chain) rather than
+// re-deriving it from raw fields -- a direct admin-name match first (the
+// PO's own Admin column, when it resolves to someone real and active),
+// falling back to whichever active admin's home location covers that same
+// territory. `po.adminName` is free text from Krista's Excel import and
+// often won't resolve directly (a typo, a since-departed admin), so the
+// territory fallback is what actually finds someone most of the time, not
+// an edge case.
+function resolvePoResponsibleAdmin(po) {
+  const direct = activeAdminMatch(po.adminName);
+  if (direct) return direct;
+  return po.territory ? findAdminForTerritory(po.territory) : null;
 }
 
 // The PO this reclass item traces back to, whichever way it's known: a
@@ -9045,6 +9088,68 @@ function findPo(id) {
   return attachOpenReclassFlags([presentPoRow(row)])[0];
 }
 
+// The vendor portal's own "My Open POs" list (see server/routes/
+// vendorPortal.js's GET /pos) -- every PO already linked to this vendor
+// (pos.vendor_id, the same reliable FK the admin-side Budget PO Tracker
+// uses) whose status column contains "pending vendor invoice". That status
+// is raw, unmanaged free text copied verbatim from Krista's Excel import
+// (no code anywhere treats it as an enum) -- SQLite's LIKE is already
+// ASCII case-insensitive, so this tolerates case/whitespace variance in
+// what's actually typed, though a genuinely different wording wouldn't
+// match (a known limitation, not something to guess around here).
+function listVendorOpenPos(vendorId) {
+  const rows = db.prepare(`SELECT * FROM pos WHERE vendor_id = ? AND status LIKE '%pending vendor invoice%' ORDER BY date_requested DESC`).all(Number(vendorId));
+  const presented = presentPoRows(rows);
+  return presented.map((p) => ({ ...p, invoices: listPoVendorInvoices(p.id) }));
+}
+
+// A vendor's own invoice submission against one of their POs -- inserted
+// BEFORE the AP email is even attempted (see POST /pos/:id/invoices), so the
+// row survives even if sendMail throws; recordPoVendorInvoiceEmailOutcome
+// below then updates it with however that attempt actually went.
+function createPoVendorInvoice({ poId, vendorId, invoiceNumber, fileId }) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO po_vendor_invoices (po_id, vendor_id, invoice_number, file_id, submitted_at, email_status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`
+    )
+    .run(Number(poId), Number(vendorId), invoiceNumber, fileId, now, now);
+  return findPoVendorInvoice(Number(result.lastInsertRowid));
+}
+
+function recordPoVendorInvoiceEmailOutcome(id, { status, error }) {
+  db.prepare("UPDATE po_vendor_invoices SET email_status = ?, email_error = ? WHERE id = ?").run(status, error || null, Number(id));
+  return findPoVendorInvoice(Number(id));
+}
+
+function presentPoVendorInvoice(r) {
+  return {
+    id: r.id,
+    poId: r.po_id,
+    vendorId: r.vendor_id,
+    invoiceNumber: r.invoice_number,
+    fileId: r.file_id,
+    submittedAt: r.submitted_at,
+    emailStatus: r.email_status,
+    emailError: r.email_error,
+  };
+}
+
+function findPoVendorInvoice(id) {
+  const row = db.prepare("SELECT * FROM po_vendor_invoices WHERE id = ?").get(Number(id));
+  return row ? presentPoVendorInvoice(row) : null;
+}
+
+// The admin-side PO detail's own view of what's been submitted against it
+// (server/routes/pos.js's GET /:id/vendor-invoices) -- most recent first.
+function listPoVendorInvoices(poId) {
+  return db
+    .prepare("SELECT * FROM po_vendor_invoices WHERE po_id = ? ORDER BY id DESC")
+    .all(Number(poId))
+    .map(presentPoVendorInvoice);
+}
+
 function getLastPoImport() {
   return db.prepare("SELECT * FROM po_imports ORDER BY id DESC LIMIT 1").get() || null;
 }
@@ -13572,6 +13677,11 @@ module.exports = {
   listReportGapMonths,
   listPos,
   findPo,
+  listVendorOpenPos,
+  createPoVendorInvoice,
+  recordPoVendorInvoiceEmailOutcome,
+  listPoVendorInvoices,
+  resolvePoResponsibleAdmin,
   getLastPoImport,
   runPoImport,
   confirmPoVendor,

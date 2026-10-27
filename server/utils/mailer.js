@@ -33,14 +33,24 @@ function buildAttachment({ filename, buffer }) {
   };
 }
 
-async function sendMail({ to, subject, text, attachments }) {
+// cc is optional -- a single address or an array of them. Kept additive
+// (every existing call site passes no cc at all and is unaffected) since
+// the one caller that needs it (the vendor-portal invoice-to-AP email)
+// resolves its own cc dynamically per PO rather than always sending to the
+// same fixed address.
+async function sendMail({ to, cc, subject, text, attachments }) {
   if (!isConfigured()) {
     console.warn(`[mailer] SendGrid not configured -- would have emailed ${to}: "${subject}"`);
     return { sent: false, reason: "SendGrid not configured" };
   }
 
+  const personalization = { to: [{ email: to }] };
+  if (cc) {
+    const ccList = Array.isArray(cc) ? cc : [cc];
+    if (ccList.length > 0) personalization.cc = ccList.map((email) => ({ email }));
+  }
   const body = {
-    personalizations: [{ to: [{ email: to }] }],
+    personalizations: [personalization],
     from: { email: SENDGRID_FROM },
     subject,
     content: [{ type: "text/plain", value: text }],

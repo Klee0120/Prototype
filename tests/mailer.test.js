@@ -100,6 +100,45 @@ test("mailer: translates a {filename, buffer} attachment into SendGrid's base64 
   assert.equal(Buffer.from(body.attachments[0].content, "base64").toString(), "hello attachment");
 });
 
+test("mailer: cc is included when passed (string or array), omitted when not", async (t) => {
+  process.env.SENDGRID_API_KEY = "test-key";
+  process.env.SENDGRID_FROM = "serviceworks.noreply@example.com";
+  const mailer = freshMailer();
+  t.after(() => {
+    delete process.env.SENDGRID_API_KEY;
+    delete process.env.SENDGRID_FROM;
+    delete require.cache[mailerPath];
+  });
+
+  const originalFetch = global.fetch;
+  let capturedOptions = null;
+  global.fetch = async (url, options) => {
+    capturedOptions = options;
+    return { ok: true, status: 202, text: async () => "" };
+  };
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+
+  await t.test("a single cc address", async () => {
+    await mailer.sendMail({ to: "someone@example.com", cc: "admin@example.com", subject: "x", text: "y" });
+    const body = JSON.parse(capturedOptions.body);
+    assert.deepEqual(body.personalizations[0].cc, [{ email: "admin@example.com" }]);
+  });
+
+  await t.test("an array of cc addresses", async () => {
+    await mailer.sendMail({ to: "someone@example.com", cc: ["a@example.com", "b@example.com"], subject: "x", text: "y" });
+    const body = JSON.parse(capturedOptions.body);
+    assert.deepEqual(body.personalizations[0].cc, [{ email: "a@example.com" }, { email: "b@example.com" }]);
+  });
+
+  await t.test("no cc at all when not passed", async () => {
+    await mailer.sendMail({ to: "someone@example.com", subject: "x", text: "y" });
+    const body = JSON.parse(capturedOptions.body);
+    assert.equal(body.personalizations[0].cc, undefined);
+  });
+});
+
 test("mailer: throws when SendGrid responds with an error status", async (t) => {
   process.env.SENDGRID_API_KEY = "test-key";
   process.env.SENDGRID_FROM = "serviceworks.noreply@example.com";

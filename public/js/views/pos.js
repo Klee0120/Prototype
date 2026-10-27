@@ -784,6 +784,9 @@ export async function renderPos(container, { openPoId } = {}) {
 
       <h4>Documents</h4>
       <div class="po-documents"></div>
+
+      <h4>Vendor Invoices</h4>
+      <div class="po-vendor-invoices"></div>
     `;
 
     container.querySelector(".po-back-btn").addEventListener("click", () => {
@@ -861,6 +864,58 @@ export async function renderPos(container, { openPoId } = {}) {
       relatedId: po.id,
       categories: PO_DOC_CATEGORIES,
       canUpload: true,
+    });
+
+    await drawVendorInvoices(container, po.id);
+  }
+
+  // What the vendor has self-submitted via the vendor portal (see
+  // server/routes/vendorPortal.js's POST /pos/:id/invoices) -- invoice #,
+  // when, whether the AP email actually went out, and a download link for
+  // the PDF itself (through the same GET /api/files/:id/download every
+  // other admin document viewer already uses).
+  async function drawVendorInvoices(container, poId) {
+    const wrap = container.querySelector(".po-vendor-invoices");
+    if (!wrap) return;
+    let invoices;
+    try {
+      invoices = await api.get(`/api/admin/pos/${poId}/vendor-invoices`);
+    } catch (err) {
+      wrap.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    if (invoices.length === 0) {
+      wrap.innerHTML = `<p class="empty-note">No invoices submitted by the vendor yet.</p>`;
+      return;
+    }
+    const emailBadgeClass = { sent: "badge-approved", failed: "badge-rejected", not_configured: "badge-draft", pending: "badge-draft" };
+    const emailBadgeLabel = { sent: "Emailed to AP", failed: "Email failed", not_configured: "Not emailed (no mail config)", pending: "Pending" };
+    wrap.innerHTML = `
+      <table class="detail-table">
+        <thead><tr><th>Invoice #</th><th>Submitted</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${invoices
+            .map(
+              (inv) => `
+            <tr>
+              <td>${escapeHtml(inv.invoiceNumber)}</td>
+              <td>${formatDateTime(inv.submittedAt)}</td>
+              <td><span class="badge ${emailBadgeClass[inv.emailStatus] || "badge-draft"}" title="${escapeHtml(inv.emailError || "")}">${emailBadgeLabel[inv.emailStatus] || inv.emailStatus}</span></td>
+              <td><button type="button" class="btn btn-link po-vendor-invoice-download-btn" data-file-id="${escapeHtml(inv.fileId)}">Download</button></td>
+            </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    `;
+    wrap.querySelectorAll(".po-vendor-invoice-download-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api.downloadFile(btn.dataset.fileId, `invoice-${btn.dataset.fileId}.pdf`);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
     });
   }
 }

@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const { DatabaseSync } = require("node:sqlite");
 
 // Vendor-portal requests never go through server.call's own authHeaders
 // (built only for x-session-token) -- a small raw-fetch helper instead,
@@ -622,4 +623,139 @@ test("Vendor portal: Submit for review creates one task, and resubmitting refres
   const tasksRes = await server.call("GET", `/api/tasks?category=vendor_submission&vendor=${vendor.id}`, { userId: "ADMIN" });
   assert.equal(tasksRes.body.length, 1, "exactly one task should exist after two submits");
   assert.equal(tasksRes.body[0].relatedVendorId, vendor.id);
+});
+
+// Seeds a PO directly against the raw pos table (same approach the admin
+// Budget PO Tracker's own tests use) -- vendor_id set, status carrying the
+// real-world "Pending Vendor Invoice" text verbatim.
+function insertPo(raw, { poNumber, vendorId, status, locationCode, requestor, adminName, amount }) {
+  const now = new Date().toISOString();
+  const result = raw
+    .prepare(
+      `INSERT INTO pos (
+        composite_key, po_number, date_requested, requestor, description, location_code, po_amount, status,
+        vendor_id, admin_name, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+    )
+    .run(`po-${poNumber}`, poNumber, now.slice(0, 10), requestor || null, "Test PO", locationCode || null, amount || 0, status, vendorId, adminName || null, now, now, now, now);
+  return Number(result.lastInsertRowid);
+}
+
+test("Vendor portal: 'My Open POs' only shows this vendor's POs with a Pending Vendor Invoice status, and is gated on Tax ID", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const other = await createVendorWithPortalAccess(server);
+
+  const openPoId = insertPo(raw, { poNumber: "PO-OPEN-1", vendorId: vendor.id, status: "Pending Vendor Invoice", requestor: "Logan Pearl" });
+  insertPo(raw, { poNumber: "PO-CLOSED-1", vendorId: vendor.id, status: "Closed" });
+  insertPo(raw, { poNumber: "PO-OTHER-1", vendorId: other.vendor.id, status: "Pending Vendor Invoice" });
+
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const res = await vendorCall(server, "GET", "/api/vendor-portal/pos", { token });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.length, 1, "only the Pending Vendor Invoice PO for this vendor should show up");
+  assert.equal(res.body[0].id, openPoId);
+  assert.equal(res.body[0].poNumber, "PO-OPEN-1");
+  assert.equal(res.body[0].requestor, "Logan Pearl");
+  assert.deepEqual(res.body[0].invoices, []);
+
+  // No Tax ID on file -- the whole section should 400, even with a valid session.
+  const noTaxVendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "No Tax Co", email: "notax@portaltest.test", taxId: "" } });
+  const credRes = await server.call("POST", `/api/admin/vendors/${noTaxVendorRes.body.id}/portal-credential`, { userId: "ADMIN", body: {} });
+  const noTaxLogin = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId: credRes.body.accessCode, passcode: credRes.body.passcode } });
+  const noTaxToken = noTaxLogin.body.token;
+
+  const gatedRes = await vendorCall(server, "GET", "/api/vendor-portal/pos", { token: noTaxToken });
+  assert.equal(gatedRes.status, 400);
+});
+
+test("Vendor portal: 'Can't find your PO?' creates a vendor_po_request task", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const emptyRes = await vendorCall(server, "POST", "/api/vendor-portal/po-request", { token, body: {} });
+  assert.equal(emptyRes.status, 400);
+
+  const res = await vendorCall(server, "POST", "/api/vendor-portal/po-request", { token, body: { poNumber: "PO-9999", notes: "Can't find this one anywhere" } });
+  assert.equal(res.status, 201);
+
+  const tasksRes = await server.call("GET", `/api/tasks?category=vendor_po_request&vendor=${vendor.id}`, { userId: "ADMIN" });
+  assert.equal(tasksRes.body.length, 1);
+  assert.match(tasksRes.body[0].title, /PO-9999/);
+  assert.equal(tasksRes.body[0].description, "Can't find this one anywhere");
+});
+
+test("Vendor portal: submitting an invoice saves it (even without SendGrid configured), rejects non-PDFs, and scopes to the vendor's own PO", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const other = await createVendorWithPortalAccess(server);
+  const poId = insertPo(raw, { poNumber: "PO-INV-1", vendorId: vendor.id, status: "Pending Vendor Invoice", requestor: "Logan Pearl" });
+  const otherPoId = insertPo(raw, { poNumber: "PO-INV-OTHER", vendorId: other.vendor.id, status: "Pending Vendor Invoice" });
+
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const notPdf = await vendorUpload(server, `/api/vendor-portal/pos/${poId}/invoices`, {
+    token,
+    fields: { invoiceNumber: "INV-1" },
+    fileName: "invoice.txt",
+    fileContent: "not a pdf",
+    mimeType: "text/plain",
+  });
+  assert.equal(notPdf.status, 400);
+
+  const missingNumber = await vendorUpload(server, `/api/vendor-portal/pos/${poId}/invoices`, {
+    token,
+    fields: {},
+    fileName: "invoice.pdf",
+    fileContent: "%PDF-1.4 fake",
+    mimeType: "application/pdf",
+  });
+  assert.equal(missingNumber.status, 400);
+
+  const crossVendor = await vendorUpload(server, `/api/vendor-portal/pos/${otherPoId}/invoices`, {
+    token,
+    fields: { invoiceNumber: "INV-1" },
+    fileName: "invoice.pdf",
+    fileContent: "%PDF-1.4 fake",
+    mimeType: "application/pdf",
+  });
+  assert.equal(crossVendor.status, 404, "a vendor should never be able to attach an invoice to another vendor's PO");
+
+  const res = await vendorUpload(server, `/api/vendor-portal/pos/${poId}/invoices`, {
+    token,
+    fields: { invoiceNumber: "INV-555" },
+    fileName: "invoice.pdf",
+    fileContent: "%PDF-1.4 fake",
+    mimeType: "application/pdf",
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.equal(res.body.invoice.invoiceNumber, "INV-555");
+  assert.equal(res.body.emailStatus, "not_configured", "SendGrid isn't configured in this test run -- this is the honest, no-crash outcome");
+
+  const failedTaskRes = await server.call("GET", `/api/tasks?category=vendor_invoice_email_failed&vendor=${vendor.id}`, { userId: "ADMIN" });
+  assert.equal(failedTaskRes.body.length, 0, "a merely-unconfigured send should never create a delivery-failure task");
+
+  const listRes = await vendorCall(server, "GET", "/api/vendor-portal/pos", { token });
+  assert.equal(listRes.body[0].invoices.length, 1);
+  assert.equal(listRes.body[0].invoices[0].invoiceNumber, "INV-555");
+
+  const adminInvoicesRes = await server.call("GET", `/api/admin/pos/${poId}/vendor-invoices`, { userId: "ADMIN" });
+  assert.equal(adminInvoicesRes.status, 200);
+  assert.equal(adminInvoicesRes.body.length, 1);
+  assert.equal(adminInvoicesRes.body[0].invoiceNumber, "INV-555");
 });

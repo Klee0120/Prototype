@@ -208,6 +208,30 @@
       border: 1px solid var(--accent);
     }
     .coi-limit-confirmation-form .coi-limit-excess-submit:hover { background: var(--accent-bg); }
+    .po-ap-requirements {
+      margin: 0 0 16px;
+      padding-left: 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .po-list li { display: block; }
+    .po-item-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+    .po-item-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    li.po-invoice-form {
+      display: block;
+      margin: 10px 0 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .po-invoice-history { list-style: none; padding: 0; margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+    .po-invoice-history li { padding: 4px 0; }
     .summary {
       font-size: 15px;
       font-weight: 700;
@@ -274,6 +298,38 @@
         <input type="text" id="contact-po-email" autocomplete="email" />
         <button type="submit" id="contact-submit">Save</button>
       </form>
+    </section>
+
+    <section id="po-view" class="card" hidden>
+      <h1>My Open POs</h1>
+      <p class="hint">Purchase orders waiting on your invoice. Attach your invoice and we'll submit it to Accounts Payable for you right away.</p>
+      <ul class="checklist po-list" id="po-list-items"></ul>
+      <p class="hint" id="po-list-empty" hidden>No open POs waiting on an invoice right now.</p>
+
+      <h2 class="section-heading">Submitting Invoice(s) for Payment</h2>
+      <p class="hint">To ensure accurate processing of payment, every invoice should include:</p>
+      <ul class="po-ap-requirements">
+        <li>Purchase Order Number</li>
+        <li>PDF Format Only</li>
+        <li>Bill to: C&amp;W FACILITY SERVICES INC, 117 Kendrick Street, Suite 250, Needham, MA 02494</li>
+        <li>Identification of the location where materials were delivered, or service was performed.</li>
+        <li>The name of the C&amp;W Services team member who placed the order.</li>
+        <li>Supplier's contact information</li>
+      </ul>
+      <p class="hint">Payment status questions? Contact apsupport.amer@cwservices.com.</p>
+
+      <button type="button" class="btn-link" id="po-request-toggle">Don't see your PO?</button>
+      <div id="po-request-panel" hidden>
+        <div id="po-request-error" class="error"></div>
+        <div id="po-request-success" class="success"></div>
+        <form id="po-request-form">
+          <label for="po-request-number">PO number (if you know it)</label>
+          <input type="text" id="po-request-number" autocomplete="off" />
+          <label for="po-request-notes">Notes</label>
+          <textarea id="po-request-notes" rows="2"></textarea>
+          <button type="submit" id="po-request-submit">Send request</button>
+        </form>
+      </div>
     </section>
 
     <section id="upload-view" class="card" hidden>

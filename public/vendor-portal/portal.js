@@ -95,6 +95,7 @@ const loginView = document.getElementById("login-view");
 const taxIdSetupView = document.getElementById("tax-id-setup-view");
 const checklistView = document.getElementById("checklist-view");
 const contactView = document.getElementById("contact-view");
+const poView = document.getElementById("po-view");
 const uploadView = document.getElementById("upload-view");
 const helpView = document.getElementById("help-view");
 const logoutRow = document.getElementById("logout-row");
@@ -106,6 +107,7 @@ function showLogin(message) {
   taxIdSetupView.hidden = true;
   checklistView.hidden = true;
   contactView.hidden = true;
+  poView.hidden = true;
   uploadView.hidden = true;
   helpView.hidden = true;
   logoutRow.hidden = true;
@@ -151,6 +153,11 @@ async function showChecklist() {
   uploadView.hidden = false;
   helpView.hidden = false;
   logoutRow.hidden = false;
+  // Per Krista: this section doesn't exist at all without a Tax ID on file
+  // -- not a nag card like tax-id-setup-view above, since that one already
+  // covers prompting them to add it.
+  poView.hidden = !data.taxId;
+  if (data.taxId) await loadOpenPos();
   document.getElementById("vendor-name").textContent = data.vendorName;
   currentVendorServices = data.services || "";
   document.getElementById("summary-line").textContent = `${data.approvedCount}/${data.totalCount} document cases approved`;
@@ -229,6 +236,160 @@ async function loadDocHistory() {
     )
     .join("");
 }
+
+function formatMoney(n) {
+  if (n == null) return "—";
+  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+const poListItems = document.getElementById("po-list-items");
+const poListEmpty = document.getElementById("po-list-empty");
+const EMAIL_STATUS_LABEL = { sent: "Emailed to AP", failed: "Couldn't email AP -- we've been notified", not_configured: "Saved", pending: "Saved" };
+
+async function loadOpenPos() {
+  let pos;
+  try {
+    pos = await apiRequest("GET", "/api/vendor-portal/pos");
+  } catch {
+    poListItems.innerHTML = `<li>Couldn't load your POs right now.</li>`;
+    poListEmpty.hidden = true;
+    return;
+  }
+  if (pos.length === 0) {
+    poListItems.innerHTML = "";
+    poListEmpty.hidden = false;
+    return;
+  }
+  poListEmpty.hidden = true;
+  poListItems.innerHTML = pos
+    .map(
+      (po) => `
+        <li data-po-id="${po.id}">
+          <div class="po-item-row">
+            <span>
+              <strong>PO ${escapeHtml(po.poNumber || "—")}</strong> &middot; ${escapeHtml(po.description || "")}
+              <div class="po-item-meta">
+                ${escapeHtml(po.locationName || po.locationCode || "No location on file")} &middot; ${formatMoney(po.poAmount)}
+              </div>
+            </span>
+            <button type="button" class="btn-link po-invoice-toggle">Attach invoice</button>
+          </div>
+          ${
+            po.invoices && po.invoices.length > 0
+              ? `<ul class="po-invoice-history">
+                  ${po.invoices
+                    .map((inv) => `<li>Invoice #${escapeHtml(inv.invoiceNumber)} submitted ${formatDate(inv.submittedAt)} -- ${escapeHtml(EMAIL_STATUS_LABEL[inv.emailStatus] || inv.emailStatus)}</li>`)
+                    .join("")}
+                </ul>`
+              : ""
+          }
+        </li>`
+    )
+    .join("");
+  wirePoInvoiceToggles();
+}
+
+// Same single-inline-form-at-a-time pattern as wireCoiWaiverToggles --
+// "Attach invoice" opens a small real form (invoice # + file), never a
+// browser prompt(). Fires a real, unreviewed email to AP the moment it's
+// submitted, so a confirm step sits in front of the final send.
+function wirePoInvoiceToggles() {
+  poListItems.querySelectorAll(".po-invoice-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const li = btn.closest("li[data-po-id]");
+      const existing = poListItems.querySelector(".po-invoice-form");
+      const wasForThisPo = existing && existing.dataset.forPoId === li.dataset.poId;
+      if (existing) existing.remove();
+      if (wasForThisPo) return; // toggled closed
+
+      const row = li.querySelector(".po-item-row");
+      const form = document.createElement("li");
+      form.className = "po-invoice-form";
+      form.dataset.forPoId = li.dataset.poId;
+      form.innerHTML = `
+        <div class="error" style="display:none;"></div>
+        <div class="success" style="display:none;"></div>
+        <label>Your invoice #</label>
+        <input type="text" class="po-invoice-number" autocomplete="off" />
+        <label>Invoice file (PDF only)</label>
+        <input type="file" class="po-invoice-file" accept="application/pdf" />
+        <button type="button" class="po-invoice-submit">Submit to AP</button>
+      `;
+      row.after(form);
+
+      const errorEl = form.querySelector(".error");
+      const successEl = form.querySelector(".success");
+      form.querySelector(".po-invoice-submit").addEventListener("click", async (ev) => {
+        const submitBtn = ev.currentTarget;
+        const invoiceNumber = form.querySelector(".po-invoice-number").value.trim();
+        const file = form.querySelector(".po-invoice-file").files[0];
+        errorEl.style.display = "none";
+        successEl.style.display = "none";
+        if (!invoiceNumber) {
+          errorEl.textContent = "Enter your invoice number.";
+          errorEl.style.display = "block";
+          return;
+        }
+        if (!file) {
+          errorEl.textContent = "Choose your invoice PDF.";
+          errorEl.style.display = "block";
+          return;
+        }
+        if (!window.confirm(`Submit invoice #${invoiceNumber} for this PO to C&W Accounts Payable? This can't be undone.`)) return;
+
+        submitBtn.disabled = true;
+        const formData = new FormData();
+        formData.append("invoiceNumber", invoiceNumber);
+        formData.append("file", file);
+        try {
+          const result = await apiUpload(`/api/vendor-portal/pos/${li.dataset.poId}/invoices`, formData);
+          successEl.textContent =
+            result.emailStatus === "failed"
+              ? "Saved -- we couldn't email it to AP automatically, so a C&W Services admin has been notified to send it."
+              : "Submitted to Accounts Payable.";
+          successEl.style.display = "block";
+          submitBtn.disabled = true;
+          await loadOpenPos();
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.style.display = "block";
+          submitBtn.disabled = false;
+        }
+      });
+    });
+  });
+}
+
+const poRequestToggle = document.getElementById("po-request-toggle");
+const poRequestPanel = document.getElementById("po-request-panel");
+const poRequestForm = document.getElementById("po-request-form");
+const poRequestSubmit = document.getElementById("po-request-submit");
+const poRequestError = document.getElementById("po-request-error");
+const poRequestSuccess = document.getElementById("po-request-success");
+
+poRequestToggle.addEventListener("click", () => {
+  poRequestPanel.hidden = !poRequestPanel.hidden;
+});
+
+poRequestForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  poRequestSubmit.disabled = true;
+  poRequestError.style.display = "none";
+  poRequestSuccess.style.display = "none";
+  const poNumber = document.getElementById("po-request-number").value.trim();
+  const notes = document.getElementById("po-request-notes").value.trim();
+  try {
+    await apiRequest("POST", "/api/vendor-portal/po-request", { poNumber, notes });
+    poRequestSuccess.textContent = "Sent -- a C&W Services admin will follow up.";
+    poRequestSuccess.style.display = "block";
+    poRequestForm.reset();
+  } catch (err) {
+    poRequestError.textContent = err.message;
+    poRequestError.style.display = "block";
+  } finally {
+    poRequestSubmit.disabled = false;
+  }
+});
 
 loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
