@@ -6,7 +6,13 @@
 const express = require("express");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
-const { buildCoiRequirementChecklist, extractCoiDocumentText, coiExtractionHints, extractCoiStructuredFields } = require("../utils/coiDocumentReview");
+const {
+  buildCoiRequirementChecklist,
+  extractCoiDocumentText,
+  coiExtractionHints,
+  extractCoiStructuredFields,
+  extractCoiCoverageLimitGuesses,
+} = require("../utils/coiDocumentReview");
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -63,7 +69,7 @@ router.post("/pool/:fileId/assign-vendor", async (req, res) => {
   } catch (err) {
     return res.status(500).json({ error: `Could not decrypt this file: ${err.message}` });
   }
-  const checklist = await buildCoiRequirementChecklist(vendor.services);
+  const checklist = await buildCoiRequirementChecklist(vendor.services, extractCoiCoverageLimitGuesses(extractedText));
   const review = db.createCoiDocumentReview({ fileId: updated.id, vendorId: vendor.id, extractedText, checklist });
 
   res.json({

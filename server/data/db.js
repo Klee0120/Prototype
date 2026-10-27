@@ -1761,6 +1761,15 @@ if (!hasColumn("vendors", "parent_vendor_id")) {
   db.exec("ALTER TABLE vendors ADD COLUMN parent_vendor_id INTEGER");
 }
 db.exec("CREATE INDEX IF NOT EXISTS idx_vendors_parent_vendor_id ON vendors(parent_vendor_id)");
+// A vendor's own self-attested answer per coverage-limit checklist item --
+// "yes that's my limit," a corrected value, or "my umbrella/excess policy
+// covers this" -- keyed by the item's own checklist key, same per-review
+// JSON-blob convention checklist_json/rejected_reasons_json already use.
+// Never auto-applied to anything (no stage/case-status read ever touches
+// this column) -- see setCoiReviewVendorLimitConfirmation's own comment.
+if (!hasColumn("coi_document_reviews", "vendor_limit_confirmations_json")) {
+  db.exec("ALTER TABLE coi_document_reviews ADD COLUMN vendor_limit_confirmations_json TEXT");
+}
 // The other manual, sticky override -- for a vendor that's already fine
 // (usually one that predates this tracker, or whose paperwork lives
 // outside it) but keeps getting pulled onto the Onboarding board as
@@ -3585,6 +3594,7 @@ function presentCoiDocumentReview(row) {
     extractedText: row.extracted_text || "",
     checklist: JSON.parse(row.checklist_json),
     rejectedReasons: row.rejected_reasons_json ? JSON.parse(row.rejected_reasons_json) : [],
+    vendorLimitConfirmations: row.vendor_limit_confirmations_json ? JSON.parse(row.vendor_limit_confirmations_json) : {},
     reviewedBy: row.reviewed_by || null,
     reviewedByName: row.reviewed_by_name || null,
     reviewedAt: row.reviewed_at || null,
@@ -3601,6 +3611,26 @@ function createCoiDocumentReview({ fileId, vendorId, extractedText, checklist })
 
 function findCoiDocumentReview(id) {
   return presentCoiDocumentReview(db.prepare("SELECT * FROM coi_document_reviews WHERE id = ?").get(Number(id)));
+}
+
+// A vendor's own self-attestation on one coverage-limit checklist item --
+// confirming a scanned guess, correcting it, or claiming their umbrella/
+// excess policy covers the gap. Deliberately narrow: verifies the review
+// actually belongs to this vendor (a vendor session can never touch
+// another vendor's review) and that requirementKey is really on this
+// review's own frozen checklist (same discipline rejectCoiDocumentReview's
+// reasonKeys check already uses), then merges the response into the JSON
+// blob. Never touches status, never calls applyCoiReviewOutcomeToVendor/
+// syncCoiCaseFromReview -- this is self-attestation an admin still
+// reviews, not an approval path.
+function setCoiReviewVendorLimitConfirmation(reviewId, vendorId, requirementKey, response) {
+  const review = findCoiDocumentReview(reviewId);
+  if (!review || review.vendorId !== Number(vendorId)) return null;
+  if (!review.checklist.some((item) => item.key === requirementKey)) return null;
+
+  const confirmations = { ...review.vendorLimitConfirmations, [requirementKey]: { ...response, respondedAt: new Date().toISOString() } };
+  db.prepare("UPDATE coi_document_reviews SET vendor_limit_confirmations_json = ? WHERE id = ?").run(JSON.stringify(confirmations), Number(reviewId));
+  return findCoiDocumentReview(reviewId);
 }
 
 function listCoiDocumentReviewsForVendor(vendorId) {
@@ -13109,6 +13139,7 @@ module.exports = {
   listVendorCorrespondence,
   createCoiDocumentReview,
   findCoiDocumentReview,
+  setCoiReviewVendorLimitConfirmation,
   listCoiDocumentReviewsForVendor,
   findPendingCoiDocumentReviewForFile,
   approveCoiDocumentReview,

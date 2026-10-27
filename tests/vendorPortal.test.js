@@ -395,7 +395,7 @@ test("Vendor portal: 'Need help' creates an admin-visible task carrying the vend
   assert.equal(tasksRes.body[0].description, "Not sure which COI form to use");
 });
 
-test("Vendor portal: COI waiver request validates reason/outcome and creates an admin-visible task", async (t) => {
+test("Vendor portal: COI waiver request requires a reason and creates an admin-visible VPO waiver task", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
@@ -405,21 +405,14 @@ test("Vendor portal: COI waiver request validates reason/outcome and creates an 
 
   const missingReason = await vendorCall(server, "POST", "/api/vendor-portal/coi-waiver-request", {
     token,
-    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", outcome: "vpo_waiver" },
+    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M" },
   });
   assert.equal(missingReason.status, 400);
   assert.match(missingReason.body.error, /reason is required/);
 
-  const badOutcome = await vendorCall(server, "POST", "/api/vendor-portal/coi-waiver-request", {
-    token,
-    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", reason: "Our policy caps at $500k", outcome: "not_a_real_outcome" },
-  });
-  assert.equal(badOutcome.status, 400);
-  assert.match(badOutcome.body.error, /outcome must be one of/);
-
   const ok = await vendorCall(server, "POST", "/api/vendor-portal/coi-waiver-request", {
     token,
-    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", reason: "Our policy caps at $500k", outcome: "vpo_waiver" },
+    body: { requirementKey: "gl_occ", requirementLabel: "General Liability $1M", reason: "Our policy caps at $500k" },
   });
   assert.equal(ok.status, 201);
 
@@ -429,6 +422,86 @@ test("Vendor portal: COI waiver request validates reason/outcome and creates an 
   assert.match(tasksRes.body[0].title, /VPO waiver/);
   assert.match(tasksRes.body[0].description, /General Liability \$1M/);
   assert.match(tasksRes.body[0].description, /Our policy caps at \$500k/);
+});
+
+test("Vendor portal: coi-limit-confirmation records a self-reported limit or excess-coverage claim without touching approval status", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server, {
+    services: "Corporate Administrative / Marketing & Communications / Commercial Printing & Finishing",
+  });
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const uploadRes = await vendorUpload(server, "/api/vendor-portal/documents", {
+    token,
+    fields: { category: "coi" },
+    fileName: "coi.pdf",
+    fileContent: "not a real pdf",
+    mimeType: "application/pdf",
+  });
+  assert.equal(uploadRes.status, 201, JSON.stringify(uploadRes.body));
+  const review = uploadRes.body.coiReview;
+  const limitItem = review.checklist.find((item) => "extractedGuess" in item);
+  assert.ok(limitItem, "a registered service with real coverage requirements should produce at least one coverage-limit item");
+
+  const noAuthRes = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    body: { reviewId: review.id, requirementKey: limitItem.key, response: { type: "confirmed", value: "$1,000,000" } },
+  });
+  assert.equal(noAuthRes.status, 401);
+
+  const badType = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    token,
+    body: { reviewId: review.id, requirementKey: limitItem.key, response: { type: "not_a_real_type" } },
+  });
+  assert.equal(badType.status, 400);
+  assert.match(badType.body.error, /response\.type must be one of/);
+
+  const missingValue = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    token,
+    body: { reviewId: review.id, requirementKey: limitItem.key, response: { type: "confirmed" } },
+  });
+  assert.equal(missingValue.status, 400);
+  assert.match(missingValue.body.error, /value is required/);
+
+  const unknownKey = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    token,
+    body: { reviewId: review.id, requirementKey: "not_a_real_requirement", response: { type: "confirmed", value: "$1,000,000" } },
+  });
+  assert.equal(unknownKey.status, 404);
+
+  const ok = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    token,
+    body: { reviewId: review.id, requirementKey: limitItem.key, response: { type: "confirmed", value: "$1,000,000" } },
+  });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.vendorLimitConfirmations[limitItem.key].value, "$1,000,000");
+  assert.equal(ok.body.status, "pending", "a vendor's self-report never touches the review's own approval status");
+
+  // A different review belonging to a different vendor is a 404, not a
+  // silent cross-vendor write.
+  const other = await createVendorWithPortalAccess(server, {
+    services: "Corporate Administrative / Marketing & Communications / Commercial Printing & Finishing",
+  });
+  const otherLogin = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId: other.taxId, passcode: other.passcode } });
+  const crossVendor = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    token: otherLogin.body.token,
+    body: { reviewId: review.id, requirementKey: limitItem.key, response: { type: "confirmed", value: "$2,000,000" } },
+  });
+  assert.equal(crossVendor.status, 404);
+
+  const excess = await vendorCall(server, "PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+    token,
+    body: { reviewId: review.id, requirementKey: limitItem.key, response: { type: "excess_coverage", note: "Covered by our umbrella policy" } },
+  });
+  assert.equal(excess.status, 200);
+  assert.equal(excess.body.vendorLimitConfirmations[limitItem.key].type, "excess_coverage");
+  assert.equal(excess.body.vendorLimitConfirmations[limitItem.key].note, "Covered by our umbrella policy");
+
+  const adminListRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  const vendorAfter = adminListRes.body.find((v) => v.id === vendor.id);
+  assert.equal(vendorAfter.onboardingStage, "not_started", "self-reporting a limit should never itself move the vendor's onboarding stage");
 });
 
 test("Vendor portal: Submit for review creates one task, and resubmitting refreshes it instead of duplicating", async (t) => {

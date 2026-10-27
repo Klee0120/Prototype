@@ -160,6 +160,11 @@ async function showChecklist() {
     ? "Everything's approved -- let us know you're ready for the next step."
     : "This unlocks once every document case above shows Approved.";
 
+  // A still-pending COI review from a past upload (not just the one just
+  // uploaded in this same page load) -- lets a vendor who closed the tab
+  // mid-way come back and still confirm/correct their coverage limits.
+  renderCoiReviewResult(data.pendingCoiReview);
+
   await loadDocHistory();
 }
 
@@ -319,7 +324,14 @@ const coiReviewResult = document.getElementById("coi-review-result");
 // amount off the page -- see this function's own header comment for why
 // pretending otherwise would be a false promise.
 const COI_AUTO_CHECKED_KEYS = new Set(["acord25", "language"]);
-function coiItemStatus(item, hints) {
+function coiItemStatus(item, hints, vendorLimitConfirmations) {
+  const confirmation = vendorLimitConfirmations && vendorLimitConfirmations[item.key];
+  if (confirmation) {
+    // The vendor answered this one -- still never upgraded to "Confirmed,"
+    // which is reserved for the two things actually checked off the file
+    // itself. A vendor's own say-so is still something a human reviews.
+    return { pillClass: "status-pill coi-self-reported", label: "Self-reported" };
+  }
   if (!COI_AUTO_CHECKED_KEYS.has(item.key) || hints[item.key] === undefined) {
     return { pillClass: "status-pill", label: "Needs manual review" };
   }
@@ -328,29 +340,45 @@ function coiItemStatus(item, hints) {
     : { pillClass: "status-pill coi-not-confirmed", label: "Couldn't confirm" };
 }
 
+// What to show for a coverage-limit item's own confirm/correct action --
+// its label, and whether it's already been answered (in which case the
+// action re-opens/edits rather than starting fresh).
+function coiLimitActionLabel(item, confirmation) {
+  if (confirmation) return "Edit your answer";
+  return item.extractedGuess ? "Is this right?" : "Enter your limit";
+}
+
 function renderCoiReviewResult(coiReview) {
   if (!coiReview) {
     coiReviewResult.hidden = true;
     return;
   }
   const hints = coiReview.extractionHints || {};
+  const vendorLimitConfirmations = coiReview.vendorLimitConfirmations || {};
   const checklist = Array.isArray(coiReview.checklist) ? coiReview.checklist : [];
   coiReviewResult.hidden = false;
+  coiReviewResult.dataset.reviewId = coiReview.id;
   coiReviewResult.innerHTML = `
     <strong>Your COI is in for review.</strong>
     ${
       checklist.length
         ? `
-          <p class="hint" style="margin-top: 8px;">Here's the full insurance requirement list for your registered service type(s). "Confirmed"/"Couldn't confirm" are the only two things actually checked automatically from the file you uploaded -- everything marked "Needs manual review" still needs a human reviewer to confirm against your actual certificate.</p>
+          <p class="hint" style="margin-top: 8px;">Here's the full insurance requirement list for your registered service type(s). "Confirmed"/"Couldn't confirm" are the only two things actually checked automatically from the file you uploaded -- everything else still needs a human reviewer to confirm against your actual certificate, even once you've answered it below.</p>
           <ul class="checklist coi-requirement-list">
             ${checklist
               .map((item) => {
-                const status = coiItemStatus(item, hints);
+                const isLimitItem = "extractedGuess" in item;
+                const confirmation = vendorLimitConfirmations[item.key];
+                const status = coiItemStatus(item, hints, vendorLimitConfirmations);
                 return `
-                  <li class="coi-requirement-item" data-key="${escapeHtml(item.key)}" data-label="${escapeHtml(item.label)}">
-                    <span>${escapeHtml(item.label)}</span>
+                  <li class="coi-requirement-item" data-key="${escapeHtml(item.key)}" data-label="${escapeHtml(item.label)}" data-guess="${escapeHtml(item.extractedGuess || "")}">
+                    <span>
+                      ${escapeHtml(item.label)}
+                      ${confirmation ? `<br /><span class="coi-self-report-value">${confirmation.type === "excess_coverage" ? `Covered by umbrella/excess policy${confirmation.note ? ` -- ${escapeHtml(confirmation.note)}` : ""}` : `You reported: ${escapeHtml(confirmation.value)}`}</span>` : ""}
+                    </span>
                     <span class="coi-requirement-actions">
                       <span class="${status.pillClass}">${status.label}</span>
+                      ${isLimitItem ? `<button type="button" class="btn-link coi-limit-toggle">${coiLimitActionLabel(item, confirmation)}</button>` : ""}
                       <button type="button" class="btn-link coi-waiver-toggle">Request waiver</button>
                     </span>
                   </li>
@@ -363,6 +391,7 @@ function renderCoiReviewResult(coiReview) {
     }
   `;
   wireCoiWaiverToggles();
+  wireCoiLimitConfirmationToggles();
 }
 
 // Each requirement item's "Request waiver" button toggles open a small
@@ -387,11 +416,7 @@ function wireCoiWaiverToggles() {
         <div class="success" style="display:none;"></div>
         <label>Why can't this be met?</label>
         <textarea class="coi-waiver-reason" rows="2"></textarea>
-        <label>What are you requesting?</label>
-        <select class="coi-waiver-outcome">
-          <option value="vpo_waiver">VPO waiver</option>
-          <option value="hold_harmless">Hold harmless agreement</option>
-        </select>
+        <p class="hint">This will be sent to admin as a VPO waiver request.</p>
         <button type="button" class="coi-waiver-submit">Send request</button>
       `;
       item.after(form);
@@ -400,7 +425,6 @@ function wireCoiWaiverToggles() {
       const successEl = form.querySelector(".success");
       form.querySelector(".coi-waiver-submit").addEventListener("click", async () => {
         const reason = form.querySelector(".coi-waiver-reason").value.trim();
-        const outcome = form.querySelector(".coi-waiver-outcome").value;
         errorEl.style.display = "none";
         if (!reason) {
           errorEl.textContent = "Let us know why this can't be met.";
@@ -412,7 +436,6 @@ function wireCoiWaiverToggles() {
             requirementKey: item.dataset.key,
             requirementLabel: item.dataset.label,
             reason,
-            outcome,
           });
           successEl.textContent = "Sent -- a C&W Services admin will follow up.";
           successEl.style.display = "block";
@@ -420,6 +443,92 @@ function wireCoiWaiverToggles() {
         } catch (err) {
           errorEl.textContent = err.message;
           errorEl.style.display = "block";
+        }
+      });
+    });
+  });
+}
+
+// A coverage-limit item's "Is this right?"/"Enter your limit"/"Edit your
+// answer" button toggles open a small inline form with two paths: confirm
+// or correct the actual dollar limit, or say an umbrella/excess policy
+// covers the gap. Either way this is the vendor's own say-so -- it's never
+// auto-applied to approval status, just recorded for admin to weigh
+// alongside the real certificate. Same single-mini-form-at-a-time pattern
+// as wireCoiWaiverToggles.
+function wireCoiLimitConfirmationToggles() {
+  coiReviewResult.querySelectorAll(".coi-limit-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const item = btn.closest(".coi-requirement-item");
+      const existing = coiReviewResult.querySelector(".coi-limit-confirmation-form");
+      if (existing) existing.remove();
+      if (existing && existing.dataset.forKey === item.dataset.key) return; // toggled closed
+
+      const guess = item.dataset.guess || "";
+      const form = document.createElement("li");
+      form.className = "coi-limit-confirmation-form";
+      form.dataset.forKey = item.dataset.key;
+      form.innerHTML = `
+        <div class="error" style="display:none;"></div>
+        <div class="success" style="display:none;"></div>
+        ${
+          guess
+            ? `<p class="hint">We found <strong>${escapeHtml(guess)}</strong> near this coverage on your certificate. Confirm it or enter the correct amount.</p>`
+            : `<p class="hint">We couldn't find this limit on your certificate. What's your actual limit?</p>`
+        }
+        <label>Your limit for this coverage</label>
+        <input type="text" class="coi-limit-value" placeholder="e.g. $1,000,000" value="${escapeHtml(guess)}" />
+        <button type="button" class="coi-limit-confirm-submit">Save</button>
+        <label style="margin-top: 14px;">Or, if an umbrella/excess policy covers this instead</label>
+        <textarea class="coi-limit-excess-note" rows="2" placeholder="Optional note for admin"></textarea>
+        <button type="button" class="coi-limit-excess-submit">My umbrella/excess policy covers this</button>
+      `;
+      item.after(form);
+
+      const errorEl = form.querySelector(".error");
+      const successEl = form.querySelector(".success");
+      const showError = (message) => {
+        successEl.style.display = "none";
+        errorEl.textContent = message;
+        errorEl.style.display = "block";
+      };
+      const showSuccess = (message) => {
+        errorEl.style.display = "none";
+        successEl.textContent = message;
+        successEl.style.display = "block";
+        form.querySelector(".coi-limit-confirm-submit").disabled = true;
+        form.querySelector(".coi-limit-excess-submit").disabled = true;
+      };
+
+      form.querySelector(".coi-limit-confirm-submit").addEventListener("click", async () => {
+        const value = form.querySelector(".coi-limit-value").value.trim();
+        if (!value) {
+          showError("Enter your limit for this coverage.");
+          return;
+        }
+        try {
+          await apiRequest("PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+            reviewId: coiReviewResult.dataset.reviewId,
+            requirementKey: item.dataset.key,
+            response: { type: "confirmed", value },
+          });
+          showSuccess("Saved -- admin will confirm this against your certificate.");
+        } catch (err) {
+          showError(err.message);
+        }
+      });
+
+      form.querySelector(".coi-limit-excess-submit").addEventListener("click", async () => {
+        const note = form.querySelector(".coi-limit-excess-note").value.trim();
+        try {
+          await apiRequest("PATCH", "/api/vendor-portal/coi-limit-confirmation", {
+            reviewId: coiReviewResult.dataset.reviewId,
+            requirementKey: item.dataset.key,
+            response: { type: "excess_coverage", note: note || undefined },
+          });
+          showSuccess("Saved -- admin will confirm this against your certificate.");
+        } catch (err) {
+          showError(err.message);
         }
       });
     });

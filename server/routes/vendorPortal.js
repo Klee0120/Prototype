@@ -6,7 +6,13 @@ const db = require("../data/db");
 const fileEncryption = require("../utils/fileEncryption");
 const { requireVendorAuth } = require("../middleware/vendorAuth");
 const { createLoginThrottle } = require("../utils/loginThrottle");
-const { extractCoiDocumentText, buildCoiRequirementChecklist, coiExtractionHints, extractCoiStructuredFields } = require("../utils/coiDocumentReview");
+const {
+  extractCoiDocumentText,
+  buildCoiRequirementChecklist,
+  coiExtractionHints,
+  extractCoiStructuredFields,
+  extractCoiCoverageLimitGuesses,
+} = require("../utils/coiDocumentReview");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -50,11 +56,16 @@ router.post("/logout", requireVendorAuth, (req, res) => {
 // The portal's own landing view -- name + the same approved/total
 // checklist the admin Onboarding board shows for this vendor, nothing
 // else. See db.getVendorPortalChecklist's own comment on why that math is
-// computed once, server-side, rather than duplicated here.
+// computed once, server-side, rather than duplicated here. Also carries
+// the vendor's own latest still-pending COI review (if any) -- without
+// this, renderCoiReviewResult on the frontend only ever fires right after
+// an upload, so a vendor who closes the tab mid-way through confirming
+// their coverage limits would have no way back to it.
 router.get("/me", requireVendorAuth, (req, res) => {
   const checklist = db.getVendorPortalChecklist(req.vendor.id);
   if (!checklist) return res.status(404).json({ error: "Vendor not found" });
-  res.json(checklist);
+  const pendingCoiReview = db.listCoiDocumentReviewsForVendor(req.vendor.id).find((r) => r.status === "pending") || null;
+  res.json({ ...checklist, pendingCoiReview });
 });
 
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
@@ -142,7 +153,7 @@ router.post("/documents", requireVendorAuth, upload.single("file"), async (req, 
     try {
       const vendor = db.findVendor(req.vendor.id);
       const extractedText = await extractCoiDocumentText(db.readUploadBytes(storedName));
-      const checklist = await buildCoiRequirementChecklist(vendor.services);
+      const checklist = await buildCoiRequirementChecklist(vendor.services, extractCoiCoverageLimitGuesses(extractedText));
       const created = db.createCoiDocumentReview({ fileId: file.id, vendorId: req.vendor.id, extractedText, checklist });
       // Same two fields the admin-side coi-review route returns (see
       // POST /api/admin/vendors/:id/files/:fileId/coi-review) -- the
@@ -188,33 +199,61 @@ router.post("/help-request", requireVendorAuth, (req, res) => {
 
 // A requirement the vendor can't meet (e.g. a coverage limit their actual
 // policy doesn't carry) -- prompts for why, and routes the ask to admin as
-// either a VPO waiver or a hold-harmless agreement request. Both are
-// already real document categories for relatedType "vendor" (see
-// server/routes/files.js's CATEGORY_BY_RELATED) -- an admin acts on this
-// the same way they already handle every other compliance document, by
-// filing the real waiver/hold-harmless file once they decide. This route
-// only gets the request in front of them with enough context; it doesn't
-// invent a new approval workflow.
-const COI_WAIVER_OUTCOMES = new Set(["vpo_waiver", "hold_harmless"]);
+// a VPO waiver, the real C&W sign-off mechanism for exactly this (a COI
+// falling short on limits or required language -- see the "Waiting on VPO
+// Waiver" case status and vpo_waivers table in db.js). Always vpo_waiver,
+// never a choice: hold_harmless is a wholly unrelated, always-optional
+// document some vendors happen to have on file (see files.js's
+// CATEGORY_BY_RELATED comment) -- it isn't an alternate way to resolve a
+// coverage/language shortfall, so it was never a real second option here.
+// An admin acts on this the same way they already handle every other
+// compliance document, by filing the real waiver once they decide. This
+// route only gets the request in front of them with enough context; it
+// doesn't invent a new approval workflow.
 router.post("/coi-waiver-request", requireVendorAuth, (req, res) => {
-  const { requirementKey, requirementLabel, reason, outcome } = req.body || {};
+  const { requirementKey, requirementLabel, reason } = req.body || {};
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: "reason is required" });
-  if (!COI_WAIVER_OUTCOMES.has(outcome)) return res.status(400).json({ error: `outcome must be one of: ${[...COI_WAIVER_OUTCOMES].join(", ")}` });
 
   const vendor = db.findVendor(req.vendor.id);
-  const outcomeLabel = outcome === "vpo_waiver" ? "VPO waiver" : "hold harmless agreement";
   const label = requirementLabel || requirementKey || "a COI requirement";
   db.createTask({
-    title: `${vendor.name} requests a ${outcomeLabel} -- ${label}`,
-    description: `Requirement: ${label}\nRequested outcome: ${outcomeLabel}\nVendor's stated reason: ${reason.trim()}`,
+    title: `${vendor.name} requests a VPO waiver -- ${label}`,
+    description: `Requirement: ${label}\nVendor's stated reason: ${reason.trim()}`,
     assignedRole: "admin",
     category: "vendor_waiver_request",
     priority: "normal",
     relatedVendorId: vendor.id,
     source: "vendor_portal",
   });
-  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_WAIVER_REQUESTED", `${vendor.name} requested a ${outcomeLabel} for "${label}"`, vendor.id);
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_WAIVER_REQUESTED", `${vendor.name} requested a VPO waiver for "${label}"`, vendor.id);
   res.status(201).json({ ok: true });
+});
+
+// A vendor's own answer to one coverage-limit checklist item: confirming
+// (or correcting) a best-effort scanned guess, or claiming their umbrella/
+// excess policy covers the gap. Never auto-applied -- see
+// db.setCoiReviewVendorLimitConfirmation's own comment -- this is
+// self-attestation an admin still reviews on the same COI review screen
+// (openCoiReviewModal in adminReview.js), same spirit as every other piece
+// of this flow. A vendor who genuinely can't meet a requirement at all
+// still uses the existing coi-waiver-request route above, unchanged.
+const COI_LIMIT_RESPONSE_TYPES = new Set(["confirmed", "excess_coverage"]);
+router.patch("/coi-limit-confirmation", requireVendorAuth, (req, res) => {
+  const { reviewId, requirementKey, response } = req.body || {};
+  if (!reviewId || !requirementKey || !response || !COI_LIMIT_RESPONSE_TYPES.has(response.type)) {
+    return res.status(400).json({ error: `response.type must be one of: ${[...COI_LIMIT_RESPONSE_TYPES].join(", ")}` });
+  }
+  if (response.type === "confirmed" && (!response.value || !String(response.value).trim())) {
+    return res.status(400).json({ error: "value is required to confirm a limit" });
+  }
+
+  const updated = db.setCoiReviewVendorLimitConfirmation(reviewId, req.vendor.id, requirementKey, response);
+  if (!updated) return res.status(404).json({ error: "Review not found for this requirement" });
+
+  const vendor = db.findVendor(req.vendor.id);
+  const summary = response.type === "excess_coverage" ? "covered by umbrella/excess policy" : `confirmed ${response.value}`;
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_COI_LIMIT_CONFIRMED", `${vendor.name} self-reported "${requirementKey}" as ${summary}`, vendor.id);
+  res.json(updated);
 });
 
 // "I think I'm done" -- the vendor's own signal that admin should take a

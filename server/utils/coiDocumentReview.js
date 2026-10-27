@@ -45,8 +45,16 @@ function splitServices(raw) {
 // Every non-"-" coverage figure across all of a vendor's registered
 // services, deduped by (service, coverage) pair so a vendor with two
 // services needing the same coverage doesn't get the same checklist line
-// twice under different wording.
-async function buildCoiRequirementChecklist(vendorServicesRaw) {
+// twice under different wording. coverageLimitGuesses (from
+// extractCoiCoverageLimitGuesses, keyed by the plain COVERAGE_COLUMNS key
+// -- "glOcc", not the composite "glOcc:$1,000,000" item key below, since
+// the guess is about the coverage TYPE scanned off the document,
+// independent of what any given vendor's own requirement happens to be)
+// rides along on each coverage-limit item as extractedGuess. The 4
+// universal items never get this field at all -- callers check
+// `"extractedGuess" in item`, not truthiness, to tell a coverage-limit
+// item apart from a universal one.
+async function buildCoiRequirementChecklist(vendorServicesRaw, coverageLimitGuesses = {}) {
   const dataUrl = path.join(__dirname, "..", "..", "public", "js", "data", "coiMatrix.js");
   const { COI_MATRIX_BY_LABEL } = await import(`file://${dataUrl}`);
 
@@ -61,7 +69,11 @@ async function buildCoiRequirementChecklist(vendorServicesRaw) {
       const itemKey = `${key}:${value}`;
       if (seen.has(itemKey)) continue;
       seen.add(itemKey);
-      items.push({ key: itemKey, label: `${label} meets ${value} minimum (required for ${service})` });
+      items.push({
+        key: itemKey,
+        label: `${label} meets ${value} minimum (required for ${service})`,
+        extractedGuess: coverageLimitGuesses[key] || null,
+      });
     }
   }
   return items;
@@ -194,6 +206,58 @@ function extractCoiStructuredFields(extractedText) {
   return result;
 }
 
+// Best-effort guesses at the vendor's actual coverage dollar limits off
+// the document text -- same "prefill only, never trusted" spirit as
+// extractCoiStructuredFields above (see its own header comment for why a
+// flattened ACORD 25 can't be parsed reliably: no table/column structure
+// survives the flatten, so a coverage figure found here can easily belong
+// to a neighboring, unrelated line of business rather than the one it
+// looks like it's near). Unlike extractCoiStructuredFields (a prefill
+// shown to the admin), this is surfaced to the VENDOR as "is this your
+// actual limit?" -- see buildCoiRequirementChecklist's own comment on how
+// it threads through. Never auto-applied either way. A scanned/flat-image
+// document with no text layer returns every key null, same as every other
+// extraction in this file.
+const COVERAGE_LABEL_PATTERNS = {
+  glOcc: /each\s*occurrence/i,
+  glAgg: /general\s*aggregate/i,
+  auto: /automobile\s*liab|auto\s*liab/i,
+  wc: /workers.{0,3}compensation|e\.?l\.?\s*each\s*accident/i,
+  exs: /umbrella\s*liab|excess\s*liab/i,
+  eAndO: /errors\s*(?:&|and)\s*omissions|professional\s*liab/i,
+  pol: /pollution/i,
+  crime: /\bcrime\b/i,
+  productsComplOpAgg: /products\s*[-/]?\s*comp(?:leted)?\s*op/i,
+};
+
+// How far past a coverage label's own match to look for a dollar figure --
+// generous enough to span a short run of header/box-drawing text between
+// the label and its value in a flattened read, tight enough that it
+// shouldn't usually reach all the way into an unrelated coverage line. A
+// NAIC code, policy number, or neighboring coverage's own figure sitting
+// inside that window is a real, accepted risk -- see this function's own
+// header comment -- not something worth a cleverer heuristic for, since
+// the vendor confirming or correcting the guess is what actually matters.
+const COVERAGE_AMOUNT_WINDOW = 60;
+const COVERAGE_AMOUNT_RE = /\$?\s*(\d{1,3}(?:,\d{3})+|\d{5,9})\b/;
+
+function extractCoiCoverageLimitGuesses(extractedText) {
+  const guesses = {};
+  for (const key of Object.keys(COVERAGE_LABEL_PATTERNS)) guesses[key] = null;
+  const text = normalizeWhitespace(extractedText);
+  if (!text) return guesses;
+
+  for (const [key, labelPattern] of Object.entries(COVERAGE_LABEL_PATTERNS)) {
+    const labelMatch = text.match(labelPattern);
+    if (!labelMatch) continue;
+    const windowStart = labelMatch.index + labelMatch[0].length;
+    const window = text.slice(windowStart, windowStart + COVERAGE_AMOUNT_WINDOW);
+    const amountMatch = window.match(COVERAGE_AMOUNT_RE);
+    if (amountMatch) guesses[key] = `$${amountMatch[1]}`;
+  }
+  return guesses;
+}
+
 function mmddyyyyToIso(dateStr) {
   const parts = String(dateStr).split("/");
   if (parts.length !== 3) return null;
@@ -224,5 +288,6 @@ module.exports = {
   extractCoiDocumentText,
   coiExtractionHints,
   extractCoiStructuredFields,
+  extractCoiCoverageLimitGuesses,
   coiDenialEmailText,
 };

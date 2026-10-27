@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 const { DatabaseSync } = require("node:sqlite");
-const { extractCoiStructuredFields } = require("../server/utils/coiDocumentReview");
+const { extractCoiStructuredFields, extractCoiCoverageLimitGuesses } = require("../server/utils/coiDocumentReview");
 
 const REQUIRED_COI_LANGUAGE =
   "C&W Facility Services Inc. d/b/a C&W Services, Toyota Motor Sales, USA, Inc., its subsidiaries and affiliated corporations are additional insureds (except Workers’ Compensation) as required by written contract/agreement.";
@@ -330,6 +330,48 @@ test("extractCoiStructuredFields: pulls policy #, carrier, expiration, and the i
     insuredName: null,
     insuredAddress: null,
   });
+});
+
+test("extractCoiCoverageLimitGuesses: finds a dollar amount near its coverage label, and stays all-null with nothing to find", () => {
+  const sample = "GENERAL LIABILITY EACH OCCURRENCE $1,000,000 GENERAL AGGREGATE $2,000,000";
+  const guesses = extractCoiCoverageLimitGuesses(sample);
+  assert.equal(guesses.glOcc, "$1,000,000");
+  assert.equal(guesses.glAgg, "$2,000,000");
+  assert.equal(guesses.auto, null);
+  assert.equal(guesses.wc, null);
+  assert.equal(guesses.exs, null);
+  assert.equal(guesses.eAndO, null);
+  assert.equal(guesses.pol, null);
+  assert.equal(guesses.crime, null);
+  assert.equal(guesses.productsComplOpAgg, null);
+
+  const allNull = {
+    glOcc: null,
+    glAgg: null,
+    auto: null,
+    wc: null,
+    exs: null,
+    eAndO: null,
+    pol: null,
+    crime: null,
+    productsComplOpAgg: null,
+  };
+  assert.deepEqual(extractCoiCoverageLimitGuesses(""), allNull);
+  assert.deepEqual(extractCoiCoverageLimitGuesses("a scanned image with no useful text"), allNull);
+});
+
+test("extractCoiCoverageLimitGuesses: a proximity guess can anchor to the wrong neighboring coverage line -- documented, not solved", () => {
+  // Two coverage lines sitting right next to each other with no amount of
+  // its own between the Errors & Omissions label and the Pollution line's
+  // figure right after it: the scan has no way to know that $3,000,000 is
+  // Pollution's limit, not E&O's, so it borrows it for both. This is the
+  // known, accepted mis-anchoring risk this extractor carries -- callers
+  // must treat every guess as a prefill to confirm or correct, never a
+  // verified fact.
+  const sample = "ERRORS AND OMISSIONS POLLUTION $3,000,000";
+  const guesses = extractCoiCoverageLimitGuesses(sample);
+  assert.equal(guesses.eAndO, "$3,000,000", "E&O has no limit of its own in the text, so the scan incorrectly borrows Pollution's neighboring figure");
+  assert.equal(guesses.pol, "$3,000,000");
 });
 
 test("coi review -> case sync: approving creates the vendor's Onboarding - COI case, Approved, with the submitted policy details", async (t) => {

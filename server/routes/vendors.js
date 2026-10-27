@@ -15,6 +15,7 @@ const {
   extractCoiDocumentText,
   coiExtractionHints,
   extractCoiStructuredFields,
+  extractCoiCoverageLimitGuesses,
   coiDenialEmailText,
 } = require("../utils/coiDocumentReview");
 
@@ -578,7 +579,7 @@ router.post("/:id/files/:fileId/coi-review", async (req, res) => {
   } catch (err) {
     return res.status(500).json({ error: `Could not decrypt this file: ${err.message}` });
   }
-  const checklist = await buildCoiRequirementChecklist(vendor.services);
+  const checklist = await buildCoiRequirementChecklist(vendor.services, extractCoiCoverageLimitGuesses(extractedText));
   const review = db.createCoiDocumentReview({ fileId: file.id, vendorId: vendor.id, extractedText, checklist });
   res.status(201).json({ ...review, extractionHints: coiExtractionHints(extractedText), extractedFields: extractCoiStructuredFields(extractedText) });
 });

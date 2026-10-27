@@ -3456,7 +3456,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                 .map((item) => {
                   const hint = hints[item.key];
                   const hintBadge = hint === true ? `<span class="badge badge-approved">found in text</span>` : hint === false ? `<span class="badge badge-warn">not found in text</span>` : "";
-                  return `<li>${escapeHtml(item.label)} ${hintBadge}</li>`;
+                  const guessBadge = item.extractedGuess ? `<span class="badge">scanned: ${escapeHtml(item.extractedGuess)}</span>` : "";
+                  const confirmation = (review.vendorLimitConfirmations || {})[item.key];
+                  const confirmationText = confirmation
+                    ? confirmation.type === "excess_coverage"
+                      ? `covered by umbrella/excess${confirmation.note ? ` -- ${confirmation.note}` : ""}`
+                      : confirmation.value
+                    : "";
+                  const confirmationBadge = confirmationText ? `<span class="badge badge-warn">vendor says: ${escapeHtml(confirmationText)}</span>` : "";
+                  return `<li>${escapeHtml(item.label)} ${hintBadge} ${guessBadge} ${confirmationBadge}</li>`;
                 })
                 .join("")}
             </ul>

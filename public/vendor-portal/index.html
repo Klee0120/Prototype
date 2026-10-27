@@ -162,6 +162,8 @@
     }
     .status-pill.approved { background: #e3f3ea; color: var(--ok); }
     .status-pill.coi-not-confirmed { background: var(--accent-bg); color: var(--accent-dark); }
+    .status-pill.coi-self-reported { background: #e7edf5; color: #3f5770; }
+    .coi-self-report-value { font-size: 12px; color: var(--muted); }
     .btn-link {
       background: none;
       border: none;
@@ -180,7 +182,8 @@
       gap: 10px;
       flex-shrink: 0;
     }
-    li.coi-waiver-form {
+    li.coi-waiver-form,
+    li.coi-limit-confirmation-form {
       display: block;
       margin: 0 0 14px;
       padding: 12px;
@@ -188,8 +191,23 @@
       border-radius: 8px;
       background: var(--bg);
     }
-    .coi-waiver-form label { margin-top: 10px; }
-    .coi-waiver-form label:first-child { margin-top: 0; }
+    .coi-waiver-form label,
+    .coi-limit-confirmation-form label { margin-top: 10px; }
+    .coi-waiver-form label:first-child,
+    .coi-limit-confirmation-form label:first-child { margin-top: 0; }
+    .coi-limit-confirmation-form input,
+    .coi-limit-confirmation-form textarea {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .coi-limit-confirmation-form .coi-limit-confirm-submit { margin-top: 8px; }
+    .coi-limit-confirmation-form .coi-limit-excess-submit {
+      margin-top: 8px;
+      background: var(--bg);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    .coi-limit-confirmation-form .coi-limit-excess-submit:hover { background: var(--accent-bg); }
     .summary {
       font-size: 15px;
       font-weight: 700;
