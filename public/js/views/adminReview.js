@@ -4467,7 +4467,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </select>
       </label>
       <div class="topbar-bell" id="topbar-vendor-quick">
-        <button type="button" class="topbar-bell-btn" aria-label="Vendor quick access">&#127970;</button>
+        <button type="button" class="topbar-vendor-quick-btn" aria-label="Vendor quick access">&#127970; Vendors &#128204;</button>
         <div class="topbar-bell-dropdown" hidden></div>
       </div>
       <div class="topbar-bell" id="topbar-bell">
@@ -4615,7 +4615,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     // loaded for the vendor profile pages) sorted by updatedAt -- no new
     // backend query needed for that half.
     const vendorQuickWrap = host.querySelector("#topbar-vendor-quick");
-    const vendorQuickBtn = vendorQuickWrap.querySelector(".topbar-bell-btn");
+    const vendorQuickBtn = vendorQuickWrap.querySelector(".topbar-vendor-quick-btn");
     const vendorQuickDropdown = vendorQuickWrap.querySelector(".topbar-bell-dropdown");
     vendorQuickBtn.addEventListener("click", async () => {
       const opening = vendorQuickDropdown.hidden;
@@ -4627,10 +4627,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
 
     function vendorQuickRowHtml(v) {
+      const stageLabel = ONBOARDING_STAGE_LABELS[v.onboardingStage] || v.onboardingStage || "";
+      const idBits = [v.jdeVendorNumber ? `Vendor ID ${escapeHtml(v.jdeVendorNumber)}` : "", v.taxId ? `TIN ${escapeHtml(v.taxId)}` : ""]
+        .filter(Boolean)
+        .join(" &middot; ");
       return `
         <button type="button" class="topbar-search-result" data-id="${v.id}">
           <span class="topbar-search-result-label">${escapeHtml(v.name)}</span>
-          <span class="topbar-search-result-sub">${escapeHtml(ONBOARDING_STAGE_LABELS[v.onboardingStage] || v.onboardingStage || "")}</span>
+          <span class="topbar-search-result-sub">${escapeHtml(stageLabel)}${idBits ? ` &middot; ${idBits}` : ""}</span>
           <span class="topbar-search-result-status" hidden></span>
         </button>
       `;
@@ -4696,17 +4700,30 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       vendorQuickDropdown.innerHTML = `
         <div class="search-field">
           <span class="search-field-icon">&#128269;</span>
-          <input type="search" class="topbar-vendor-quick-search-input" placeholder="Search vendors..." autocomplete="off" value="${escapeHtml(q)}" />
+          <input type="search" class="topbar-vendor-quick-search-input" placeholder="Search by name, Vendor ID, or TIN..." autocomplete="off" value="${escapeHtml(q)}" />
         </div>
         <div class="topbar-vendor-quick-results"></div>
       `;
       const resultsHost = vendorQuickDropdown.querySelector(".topbar-vendor-quick-results");
       const term = q.trim().toLowerCase();
       if (term) {
-        const matches = vendorsCache.filter((v) => v.name.toLowerCase().includes(term)).slice(0, 8);
+        // Same search box checks all three -- a vendor's name, their JDE
+        // Vendor # ("Vendor ID" -- see the profile's own "JDE Vendor #"
+        // field), or their Tax ID (see the "Vendor portal access" card's
+        // own TIN field) -- so typing any of those here doubles as "does
+        // this vendor already have a profile," the same way the
+        // ServiceEdge lookup works.
+        const matches = vendorsCache
+          .filter(
+            (v) =>
+              v.name.toLowerCase().includes(term) ||
+              (v.jdeVendorNumber && v.jdeVendorNumber.toLowerCase().includes(term)) ||
+              (v.taxId && v.taxId.toLowerCase().includes(term))
+          )
+          .slice(0, 8);
         resultsHost.innerHTML = `
           <div class="topbar-bell-title">Matching vendors</div>
-          ${matches.length ? matches.map(vendorQuickRowHtml).join("") : `<p class="empty-note">No matches.</p>`}
+          ${matches.length ? matches.map(vendorQuickRowHtml).join("") : `<p class="empty-note">No vendor found with that name, Vendor ID, or TIN.</p>`}
         `;
       } else {
         resultsHost.innerHTML = `

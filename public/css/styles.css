@@ -782,6 +782,24 @@ h1, h2, h3, h4 {
   padding: 8px;
   line-height: 1;
 }
+.topbar-vendor-quick-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.topbar-vendor-quick-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
 .topbar-bell-badge {
   position: absolute;
   top: 2px;
