@@ -3502,14 +3502,14 @@ function presentVendorCorrespondence(row) {
   };
 }
 
-function addVendorCorrespondence(vendorId, { subject, correspondent, occurredAt, bodyText, loggedBy }) {
+function addVendorCorrespondence(vendorId, { subject, correspondent, occurredAt, bodyText, loggedBy, summary }) {
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `INSERT INTO vendor_correspondence (vendor_id, subject, correspondent, occurred_at, body_text, logged_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO vendor_correspondence (vendor_id, subject, correspondent, occurred_at, body_text, summary, logged_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(Number(vendorId), subject, correspondent, occurredAt || now, bodyText || "", loggedBy, now);
+    .run(Number(vendorId), subject, correspondent, occurredAt || now, bodyText || "", summary || null, loggedBy, now);
   return findVendorCorrespondence(result.lastInsertRowid);
 }
 

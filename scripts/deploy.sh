@@ -29,6 +29,12 @@
 # outbound HTTPS (what this call makes, same as the Smartsheet sync
 # already does) is unrestricted. Plain SMTP credentials will time out
 # from a droplet like this one no matter how correct they are.
+#
+# To turn on AI-generated vendor correspondence summaries (see
+# server/utils/aiSummarizer.js), set ANTHROPIC_API_KEY the same way, on
+# the `bash` side of the pipe. Until it's set, correspondence still logs
+# and files normally -- the summary just stays blank, same "never block
+# the real action on this" rule the SendGrid key already follows.
 set -euo pipefail
 
 REPO_URL="https://github.com/Klee0120/Prototype.git"
@@ -38,6 +44,7 @@ APP_PORT=3000
 DOMAIN="${DOMAIN:-}"
 SENDGRID_API_KEY="${SENDGRID_API_KEY:-}"
 SENDGRID_FROM="${SENDGRID_FROM:-}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 # Defaults to the domain itself (once one is set) rather than making you
 # pass the same thing twice -- without this, a reset-PIN email would link
 # to this box's own internal localhost:$APP_PORT, which nobody else can
@@ -80,6 +87,7 @@ Environment=NODE_ENV=production
 Environment=SENDGRID_API_KEY=$SENDGRID_API_KEY
 Environment=SENDGRID_FROM=$SENDGRID_FROM
 Environment=PUBLIC_BASE_URL=$PUBLIC_BASE_URL
+Environment=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 
 [Install]
 WantedBy=multi-user.target
