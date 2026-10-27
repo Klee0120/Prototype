@@ -6645,6 +6645,23 @@ tr.gl-import-shrink-row {
     display: inline-flex;
   }
 
+  /* Same escape-the-small-button trick as .topbar-search above: both bell
+     dropdowns (Vendors quick-access, Notifications) anchor off their own
+     tiny button (right:0, width:340px) at desktop widths, which overflows
+     past the left edge of a phone screen when that button sits left of
+     center in the header. Freeing .topbar-bell from position:relative
+     here lets the dropdown's position:absolute bubble up to .app-topbar
+     (already position:relative in this breakpoint) instead, so left/right
+     span the real header width no matter which button opened it. */
+  .topbar-bell {
+    position: static;
+  }
+  .topbar-bell-dropdown {
+    left: 16px;
+    right: 16px;
+    width: auto;
+  }
+
   .app-sidebar {
     position: fixed;
     top: 0;
