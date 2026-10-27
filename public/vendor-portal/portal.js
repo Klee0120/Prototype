@@ -310,38 +310,56 @@ const coiReviewResult = document.getElementById("coi-review-result");
 // auto-read actual dollar limits off a scan (see that file's own comment:
 // a wrong auto-read risks silently clearing an under-covered vendor), so
 // showing the list as a verified checklist would be a false promise.
+// Two checklist item keys ("acord25", "language") line up exactly with
+// extractionHints -- this is a real, verified result (the document's own
+// text was actually checked), so those two get a real status pill. Every
+// other item (certHolder, autoLiabilityBoxes, and every per-service
+// coverage-amount line) gets a neutral "Needs manual review" pill instead
+// of a checkmark, since nothing here ever reads an actual coverage dollar
+// amount off the page -- see this function's own header comment for why
+// pretending otherwise would be a false promise.
+const COI_AUTO_CHECKED_KEYS = new Set(["acord25", "language"]);
+function coiItemStatus(item, hints) {
+  if (!COI_AUTO_CHECKED_KEYS.has(item.key) || hints[item.key] === undefined) {
+    return { pillClass: "status-pill", label: "Needs manual review" };
+  }
+  return hints[item.key]
+    ? { pillClass: "status-pill approved", label: "Confirmed" }
+    : { pillClass: "status-pill coi-not-confirmed", label: "Couldn't confirm" };
+}
+
 function renderCoiReviewResult(coiReview) {
   if (!coiReview) {
     coiReviewResult.hidden = true;
     return;
   }
   const hints = coiReview.extractionHints || {};
-  const notes = [];
-  if (hints.acord25 === false) notes.push("We couldn't confirm this is on an ACORD 25 (2016/03) form -- double check before it's reviewed.");
-  if (hints.language === false) notes.push("We couldn't find the required additional-insured language -- double check it's present and matches exactly.");
   const checklist = Array.isArray(coiReview.checklist) ? coiReview.checklist : [];
   coiReviewResult.hidden = false;
   coiReviewResult.innerHTML = `
     <strong>Your COI is in for review.</strong>
-    ${notes.length ? `<ul>${notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` : "<p>Nothing obviously missing from what we could read off the file -- a C&amp;W Services admin will still review it before it's approved.</p>"}
     ${
       checklist.length
         ? `
-          <p class="hint" style="margin-top: 16px;">Here's the full insurance requirement list for your registered service type(s). The two notes above are the only things we can check automatically from the file you uploaded -- the specific coverage amounts below still need a human reviewer to confirm against your actual certificate.</p>
+          <p class="hint" style="margin-top: 8px;">Here's the full insurance requirement list for your registered service type(s). "Confirmed"/"Couldn't confirm" are the only two things actually checked automatically from the file you uploaded -- everything marked "Needs manual review" still needs a human reviewer to confirm against your actual certificate.</p>
           <ul class="checklist coi-requirement-list">
             ${checklist
-              .map(
-                (item) => `
+              .map((item) => {
+                const status = coiItemStatus(item, hints);
+                return `
                   <li class="coi-requirement-item" data-key="${escapeHtml(item.key)}" data-label="${escapeHtml(item.label)}">
                     <span>${escapeHtml(item.label)}</span>
-                    <button type="button" class="btn-link coi-waiver-toggle">Request waiver</button>
+                    <span class="coi-requirement-actions">
+                      <span class="${status.pillClass}">${status.label}</span>
+                      <button type="button" class="btn-link coi-waiver-toggle">Request waiver</button>
+                    </span>
                   </li>
-                `
-              )
+                `;
+              })
               .join("")}
           </ul>
         `
-        : ""
+        : "<p>A C&amp;W Services admin will review it before it's approved.</p>"
     }
   `;
   wireCoiWaiverToggles();

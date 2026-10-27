@@ -161,6 +161,7 @@
       white-space: nowrap;
     }
     .status-pill.approved { background: #e3f3ea; color: var(--ok); }
+    .status-pill.coi-not-confirmed { background: var(--accent-bg); color: var(--accent-dark); }
     .btn-link {
       background: none;
       border: none;
@@ -173,6 +174,12 @@
     }
     .btn-link:hover { text-decoration: underline; }
     .coi-requirement-item { gap: 12px; }
+    .coi-requirement-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
     li.coi-waiver-form {
       display: block;
       margin: 0 0 14px;
