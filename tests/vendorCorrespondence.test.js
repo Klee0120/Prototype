@@ -163,6 +163,37 @@ test("vendors: correspondence log", async (t) => {
     assert.equal(res.body[res.body.length - 1].id, manualEntryId);
   });
 
+  await t.test("the vendor list reflects how many correspondence attachments are still unfiled", async () => {
+    const res = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = res.body.find((v) => v.id === vendorId);
+    // manual entry's voicemail note + the .eml's coi.pdf + the fallback
+    // entry's own screenshot -- three attachments, none filed yet.
+    assert.equal(vendor.pendingCorrespondenceCount, 3);
+  });
+
+  await t.test("filing a correspondence attachment to a case moves it onto the vendor's real Documents", async () => {
+    const beforeFiles = await server.call("GET", `/api/files?relatedType=vendor_correspondence&relatedId=${emlEntryId}`, { userId: "ADMIN" });
+    const coiFileId = beforeFiles.body[0].id;
+
+    const relocateRes = await server.call("PATCH", `/api/files/${coiFileId}/relocate`, {
+      userId: "ADMIN",
+      body: { relatedType: "vendor", relatedId: vendorId, category: "coi" },
+    });
+    assert.equal(relocateRes.status, 200);
+
+    const afterCorrespondenceFiles = await server.call("GET", `/api/files?relatedType=vendor_correspondence&relatedId=${emlEntryId}`, {
+      userId: "ADMIN",
+    });
+    assert.equal(afterCorrespondenceFiles.body.length, 0, "no longer shows up under its old correspondence entry");
+
+    const vendorDocs = await server.call("GET", `/api/files?relatedType=vendor&relatedId=${vendorId}`, { userId: "ADMIN" });
+    assert.ok(vendorDocs.body.some((f) => f.id === coiFileId && f.category === "coi"), "now shows up on the vendor's real Documents");
+
+    const vendorListRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+    const vendor = vendorListRes.body.find((v) => v.id === vendorId);
+    assert.equal(vendor.pendingCorrespondenceCount, 2, "one fewer, now that it's been filed");
+  });
+
   await t.test("importing without a file is rejected", async () => {
     const res = await server.call("POST", `/api/admin/vendors/${vendorId}/correspondence/import-eml`, { userId: "ADMIN", body: {} });
     assert.equal(res.status, 400);

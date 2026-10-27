@@ -339,6 +339,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // the Vendors tab, same pattern jumpToTech already uses for Technicians.
   let vendorProfileId = null;
   let vendorProfileTab = "overview";
+  // One-shot deep link into the Correspondence tab for the entry a
+  // toolbar drop-to-import just created -- same idiom as jumpToTech above,
+  // consumed and cleared by renderVendorCorrespondenceTab's own first render.
+  let correspondenceJumpEntryId = null;
   const auditFilters = { search: "", action: "", range: "" };
   function openVendorProfile(vendorId, tab) {
     vendorProfileId = vendorId;
@@ -2581,7 +2585,17 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         </div>
       </div>
       <div class="tabs vendor-profile-tabs">
-        ${VENDOR_PROFILE_TABS.map((t) => `<button class="tab ${vendorProfileTab === t.key ? "active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
+        ${VENDOR_PROFILE_TABS.map(
+          (t) => `
+          <button class="tab ${vendorProfileTab === t.key ? "active" : ""}" data-tab="${t.key}" type="button">
+            ${t.label}${
+            t.key === "correspondence" && v.pendingCorrespondenceCount
+              ? ` <span class="badge-count" title="Attachment(s) waiting to be filed to a case">${v.pendingCorrespondenceCount}</span>`
+              : ""
+          }
+          </button>
+        `
+        ).join("")}
       </div>
       <div class="vendor-profile-body"></div>
     `;
@@ -3141,6 +3155,31 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         )
         .join("");
 
+      // One entry's attachment panel -- a named function (not inlined)
+      // since filing an attachment onto the vendor's real Documents
+      // (onFileToCase) needs to re-render this exact same panel afterward
+      // so the just-filed file disappears from here.
+      function renderEntryAttachments(el, entry) {
+        return renderAttachments(el.querySelector(".vendor-correspondence-entry-attachments"), {
+          title: "Attachments",
+          relatedType: "vendor_correspondence",
+          relatedId: entry.id,
+          categories: [{ value: "attachment", label: "Attachment" }],
+          canUpload: true,
+          emptyText: "No attachments.",
+          // A full draw() (not just re-rendering this one panel) -- the
+          // pending-count badge on the Correspondence tab itself lives on
+          // `v`, which only a real redraw through vendorsCache picks up.
+          // Costs the just-expanded entry collapsing back, which is an
+          // acceptable tradeoff for the badge actually being correct.
+          onFileToCase: (file) =>
+            openFileToCaseModal(v, file, async () => {
+              invalidateVendorsCache();
+              await draw();
+            }),
+        });
+      }
+
       listHost.querySelectorAll(".vendor-correspondence-entry").forEach((el) => {
         const entry = entries.find((x) => String(x.id) === el.dataset.id);
         const headerBtn = el.querySelector(".vendor-correspondence-entry-header");
@@ -3151,17 +3190,23 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           bodyEl.toggleAttribute("hidden", !wasHidden);
           if (wasHidden && !attachmentsLoaded) {
             attachmentsLoaded = true;
-            await renderAttachments(el.querySelector(".vendor-correspondence-entry-attachments"), {
-              title: "Attachments",
-              relatedType: "vendor_correspondence",
-              relatedId: entry.id,
-              categories: [{ value: "attachment", label: "Attachment" }],
-              canUpload: true,
-              emptyText: "No attachments.",
-            });
+            await renderEntryAttachments(el, entry);
           }
         });
       });
+
+      // The one-shot deep link a toolbar drop-to-import just set (see
+      // wireVendorQuickRowDrop) -- land directly on what was just
+      // captured instead of a blank list she'd have to hunt through.
+      if (correspondenceJumpEntryId != null) {
+        const jumpId = correspondenceJumpEntryId;
+        correspondenceJumpEntryId = null;
+        const jumpEl = listHost.querySelector(`.vendor-correspondence-entry[data-id="${jumpId}"]`);
+        if (jumpEl) {
+          jumpEl.querySelector(".vendor-correspondence-entry-header").click();
+          jumpEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }
     }
 
     async function handleImport(fileList) {
@@ -3235,6 +3280,44 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         });
         close();
         await onSaved();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  }
+
+  // Promotes a correspondence attachment onto the vendor's real compliance
+  // Documents -- the same existing relocate endpoint the COI pool and task
+  // attachments already use to move a file between buckets, just source
+  // (vendor_correspondence) and destination (vendor) categories specific
+  // to this flow. The admin always picks the category -- "which case this
+  // actually belongs to" is a judgment call, same as every other hint-only
+  // document handling in this app.
+  function openFileToCaseModal(v, file, onDone) {
+    const { body, close } = openModal({
+      title: `File "${file.originalName}" to a case`,
+      bodyHtml: `
+        <form class="modal-form file-to-case-form">
+          <label class="profile-field">
+            <span>Category</span>
+            <select name="category">
+              ${VENDOR_DOC_CATEGORIES.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
+            </select>
+          </label>
+          <p class="review-checklist-hint">Moves this file onto ${escapeHtml(v.name)}'s Documents tab under that category -- it won't show here on Correspondence anymore.</p>
+          <div class="modal-form-actions"><button type="submit" class="btn btn-primary">File it</button></div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".file-to-case-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.patch(`/api/files/${file.id}/relocate`, { relatedType: "vendor", relatedId: v.id, category: form.category.value });
+        close();
+        await onDone();
       } catch (err) {
         msg.textContent = err.message;
       }
@@ -4477,8 +4560,51 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         <button type="button" class="topbar-search-result" data-id="${v.id}">
           <span class="topbar-search-result-label">${escapeHtml(v.name)}</span>
           <span class="topbar-search-result-sub">${escapeHtml(ONBOARDING_STAGE_LABELS[v.onboardingStage] || v.onboardingStage || "")}</span>
+          <span class="topbar-search-result-status" hidden></span>
         </button>
       `;
+    }
+
+    // Drag a file straight onto a vendor row here -- same import-eml
+    // endpoint the Correspondence tab's own dropzone calls (a real .eml
+    // gets the full parse; anything else logs as a blank entry with that
+    // file attached, see POST .../correspondence/import-eml's own
+    // comment). A failure shows inline on the row and never navigates, so
+    // she can see what broke instead of landing on a vendor page with
+    // nothing new on it.
+    function wireVendorQuickRowDrop(btn) {
+      btn.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        btn.classList.add("topbar-search-result-dragover");
+      });
+      btn.addEventListener("dragleave", () => btn.classList.remove("topbar-search-result-dragover"));
+      btn.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        btn.classList.remove("topbar-search-result-dragover");
+        const file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        const statusEl = btn.querySelector(".topbar-search-result-status");
+        statusEl.hidden = false;
+        statusEl.classList.remove("topbar-search-result-status-error");
+        statusEl.textContent = "Importing…";
+        try {
+          const vendorId = Number(btn.dataset.id);
+          const result = await api.uploadRawFile(`/api/admin/vendors/${vendorId}/correspondence/import-eml`, file);
+          invalidateVendorsCache();
+          vendorQuickDropdown.hidden = true;
+          correspondenceJumpEntryId = result.entry.id;
+          // No extra await draw() here, unlike other nav call sites in
+          // this file -- openVendorProfile -> goTo already triggers its
+          // own draw(), and a second one would re-render the
+          // Correspondence tab a beat later with correspondenceJumpEntryId
+          // already consumed and nulled by the first pass, silently
+          // un-expanding the entry it just auto-opened.
+          openVendorProfile(vendorId, "correspondence");
+        } catch (err) {
+          statusEl.classList.add("topbar-search-result-status-error");
+          statusEl.textContent = err.message;
+        }
+      });
     }
 
     async function loadVendorQuickDropdown() {
@@ -4523,6 +4649,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           openVendorProfile(Number(btn.dataset.id));
           await draw();
         });
+        wireVendorQuickRowDrop(btn);
       });
       const searchInputEl = vendorQuickDropdown.querySelector(".topbar-vendor-quick-search-input");
       searchInputEl.addEventListener("input", () => renderVendorQuickDropdown(searchInputEl.value));

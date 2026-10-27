@@ -730,6 +730,19 @@ h1, h2, h3, h4 {
   font-size: 12px;
   color: var(--muted);
 }
+.topbar-search-result-dragover {
+  background: var(--accent-bg);
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.topbar-search-result-status {
+  font-size: 12px;
+  margin-top: 4px;
+  color: var(--accent-dark);
+}
+.topbar-search-result-status-error {
+  color: var(--danger);
+}
 
 .topbar-territory-field {
   display: flex;
@@ -1755,6 +1768,23 @@ h1, h2, h3, h4 {
   color: #fff;
   background: var(--accent);
   border-color: var(--accent);
+}
+
+.badge-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+.tab.active .badge-count {
+  background: rgba(255, 255, 255, 0.35);
 }
 
 .lang-toggle {

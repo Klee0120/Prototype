@@ -2902,7 +2902,25 @@ function presentVendorRow(v) {
     // in a 200-row Directory load when only the vendor profile page
     // actually shows this.
     hasPortalAccess: hasVendorPortalAccess(v.id),
+    pendingCorrespondenceCount: countPendingVendorCorrespondenceFiles(v.id),
   };
+}
+
+// How many files a vendor's own correspondence log is still holding that
+// haven't been filed onto the real compliance Documents yet (see
+// server/routes/vendors.js's POST .../correspondence/import-eml and
+// adminReview.js's "File to case" action, which is what clears one of
+// these). related_id on the files table is text, vendor_correspondence.id
+// is numeric -- the CAST matches a correspondence entry's attachments
+// specifically, not a coincidental numeric string collision elsewhere.
+function countPendingVendorCorrespondenceFiles(vendorId) {
+  return db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM files f
+       JOIN vendor_correspondence vc ON vc.id = CAST(f.related_id AS INTEGER)
+       WHERE f.related_type = 'vendor_correspondence' AND vc.vendor_id = ?`
+    )
+    .get(Number(vendorId)).n;
 }
 
 const ONBOARDING_STAGES = ["not_started", "in_progress", "denied", "onboarded", "not_required"];
@@ -2984,6 +3002,18 @@ function listVendors() {
 
   const portalAccessIds = new Set(db.prepare("SELECT vendor_id FROM vendor_credentials").all().map((r) => r.vendor_id));
 
+  const pendingCorrespondenceCounts = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT vc.vendor_id AS vendorId, COUNT(*) AS n FROM files f
+       JOIN vendor_correspondence vc ON vc.id = CAST(f.related_id AS INTEGER)
+       WHERE f.related_type = 'vendor_correspondence'
+       GROUP BY vc.vendor_id`
+    )
+    .all()) {
+    pendingCorrespondenceCounts.set(r.vendorId, r.n);
+  }
+
   return vendors.map((v) => {
     const spend = contractedSpend.get(v.id) || { total: 0, womCount: 0 };
     return {
@@ -2995,6 +3025,7 @@ function listVendors() {
       contractedWomCount: spend.womCount,
       lastInvoicedAt: lastInvoiced.get(v.id) || null,
       hasPortalAccess: portalAccessIds.has(v.id),
+      pendingCorrespondenceCount: pendingCorrespondenceCounts.get(v.id) || 0,
     };
   });
 }
