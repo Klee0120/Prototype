@@ -202,6 +202,7 @@ export async function renderGlScreening(container) {
         <input type="checkbox" class="glscreen-show-resolved-toggle" ${showResolved ? "checked" : ""} />
         Show resolved
       </label>
+      <button type="button" class="btn btn-secondary glscreen-export-btn">Export to Excel</button>
     </div>
     <p class="review-checklist-hint">
       Runs Krista's own reclass-review checklist (amount, Temp Labor, Concur, Labor subsidiary, WOM
@@ -268,6 +269,28 @@ export async function renderGlScreening(container) {
   container.querySelector(".glscreen-clear-territory-btn")?.addEventListener("click", () => setTerritory(null));
   container.querySelector(".glscreen-add-selected-btn").addEventListener("click", () => addFlaggedToReclass(container, [...selectedIds]));
   container.querySelector(".glscreen-resolve-selected-btn").addEventListener("click", () => resolveFlagged(container, [...selectedIds]));
+  container.querySelector(".glscreen-export-btn").addEventListener("click", async (e) => {
+    const btn = e.target;
+    const params = new URLSearchParams();
+    if (territory) params.set("territory", territory);
+    params.set("fiscalYear", String(selectedFiscalYear));
+    if (selectedPeriod) params.set("periodNumber", selectedPeriod);
+    if (showResolved) params.set("includeResolved", "true");
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = "Exporting…";
+    try {
+      await api.downloadFromUrl(
+        `/api/admin/gl/screening/export?${params}`,
+        `GL_Screening_Flags_${new Date().toISOString().slice(0, 10)}.xlsx`
+      );
+    } catch (err) {
+      window.alert(err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
 
   drawBody(container);
 }

@@ -275,6 +275,19 @@ test("GL Screening: each reclass-review rule fires on the line it's meant to, an
     const techRes = await server.call("GET", "/api/admin/gl/screening", { userId: "T1001" });
     assert.equal(techRes.status, 403);
   });
+
+  await t.test("GET /screening/export returns a downloadable xlsx with the same flags, one row per matched rule", async () => {
+    const res = await server.rawGet(`/api/admin/gl/screening/export?fiscalYear=${FY}&periodNumber=${PERIOD}`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    assert.match(res.headers.get("content-disposition") || "", /attachment; filename="GL_Screening_Flags_.*\.xlsx"/);
+    assert.ok(res.text.length > 0);
+  });
+
+  await t.test("a technician can't reach the export route either", async () => {
+    const techRes = await server.call("GET", "/api/admin/gl/screening/export", { userId: "T1001" });
+    assert.equal(techRes.status, 403);
+  });
 });
 
 test("GL Screening: adding a flagged line to the Reclass list uses source=auto_flagged; the ordinary manual form still defaults to manual", async (t) => {

@@ -431,6 +431,64 @@ router.get("/screening", (req, res) => {
   );
 });
 
+const GL_SCREENING_EXPORT_COLUMNS = [
+  { header: "Fiscal Year", key: "fiscalYear" },
+  { header: "Period", key: "periodNumber" },
+  { header: "Month", key: "month" },
+  { header: "GL Date", key: "glDate" },
+  { header: "Territory", key: "territory" },
+  { header: "Business Unit (Job #)", key: "businessUnit" },
+  { header: "Location", key: "locationLabel" },
+  { header: "Object Account", key: "objectAccount" },
+  { header: "Object Code", key: "objectAccountCode" },
+  { header: "Subsidiary", key: "subsidiary" },
+  { header: "Amount", key: "amount" },
+  { header: "Remark", key: "remark" },
+  { header: "Name - Remark Explanation", key: "nameAlpha" },
+  { header: "Subledger (WOM#)", key: "subledgerGl" },
+  { header: "Purchase Order", key: "purchaseOrder" },
+  { header: "Rule Flagged", key: "ruleLabel" },
+  { header: "Severity", key: "severity" },
+  { header: "Suggested Fix", key: "suggestedFix" },
+  { header: "Already on Reclass List", key: "onReclassList" },
+];
+
+// Same flags as GET /screening, flattened to one row per matched rule
+// (a line matching two rules at once becomes two rows, since each rule
+// carries its own suggested fix) so a dropped-in GL file turns directly
+// into a list finance/admin can work line by line.
+router.get("/screening/export", (req, res) => {
+  const { territory, fiscalYear, periodNumber, includeResolved } = req.query || {};
+  const { items } = db.getGlScreeningFlags({
+    territory: territory || null,
+    fiscalYear: fiscalYear ? Number(fiscalYear) : null,
+    periodNumber: periodNumber ? Number(periodNumber) : null,
+    includeResolved: includeResolved === "true",
+  });
+  const dataRows = [];
+  for (const item of items) {
+    for (const reason of item.reasons) {
+      if (reason.resolved && includeResolved !== "true") continue;
+      const suggestedFix = reason.suggestedToObjectCode
+        ? `Reclass to object ${reason.suggestedToObjectCode}`
+        : reason.suggestedToSubsidiary
+        ? `Reclass to subsidiary ${reason.suggestedToSubsidiary}`
+        : "";
+      const row = { ...item, ruleLabel: reason.label, severity: reason.severity, suggestedFix, onReclassList: item.onReclassList ? "Yes" : "No" };
+      dataRows.push(GL_SCREENING_EXPORT_COLUMNS.map((c) => (row[c.key] == null ? null : row[c.key])));
+    }
+  }
+  const headerRow = GL_SCREENING_EXPORT_COLUMNS.map((c) => c.header);
+  const sheet = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "GL Screening Flags");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  const fileName = `GL_Screening_Flags_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(buffer);
+});
+
 // "Take this off my territory's list" -- doesn't touch gl_entries or
 // reclass_items, just records that an admin has looked at this specific
 // finding (see db.resolveGlScreeningItem for why it's keyed by the line's
