@@ -613,6 +613,19 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     payment: "paymentFormStatus",
     blank_invoice: "blankInvoiceFormStatus",
   };
+  // Which vendor-document category a file dropped straight onto a case
+  // pill lands under -- Payment has no category of its own (its
+  // compliance card is satisfied by either an ACH form or a canceled
+  // check, see requiredCategories' anyOf in renderVendorOverviewTab), so a
+  // drop here defaults to the more common of the two; a vendor who
+  // actually has a voided check instead can still re-categorize it from
+  // the Documents tab same as any other file.
+  const DROP_UPLOAD_CATEGORY_BY_CASE_KEY = {
+    coi: "coi",
+    w9: "w9",
+    payment: "ach",
+    blank_invoice: "blank_invoice",
+  };
   // Each form's own review-notes checklist -- an expandable multi-select
   // list of the specific issues that can be found on that document, per
   // the redesign spec. Stored per-case as an array of these keys
@@ -1771,7 +1784,9 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
               ? `<button type="button" class="btn btn-secondary onboarding-case-start-new-btn">Start new ${escapeHtml(ct.label)} case</button>`
               : `<span class="onboarding-case-type-tag">Individual document case</span>`
           }
+          <span class="onboarding-case-drop-status" hidden></span>
         </div>
+        ${locked ? "" : `<p class="onboarding-case-drop-hint">Drop a file here to upload it straight to this case.</p>`}
         ${
           locked
             ? `<p class="onboarding-case-locked-hint">This ${escapeHtml(ct.label)} case is Approved and closed -- a record of this policy/form period. Click "Start new ${escapeHtml(ct.label)} case" above for a renewal or update, rather than editing this one.</p>`
@@ -1906,6 +1921,36 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const paymentPhoneInput = caseEl.querySelector(".onboarding-payment-phone-input");
     const reviewNotesDetails = caseEl.querySelector(".onboarding-review-notes-details");
     const reviewNotesSummary = caseEl.querySelector(".onboarding-review-notes-summary");
+
+    // Drop a file straight onto this case pill -- a shortcut for uploading
+    // it to the matching vendor-document category (same api.uploadFile
+    // call the Documents tab's own dropzone makes) without having to leave
+    // the Onboarding & Compliance tab first. Doesn't touch the case's own
+    // status/fields -- same as any other admin-side upload, nothing here
+    // auto-approves anything (see attachments.js's own upload flow).
+    const dropStatusEl = caseEl.querySelector(".onboarding-case-drop-status");
+    caseEl.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      caseEl.classList.add("onboarding-case-dragover");
+    });
+    caseEl.addEventListener("dragleave", () => caseEl.classList.remove("onboarding-case-dragover"));
+    caseEl.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      caseEl.classList.remove("onboarding-case-dragover");
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (!file) return;
+      const category = DROP_UPLOAD_CATEGORY_BY_CASE_KEY[ct.key];
+      dropStatusEl.hidden = false;
+      dropStatusEl.classList.remove("onboarding-case-drop-status-error");
+      dropStatusEl.textContent = "Uploading…";
+      try {
+        await api.uploadFile("vendor", v.id, category, file, {});
+        dropStatusEl.textContent = `Uploaded "${file.name}".`;
+      } catch (err) {
+        dropStatusEl.classList.add("onboarding-case-drop-status-error");
+        dropStatusEl.textContent = err.message;
+      }
+    });
 
     function buildPayload() {
       const payload = {
