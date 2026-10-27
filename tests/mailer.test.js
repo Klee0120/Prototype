@@ -1,8 +1,5 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
 
 const mailerPath = require.resolve("../server/utils/mailer");
 
@@ -70,7 +67,7 @@ test("mailer: sends via SendGrid's HTTP API when configured", async (t) => {
   assert.equal(body.content[0].value, "Test body");
 });
 
-test("mailer: translates a {filename, path} attachment into SendGrid's base64 shape", async (t) => {
+test("mailer: translates a {filename, buffer} attachment into SendGrid's base64 shape", async (t) => {
   process.env.SENDGRID_API_KEY = "test-key";
   process.env.SENDGRID_FROM = "serviceworks.noreply@example.com";
   const mailer = freshMailer();
@@ -79,10 +76,6 @@ test("mailer: translates a {filename, path} attachment into SendGrid's base64 sh
     delete process.env.SENDGRID_FROM;
     delete require.cache[mailerPath];
   });
-
-  const filePath = path.join(os.tmpdir(), `mailer-test-${Date.now()}.txt`);
-  fs.writeFileSync(filePath, "hello attachment");
-  t.after(() => fs.unlinkSync(filePath));
 
   const originalFetch = global.fetch;
   let capturedOptions = null;
@@ -98,7 +91,7 @@ test("mailer: translates a {filename, path} attachment into SendGrid's base64 sh
     to: "someone@example.com",
     subject: "With attachment",
     text: "See attached",
-    attachments: [{ filename: "notes.txt", path: filePath }],
+    attachments: [{ filename: "notes.txt", buffer: Buffer.from("hello attachment") }],
   });
 
   const body = JSON.parse(capturedOptions.body);

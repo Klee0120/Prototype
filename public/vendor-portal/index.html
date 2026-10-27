@@ -195,6 +195,22 @@
       <ul class="checklist" id="checklist-items"></ul>
     </section>
 
+    <section id="contact-view" class="card" hidden>
+      <h1>Contact info</h1>
+      <p class="hint">Keep this up to date so C&amp;W Services can reach you about this work.</p>
+      <div id="contact-error" class="error"></div>
+      <div id="contact-success" class="success"></div>
+      <form id="contact-form">
+        <label for="contact-phone">Contact phone</label>
+        <input type="text" id="contact-phone" autocomplete="tel" />
+        <label for="contact-email">Email</label>
+        <input type="text" id="contact-email" autocomplete="email" />
+        <label for="contact-po-email">PO email</label>
+        <input type="text" id="contact-po-email" autocomplete="email" />
+        <button type="submit" id="contact-submit">Save</button>
+      </form>
+    </section>
+
     <section id="upload-view" class="card" hidden>
       <h1>Submit a document</h1>
       <p class="hint">Upload a new or replacement COI, W-9, ACH form, voided check, blank invoice, or hold harmless agreement. A COI is checked automatically and you'll see right away if anything looks off.</p>

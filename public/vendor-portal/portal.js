@@ -78,6 +78,7 @@ function escapeHtml(s) {
 
 const loginView = document.getElementById("login-view");
 const checklistView = document.getElementById("checklist-view");
+const contactView = document.getElementById("contact-view");
 const uploadView = document.getElementById("upload-view");
 const logoutRow = document.getElementById("logout-row");
 const loginForm = document.getElementById("login-form");
@@ -86,6 +87,7 @@ const loginSubmit = document.getElementById("login-submit");
 
 function showLogin(message) {
   checklistView.hidden = true;
+  contactView.hidden = true;
   uploadView.hidden = true;
   logoutRow.hidden = true;
   loginView.hidden = false;
@@ -120,10 +122,14 @@ async function showChecklist() {
   }
   loginView.hidden = true;
   checklistView.hidden = false;
+  contactView.hidden = false;
   uploadView.hidden = false;
   logoutRow.hidden = false;
   document.getElementById("vendor-name").textContent = data.vendorName;
   document.getElementById("summary-line").textContent = `${data.approvedCount}/${data.totalCount} document cases approved`;
+  document.getElementById("contact-phone").value = data.phone || "";
+  document.getElementById("contact-email").value = data.email || "";
+  document.getElementById("contact-po-email").value = data.poEmail || "";
   const list = document.getElementById("checklist-items");
   list.innerHTML = data.items
     .filter((item) => !item.notRequired)
@@ -191,6 +197,31 @@ loginForm.addEventListener("submit", async (e) => {
     loginError.style.display = "block";
   } finally {
     loginSubmit.disabled = false;
+  }
+});
+
+const contactForm = document.getElementById("contact-form");
+const contactSubmit = document.getElementById("contact-submit");
+const contactError = document.getElementById("contact-error");
+const contactSuccess = document.getElementById("contact-success");
+
+contactForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  contactSubmit.disabled = true;
+  contactError.style.display = "none";
+  contactSuccess.style.display = "none";
+  const phone = document.getElementById("contact-phone").value.trim();
+  const email = document.getElementById("contact-email").value.trim();
+  const poEmail = document.getElementById("contact-po-email").value.trim();
+  try {
+    await apiRequest("PATCH", "/api/vendor-portal/contact-info", { phone, email, poEmail });
+    contactSuccess.textContent = "Saved.";
+    contactSuccess.style.display = "block";
+  } catch (err) {
+    contactError.textContent = err.message;
+    contactError.style.display = "block";
+  } finally {
+    contactSubmit.disabled = false;
   }
 });
 

@@ -1,6 +1,10 @@
+const fs = require("fs");
+const path = require("path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
+const db = require("../server/data/db");
+const fileEncryption = require("../server/utils/fileEncryption");
 
 test("files: attachments (upload/list/download/delete) authorization", async (t) => {
   const server = await startServer();
@@ -212,6 +216,49 @@ test("files: attachments (upload/list/download/delete) authorization", async (t)
     const res = await server.call("GET", "/api/admin/expiring-forms", { userId: "T1001" });
     assert.equal(res.status, 403);
   });
+});
+
+// Encryption at rest (server/utils/fileEncryption.js): every uploaded file
+// sits as ciphertext on disk, not plaintext -- this is what actually
+// matters for a bank document (an ACH form), so this proves it against the
+// real upload/download routes, not just fileEncryption.js in isolation
+// (fileEncryption.test.js already covers the crypto module itself).
+test("files: encryption at rest", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const create = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Encryption Test Vendor" } });
+  const vendorId = create.body.id;
+
+  const plaintextContent = "ACH form -- routing 123456789, account 987654321";
+  const upload = await server.upload("/api/files", {
+    userId: "ADMIN",
+    fields: { relatedType: "vendor", relatedId: String(vendorId), category: "ach" },
+    fileName: "ach-form.txt",
+    fileContent: plaintextContent,
+  });
+  assert.equal(upload.status, 201);
+
+  await t.test("the raw bytes on disk are ciphertext, not the plaintext content", () => {
+    const raw = fs.readFileSync(path.join(db.UPLOADS_DIR, upload.body.storedName));
+    assert.ok(raw.subarray(0, fileEncryption.MAGIC.length).equals(fileEncryption.MAGIC), "stored file should start with the encryption magic marker");
+    assert.ok(!raw.includes("routing"), "raw bytes on disk must not contain recognizable plaintext");
+    assert.ok(!raw.includes("987654321"), "raw bytes on disk must not contain recognizable plaintext");
+  });
+
+  await t.test("downloading through the authenticated route returns the exact original bytes", async () => {
+    const res = await server.rawGet(`/api/files/${upload.body.id}/download`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.equal(res.text, plaintextContent);
+  });
+
+  await t.test("a download is audited", async () => {
+    const res = await server.call("GET", "/api/audit", { userId: "ADMIN" });
+    const entry = res.body.find((e) => e.action === "FILE_DOWNLOADED");
+    assert.ok(entry, "expected a FILE_DOWNLOADED audit entry");
+    assert.match(entry.details, /downloaded "ach-form\.txt"/);
+  });
+
 });
 
 // A COI (or W-9, etc.) can come in before Krista's picked a vendor to file

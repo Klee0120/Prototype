@@ -35,6 +35,23 @@
 # the `bash` side of the pipe. Until it's set, correspondence still logs
 # and files normally -- the summary just stays blank, same "never block
 # the real action on this" rule the SendGrid key already follows.
+#
+# FILE_ENCRYPTION_KEY turns on encryption at rest for every uploaded file
+# (COI/W-9/ACH/etc. -- see server/utils/fileEncryption.js). Unlike every
+# other key above, this one is REQUIRED for uploads to work at all --
+# without it, the app refuses new uploads outright (fail closed) rather
+# than silently storing a bank document as plaintext. Generate one with:
+#   openssl rand -hex 32
+# and pass it the same way as the others. READ THIS BEFORE YOU SET IT:
+# losing this key means every file encrypted with it becomes permanently,
+# totally unreadable -- there is no "forgot password" recovery for this.
+# Save a copy of it somewhere off this server (a password manager, written
+# down somewhere safe) the moment you generate it. Unlike every other
+# variable here, this script carries an already-set FILE_ENCRYPTION_KEY
+# forward automatically on a later re-run even if you don't pass it again
+# (see below) -- specifically so a routine re-run (e.g. just to add
+# DOMAIN) can never silently "lose" the key and orphan already-encrypted
+# files. You only need to pass it explicitly on the very first deploy.
 set -euo pipefail
 
 REPO_URL="https://github.com/Klee0120/Prototype.git"
@@ -45,6 +62,14 @@ DOMAIN="${DOMAIN:-}"
 SENDGRID_API_KEY="${SENDGRID_API_KEY:-}"
 SENDGRID_FROM="${SENDGRID_FROM:-}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+FILE_ENCRYPTION_KEY="${FILE_ENCRYPTION_KEY:-}"
+# Unlike every other var above, carry an already-configured key forward
+# automatically if this run didn't pass one -- see this script's header
+# comment for why losing this specific key is catastrophic (not just an
+# outage) in a way SENDGRID_API_KEY/ANTHROPIC_API_KEY aren't.
+if [ -z "$FILE_ENCRYPTION_KEY" ] && [ -f /etc/systemd/system/labor-allocation.service ]; then
+  FILE_ENCRYPTION_KEY=$(grep -oP '^Environment=FILE_ENCRYPTION_KEY=\K.*' /etc/systemd/system/labor-allocation.service || true)
+fi
 # Defaults to the domain itself (once one is set) rather than making you
 # pass the same thing twice -- without this, a reset-PIN email would link
 # to this box's own internal localhost:$APP_PORT, which nobody else can
@@ -88,6 +113,7 @@ Environment=SENDGRID_API_KEY=$SENDGRID_API_KEY
 Environment=SENDGRID_FROM=$SENDGRID_FROM
 Environment=PUBLIC_BASE_URL=$PUBLIC_BASE_URL
 Environment=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+Environment=FILE_ENCRYPTION_KEY=$FILE_ENCRYPTION_KEY
 
 [Install]
 WantedBy=multi-user.target
@@ -153,4 +179,9 @@ if [ -n "$SENDGRID_API_KEY" ] && [ -n "$SENDGRID_FROM" ]; then
 else
   echo "Email isn't configured yet -- 'forgot my PIN' requests are logged, not delivered. See this script's header comment for how to turn it on."
 fi
-echo "NOTE: re-running this full setup script (as opposed to redeploy.sh) always rewrites the systemd service file -- any env var not passed on a given run (DOMAIN, SENDGRID_*, PUBLIC_BASE_URL) reverts to unset, even if a previous run had it configured. Pass the full set every time you run deploy.sh itself; redeploy.sh (the normal pull-and-restart script) never touches this and is safe to run on its own."
+if [ -n "$FILE_ENCRYPTION_KEY" ]; then
+  echo "File encryption at rest is configured -- uploads are encrypted. If this is the first time it's been set, make sure you've saved a copy of the key somewhere off this server, then run 'node scripts/encrypt-existing-uploads.js' from $APP_DIR once to encrypt any files uploaded before now."
+else
+  echo "FILE_ENCRYPTION_KEY is NOT set -- uploads (COI/W-9/ACH/etc.) are disabled until it is. Generate one with 'openssl rand -hex 32' and re-run this script with FILE_ENCRYPTION_KEY=<key> set. See this script's header comment first -- losing this key once set means permanent data loss."
+fi
+echo "NOTE: re-running this full setup script (as opposed to redeploy.sh) always rewrites the systemd service file -- any env var not passed on a given run (DOMAIN, SENDGRID_*, PUBLIC_BASE_URL) reverts to unset, even if a previous run had it configured. Pass the full set every time you run deploy.sh itself; redeploy.sh (the normal pull-and-restart script) never touches this and is safe to run on its own. FILE_ENCRYPTION_KEY is the one exception -- it's carried forward automatically from the live service file if you don't pass it, so a routine re-run can never silently orphan already-encrypted files."

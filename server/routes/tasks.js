@@ -1,4 +1,3 @@
-const path = require("path");
 const express = require("express");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
@@ -612,14 +611,25 @@ router.patch("/:id/po-generated", requireAuth, requireAdmin, (req, res) => {
     .catch((err) => console.error(`[mailer] failed to send invoice-request email for task ${task.id}:`, err.message));
 
   if (emailVendor) {
-    mailer
-      .sendMail({
-        to: poEmail,
-        subject: `Purchase Order -- ${task.related_wom_code || ""}`.trim(),
-        text: `Hi ${vendor.name},\n\nAttached is the Purchase Order for this work.\n\nThanks,\n${req.user.name}`,
-        attachments: [{ filename: poDoc.originalName, path: path.join(db.UPLOADS_DIR, poDoc.storedName) }],
-      })
-      .catch((err) => console.error(`[mailer] failed to email PO document for task ${task.id}:`, err.message));
+    // Decrypting the attachment can throw (missing key, corrupt/tampered
+    // ciphertext) in a way nothing here could before -- caught the same as
+    // any other failure to actually get the PO emailed, matching the
+    // existing fire-and-forget .catch() below. A bad attachment should
+    // never block marking the PO generated (already done above), only
+    // drop this one email side-effect.
+    try {
+      const poDocBuffer = db.readUploadBytes(poDoc.storedName);
+      mailer
+        .sendMail({
+          to: poEmail,
+          subject: `Purchase Order -- ${task.related_wom_code || ""}`.trim(),
+          text: `Hi ${vendor.name},\n\nAttached is the Purchase Order for this work.\n\nThanks,\n${req.user.name}`,
+          attachments: [{ filename: poDoc.originalName, buffer: poDocBuffer }],
+        })
+        .catch((err) => console.error(`[mailer] failed to email PO document for task ${task.id}:`, err.message));
+    } catch (err) {
+      console.error(`[mailer] failed to read PO document for task ${task.id}:`, err.message);
+    }
   }
 
   db.addAudit(

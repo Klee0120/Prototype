@@ -1,9 +1,9 @@
 const express = require("express");
 const multer = require("multer");
-const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const db = require("../data/db");
+const fileEncryption = require("../utils/fileEncryption");
 const { requireVendorAuth } = require("../middleware/vendorAuth");
 const { createLoginThrottle } = require("../utils/loginThrottle");
 const { extractCoiDocumentText, buildCoiRequirementChecklist, coiExtractionHints, extractCoiStructuredFields } = require("../utils/coiDocumentReview");
@@ -57,6 +57,28 @@ router.get("/me", requireVendorAuth, (req, res) => {
   res.json(checklist);
 });
 
+const EMAIL_RE = /^\S+@\S+\.\S+$/;
+
+// A vendor filling in their own Contact phone / Email / PO email --
+// fields that already exist on the vendor record and show on the admin
+// Overview tab, but previously only an admin could set (via "Edit
+// vendor"). Deliberately its own narrow route rather than routing a
+// vendor session through the admin PATCH /api/admin/vendors/:id, which
+// accepts (and requires) every vendor column -- name, onboarding stage,
+// JDE #, etc. -- none of which a vendor should ever be able to touch.
+// db.updateVendorContactInfo only ever writes these three columns, and
+// only ever for req.vendor.id, same hardcoded-to-self pattern the
+// document upload route above already uses.
+router.patch("/contact-info", requireVendorAuth, (req, res) => {
+  const { phone, email, poEmail } = req.body || {};
+  if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: "That doesn't look like a valid email address" });
+  if (poEmail && !EMAIL_RE.test(poEmail)) return res.status(400).json({ error: "That doesn't look like a valid PO email address" });
+
+  const updated = db.updateVendorContactInfo(req.vendor.id, { phone, email, poEmail });
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_CONTACT_INFO_UPDATED", `${req.vendor.name} updated their contact info via the vendor portal`, req.vendor.id);
+  res.json({ phone: updated.phone, email: updated.email, poEmail: updated.poEmail });
+});
+
 // The categories a vendor is allowed to submit themselves -- the same
 // vendor-document vocabulary server/routes/files.js already defines for
 // relatedType "vendor", minus the two an admin alone ever creates
@@ -84,11 +106,14 @@ router.post("/documents", requireVendorAuth, upload.single("file"), async (req, 
   if (!category || !VENDOR_UPLOAD_CATEGORIES.has(category)) {
     return res.status(400).json({ error: `category must be one of: ${[...VENDOR_UPLOAD_CATEGORIES].join(", ")}` });
   }
+  if (!fileEncryption.isConfigured()) {
+    return res.status(503).json({ error: "File encryption is not configured on this server -- uploads are disabled" });
+  }
 
   const id = crypto.randomUUID();
   const ext = path.extname(req.file.originalname || "").slice(0, 10);
   const storedName = `${id}${ext}`;
-  fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), req.file.buffer);
+  db.writeUploadBytes(storedName, req.file.buffer);
 
   const file = db.insertFile({
     id,
@@ -116,7 +141,7 @@ router.post("/documents", requireVendorAuth, upload.single("file"), async (req, 
   if (category === "coi") {
     try {
       const vendor = db.findVendor(req.vendor.id);
-      const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, storedName));
+      const extractedText = await extractCoiDocumentText(db.readUploadBytes(storedName));
       const checklist = await buildCoiRequirementChecklist(vendor.services);
       const created = db.createCoiDocumentReview({ fileId: file.id, vendorId: req.vendor.id, extractedText, checklist });
       // Same two fields the admin-side coi-review route returns (see

@@ -20,10 +20,13 @@ const SAME_COLUMN_TOLERANCE_PT = 5;
 const path = require("path");
 const STANDARD_FONT_DATA_URL = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts") + path.sep;
 
-async function extractPoVendorInfo(filePath) {
+// Takes the PDF's raw bytes directly (a Buffer), not a file path -- the
+// caller is responsible for getting those bytes (which, for an uploaded
+// file, means going through db.readUploadBytes so encryption at rest is
+// transparent to this function).
+async function extractPoVendorInfo(buffer) {
   const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const fs = require("fs");
-  const data = new Uint8Array(fs.readFileSync(filePath));
+  const data = new Uint8Array(buffer);
   const doc = await pdfjsLib.getDocument({ data, useWorkerFetch: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL })
     .promise;
   const page = await doc.getPage(1);

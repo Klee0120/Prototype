@@ -10,6 +10,7 @@ const { hashPin, verifyPin } = require("../utils/password");
 // regeneration), so centralizing the notify-the-assignee check here is far
 // less error-prone than duplicating it at every call site.
 const mailer = require("../utils/mailer");
+const fileEncryption = require("../utils/fileEncryption");
 const { mondayOf, datesForWeek, DAY_NAMES } = require("../utils/week");
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -34,6 +35,19 @@ const DB_PATH = process.env.LABOR_DB_PATH || path.join(__dirname, "store.sqlite"
 const UPLOADS_DIR = process.env.LABOR_UPLOADS_DIR || path.join(__dirname, "uploads");
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// Every route that touches an uploaded file's raw bytes goes through these
+// two instead of fs.writeFileSync/readFileSync directly -- the one
+// chokepoint where encryption at rest (server/utils/fileEncryption.js)
+// actually happens, so no route file needs its own crypto logic. See
+// fileEncryption.js's own comment for why a file not starting with its
+// MAGIC marker (written before encryption shipped) still reads back fine.
+function writeUploadBytes(storedName, buffer) {
+  fs.writeFileSync(path.join(UPLOADS_DIR, storedName), fileEncryption.encryptBuffer(buffer));
+}
+function readUploadBytes(storedName) {
+  return fileEncryption.decryptBuffer(fs.readFileSync(path.join(UPLOADS_DIR, storedName)));
+}
 
 const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA foreign_keys = ON;");
@@ -3331,6 +3345,24 @@ function updateVendor(id, fields) {
   );
   linkUnmatchedPosForVendor(Number(id), fields.jdeVendorNumber);
   return findVendor(id);
+}
+
+// A narrow, 3-column update for the vendor portal's own self-service
+// contact-info form -- deliberately NOT a call into updateVendor above,
+// which does a full-row replace of every vendor column (name, status,
+// services, etc.) and would blank all of those out if called with only
+// these three fields. A vendor session can only ever reach this function
+// for its own vendor id (see server/routes/vendorPortal.js), so there's
+// no risk of it touching another vendor's record either.
+function updateVendorContactInfo(vendorId, { phone, email, poEmail }) {
+  db.prepare("UPDATE vendors SET phone = ?, email = ?, po_email = ?, updated_at = ? WHERE id = ?").run(
+    phone || "",
+    email || "",
+    poEmail || "",
+    new Date().toISOString(),
+    Number(vendorId)
+  );
+  return findVendor(vendorId);
 }
 
 // Blocked if a WOM or PO record actually points at this vendor -- that's
@@ -8359,6 +8391,9 @@ function getVendorPortalChecklist(vendorId) {
   const approved = relevant.filter((i) => String(i.status).trim().toLowerCase() === "approved").length;
   return {
     vendorName: vendorRow.name,
+    phone: vendorRow.phone || "",
+    email: vendorRow.email || "",
+    poEmail: vendorRow.po_email || "",
     items,
     approvedCount: approved,
     totalCount: relevant.length,
@@ -13021,6 +13056,8 @@ for (const po of db
 module.exports = {
   UPLOADS_DIR,
   DB_PATH,
+  writeUploadBytes,
+  readUploadBytes,
   backupDatabaseTo,
   findTechnician,
   listTechnicians,
@@ -13053,6 +13090,7 @@ module.exports = {
   getVendorInvoiceHistory,
   createVendor,
   updateVendor,
+  updateVendorContactInfo,
   deleteVendor,
   mergeVendors,
   setVendorPreferred,

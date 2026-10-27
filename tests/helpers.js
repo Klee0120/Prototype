@@ -12,6 +12,12 @@ const dbPath = path.join(os.tmpdir(), `labor-test-${runId}.sqlite`);
 const uploadsDir = path.join(os.tmpdir(), `labor-test-uploads-${runId}`);
 process.env.LABOR_DB_PATH = dbPath;
 process.env.LABOR_UPLOADS_DIR = uploadsDir;
+// Fixed (not per-run) -- encryption at rest is fail-closed (see
+// server/utils/fileEncryption.js), so every test file that uploads
+// anything needs this set before server/app's first require, same as
+// LABOR_DB_PATH/LABOR_UPLOADS_DIR above. There's nothing test-isolation-
+// sensitive about the key's actual value, unlike the DB path.
+process.env.FILE_ENCRYPTION_KEY = "a".repeat(64);
 if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 
 const { createApp } = require("../server/app");

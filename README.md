@@ -2394,15 +2394,31 @@ happen.
   encrypted too (see the HTTPS bullet above) — downloads and uploads are
   no longer interceptable in transit the way they were before a domain
   and certificate were in place.
-  **What's still genuinely open: encryption at rest.** Uploaded files sit
-  as plain, unencrypted bytes on the droplet's own disk
-  (`server/data/uploads/` by default), and the SQLite database isn't
-  encrypted either. Admin-only access control and encryption-in-transit
-  don't cover someone who gets at the filesystem directly — root/SSH
-  access to the droplet itself, or a leaked disk backup. Closing that
-  fully would mean encrypting the uploads directory (e.g. a LUKS-encrypted
-  volume) and/or switching to per-file encryption before writing to disk,
-  neither of which exists yet.
+  **Every uploaded file is also encrypted at rest** (`server/utils/
+  fileEncryption.js`) — AES-256-GCM, applied uniformly to every upload
+  (not just COI/W-9/ACH; a vendor's untriaged correspondence attachments
+  carry the same risk before an admin re-files them), with a random IV
+  per file and the auth tag stored alongside the ciphertext so the key
+  alone decrypts it. `server/data/db.js`'s `writeUploadBytes`/
+  `readUploadBytes` are the one chokepoint every route goes through —
+  nowhere else touches raw bytes on disk. This closes the gap admin-only
+  access control and encryption-in-transit don't cover: someone who gets
+  at the filesystem directly (root/SSH access to the droplet, or a leaked
+  disk backup) still can't read a bank document without the key.
+  Fail-closed: if `FILE_ENCRYPTION_KEY` isn't set, uploads are refused
+  outright (503) rather than silently falling back to plaintext — unlike
+  SendGrid/Anthropic above, this one key is required, not optional. See
+  `scripts/deploy.sh`'s header comment for how to generate and set it
+  (`openssl rand -hex 32`) and why losing it afterward means permanent,
+  total data loss for every encrypted file — there's no recovery path.
+  Files already on disk from before this shipped are read as legacy
+  plaintext until `scripts/encrypt-existing-uploads.js` is run once
+  (idempotent, atomic per file) to bring them under the same protection.
+  The SQLite database itself isn't encrypted — it holds no bank account/
+  routing numbers of its own (only compliance checkboxes like "bank
+  letterhead provided"; the real numbers only ever exist inside the
+  uploaded, now-encrypted document), so this was judged the gap that
+  actually mattered to close first.
 - **PIN strength policy: 8+ characters, at least one special character
   (`server/utils/password.js`'s `pinStrengthError`).** Enforced on every
   path that sets a PIN going forward -- account creation (admin or

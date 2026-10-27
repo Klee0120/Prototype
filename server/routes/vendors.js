@@ -1,12 +1,12 @@
 const express = require("express");
 const path = require("path");
-const fs = require("fs");
 const crypto = require("crypto");
 const multer = require("multer");
 const { simpleParser } = require("mailparser");
 const { summarizeCorrespondence } = require("../utils/aiSummarizer");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
+const fileEncryption = require("../utils/fileEncryption");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { buildOnboardRequirementsPdf } = require("../utils/onboardRequirementsPdf");
 const { sendVendorComplianceReminders } = require("../utils/vendorComplianceReminders");
@@ -456,6 +456,9 @@ router.post("/:id/correspondence/import-eml", correspondenceUpload.single("file"
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
   if (!req.file) return res.status(400).json({ error: "file is required" });
+  if (!fileEncryption.isConfigured()) {
+    return res.status(503).json({ error: "File encryption is not configured on this server -- uploads are disabled" });
+  }
 
   const originalName = req.file.originalname || "correspondence";
   const isEml = /\.eml$/i.test(originalName) || req.file.mimetype === "message/rfc822";
@@ -502,7 +505,11 @@ router.post("/:id/correspondence/import-eml", correspondenceUpload.single("file"
     const id = crypto.randomUUID();
     const ext = path.extname(att.originalname || "").slice(0, 10);
     const storedName = `${id}${ext}`;
-    fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), att.buffer);
+    try {
+      db.writeUploadBytes(storedName, att.buffer);
+    } catch (err) {
+      return res.status(500).json({ error: `Couldn't save attachment "${att.originalname}": ${err.message}` });
+    }
     const file = db.insertFile({
       id,
       relatedType: "vendor_correspondence",
@@ -565,7 +572,12 @@ router.post("/:id/files/:fileId/coi-review", async (req, res) => {
     });
   }
 
-  const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, file.storedName));
+  let extractedText;
+  try {
+    extractedText = await extractCoiDocumentText(db.readUploadBytes(file.storedName));
+  } catch (err) {
+    return res.status(500).json({ error: `Could not decrypt this file: ${err.message}` });
+  }
   const checklist = await buildCoiRequirementChecklist(vendor.services);
   const review = db.createCoiDocumentReview({ fileId: file.id, vendorId: vendor.id, extractedText, checklist });
   res.status(201).json({ ...review, extractionHints: coiExtractionHints(extractedText), extractedFields: extractCoiStructuredFields(extractedText) });

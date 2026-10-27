@@ -16,7 +16,6 @@
 // text, if any, contain this known fixed string) -- safe because a false
 // negative just means "admin double-checks something that was actually
 // fine," never "something gets silently approved."
-const fs = require("fs");
 const path = require("path");
 const { REQUIRED_COI_LANGUAGE, COVERAGE_COLUMNS } = require("./onboardRequirementsPdf");
 
@@ -74,10 +73,13 @@ async function buildCoiRequirementChecklist(vendorServicesRaw) {
 // common outcome (see this file's header comment), not a failure to
 // surface to the caller -- the admin still reviews the document, just
 // without this reading aid.
-async function extractCoiDocumentText(filePath) {
+// Takes the PDF's raw bytes directly (a Buffer), not a file path -- see
+// poDocument.js's extractPoVendorInfo for the same convention and why
+// (transparent encryption at rest via db.readUploadBytes).
+async function extractCoiDocumentText(buffer) {
   try {
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const data = new Uint8Array(fs.readFileSync(filePath));
+    const data = new Uint8Array(buffer);
     const doc = await pdfjsLib.getDocument({ data, useWorkerFetch: false, isEvalSupported: false, standardFontDataUrl: STANDARD_FONT_DATA_URL })
       .promise;
     const pageTexts = [];

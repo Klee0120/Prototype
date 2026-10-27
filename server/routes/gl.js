@@ -1,10 +1,10 @@
 const express = require("express");
 const multer = require("multer");
-const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const XLSX = require("xlsx");
 const db = require("../data/db");
+const fileEncryption = require("../utils/fileEncryption");
 const { requireAuth, requireAdmin, requireFinancialsAccess } = require("../middleware/auth");
 
 const router = express.Router();
@@ -156,6 +156,9 @@ function validateCalendarMonth(raw) {
 
 router.post("/import", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  if (!fileEncryption.isConfigured()) {
+    return res.status(503).json({ error: "File encryption is not configured on this server -- uploads are disabled" });
+  }
   const calendarMonth = validateCalendarMonth(req.body.calendarMonth);
   if (!calendarMonth) return res.status(400).json({ error: "calendarMonth is required (YYYY-MM)" });
   let parsed;
@@ -185,7 +188,7 @@ router.post("/import", upload.single("file"), (req, res) => {
     const id = crypto.randomUUID();
     const ext = path.extname(req.file.originalname || "").slice(0, 10);
     const storedName = `${id}${ext}`;
-    fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), req.file.buffer);
+    db.writeUploadBytes(storedName, req.file.buffer);
     db.insertFile({
       id,
       relatedType: "labor_report",

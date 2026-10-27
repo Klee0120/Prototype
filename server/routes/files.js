@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const db = require("../data/db");
 const { requireAuth } = require("../middleware/auth");
 const { extractPoVendorInfo } = require("../utils/poDocument");
+const fileEncryption = require("../utils/fileEncryption");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -155,10 +156,14 @@ router.post("/", requireAuth, upload.single("file"), (req, res) => {
     return res.status(400).json({ error: "accessLevel must be 'standard' or 'restricted'" });
   }
 
+  if (!fileEncryption.isConfigured()) {
+    return res.status(503).json({ error: "File encryption is not configured on this server -- uploads are disabled" });
+  }
+
   const id = crypto.randomUUID();
   const ext = path.extname(req.file.originalname || "").slice(0, 10);
   const storedName = `${id}${ext}`;
-  fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), req.file.buffer);
+  db.writeUploadBytes(storedName, req.file.buffer);
 
   const record = db.insertFile({
     id,
@@ -210,7 +215,7 @@ router.get("/:id/extract-po-vendor", requireAuth, async (req, res) => {
 
   let extracted;
   try {
-    extracted = await extractPoVendorInfo(path.join(db.UPLOADS_DIR, file.storedName));
+    extracted = await extractPoVendorInfo(db.readUploadBytes(file.storedName));
   } catch (err) {
     return res.status(422).json({ error: `Couldn't read this PDF: ${err.message}` });
   }
@@ -298,10 +303,19 @@ router.get("/:id/download", requireAuth, (req, res) => {
   const filePath = path.join(db.UPLOADS_DIR, file.storedName);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File missing on disk" });
 
+  let buffer;
+  try {
+    buffer = db.readUploadBytes(file.storedName);
+  } catch (err) {
+    return res.status(500).json({ error: `Could not decrypt this file: ${err.message}` });
+  }
+
+  db.addAudit(req.user.id, "FILE_DOWNLOADED", `${req.user.name} downloaded "${file.originalName}" from ${file.relatedType} ${file.relatedId}`);
+
   const safeName = file.originalName.replace(/["\r\n]/g, "_");
   res.setHeader("Content-Type", file.mimeType || "application/octet-stream");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
-  fs.createReadStream(filePath).pipe(res);
+  res.send(buffer);
 });
 
 // Deleting is admin-only, full stop -- even a technician deleting their own

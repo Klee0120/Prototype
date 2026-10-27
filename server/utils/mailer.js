@@ -1,4 +1,3 @@
-const fs = require("fs");
 
 // Real email delivery is opt-in via an environment variable -- if it isn't
 // set, sendMail logs what it would have sent and returns without error,
@@ -21,16 +20,16 @@ function isConfigured() {
   return Boolean(SENDGRID_API_KEY && SENDGRID_FROM);
 }
 
-// attachments entries use nodemailer's old {filename, path} shape (see
-// server/routes/tasks.js's one call site that attaches a PO document) --
-// kept as-is rather than changing every caller, just translated here into
-// what SendGrid's API actually wants: the file's own bytes, base64-encoded
-// inline, since SendGrid has no access to this server's filesystem to
-// read a path itself.
-function buildAttachment({ filename, path }) {
+// attachments entries carry {filename, buffer} -- the caller (server/routes/tasks.js's
+// one call site, attaching a PO document) is responsible for getting those
+// bytes itself (via db.readUploadBytes, so encryption at rest stays
+// transparent to this module), since mailer.js has no business knowing
+// where an upload lives on disk. Translated here into what SendGrid's API
+// actually wants: the bytes, base64-encoded inline.
+function buildAttachment({ filename, buffer }) {
   return {
     filename,
-    content: fs.readFileSync(path).toString("base64"),
+    content: buffer.toString("base64"),
   };
 }
 

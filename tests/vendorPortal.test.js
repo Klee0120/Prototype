@@ -111,6 +111,75 @@ test("Vendor portal: /me returns the same approved/total checklist math the admi
   assert.equal(meRes.body.approvedCount, adminApproved, "portal and admin-side data must agree on what's actually approved");
 });
 
+test("Vendor portal: a vendor can set their own phone/email/PO email, which show up on the admin side", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const beforeRes = await vendorCall(server, "GET", "/api/vendor-portal/me", { token });
+  assert.equal(beforeRes.body.phone, "");
+  assert.equal(beforeRes.body.poEmail, "");
+
+  const saveRes = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", {
+    token,
+    body: { phone: "555-0100", email: "ops-updated@portaltest.test", poEmail: "po@portaltest.test" },
+  });
+  assert.equal(saveRes.status, 200);
+  assert.equal(saveRes.body.phone, "555-0100");
+  assert.equal(saveRes.body.email, "ops-updated@portaltest.test");
+  assert.equal(saveRes.body.poEmail, "po@portaltest.test");
+
+  const afterRes = await vendorCall(server, "GET", "/api/vendor-portal/me", { token });
+  assert.equal(afterRes.body.phone, "555-0100");
+  assert.equal(afterRes.body.poEmail, "po@portaltest.test");
+
+  const adminRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  const adminVendor = adminRes.body.find((v) => v.id === vendor.id);
+  assert.equal(adminVendor.phone, "555-0100");
+  assert.equal(adminVendor.email, "ops-updated@portaltest.test");
+  assert.equal(adminVendor.poEmail, "po@portaltest.test");
+});
+
+test("Vendor portal: contact-info rejects an invalid email, requires a session, and can't touch any other vendor field", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const noToken = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", { body: { phone: "555-0100" } });
+  assert.equal(noToken.status, 401);
+
+  const badEmail = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", { token, body: { email: "not-an-email" } });
+  assert.equal(badEmail.status, 400);
+
+  // Posting unrelated fields in the same body is silently ignored, not
+  // applied -- this route only ever touches phone/email/poEmail, however
+  // creatively the request is shaped.
+  const sneaky = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", {
+    token,
+    body: { phone: "555-0199", name: "Hijacked Name", onboardingStage: "approved" },
+  });
+  assert.equal(sneaky.status, 200);
+
+  const adminListRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  const adminVendor = adminListRes.body.find((v) => v.id === vendor.id);
+  assert.equal(adminVendor.name, vendor.name, "name must be untouched");
+  assert.equal(adminVendor.onboardingStage, vendor.onboardingStage, "onboardingStage must be untouched");
+  assert.equal(adminVendor.phone, "555-0199", "only the allowed field actually changed");
+
+  // An internal admin/tech session can't reach this vendor-only route
+  // either -- same invariant the existing cross-session test above checks
+  // for every other portal route.
+  const internalToken = await server.tokenFor("ADMIN");
+  const asAdmin = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", { token: internalToken, body: { phone: "555-0100" } });
+  assert.equal(asAdmin.status, 401);
+});
+
 // The core safety invariant the whole portal design rests on: a vendor's
 // own session token must be structurally impossible to use anywhere an
 // internal admin/technician session is checked, and vice versa.

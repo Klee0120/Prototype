@@ -4,7 +4,6 @@
 // having to already be on the right vendor's profile to know a review
 // exists at all.
 const express = require("express");
-const path = require("path");
 const db = require("../data/db");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { buildCoiRequirementChecklist, extractCoiDocumentText, coiExtractionHints, extractCoiStructuredFields } = require("../utils/coiDocumentReview");
@@ -30,7 +29,12 @@ router.get("/queue", (req, res) => {
 router.get("/pool/:fileId/preview", async (req, res) => {
   const file = db.getFile(req.params.fileId);
   if (!file || file.relatedType !== "coi_pool") return res.status(404).json({ error: "Pooled file not found" });
-  const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, file.storedName));
+  let extractedText;
+  try {
+    extractedText = await extractCoiDocumentText(db.readUploadBytes(file.storedName));
+  } catch (err) {
+    return res.status(500).json({ error: `Could not decrypt this file: ${err.message}` });
+  }
   res.json({ extractedText, extractionHints: coiExtractionHints(extractedText), extractedFields: extractCoiStructuredFields(extractedText) });
 });
 
@@ -53,7 +57,12 @@ router.post("/pool/:fileId/assign-vendor", async (req, res) => {
   // pooled file is always still "pending" review by definition, so this
   // never hits the "already has a pending review" branch that route
   // guards against.
-  const extractedText = await extractCoiDocumentText(path.join(db.UPLOADS_DIR, updated.storedName));
+  let extractedText;
+  try {
+    extractedText = await extractCoiDocumentText(db.readUploadBytes(updated.storedName));
+  } catch (err) {
+    return res.status(500).json({ error: `Could not decrypt this file: ${err.message}` });
+  }
   const checklist = await buildCoiRequirementChecklist(vendor.services);
   const review = db.createCoiDocumentReview({ fileId: updated.id, vendorId: vendor.id, extractedText, checklist });
 
