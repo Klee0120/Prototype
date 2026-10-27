@@ -3075,6 +3075,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         categories: VENDOR_DOC_CATEGORIES,
         canUpload: true,
         trackExpiration: true,
+        expiringCategories: new Set(["coi"]),
         requiredCategories,
         emptyText: "No documents on file yet.",
         onReviewCoi: (file) => openCoiReviewModal(v, file, refreshDocumentsPanel),

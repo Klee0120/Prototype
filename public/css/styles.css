@@ -4751,6 +4751,9 @@ tr.gl-import-shrink-row {
   font-size: 13px;
   color: var(--muted);
 }
+.attachment-expiry-field[hidden] {
+  display: none;
+}
 
 .ot-trend-sparkline {
   display: flex;

@@ -110,8 +110,10 @@ export async function renderAssignTaskDocumentControl(host, opts, onAssigned) {
  * Renders a self-contained document manager (compliance cards, search +
  * category filter, a unified table, and a drag-and-drop upload zone) into
  * `host`. options: { title, relatedType, relatedId, categories: [{value,label}], canUpload, emptyText,
- *            trackExpiration: true adds Type + Expiration date fields to the upload form and
- *            shows them (with an Expired/Expires badge) on each file row -- used for Forms on File.
+ *            trackExpiration: true adds a Type field to the upload form, used for Forms on File.
+ *            It also enables the Expiration date field/badge, scoped to just the categories
+ *            listed in expiringCategories (a Set of category values) -- omit expiringCategories
+ *            to apply it to every category in the panel, as before.
  *            requiredCategories: [value | {anyOf: [value,...], label}, ...] -- categories that
  *            should always have at least one file on file; each gets a compliance card up top
  *            with a "Missing" badge when it doesn't (e.g. a vendor's COI/W-9/VPO waiver). An
@@ -125,6 +127,18 @@ export async function renderAttachments(host, opts) {
   let searchTerm = "";
   let categoryFilter = "";
   let allFiles = [];
+
+  // Whether a given category's files show/collect an expiration date --
+  // trackExpiration alone used to mean "every category in this panel
+  // expires," which was wrong for e.g. a vendor's W-9/ACH (standing forms,
+  // no renewal date) sharing a panel with its COI (which does expire).
+  // expiringCategories narrows that to just the categories that actually
+  // do; omitting it keeps the old all-categories behavior.
+  function categoryExpires(category) {
+    if (!opts.trackExpiration) return false;
+    if (!opts.expiringCategories) return true;
+    return opts.expiringCategories.has(category);
+  }
 
   await refresh();
 
@@ -269,7 +283,7 @@ export async function renderAttachments(host, opts) {
       <td class="attachment-doc-cell">
         <div class="attachment-name">${escapeHtml(f.originalName)}</div>
         ${opts.trackExpiration && f.formType ? `<div class="attachment-subtext">${escapeHtml(f.formType)}</div>` : ""}
-        ${opts.trackExpiration ? expiryBadge(f.expiresAt) : ""}
+        ${categoryExpires(f.category) ? expiryBadge(f.expiresAt) : ""}
       </td>
       <td><span class="badge badge-draft">${escapeHtml(label)}</span> ${opts.statusForFile ? statusBadgeHtml(opts.statusForFile(f)) : ""}</td>
       <td>
@@ -441,7 +455,7 @@ export async function renderAttachments(host, opts) {
           ${accessBadge(f)}
         </div>
         ${
-          opts.trackExpiration && f.expiresAt
+          categoryExpires(f.category) && f.expiresAt
             ? `<div class="doc-viewer-field"><span class="doc-viewer-field-label">Expiration</span>${expiryBadge(f.expiresAt)}</div>`
             : ""
         }
@@ -523,6 +537,10 @@ export async function renderAttachments(host, opts) {
             .map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`)
             .join("")}</select>`
         : "";
+    // Browser default-selects the first <option>, so the initially-shown
+    // category is always opts.categories[0] regardless of whether a
+    // <select> is even rendered (single-category panels skip it above).
+    const initialExpires = categoryExpires(opts.categories[0].value);
     return `
       <div class="attachments-upload">
         <div class="attachments-upload-settings">
@@ -530,7 +548,7 @@ export async function renderAttachments(host, opts) {
           ${opts.trackExpiration ? `<input class="attachments-upload-formtype" placeholder="Type (e.g. Certification)" />` : ""}
           ${
             opts.trackExpiration
-              ? `<label class="attachment-expiry-field"><span>Expires</span><input type="date" class="attachments-upload-expires" /></label>`
+              ? `<label class="attachment-expiry-field" ${initialExpires ? "" : "hidden"}><span>Expires</span><input type="date" class="attachments-upload-expires" /></label>`
               : ""
           }
           ${
@@ -565,11 +583,17 @@ export async function renderAttachments(host, opts) {
     if (!zone) return;
     const fileInput = zone.querySelector(".attachments-dropzone-input");
     const msg = host.querySelector(".upload-message");
+    const categorySelect = host.querySelector(".attachments-upload-category");
+    const expiryField = host.querySelector(".attachment-expiry-field");
+    if (categorySelect && expiryField) {
+      categorySelect.addEventListener("change", () => {
+        expiryField.hidden = !categoryExpires(categorySelect.value);
+      });
+    }
 
     async function handleFiles(fileList) {
       const file = fileList && fileList[0];
       if (!file) return;
-      const categorySelect = host.querySelector(".attachments-upload-category");
       const category = categorySelect ? categorySelect.value : opts.categories[0].value;
       const formTypeInput = host.querySelector(".attachments-upload-formtype");
       const expiresInput = host.querySelector(".attachments-upload-expires");
@@ -579,7 +603,7 @@ export async function renderAttachments(host, opts) {
       try {
         await api.uploadFile(opts.relatedType, opts.relatedId, category, file, {
           formType: opts.trackExpiration && formTypeInput ? formTypeInput.value.trim() : undefined,
-          expiresAt: opts.trackExpiration && expiresInput ? expiresInput.value : undefined,
+          expiresAt: categoryExpires(category) && expiresInput ? expiresInput.value : undefined,
           accessLevel: accessSelect ? accessSelect.value : undefined,
         });
         msg.textContent = "";
