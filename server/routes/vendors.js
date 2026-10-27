@@ -1,6 +1,9 @@
 const express = require("express");
 const path = require("path");
+const fs = require("fs");
 const crypto = require("crypto");
+const multer = require("multer");
+const { simpleParser } = require("mailparser");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
@@ -16,6 +19,7 @@ const {
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
+const correspondenceUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 const EXPIRED_DOC_LABELS = { coi: "Certificate of Insurance (COI)", w9: "W-9", ach: "ACH / banking details" };
 
@@ -398,6 +402,116 @@ router.post("/:id/remarks", (req, res) => {
   if (!body) return res.status(400).json({ error: "body is required" });
   const remarks = db.addVendorRemark(vendor.id, req.user.id, req.user.name, body);
   res.status(201).json(remarks);
+});
+
+// A running log of correspondence an admin received from a vendor outside
+// the self-service portal -- for vendors who don't use it, or send
+// paperwork a different way. Distinct from vendor_remarks above (an
+// admin's own notes ABOUT a vendor) since this captures what the vendor
+// actually said. Attachments reuse the existing files table via
+// relatedType "vendor_correspondence", keyed to one of these entries' own
+// id -- see server/routes/files.js and db.js's vendor_correspondence table
+// comment.
+router.get("/:id/correspondence", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  res.json(db.listVendorCorrespondence(vendor.id));
+});
+
+router.post("/:id/correspondence", (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  const { subject, correspondent, occurredAt, bodyText } = req.body || {};
+  if (!subject || !String(subject).trim()) return res.status(400).json({ error: "subject is required" });
+  if (!correspondent || !String(correspondent).trim()) return res.status(400).json({ error: "correspondent is required" });
+  const entry = db.addVendorCorrespondence(vendor.id, {
+    subject: String(subject).trim(),
+    correspondent: String(correspondent).trim(),
+    occurredAt: occurredAt || undefined,
+    bodyText: bodyText || "",
+    loggedBy: req.user.name,
+  });
+  db.addAudit(req.user.id, "VENDOR_CORRESPONDENCE_LOGGED", `${req.user.name} logged correspondence "${entry.subject}" for ${vendor.name}`, vendor.id);
+  res.status(201).json(entry);
+});
+
+// The "just drag whatever you have" path -- a real .eml export gets parsed
+// with mailparser (see package.json) for its subject/from/date/body and
+// each attachment filed automatically; anything else (a PDF/screenshot a
+// vendor sent some other way) becomes a blank entry titled from the
+// filename with that one file as its only attachment, for the admin to
+// fill in afterward. Either way, attachments are written through the same
+// db.insertFile/UPLOADS_DIR primitives files.js itself uses, so they work
+// in every existing viewer unmodified.
+router.post("/:id/correspondence/import-eml", correspondenceUpload.single("file"), async (req, res) => {
+  const vendor = db.findVendor(req.params.id);
+  if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+  if (!req.file) return res.status(400).json({ error: "file is required" });
+
+  const originalName = req.file.originalname || "correspondence";
+  const isEml = /\.eml$/i.test(originalName) || req.file.mimetype === "message/rfc822";
+
+  let entry;
+  const attachmentsToFile = [];
+
+  if (isEml) {
+    let parsed;
+    try {
+      parsed = await simpleParser(req.file.buffer);
+    } catch (err) {
+      return res.status(422).json({ error: `Couldn't read this email file: ${err.message}` });
+    }
+    entry = db.addVendorCorrespondence(vendor.id, {
+      subject: parsed.subject || "(no subject)",
+      correspondent: (parsed.from && parsed.from.text) || "Unknown sender",
+      occurredAt: parsed.date ? parsed.date.toISOString() : undefined,
+      bodyText: parsed.text || "",
+      loggedBy: req.user.name,
+    });
+    for (const att of parsed.attachments || []) {
+      attachmentsToFile.push({ originalname: att.filename || "attachment", mimetype: att.contentType, buffer: att.content });
+    }
+  } else {
+    entry = db.addVendorCorrespondence(vendor.id, {
+      subject: originalName.replace(/\.[^.]+$/, ""),
+      correspondent: "",
+      bodyText: "",
+      loggedBy: req.user.name,
+    });
+    attachmentsToFile.push({ originalname: originalName, mimetype: req.file.mimetype, buffer: req.file.buffer });
+  }
+
+  const filedAttachments = [];
+  for (const att of attachmentsToFile) {
+    const id = crypto.randomUUID();
+    const ext = path.extname(att.originalname || "").slice(0, 10);
+    const storedName = `${id}${ext}`;
+    fs.writeFileSync(path.join(db.UPLOADS_DIR, storedName), att.buffer);
+    const file = db.insertFile({
+      id,
+      relatedType: "vendor_correspondence",
+      relatedId: String(entry.id),
+      category: "attachment",
+      originalName: att.originalname,
+      storedName,
+      mimeType: att.mimetype,
+      size: att.buffer.length,
+      uploadedBy: req.user.name,
+      uploadedAt: new Date().toISOString(),
+    });
+    filedAttachments.push(file);
+  }
+
+  db.addAudit(
+    req.user.id,
+    "VENDOR_CORRESPONDENCE_LOGGED",
+    `${req.user.name} imported ${isEml ? "an email" : "a document"} ("${entry.subject}") for ${vendor.name}${
+      filedAttachments.length ? ` with ${filedAttachments.length} attachment${filedAttachments.length === 1 ? "" : "s"}` : ""
+    }`,
+    vendor.id
+  );
+
+  res.status(201).json({ entry, attachments: filedAttachments, imported: isEml });
 });
 
 // Real territories this vendor has been used in, derived from its own PO/WOM

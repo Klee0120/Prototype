@@ -303,6 +303,34 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 
+  -- A log of outside-the-portal correspondence an admin received from a
+  -- vendor -- an .eml export dragged in and auto-parsed, or a manually
+  -- logged email/call -- distinct from vendor_remarks above (an admin's
+  -- own notes ABOUT a vendor) since this captures what the vendor actually
+  -- said, attachments included. Attachments reuse the files table with no
+  -- schema change here: see server/routes/files.js's "vendor_correspondence"
+  -- relatedType, keyed to one of these rows' own id -- the same per-record
+  -- bucket pattern task attachments already use, not a new grouping
+  -- concept. occurred_at is the email's own date (from its header, or
+  -- typed in by hand), kept separate from created_at (when it was actually
+  -- logged here) since those two often differ once someone gets around to
+  -- filing an email days later. summary stays NULL until AI summarization
+  -- exists as its own later piece (needs an LLM API key this app doesn't
+  -- have configured yet) -- the column is here now so that follow-up is
+  -- additive, not another migration.
+  CREATE TABLE IF NOT EXISTS vendor_correspondence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id INTEGER NOT NULL,
+    subject TEXT NOT NULL,
+    correspondent TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    body_text TEXT DEFAULT '',
+    summary TEXT,
+    logged_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_vendor_correspondence_vendor_id ON vendor_correspondence(vendor_id);
+
   -- A review session for one uploaded COI file -- see server/utils/
   -- coiDocumentReview.js. checklist_json is the requirement list frozen at
   -- the moment the review started (the vendor's registered service(s) plus
@@ -3294,6 +3322,15 @@ function deleteVendor(id) {
   for (const taskId of taskIds) deleteTask(taskId);
   db.prepare("DELETE FROM vendor_requests WHERE vendor_id = ?").run(Number(id));
   db.prepare("DELETE FROM vendor_remarks WHERE vendor_id = ?").run(Number(id));
+  // Each correspondence entry's own attachments are keyed by its own id
+  // (relatedId = the entry's id, not the vendor's -- see files.js's
+  // "vendor_correspondence" relatedType), so those have to be cleaned up
+  // per-entry before the entries themselves go.
+  const correspondenceIds = db.prepare("SELECT id FROM vendor_correspondence WHERE vendor_id = ?").all(Number(id)).map((r) => r.id);
+  for (const cId of correspondenceIds) {
+    db.prepare("DELETE FROM files WHERE related_type = 'vendor_correspondence' AND related_id = ?").run(String(cId));
+  }
+  db.prepare("DELETE FROM vendor_correspondence WHERE vendor_id = ?").run(Number(id));
   db.prepare("DELETE FROM files WHERE related_type = 'vendor' AND related_id = ?").run(String(id));
   db.prepare("DELETE FROM vendors WHERE id = ?").run(Number(id));
   return { ok: true, vendor };
@@ -3336,6 +3373,9 @@ function mergeVendors(primaryId, duplicateId, actorId, actorName) {
   db.prepare("UPDATE tasks SET related_vendor_id = ? WHERE related_vendor_id = ?").run(pId, dId);
   db.prepare("UPDATE vendor_requests SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
   db.prepare("UPDATE vendor_remarks SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
+  // Each entry's own files stay keyed to the entry's own (unchanged) id, so
+  // only the entry's vendor_id needs reassigning here -- no files-table touch.
+  db.prepare("UPDATE vendor_correspondence SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
   db.prepare("UPDATE coi_document_reviews SET vendor_id = ? WHERE vendor_id = ?").run(pId, dId);
   db.prepare("UPDATE time_log_entries SET related_vendor_id = ? WHERE related_vendor_id = ?").run(pId, dId);
   db.prepare("UPDATE files SET related_id = ? WHERE related_type = 'vendor' AND related_id = ?").run(String(pId), String(dId));
@@ -3367,7 +3407,7 @@ function mergeVendors(primaryId, duplicateId, actorId, actorName) {
     pId,
     actorId,
     actorName,
-    `Merged duplicate vendor profile "${duplicate.name}" (#${dId}) into this one -- its POs, WOMs, tasks, onboarding cases, COI reviews, remarks, and documents now live here.`
+    `Merged duplicate vendor profile "${duplicate.name}" (#${dId}) into this one -- its POs, WOMs, tasks, onboarding cases, COI reviews, remarks, correspondence, and documents now live here.`
   );
 
   // The merged-in cases may change which onboarding/parent stage this
@@ -3413,6 +3453,47 @@ function addVendorRemark(vendorId, authorId, authorName, body) {
 
 function listVendorRemarks(vendorId) {
   return db.prepare("SELECT * FROM vendor_remarks WHERE vendor_id = ? ORDER BY id DESC").all(Number(vendorId));
+}
+
+// ---- Vendor correspondence (emails logged outside the portal) ----
+function presentVendorCorrespondence(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    vendorId: row.vendor_id,
+    subject: row.subject,
+    correspondent: row.correspondent,
+    occurredAt: row.occurred_at,
+    bodyText: row.body_text || "",
+    summary: row.summary || null,
+    loggedBy: row.logged_by,
+    createdAt: row.created_at,
+  };
+}
+
+function addVendorCorrespondence(vendorId, { subject, correspondent, occurredAt, bodyText, loggedBy }) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO vendor_correspondence (vendor_id, subject, correspondent, occurred_at, body_text, logged_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(Number(vendorId), subject, correspondent, occurredAt || now, bodyText || "", loggedBy, now);
+  return findVendorCorrespondence(result.lastInsertRowid);
+}
+
+function findVendorCorrespondence(id) {
+  return presentVendorCorrespondence(db.prepare("SELECT * FROM vendor_correspondence WHERE id = ?").get(Number(id)));
+}
+
+// Newest-first by the email's own date, not by when it was logged -- an
+// admin filing a backlog of old emails shouldn't push them above more
+// recent ones just because they were typed in last.
+function listVendorCorrespondence(vendorId) {
+  return db
+    .prepare("SELECT * FROM vendor_correspondence WHERE vendor_id = ? ORDER BY occurred_at DESC, id DESC")
+    .all(Number(vendorId))
+    .map(presentVendorCorrespondence);
 }
 
 // ---- COI document review (server/utils/coiDocumentReview.js) ----
@@ -12939,6 +13020,9 @@ module.exports = {
   recordVendorComplianceReminderSent,
   addVendorRemark,
   listVendorRemarks,
+  addVendorCorrespondence,
+  findVendorCorrespondence,
+  listVendorCorrespondence,
   createCoiDocumentReview,
   findCoiDocumentReview,
   listCoiDocumentReviewsForVendor,

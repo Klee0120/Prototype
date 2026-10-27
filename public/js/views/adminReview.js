@@ -2534,6 +2534,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     { key: "onboarding", label: "Onboarding & Compliance" },
     { key: "tasks", label: "Tasks" },
     { key: "documents", label: "Documents" },
+    { key: "correspondence", label: "Correspondence" },
     { key: "costs", label: "Work & Costs" },
     { key: "activity", label: "Activity" },
   ];
@@ -2615,7 +2616,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           const duplicate = vendorsCache.find((cand) => cand.id === duplicateId);
           if (
             !window.confirm(
-              `Merge "${duplicate ? duplicate.name : "that vendor"}" into "${v.name}"? Its POs, WOMs, tasks, onboarding cases, COI reviews, remarks, and documents all move onto ${v.name}, and the duplicate profile is removed. This can't be undone.`
+              `Merge "${duplicate ? duplicate.name : "that vendor"}" into "${v.name}"? Its POs, WOMs, tasks, onboarding cases, COI reviews, remarks, correspondence, and documents all move onto ${v.name}, and the duplicate profile is removed. This can't be undone.`
             )
           ) {
             return;
@@ -2643,6 +2644,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     if (vendorProfileTab === "onboarding") await renderVendorOnboardingTab(body, v);
     else if (vendorProfileTab === "tasks") await renderVendorTasksTab(body, v);
     else if (vendorProfileTab === "documents") await renderVendorDocumentsTab(body, v);
+    else if (vendorProfileTab === "correspondence") await renderVendorCorrespondenceTab(body, v);
     else if (vendorProfileTab === "costs") await renderVendorCostsTab(body, v);
     else if (vendorProfileTab === "activity") await renderVendorActivityTab(body, v);
     else await renderVendorOverviewTab(body, v);
@@ -3075,6 +3077,168 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       { relatedType: "vendor", relatedId: v.id, categories: VENDOR_DOC_CATEGORIES, actionLabel: "Assign to this vendor" },
       refreshDocumentsPanel
     );
+  }
+
+  // Correspondence from vendors who don't use (or struggle with) the
+  // self-service portal and send paperwork by email instead -- a running
+  // log, separate from the compliance Documents tab, that an admin can
+  // either drag a real .eml export onto (auto-parsed) or log manually.
+  // See db.js's vendor_correspondence table and POST /:id/correspondence/
+  // import-eml's own comment for the exact "just drag whatever you have"
+  // behavior.
+  async function renderVendorCorrespondenceTab(host, v) {
+    host.innerHTML = `
+      <p class="review-checklist-hint">Drag in a vendor's email (an .eml export) to automatically pull its subject, sender, date, body, and attachments -- or drop any other document to log it as a blank entry you can fill in. For vendors who aren't using the self-service portal.</p>
+      <div class="vendor-correspondence-dropzone attachments-dropzone">
+        <input type="file" class="vendor-correspondence-dropzone-input" hidden accept=".eml,message/rfc822" />
+        <div class="attachments-dropzone-icon">&#128231;</div>
+        <div class="attachments-dropzone-text">Drop an .eml file here (or any document) or <span class="attachments-dropzone-browse">browse</span></div>
+      </div>
+      <span class="save-message vendor-correspondence-upload-message"></span>
+      <div class="page-header">
+        <div></div>
+        <div class="page-header-actions">
+          <button type="button" class="btn btn-secondary vendor-correspondence-log-btn">+ Log Correspondence</button>
+        </div>
+      </div>
+      <div class="vendor-correspondence-list"></div>
+    `;
+
+    const dropzone = host.querySelector(".vendor-correspondence-dropzone");
+    const fileInput = host.querySelector(".vendor-correspondence-dropzone-input");
+    const uploadMsg = host.querySelector(".vendor-correspondence-upload-message");
+    const listHost = host.querySelector(".vendor-correspondence-list");
+
+    async function refreshList() {
+      listHost.innerHTML = `<p class="empty-note">Loading…</p>`;
+      let entries;
+      try {
+        entries = await api.get(`/api/admin/vendors/${v.id}/correspondence`);
+      } catch (err) {
+        listHost.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+        return;
+      }
+      if (entries.length === 0) {
+        listHost.innerHTML = `<p class="empty-note">No correspondence logged yet.</p>`;
+        return;
+      }
+      listHost.innerHTML = entries
+        .map(
+          (e) => `
+        <div class="vendor-correspondence-entry" data-id="${e.id}">
+          <button type="button" class="vendor-correspondence-entry-header">
+            <span class="vendor-correspondence-entry-subject">${escapeHtml(e.subject)}</span>
+            <span class="vendor-correspondence-entry-meta">${escapeHtml(e.correspondent || "Unknown sender")} &middot; ${escapeHtml(
+            (e.occurredAt || "").slice(0, 10)
+          )} &middot; logged by ${escapeHtml(e.loggedBy)}</span>
+          </button>
+          <div class="vendor-correspondence-entry-body" hidden>
+            ${e.bodyText ? `<p class="vendor-correspondence-entry-text">${escapeHtml(e.bodyText)}</p>` : `<p class="empty-note">No body text.</p>`}
+            <div class="vendor-correspondence-entry-attachments"></div>
+          </div>
+        </div>
+      `
+        )
+        .join("");
+
+      listHost.querySelectorAll(".vendor-correspondence-entry").forEach((el) => {
+        const entry = entries.find((x) => String(x.id) === el.dataset.id);
+        const headerBtn = el.querySelector(".vendor-correspondence-entry-header");
+        const bodyEl = el.querySelector(".vendor-correspondence-entry-body");
+        let attachmentsLoaded = false;
+        headerBtn.addEventListener("click", async () => {
+          const wasHidden = bodyEl.hasAttribute("hidden");
+          bodyEl.toggleAttribute("hidden", !wasHidden);
+          if (wasHidden && !attachmentsLoaded) {
+            attachmentsLoaded = true;
+            await renderAttachments(el.querySelector(".vendor-correspondence-entry-attachments"), {
+              title: "Attachments",
+              relatedType: "vendor_correspondence",
+              relatedId: entry.id,
+              categories: [{ value: "attachment", label: "Attachment" }],
+              canUpload: true,
+              emptyText: "No attachments.",
+            });
+          }
+        });
+      });
+    }
+
+    async function handleImport(fileList) {
+      const file = fileList && fileList[0];
+      if (!file) return;
+      uploadMsg.textContent = "Importing…";
+      try {
+        await api.uploadRawFile(`/api/admin/vendors/${v.id}/correspondence/import-eml`, file);
+        uploadMsg.textContent = "";
+        await refreshList();
+      } catch (err) {
+        uploadMsg.textContent = err.message;
+      }
+    }
+    dropzone.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => handleImport(fileInput.files));
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("attachments-dropzone-active");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("attachments-dropzone-active"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("attachments-dropzone-active");
+      handleImport(e.dataTransfer.files);
+    });
+
+    host.querySelector(".vendor-correspondence-log-btn").addEventListener("click", () => {
+      openLogCorrespondenceModal(v, refreshList);
+    });
+
+    await refreshList();
+  }
+
+  function openLogCorrespondenceModal(v, onSaved) {
+    const { body, close } = openModal({
+      title: "Log Correspondence",
+      bodyHtml: `
+        <form class="modal-form vendor-correspondence-form">
+          <label class="profile-field">
+            <span>Subject</span>
+            <input name="subject" required placeholder="e.g. COI renewal" />
+          </label>
+          <label class="profile-field">
+            <span>Correspondent</span>
+            <input name="correspondent" required placeholder="e.g. Jane at Acme Plumbing" />
+          </label>
+          <label class="profile-field">
+            <span>Date</span>
+            <input type="date" name="occurredAt" value="${new Date().toISOString().slice(0, 10)}" />
+          </label>
+          <label class="profile-field">
+            <span>Notes / body (optional)</span>
+            <textarea name="bodyText" rows="5"></textarea>
+          </label>
+          <div class="modal-form-actions"><button type="submit" class="btn btn-primary">Log it</button></div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".vendor-correspondence-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      try {
+        await api.post(`/api/admin/vendors/${v.id}/correspondence`, {
+          subject: form.subject.value.trim(),
+          correspondent: form.correspondent.value.trim(),
+          occurredAt: form.occurredAt.value || undefined,
+          bodyText: form.bodyText.value.trim(),
+        });
+        close();
+        await onSaved();
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
   }
 
   // The admin-review half of the COI workflow: start (or resume) a review
@@ -4148,6 +4312,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           ${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}" ${getTerritory() === t ? "selected" : ""}>${escapeHtml(t)}</option>`).join("")}
         </select>
       </label>
+      <div class="topbar-bell" id="topbar-vendor-quick">
+        <button type="button" class="topbar-bell-btn" aria-label="Vendor quick access">&#127970;</button>
+        <div class="topbar-bell-dropdown" hidden></div>
+      </div>
       <div class="topbar-bell" id="topbar-bell">
         <button type="button" class="topbar-bell-btn" aria-label="Notifications">
           &#128276;
@@ -4285,8 +4453,91 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       territorySelect.value = value;
     });
 
-    const bellBtn = host.querySelector(".topbar-bell-btn");
-    const bellDropdown = host.querySelector(".topbar-bell-dropdown");
+    // Vendor quick-access -- same persistent-icon-+-dropdown shape as the
+    // notification bell just below it, so a vendor is reachable from
+    // anywhere in the app without first navigating to the Vendors tab.
+    // Search reuses the same global search endpoint the topbar search box
+    // already calls; "Recent" is built entirely from vendorsCache (already
+    // loaded for the vendor profile pages) sorted by updatedAt -- no new
+    // backend query needed for that half.
+    const vendorQuickWrap = host.querySelector("#topbar-vendor-quick");
+    const vendorQuickBtn = vendorQuickWrap.querySelector(".topbar-bell-btn");
+    const vendorQuickDropdown = vendorQuickWrap.querySelector(".topbar-bell-dropdown");
+    vendorQuickBtn.addEventListener("click", async () => {
+      const opening = vendorQuickDropdown.hidden;
+      vendorQuickDropdown.hidden = !opening;
+      if (opening) await loadVendorQuickDropdown();
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest("#topbar-vendor-quick")) vendorQuickDropdown.hidden = true;
+    });
+
+    function vendorQuickRowHtml(v) {
+      return `
+        <button type="button" class="topbar-search-result" data-id="${v.id}">
+          <span class="topbar-search-result-label">${escapeHtml(v.name)}</span>
+          <span class="topbar-search-result-sub">${escapeHtml(ONBOARDING_STAGE_LABELS[v.onboardingStage] || v.onboardingStage || "")}</span>
+        </button>
+      `;
+    }
+
+    async function loadVendorQuickDropdown() {
+      vendorQuickDropdown.innerHTML = `<p class="empty-note">Loading…</p>`;
+      if (!vendorsCache) {
+        try {
+          vendorsCache = await api.get("/api/admin/vendors");
+        } catch (err) {
+          vendorQuickDropdown.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+          return;
+        }
+      }
+      renderVendorQuickDropdown("");
+    }
+
+    function renderVendorQuickDropdown(q) {
+      const recent = [...vendorsCache].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 8);
+      vendorQuickDropdown.innerHTML = `
+        <div class="search-field">
+          <span class="search-field-icon">&#128269;</span>
+          <input type="search" class="topbar-vendor-quick-search-input" placeholder="Search vendors..." autocomplete="off" value="${escapeHtml(q)}" />
+        </div>
+        <div class="topbar-vendor-quick-results"></div>
+      `;
+      const resultsHost = vendorQuickDropdown.querySelector(".topbar-vendor-quick-results");
+      const term = q.trim().toLowerCase();
+      if (term) {
+        const matches = vendorsCache.filter((v) => v.name.toLowerCase().includes(term)).slice(0, 8);
+        resultsHost.innerHTML = `
+          <div class="topbar-bell-title">Matching vendors</div>
+          ${matches.length ? matches.map(vendorQuickRowHtml).join("") : `<p class="empty-note">No matches.</p>`}
+        `;
+      } else {
+        resultsHost.innerHTML = `
+          <div class="topbar-bell-title">Recent</div>
+          ${recent.length ? recent.map(vendorQuickRowHtml).join("") : `<p class="empty-note">No vendors yet.</p>`}
+        `;
+      }
+      resultsHost.querySelectorAll(".topbar-search-result").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          vendorQuickDropdown.hidden = true;
+          openVendorProfile(Number(btn.dataset.id));
+          await draw();
+        });
+      });
+      const searchInputEl = vendorQuickDropdown.querySelector(".topbar-vendor-quick-search-input");
+      searchInputEl.addEventListener("input", () => renderVendorQuickDropdown(searchInputEl.value));
+      // The whole dropdown (search input included) is rebuilt on every
+      // keystroke, so the old input node is gone -- this has to re-focus
+      // the new one every time, not just on first open, or typing a second
+      // character would land nowhere. The cursor itself lands at the end
+      // of the preserved value, which is where someone mid-typing expects it.
+      searchInputEl.focus();
+      searchInputEl.setSelectionRange(searchInputEl.value.length, searchInputEl.value.length);
+    }
+
+    const bellWrap = host.querySelector("#topbar-bell");
+    const bellBtn = bellWrap.querySelector(".topbar-bell-btn");
+    const bellDropdown = bellWrap.querySelector(".topbar-bell-dropdown");
     bellBtn.addEventListener("click", async () => {
       const opening = bellDropdown.hidden;
       bellDropdown.hidden = !opening;

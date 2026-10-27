@@ -56,6 +56,13 @@ const CATEGORY_BY_RELATED = {
   // admin picks which vendor it belongs to -- same file row, no
   // re-upload, so its uploaded-at/expiry/etc. survive the move.
   coi_pool: new Set(["coi"]),
+  // One correspondence log entry's own attachments (see db.js's
+  // vendor_correspondence table) -- relatedId is that entry's own id, same
+  // per-record-bucket pattern `task` above uses, not the vendor's id. A
+  // single generic category: an email attachment could be a PDF, a photo,
+  // a Word doc -- nothing here is itself a compliance document until an
+  // admin separately re-files it onto the vendor's real Documents tab.
+  vendor_correspondence: new Set(["attachment"]),
   // Company-wide reference documents (PTO policy, Benefit Brochure,
   // Employee Handbook, blank onboarding forms) -- everyone gets the same
   // copy, not a per-employee upload, so this is one fixed bucket
@@ -77,7 +84,7 @@ function canRead(user, relatedType, relatedId) {
   // narrower read-only endpoint that never touches this files system.
   // Task attachments and the COI pool follow the same rule -- they're the
   // same kind of compliance document, just not filed against a vendor yet.
-  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool") return false;
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool" || relatedType === "vendor_correspondence") return false;
   if (relatedType === "wom" || relatedType === "company_documents") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
@@ -90,7 +97,7 @@ function canRead(user, relatedType, relatedId) {
 function canWrite(user, relatedType, relatedId, category) {
   if (user.role === "admin") return true;
   if (category === "tech_form") return false;
-  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool" || relatedType === "company_documents") return false;
+  if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool" || relatedType === "company_documents" || relatedType === "vendor_correspondence") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   return false;
@@ -110,6 +117,7 @@ function relatedRecordExists(relatedType, relatedId) {
   if (relatedType === "coi_pool") return relatedId === "pool";
   // Same fixed-bucket shape as the COI pool above.
   if (relatedType === "company_documents") return relatedId === "library";
+  if (relatedType === "vendor_correspondence") return Boolean(db.findVendorCorrespondence(relatedId));
   return false;
 }
 

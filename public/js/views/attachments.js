@@ -26,6 +26,7 @@ const CATEGORY_LABELS = {
   hold_harmless: "Hold Harmless Agreement",
   policy: "Company Policy",
   form: "Blank Form",
+  attachment: "Attachment",
 };
 
 function formatSize(bytes) {
