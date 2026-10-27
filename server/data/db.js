@@ -10520,6 +10520,158 @@ function findReclassPostingMatches(jobNumber, amount) {
     .all(jobNumber, amount);
 }
 
+// Tightened version of findReclassPostingMatches for Part C's "did this
+// submitted reclass actually post" check -- scoped to strictly after the
+// item's own fiscal period (a correction can't post before the finding that
+// called for it), matched on the full coding (job #, object code,
+// subsidiary, amount) rather than just job # + amount, since job # alone is
+// common enough across a month's GL that amount can coincide by chance.
+// Falls back to the looser existing match (job # + amount, any later
+// period, the "Reclass" name signal) when the tight match finds nothing --
+// still just a candidate for admin to look at, never an auto-confirmation,
+// same as findReclassPostingMatches itself.
+function findTightenedReclassPostingMatches(jobNumber, objectCode, subsidiary, amount, afterPeriodNumber, afterFiscalYear) {
+  if (!jobNumber || amount == null) return [];
+  const periodCutoff = (clauses, params) => {
+    if (afterFiscalYear == null) return;
+    clauses.push("(fiscal_year > ? OR (fiscal_year = ? AND period_number > ?))");
+    params.push(afterFiscalYear, afterFiscalYear, afterPeriodNumber == null ? 0 : afterPeriodNumber);
+  };
+  const tightClauses = ["business_unit = ?", "ABS(ABS(amount) - ABS(?)) < 0.01"];
+  const tightParams = [jobNumber, amount];
+  if (objectCode) {
+    tightClauses.push("object_account_code = ?");
+    tightParams.push(objectCode);
+  }
+  if (subsidiary) {
+    tightClauses.push("subsidiary = ?");
+    tightParams.push(subsidiary);
+  }
+  periodCutoff(tightClauses, tightParams);
+  const tight = db
+    .prepare(
+      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, business_unit AS businessUnit,
+              object_account AS objectAccount, subsidiary, amount, name_alpha AS nameAlpha, remark, batch_number AS batchNumber
+       FROM gl_entries WHERE ${tightClauses.join(" AND ")} ORDER BY gl_date`
+    )
+    .all(...tightParams);
+  if (tight.length > 0) return tight.map((r) => ({ ...r, matchType: "tight" }));
+
+  const looseClauses = ["business_unit = ?", "ABS(ABS(amount) - ABS(?)) < 0.01", "name_alpha LIKE '%reclass%' COLLATE NOCASE"];
+  const looseParams = [jobNumber, amount];
+  periodCutoff(looseClauses, looseParams);
+  const loose = db
+    .prepare(
+      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, business_unit AS businessUnit,
+              object_account AS objectAccount, subsidiary, amount, name_alpha AS nameAlpha, remark, batch_number AS batchNumber
+       FROM gl_entries WHERE ${looseClauses.join(" AND ")} ORDER BY gl_date`
+    )
+    .all(...looseParams);
+  return loose.map((r) => ({ ...r, matchType: "loose" }));
+}
+
+// The GL lines actually behind one reclass item's FROM side -- for the
+// Finance export's "GL RECLASS - Expense Detail" sheet, which is meant to
+// show finance exactly what's being corrected, not just the reclass note
+// itself. Matched the same way GL Screening and findReclassPostingMatches
+// both already key a line's identity (job #/object code/subsidiary/amount,
+// since gl_entries.id isn't stable across re-imports), scoped to the item's
+// own fiscal period when known so a coincidentally-identical line from a
+// different month doesn't show up.
+function findGlEntriesForReclassLine(item) {
+  if (!item || !item.fromJobNumber || item.fromAmount == null) return [];
+  const clauses = ["business_unit = ?", "ABS(ABS(amount) - ABS(?)) < 0.01"];
+  const params = [item.fromJobNumber, item.fromAmount];
+  if (item.fromObjectCode) {
+    clauses.push("object_account_code = ?");
+    params.push(item.fromObjectCode);
+  }
+  if (item.fromSubsidiary) {
+    clauses.push("subsidiary = ?");
+    params.push(item.fromSubsidiary);
+  }
+  if (item.fiscalPeriodNumber != null && item.fiscalYear != null) {
+    clauses.push("period_number = ? AND fiscal_year = ?");
+    params.push(item.fiscalPeriodNumber, item.fiscalYear);
+  }
+  return db
+    .prepare(
+      `SELECT period_number AS periodNumber, fiscal_year AS fiscalYear, gl_date AS glDate, document_type AS documentType,
+              document_number AS documentNumber, journal_entry_line_number AS journalEntryLineNumber, business_unit AS businessUnit,
+              object_account AS objectAccount, subsidiary, subledger_gl AS subledgerGl, remark, amount, batch_number AS batchNumber,
+              supplier_invoice_number AS supplierInvoiceNumber, invoice_date AS invoiceDate, location_code AS locationCode,
+              name_alpha AS nameAlpha, purchase_order AS purchaseOrder
+       FROM gl_entries WHERE ${clauses.join(" AND ")} ORDER BY gl_date`
+    )
+    .all(...params);
+}
+
+// "Total GL Line Items for Site" in the real RECLASS sheet's metric block --
+// every imported GL line for the region/period the Finance export is scoped
+// to, same territory resolution (via locations.territory) getGlScreeningFlags
+// already uses.
+function countGlEntriesForRegionPeriod(region, periodNumber, fiscalYear) {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM gl_entries g LEFT JOIN locations l ON l.code = g.matched_location_code
+       WHERE g.period_number = ? AND g.fiscal_year = ? AND COALESCE(l.territory, 'Unassigned') = ?`
+    )
+    .get(periodNumber, fiscalYear, region);
+  return row ? row.n : 0;
+}
+
+function reclassVerificationTaskSourceKey(itemId) {
+  return `RECLASS-${itemId}-VERIFICATION`;
+}
+
+// Same lazy "regenerate whenever new data might have changed something"
+// mechanic as refreshPoCodingDriftTask above, for Krista's third ask: "we
+// need to have a way that we verify those reclasses hit on the next
+// report." Only meaningful once an item is actually 'submitted' (someone
+// told finance to post it) -- a 'flagged'/'reviewed'/'draft' item hasn't
+// been handed off yet, and 'confirmed_posted'/'dismissed' are already
+// resolved either way. Clearing the task once a candidate match turns up
+// isn't an auto-confirmation of the reclass itself (that's still a manual
+// status change via PATCH /items/:id) -- it just closes the "go check on
+// this" nag now that /items/:id/gl-links has something to show.
+function refreshReclassVerificationTask(itemId) {
+  const item = findReclassItem(itemId);
+  const sourceKey = reclassVerificationTaskSourceKey(itemId);
+  if (!item || item.status !== "submitted") {
+    completeTaskBySourceKey(sourceKey);
+    return;
+  }
+  const jobNumber = item.toJobNumber || item.fromJobNumber;
+  const objectCode = item.toObjectCode || item.fromObjectCode;
+  const subsidiary = item.toSubsidiary || item.fromSubsidiary;
+  const amount = item.toAmount != null ? item.toAmount : item.fromAmount;
+  const matches = findTightenedReclassPostingMatches(jobNumber, objectCode, subsidiary, amount, item.fiscalPeriodNumber, item.fiscalYear);
+  if (matches.length > 0) {
+    completeTaskBySourceKey(sourceKey);
+    return;
+  }
+  upsertTaskBySourceKey(
+    sourceKey,
+    {
+      title: `Confirm reclass posted -- ${item.vendor || jobNumber || `reclass #${item.id}`}`,
+      description: `This reclass (${item.region || "unknown region"}, job ${jobNumber || "n/a"}, object ${objectCode || "n/a"}, $${Math.abs(
+        amount || 0
+      ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) was submitted but hasn't shown up yet in a later GL pull. Check back once the next period's GL is imported, or review this item's GL links directly.`,
+      category: "reclass_verification",
+      priority: "normal",
+      source: "reclass_verification",
+      sourceRecordId: String(itemId),
+      workflowRule: "reclass_verification",
+    },
+    { reopenIfClosed: true }
+  );
+}
+
+function refreshAllReclassVerificationTasks() {
+  const rows = db.prepare("SELECT id FROM reclass_items WHERE status = 'submitted'").all();
+  for (const row of rows) refreshReclassVerificationTask(row.id);
+}
+
 // Every GL line that looks like a reclass posting (same "Name - Alpha
 // Explanation contains Reclass" signal as findReclassPostingMatches above),
 // independent of whether anyone ever imported a Reclass Submission workbook
@@ -13444,6 +13596,11 @@ module.exports = {
   findGlImportByPeriod,
   getPoGlLinksByWom,
   findReclassPostingMatches,
+  findTightenedReclassPostingMatches,
+  findGlEntriesForReclassLine,
+  countGlEntriesForRegionPeriod,
+  refreshReclassVerificationTask,
+  refreshAllReclassVerificationTasks,
   getGlReclassActivity,
   getGlReconciliationSummary,
   getGlSpendBreakdown,

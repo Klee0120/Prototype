@@ -288,6 +288,19 @@ router.get("/items/:id/gl-links", (req, res) => {
     // side of a reclass often moves to a job with no WOM at all.
     fromPostingMatches: db.findReclassPostingMatches(item.fromJobNumber, item.fromAmount),
     toPostingMatches: db.findReclassPostingMatches(item.toJobNumber, item.toAmount),
+    // The tightened check (job # + object code + subsidiary + amount,
+    // scoped to strictly after this item's own fiscal period) -- Part C's
+    // "did this actually hit on the next report" signal. Still just a
+    // candidate for admin to look at, same as the two above; never an
+    // auto-confirmation of the item's status.
+    toPostingMatchesTightened: db.findTightenedReclassPostingMatches(
+      item.toJobNumber || item.fromJobNumber,
+      item.toObjectCode || item.fromObjectCode,
+      item.toSubsidiary || item.fromSubsidiary,
+      item.toAmount != null ? item.toAmount : item.fromAmount,
+      item.fiscalPeriodNumber,
+      item.fiscalYear
+    ),
   });
 });
 
@@ -316,6 +329,171 @@ router.patch("/items/:id", (req, res) => {
 // imported for it -- see db.getGlReclassActivity.
 router.get("/gl-activity", (req, res) => {
   res.json(db.getGlReclassActivity());
+});
+
+// Exact header row from the real 2026-09+ template's RECLASS sheet (see
+// parseReclassWorkbook above, and tests/reclasses.test.js's own import
+// fixture) -- reused verbatim here, rather than redefined, so an export
+// built from this row always round-trips straight back through that same
+// parser.
+const RECLASS_SHEET_HEADER = [
+  "#", "Job # (Cost Center or Business Unit)", "Object Acct or Code", "Subsidiary or Cost Code", "WOM Number If Needed", "Amount", "To",
+  "Job # (Cost Center or Business Unit)", "Object Acct or Code", "Subsidiary or Cost Code", "WOM Number If Needed", "Amount",
+  "Vendor", "Comments", "Region", "Period",
+  "Cost Center Adjustment", "Object Code Adjustment", "Subsidiary Code Adjustment", "Subledger (WOM#) Adjustment",
+  "Yes (Impacting)  or No (Non Impacting)", "Automotive", "AP", "Other", "Customer", "Automotive", "AP", "Other", "Customer",
+  "Process Failure", "Manual Mistake", "System Mistake", "Management Change", "Customer Change", "Comments and Path forward",
+];
+
+// The real "GL RECLASS - Expense Detail" sheet's 32 columns, in their real
+// order (confirmed directly against a territory's own submission file).
+// Only the 18 marked `true` have any backing data in gl_entries (see
+// gl.js's own COLUMN_MAP, the GL import's column list) -- the other 14
+// ship as blank columns below, not fabricated, since this app's GL import
+// never captures them from any source file.
+const EXPENSE_DETAIL_COLUMNS = [
+  { header: "G/L Posted Code", supported: false },
+  { header: "Period Number - General Ledger", key: "periodNumber", supported: true },
+  { header: "Fiscal Year", key: "fiscalYear", supported: true },
+  { header: "Business Unit Type", supported: false },
+  { header: "GL Date", key: "glDate", supported: true },
+  { header: "Document Type", key: "documentType", supported: true },
+  { header: "Document Number", key: "documentNumber", supported: true },
+  { header: "Address Number", supported: false },
+  { header: "Name - Alpha Explanation", key: "nameAlpha", supported: true },
+  { header: "Journal Entry Line Number", key: "journalEntryLineNumber", supported: true },
+  { header: "Business Unit", key: "businessUnit", supported: true },
+  { header: "Object Account", key: "objectAccount", supported: true },
+  { header: "Subsidiary", key: "subsidiary", supported: true },
+  { header: "Subledger - G/L", key: "subledgerGl", supported: true },
+  { header: "Subledger Type", supported: false },
+  { header: "Name - Remark Explanation", key: "remark", supported: true },
+  { header: "Reference 2", supported: false },
+  { header: "Amount", key: "amount", supported: true },
+  { header: "Batch Number", key: "batchNumber", supported: true },
+  { header: "Supplier Invoice Number", key: "supplierInvoiceNumber", supported: true },
+  { header: "Bill Type", supported: false },
+  { header: "Batch Date", supported: false },
+  { header: "Invoice Date", key: "invoiceDate", supported: true },
+  { header: "Cat Code 02", supported: false },
+  { header: "Cat Code 03", supported: false },
+  { header: "Cat Code 04", supported: false },
+  { header: "Cat Code 05", supported: false },
+  { header: "Cat Code 06", supported: false },
+  { header: "Customer Code", supported: false },
+  { header: "Location Code", key: "locationCode", supported: true },
+  { header: "Group Code", supported: false },
+  { header: "Purchase Order", key: "purchaseOrder", supported: true },
+];
+
+function reclassMetadataRows(metadata) {
+  const labelFor = Object.fromEntries(Object.entries(METADATA_LABELS).map(([label, key]) => [key, label]));
+  const order = ["region", "totalGlLineItems", "reclassCount", "totalAmount", "originalDatePublished", "revisionDate", "reasonForChange", "revisionNo", "producedBy"];
+  return order.map((key) => [labelFor[key], metadata[key] == null ? null : metadata[key]]);
+}
+
+// Mirrors parseReclassWorkbook's column reading, in reverse -- each item
+// becomes one row at the exact offsets that parser expects (shift=1, since
+// this always writes the current, Period-column template).
+function reclassItemToSheetRow(item, index) {
+  const row = new Array(RECLASS_SHEET_HEADER.length).fill(null);
+  row[0] = item.lineNumber || index + 1;
+  row[1] = item.fromJobNumber;
+  row[2] = item.fromObjectCode;
+  row[3] = item.fromSubsidiary;
+  row[4] = item.fromWomNumber;
+  row[5] = item.fromAmount;
+  row[7] = item.toJobNumber;
+  row[8] = item.toObjectCode;
+  row[9] = item.toSubsidiary;
+  row[10] = item.toWomNumber;
+  row[11] = item.toAmount;
+  row[12] = item.vendor;
+  row[13] = item.comments;
+  row[14] = item.region;
+  row[15] = item.fiscalPeriodNumber;
+  if (item.costCenterAdjusted) row[16] = "x";
+  if (item.objectCodeAdjusted) row[17] = "x";
+  if (item.subledgerAdjusted) row[18] = "x"; // the sheet's own "Subsidiary Code Adjustment" column -- see parseReclassWorkbook's comment on this field's name
+  if (item.womAdjusted) row[19] = "x";
+  row[20] = item.impactsFinalInvoice;
+  const impacting = item.impactsFinalInvoice === "Yes";
+  const categoryIdx = IMPACT_CATEGORY_LABELS.indexOf(item.causedBy);
+  if (categoryIdx !== -1) row[(impacting ? 21 : 25) + categoryIdx] = "x";
+  const rootCauseIdx = ROOT_CAUSE_LABELS.indexOf(item.rootCause);
+  if (rootCauseIdx !== -1) row[29 + rootCauseIdx] = "x";
+  row[34] = item.pathForward;
+  return row;
+}
+
+function reclassItemToTemplateRows(item) {
+  // The raw JE-posting format Finance actually keys from: one negative
+  // (pulling the dollars off the wrong coding) and one positive (landing
+  // them on the right coding) line per reclass, same FROM/TO fields as the
+  // RECLASS sheet's own From/To block, just laid out the way a journal
+  // entry upload expects it.
+  return [
+    { jobNumber: item.fromJobNumber, objectCode: item.fromObjectCode, subsidiary: item.fromSubsidiary, womNumber: item.fromWomNumber, amount: -Math.abs(item.fromAmount || 0), vendor: item.vendor, comments: item.comments },
+    { jobNumber: item.toJobNumber, objectCode: item.toObjectCode, subsidiary: item.toSubsidiary, womNumber: item.toWomNumber, amount: Math.abs(item.toAmount != null ? item.toAmount : item.fromAmount || 0), vendor: item.vendor, comments: item.comments },
+  ];
+}
+
+// The Finance-ready export Krista asked for: "export a reclass submission
+// report exactly like the ones I attached for the submission which is the
+// format needed for finance to do those reclasses" -- same 3 sheets as a
+// real territory submission (RECLASS, Template, GL RECLASS - Expense
+// Detail), built from whatever's currently on the Reclass list for this
+// region/period rather than a new file someone has to fill out by hand.
+router.get("/finance-export", (req, res) => {
+  const { region, fiscalPeriodNumber, fiscalYear, status } = req.query || {};
+  if (!region || !fiscalPeriodNumber || !fiscalYear) {
+    return res.status(400).json({ error: "region, fiscalPeriodNumber, and fiscalYear are all required" });
+  }
+  const periodNumber = Number(fiscalPeriodNumber);
+  const year = Number(fiscalYear);
+  // A blank "From" job # ends parseReclassWorkbook's own read of the line
+  // items (it's the sheet's own "no more real rows" signal) -- an item with
+  // no job # at all can't be posted as a reclass anyway (there's nothing to
+  // pull the dollars off of), so it's left out here rather than written as
+  // a blank row that would silently truncate every row after it on re-import.
+  const allItems = db.listReclassItems({ region, fiscalPeriodNumber: periodNumber, fiscalYear: year, status });
+  const items = allItems.filter((it) => it.fromJobNumber);
+
+  const totalAmount = items.reduce((sum, it) => sum + Math.abs(it.fromAmount || 0), 0);
+  const metadata = {
+    region,
+    totalGlLineItems: db.countGlEntriesForRegionPeriod(region, periodNumber, year),
+    reclassCount: items.length,
+    totalAmount,
+    originalDatePublished: new Date().toISOString().slice(0, 10),
+    revisionDate: new Date().toISOString().slice(0, 10),
+    reasonForChange: "Monthly GL reclass submission",
+    revisionNo: 1,
+    producedBy: req.user.name,
+  };
+
+  const reclassSheetRows = [...reclassMetadataRows(metadata), [], RECLASS_SHEET_HEADER, ...items.map((it, i) => reclassItemToSheetRow(it, i))];
+  const reclassSheet = XLSX.utils.aoa_to_sheet(reclassSheetRows);
+
+  const templateHeader = ["Job #", "Object Code", "Subsidiary", "WOM #", "Amount", "Vendor", "Comments"];
+  const templateRows = items.flatMap(reclassItemToTemplateRows).map((r) => [r.jobNumber, r.objectCode, r.subsidiary, r.womNumber, r.amount, r.vendor, r.comments]);
+  const templateSheet = XLSX.utils.aoa_to_sheet([templateHeader, ...templateRows]);
+
+  const expenseDetailHeader = EXPENSE_DETAIL_COLUMNS.map((c) => c.header);
+  const expenseDetailRows = items.flatMap((item) =>
+    db.findGlEntriesForReclassLine(item).map((glRow) => EXPENSE_DETAIL_COLUMNS.map((c) => (c.supported ? (glRow[c.key] == null ? null : glRow[c.key]) : null)))
+  );
+  const expenseDetailSheet = XLSX.utils.aoa_to_sheet([expenseDetailHeader, ...expenseDetailRows]);
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, reclassSheet, "RECLASS");
+  XLSX.utils.book_append_sheet(workbook, templateSheet, "Template");
+  XLSX.utils.book_append_sheet(workbook, expenseDetailSheet, "GL RECLASS - Expense Detail");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  const fileName = `${region}_Reclass_Fiscal_${periodNumber}-${year}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(buffer);
 });
 
 router.get("/meta", (req, res) => {

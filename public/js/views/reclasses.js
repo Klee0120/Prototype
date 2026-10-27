@@ -124,7 +124,13 @@ export async function renderReclasses(container, options = {}) {
         <button type="button" class="btn btn-primary reclass-import-btn">Import Submission</button>
         <input type="file" class="reclass-import-file" accept=".xlsx,.xls" hidden />
         <button type="button" class="btn btn-secondary reclass-flag-btn">+ Flag a finding</button>
+        <button type="button" class="btn btn-secondary reclass-finance-export-btn" ${regionFilter && fiscalPeriodFilter ? "" : "disabled"}>Export Finance Submission</button>
       </div>
+      ${
+        !(regionFilter && fiscalPeriodFilter)
+          ? `<p class="review-checklist-hint">Pick a location and a month above to export a Finance submission for just that region/period.</p>`
+          : ""
+      }
       <p class="review-checklist-hint">
         ${
           lastBatch
@@ -203,6 +209,25 @@ export async function renderReclasses(container, options = {}) {
       await runImport(file);
     });
     container.querySelector(".reclass-flag-btn").addEventListener("click", () => openReclassFormModal());
+    container.querySelector(".reclass-finance-export-btn").addEventListener("click", async (e) => {
+      if (!(regionFilter && fiscalPeriodFilter)) return;
+      const [fiscalPeriodNumber, fiscalYear] = fiscalPeriodFilter.split("|");
+      const btn = e.target;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = "Exporting…";
+      try {
+        await api.downloadFromUrl(
+          `/api/admin/reclasses/finance-export?region=${encodeURIComponent(regionFilter)}&fiscalPeriodNumber=${fiscalPeriodNumber}&fiscalYear=${fiscalYear}`,
+          `${regionFilter}_Reclass_Submission_P${fiscalPeriodNumber}-FY${fiscalYear}.xlsx`
+        );
+      } catch (err) {
+        window.alert(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
     container.querySelector(".reclass-search-filter").addEventListener("input", (e) => {
       const value = e.target.value;
       clearTimeout(searchDebounceTimer);
@@ -612,6 +637,20 @@ export async function renderReclasses(container, options = {}) {
       </p>
       ${postingRows("From", item.fromJobNumber, item.fromAmount, data.fromPostingMatches)}
       ${postingRows("To", item.toJobNumber, item.toAmount, data.toPostingMatches)}
+
+      ${
+        item.status === "submitted"
+          ? `
+      <h5>Did this hit on the next report?</h5>
+      <p class="review-checklist-hint">
+        Tightened check: same job #, object code, subsidiary, and amount, scoped to a GL period strictly after this
+        item's own (P${escapeHtml(String(item.fiscalPeriodNumber ?? "—"))}/FY${escapeHtml(String(item.fiscalYear ?? "—"))}). Falls back to the looser
+        "Reclass"-named match above if nothing tighter turns up. Still just a candidate -- confirm it yourself before marking this Confirmed Posted.
+      </p>
+      ${postingRows("To", item.toJobNumber || item.fromJobNumber, item.toAmount != null ? item.toAmount : item.fromAmount, data.toPostingMatchesTightened)}
+      `
+          : ""
+      }
 
       ${
         womSides.length > 0

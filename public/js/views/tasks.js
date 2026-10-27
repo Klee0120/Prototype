@@ -86,6 +86,7 @@ export const CATEGORY_LABELS = {
   vendor_waiver_request: "Vendor Waiver Request",
   vendor_submission: "Vendor Submission",
   vendor_tax_id_conflict: "Vendor Tax ID Conflict",
+  reclass_verification: "Reclass Verification",
 };
 // Which of the above a person can actually pick when creating a task by
 // hand -- wom_workflow/recurring are reserved for what the PSE pipeline and
@@ -97,7 +98,7 @@ export const MANUAL_CATEGORY_OPTIONS = ["manual", "vendor_compliance", "onboardi
 // turning into yet another tab to click through. Order here is the order
 // sections render in; a category not listed anywhere falls into "general".
 const TASK_SECTIONS = [
-  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow", "wom_invoicing", "po_request"] },
+  { key: "financial", label: "Financial & PO/WOM", colorClass: "task-section-financial", categories: ["financial", "wom_workflow", "wom_invoicing", "po_request", "reclass_verification"] },
   { key: "compliance", label: "Compliance Items", colorClass: "task-section-compliance", categories: ["vendor_compliance"] },
   {
     key: "vendor_portal",

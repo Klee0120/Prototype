@@ -324,6 +324,286 @@ test("Reclasses import: the 2026-09 template's Period column resolves each line'
   assert.equal(febLine.rootCause, "Manual Mistake");
 });
 
+// The Finance export (GET /finance-export) is meant to hand Finance exactly
+// the format a territory submission already comes in -- built here from
+// whatever's on the Reclass list for a region/period, rather than requiring
+// someone to fill out a new file by hand. Round-tripping the export straight
+// back through the real import parser is the actual correctness bar: if the
+// two ever drift, this is where it shows up.
+test("Reclasses finance-export: builds a 3-sheet Finance workbook that round-trips through the real import parser", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+  const XLSX = require("xlsx");
+
+  const REGION = "Midwest";
+  const PERIOD = 8;
+  const FY = 40;
+  const now = new Date().toISOString();
+
+  raw.prepare("INSERT INTO locations (code, name, territory) VALUES (?, ?, ?)").run("FINEXP-SITE", "Finance Export Test Site", REGION);
+
+  // Two exportable items (a real job # on the From side -- the one thing
+  // the export route requires to include a line) plus one with no From job
+  // #, confirming it's left out of the export rather than written as a
+  // blank row that would truncate the sheet on re-import.
+  function insertItem({ fromJobNumber, fromObjectCode, fromSubsidiary, fromAmount, toJobNumber, toObjectCode, toSubsidiary, toAmount, vendor, comments, causedBy, rootCause, impactsFinalInvoice }) {
+    raw
+      .prepare(
+        `INSERT INTO reclass_items (
+          from_job_number, from_object_code, from_subsidiary, from_amount,
+          to_job_number, to_object_code, to_subsidiary, to_amount,
+          vendor, comments, region, caused_by, root_cause, impacts_final_invoice,
+          cost_center_adjusted, object_code_adjusted, subledger_adjusted, wom_adjusted,
+          source, status, fiscal_period_number, fiscal_year, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 'auto_flagged', 'flagged', ?, ?, ?, ?)`
+      )
+      .run(
+        fromJobNumber, fromObjectCode, fromSubsidiary, fromAmount,
+        toJobNumber, toObjectCode, toSubsidiary, toAmount,
+        vendor, comments, REGION, causedBy, rootCause, impactsFinalInvoice,
+        PERIOD, FY, now, now
+      );
+  }
+
+  insertItem({
+    fromJobNumber: "FINEXP-SITE", fromObjectCode: "605300", fromSubsidiary: "10010010", fromAmount: 500,
+    toJobNumber: "FINEXP-SITE", toObjectCode: "601000", toSubsidiary: "10010010", toAmount: 500,
+    vendor: "Allegis Global Solutions", comments: "Temp labor reclass", causedBy: "Automotive", rootCause: "Process Failure", impactsFinalInvoice: "Yes",
+  });
+  insertItem({
+    fromJobNumber: "FINEXP-SITE", fromObjectCode: "616100", fromSubsidiary: "99999999", fromAmount: 250,
+    toJobNumber: "FINEXP-SITE", toObjectCode: "616100", toSubsidiary: "10910000", toAmount: 250,
+    vendor: "Concur Technologies", comments: "Concur reclass", causedBy: "AP", rootCause: "Manual Mistake", impactsFinalInvoice: "No",
+  });
+  insertItem({
+    fromJobNumber: null, fromObjectCode: "999000", fromSubsidiary: "99999999", fromAmount: 100,
+    toJobNumber: null, toObjectCode: "999000", toSubsidiary: "11111111", toAmount: 100,
+    vendor: "No Job Number", comments: "should be excluded", causedBy: null, rootCause: null, impactsFinalInvoice: null,
+  });
+
+  // A GL line backing the first item's From side, for the Expense Detail sheet.
+  raw
+    .prepare(
+      `INSERT INTO gl_entries (
+        period_number, fiscal_year, gl_date, document_type, document_number, business_unit,
+        object_account, object_account_code, subsidiary, amount, name_alpha, created_at
+      ) VALUES (?, ?, '2026-08-01', 'JE', 'DOC-1', 'FINEXP-SITE', '605300 - Gen~Sub NonRecur Lab', '605300', '10010010', 500, 'ALLEGIS GLOBAL SOLUTIONS', ?)`
+    )
+    .run(PERIOD, FY, now);
+
+  await t.test("400s without region/fiscalPeriodNumber/fiscalYear", async () => {
+    const res = await server.call("GET", "/api/admin/reclasses/finance-export", { userId: "ADMIN" });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can't reach the export route", async () => {
+    const res = await server.call("GET", `/api/admin/reclasses/finance-export?region=${REGION}&fiscalPeriodNumber=${PERIOD}&fiscalYear=${FY}`, { userId: "T1001" });
+    assert.equal(res.status, 403);
+  });
+
+  const token = await server.tokenFor("ADMIN");
+  const exportRes = await fetch(`${server.baseUrl}/api/admin/reclasses/finance-export?region=${REGION}&fiscalPeriodNumber=${PERIOD}&fiscalYear=${FY}`, {
+    headers: { "x-session-token": token },
+  });
+  assert.equal(exportRes.status, 200);
+  const buffer = Buffer.from(await exportRes.arrayBuffer());
+
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+
+  await t.test("the workbook has exactly the 3 real sheets, in order", () => {
+    assert.deepEqual(workbook.SheetNames, ["RECLASS", "Template", "GL RECLASS - Expense Detail"]);
+  });
+
+  await t.test("the RECLASS sheet's line items exclude the item with no From job #", () => {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets["RECLASS"], { header: 1, defval: null });
+    const allCells = rows.flat().filter((c) => typeof c === "string");
+    assert.ok(!allCells.includes("No Job Number"), "the item with no From job # should not appear anywhere in the sheet");
+    assert.ok(allCells.includes("Allegis Global Solutions"));
+    assert.ok(allCells.includes("Concur Technologies"));
+  });
+
+  await t.test("the GL RECLASS - Expense Detail sheet has all 32 real headers, with the unsupported ones blank", () => {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets["GL RECLASS - Expense Detail"], { header: 1, defval: null });
+    assert.equal(rows[0].length, 32);
+    assert.deepEqual(rows[0].slice(0, 3), ["G/L Posted Code", "Period Number - General Ledger", "Fiscal Year"]);
+    const dataRow = rows.find((r, i) => i > 0 && r.some((c) => c != null));
+    assert.ok(dataRow, "expected the backing GL line for the Allegis item to show up");
+    assert.equal(dataRow[0], null, "G/L Posted Code is never captured by this app's GL import -- should ship blank, not fabricated");
+    assert.equal(dataRow[1], PERIOD);
+    assert.equal(dataRow[6], "DOC-1");
+  });
+
+  await t.test("the exported file round-trips through the real RECLASS import parser", async () => {
+    const importRes = await server.upload("/api/admin/reclasses/batches/import", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "finance_export.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(importRes.status, 201, JSON.stringify(importRes.body));
+    assert.equal(importRes.body.items.length, 2, "only the 2 exportable items should come back through re-import");
+
+    const allegis = importRes.body.items.find((i) => i.vendor === "Allegis Global Solutions");
+    assert.ok(allegis);
+    assert.equal(allegis.fromJobNumber, "FINEXP-SITE");
+    assert.equal(allegis.fromObjectCode, "605300");
+    assert.equal(allegis.fromSubsidiary, "10010010");
+    assert.equal(allegis.fromAmount, 500);
+    assert.equal(allegis.toObjectCode, "601000");
+    assert.equal(allegis.region, REGION);
+    assert.equal(allegis.fiscalPeriodNumber, PERIOD);
+    assert.equal(allegis.causedBy, "Automotive");
+    assert.equal(allegis.rootCause, "Process Failure");
+    assert.equal(allegis.objectCodeAdjusted, true);
+
+    const concur = importRes.body.items.find((i) => i.vendor === "Concur Technologies");
+    assert.ok(concur);
+    assert.equal(concur.fromSubsidiary, "99999999");
+    assert.equal(concur.toSubsidiary, "10910000");
+    assert.equal(concur.causedBy, "AP");
+    assert.equal(concur.rootCause, "Manual Mistake");
+  });
+});
+
+// Part C: "we need to have a way that we verify those reclasses hit on the
+// next report." findTightenedReclassPostingMatches is the tightened check
+// (job # + object code + subsidiary + amount, strictly after the item's own
+// fiscal period); refreshReclassVerificationTask/refreshAllReclassVerificationTasks
+// is the lazy task-regeneration pair modeled on refreshPoCodingDriftTask.
+// Neither one ever writes to reclass_items.status itself -- a candidate
+// match only ever clears the nag task, never auto-confirms the reclass.
+test("Reclasses Part C: tightened posting-match check + verification task lifecycle", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  const now = new Date().toISOString();
+
+  await t.test("findTightenedReclassPostingMatches matches job+object+subsidiary+amount strictly after the given period", () => {
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (period_number, fiscal_year, gl_date, business_unit, object_account, object_account_code, subsidiary, amount, name_alpha, created_at)
+         VALUES (?, ?, '2026-04-01', 'TIGHT-JOB', '601000 - Gen~Labor', '601000', '20920000', 750, 'Payroll Labor Distribution', ?)`
+      )
+      .run(4, 26, now);
+
+    const tight = db.findTightenedReclassPostingMatches("TIGHT-JOB", "601000", "20920000", 750, 3, 26);
+    assert.equal(tight.length, 1, "a later-period line matching job/object/subsidiary/amount should be a tight match");
+    assert.equal(tight[0].matchType, "tight");
+
+    const sameOrEarlier = db.findTightenedReclassPostingMatches("TIGHT-JOB", "601000", "20920000", 750, 4, 26);
+    assert.equal(sameOrEarlier.length, 0, "a line in the SAME period as the cutoff should not match -- only strictly after");
+
+    const wrongObjectCode = db.findTightenedReclassPostingMatches("TIGHT-JOB", "605000", "20920000", 750, 3, 26);
+    assert.equal(wrongObjectCode.length, 0, "a mismatched object code should not tight-match, even with the right job/subsidiary/amount");
+  });
+
+  await t.test("falls back to the looser name-based match when nothing tight is found", () => {
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (period_number, fiscal_year, gl_date, business_unit, object_account, object_account_code, subsidiary, amount, name_alpha, created_at)
+         VALUES (?, ?, '2026-05-01', 'LOOSE-JOB', '605250 - Gen~Sub Recur Matl', '605250', '99999999', 300, 'AER Reclass May 2026', ?)`
+      )
+      .run(5, 26, now);
+
+    // Doesn't match tight (object code differs from what's asked for), but
+    // does carry the "Reclass" name signal, in a period after the cutoff.
+    const result = db.findTightenedReclassPostingMatches("LOOSE-JOB", "999999", null, 300, 4, 26);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].matchType, "loose");
+  });
+
+  await t.test("refreshReclassVerificationTask creates a task for a submitted item with no match, and clears it once one appears", () => {
+    const itemResult = raw
+      .prepare(
+        `INSERT INTO reclass_items (
+          from_job_number, from_object_code, from_subsidiary, from_amount,
+          to_job_number, to_object_code, to_subsidiary, to_amount,
+          vendor, source, status, fiscal_period_number, fiscal_year, created_at, updated_at
+        ) VALUES ('VERIFY-JOB', '605300', '10010010', 500, 'VERIFY-JOB', '601000', '10010010', 500, 'Allegis Global Solutions', 'auto_flagged', 'submitted', ?, ?, ?, ?)`
+      )
+      .run(6, 26, now, now);
+    const itemId = Number(itemResult.lastInsertRowid);
+    const sourceKey = `RECLASS-${itemId}-VERIFICATION`;
+
+    db.refreshReclassVerificationTask(itemId);
+    const openTask = db.findTaskBySourceKey(sourceKey);
+    assert.ok(openTask, "a submitted item with no posting match yet should get a verification task");
+    assert.equal(openTask.status, "open");
+    assert.equal(openTask.category, "reclass_verification");
+
+    // Now the correction actually posts, in a later period, matching the To side's coding.
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (period_number, fiscal_year, gl_date, business_unit, object_account, object_account_code, subsidiary, amount, name_alpha, created_at)
+         VALUES (?, ?, '2026-07-01', 'VERIFY-JOB', '601000 - Gen~Labor', '601000', '10010010', 500, 'Payroll Labor Distribution', ?)`
+      )
+      .run(7, 26, now);
+
+    db.refreshReclassVerificationTask(itemId);
+    const clearedTask = db.findTaskBySourceKey(sourceKey);
+    assert.equal(clearedTask.status, "completed", "once a candidate posting match appears, the nag task should clear");
+
+    const itemAfter = db.findReclassItem(itemId);
+    assert.equal(itemAfter.status, "submitted", "clearing the task must never itself change the item's own status -- that's still a manual call");
+  });
+
+  await t.test("a non-submitted item (flagged/reviewed/draft/confirmed_posted/dismissed) never gets a verification task", () => {
+    const itemResult = raw
+      .prepare(
+        `INSERT INTO reclass_items (from_job_number, from_amount, vendor, source, status, fiscal_period_number, fiscal_year, created_at, updated_at)
+         VALUES ('NOTSUBMITTED-JOB', 100, 'Office Depot', 'manual', 'flagged', ?, ?, ?, ?)`
+      )
+      .run(8, 26, now, now);
+    const itemId = Number(itemResult.lastInsertRowid);
+    db.refreshReclassVerificationTask(itemId);
+    assert.ok(!db.findTaskBySourceKey(`RECLASS-${itemId}-VERIFICATION`));
+  });
+
+  await t.test("refreshAllReclassVerificationTasks sweeps every submitted item without needing each id passed in by hand", () => {
+    const itemResult = raw
+      .prepare(
+        `INSERT INTO reclass_items (from_job_number, from_amount, vendor, source, status, fiscal_period_number, fiscal_year, created_at, updated_at)
+         VALUES ('SWEEP-JOB', 999, 'Sweep Test Vendor', 'manual', 'submitted', ?, ?, ?, ?)`
+      )
+      .run(9, 26, now, now);
+    const itemId = Number(itemResult.lastInsertRowid);
+    db.refreshAllReclassVerificationTasks();
+    assert.ok(db.findTaskBySourceKey(`RECLASS-${itemId}-VERIFICATION`), "the sweep should pick up every submitted item on its own");
+  });
+
+  await t.test("GET /items/:id/gl-links surfaces the tightened match alongside the existing looser ones", async () => {
+    const itemResult = raw
+      .prepare(
+        `INSERT INTO reclass_items (
+          from_job_number, from_object_code, from_subsidiary, from_amount,
+          to_job_number, to_object_code, to_subsidiary, to_amount,
+          vendor, source, status, fiscal_period_number, fiscal_year, created_at, updated_at
+        ) VALUES ('GLLINKS-JOB', '605300', '10010010', 400, 'GLLINKS-JOB', '601000', '10010010', 400, 'Allegis Global Solutions', 'auto_flagged', 'submitted', ?, ?, ?, ?)`
+      )
+      .run(10, 26, now, now);
+    const itemId = Number(itemResult.lastInsertRowid);
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (period_number, fiscal_year, gl_date, business_unit, object_account, object_account_code, subsidiary, amount, name_alpha, created_at)
+         VALUES (?, ?, '2026-11-01', 'GLLINKS-JOB', '601000 - Gen~Labor', '601000', '10010010', 400, 'Payroll Labor Distribution', ?)`
+      )
+      .run(11, 26, now);
+
+    const res = await server.call("GET", `/api/admin/reclasses/items/${itemId}/gl-links`, { userId: "ADMIN" });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body.toPostingMatchesTightened));
+    assert.equal(res.body.toPostingMatchesTightened.length, 1);
+    assert.equal(res.body.toPostingMatchesTightened[0].matchType, "tight");
+  });
+});
+
 // A submission file from before the 2026-09 template revision has no
 // Period column at all -- the import should still work, falling back to
 // the batch's own import date for fiscal period the same way it always
