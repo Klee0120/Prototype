@@ -225,14 +225,26 @@
   <main>
     <section id="login-view" class="card">
       <h1>Sign in</h1>
-      <p class="hint">Use the Tax ID and passcode your C&amp;W Services contact gave you.</p>
+      <p class="hint">Use the Tax ID or access code and passcode your C&amp;W Services contact gave you.</p>
       <div id="login-error" class="error"></div>
       <form id="login-form">
-        <label for="tax-id">Tax ID</label>
+        <label for="tax-id">Tax ID or Access Code</label>
         <input type="text" id="tax-id" autocomplete="off" required />
         <label for="passcode">Passcode</label>
         <input type="password" id="passcode" autocomplete="current-password" required />
         <button type="submit" id="login-submit">Sign in</button>
+      </form>
+    </section>
+
+    <section id="tax-id-setup-view" class="card" hidden>
+      <h1>Add your Tax ID</h1>
+      <p class="hint">Before we can process payments or review your compliance documents, we need your Tax ID on file. You can upload your W-9 any time below, with or without this.</p>
+      <div id="tax-id-error" class="error"></div>
+      <div id="tax-id-success" class="success"></div>
+      <form id="tax-id-form">
+        <label for="tax-id-input">Tax ID</label>
+        <input type="text" id="tax-id-input" autocomplete="off" required />
+        <button type="submit" id="tax-id-submit">Save</button>
       </form>
     </section>
 

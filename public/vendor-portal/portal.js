@@ -77,6 +77,7 @@ function escapeHtml(s) {
 }
 
 const loginView = document.getElementById("login-view");
+const taxIdSetupView = document.getElementById("tax-id-setup-view");
 const checklistView = document.getElementById("checklist-view");
 const contactView = document.getElementById("contact-view");
 const uploadView = document.getElementById("upload-view");
@@ -87,6 +88,7 @@ const loginError = document.getElementById("login-error");
 const loginSubmit = document.getElementById("login-submit");
 
 function showLogin(message) {
+  taxIdSetupView.hidden = true;
   checklistView.hidden = true;
   contactView.hidden = true;
   uploadView.hidden = true;
@@ -123,6 +125,12 @@ async function showChecklist() {
     return;
   }
   loginView.hidden = true;
+  // A nag, not a gate -- shown above the checklist whenever there's no
+  // Tax ID on file yet (the vendor may have been granted access via a
+  // system access code rather than a real Tax ID, see
+  // db.ensureVendorPortalAccessCode), but the rest of the portal (document
+  // uploads including W-9, Contact Info, Help) is fully usable regardless.
+  taxIdSetupView.hidden = Boolean(data.taxId);
   checklistView.hidden = false;
   contactView.hidden = false;
   uploadView.hidden = false;
@@ -154,10 +162,13 @@ async function showChecklist() {
   // list above applies.
   const submitBtn = document.getElementById("submit-for-review-btn");
   const submitHint = document.getElementById("submit-hint");
-  const allApproved = data.totalCount > 0 && data.approvedCount === data.totalCount;
+  const allCasesApproved = data.totalCount > 0 && data.approvedCount === data.totalCount;
+  const allApproved = allCasesApproved && Boolean(data.taxId);
   submitBtn.disabled = !allApproved;
   submitHint.textContent = allApproved
     ? "Everything's approved -- let us know you're ready for the next step."
+    : !data.taxId && allCasesApproved
+    ? "Add your Tax ID above before submitting for review."
     : "This unlocks once every document case above shows Approved.";
 
   // A still-pending COI review from a past upload (not just the one just
@@ -218,6 +229,30 @@ loginForm.addEventListener("submit", async (e) => {
     loginError.style.display = "block";
   } finally {
     loginSubmit.disabled = false;
+  }
+});
+
+const taxIdForm = document.getElementById("tax-id-form");
+const taxIdSubmit = document.getElementById("tax-id-submit");
+const taxIdError = document.getElementById("tax-id-error");
+const taxIdSuccess = document.getElementById("tax-id-success");
+
+taxIdForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  taxIdSubmit.disabled = true;
+  taxIdError.style.display = "none";
+  taxIdSuccess.style.display = "none";
+  const taxId = document.getElementById("tax-id-input").value.trim();
+  try {
+    await apiRequest("PATCH", "/api/vendor-portal/tax-id", { taxId });
+    taxIdSuccess.textContent = "Saved.";
+    taxIdSuccess.style.display = "block";
+    await showChecklist();
+  } catch (err) {
+    taxIdError.textContent = err.message;
+    taxIdError.style.display = "block";
+  } finally {
+    taxIdSubmit.disabled = false;
   }
 });
 

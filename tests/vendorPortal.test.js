@@ -264,14 +264,111 @@ test("Vendor portal: resetting the passcode invalidates the old one and any sess
   assert.equal(newLogin.status, 200);
 });
 
-test("Vendor portal: setting up access requires a Tax ID on file first", async (t) => {
+test("Vendor portal: a vendor with no Tax ID on file gets a system access code instead, and can log in with it", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
   const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "No Tax ID Co" } });
   const credRes = await server.call("POST", `/api/admin/vendors/${vendorRes.body.id}/portal-credential`, { userId: "ADMIN", body: {} });
-  assert.equal(credRes.status, 400);
-  assert.match(credRes.body.error, /Tax ID/);
+  assert.equal(credRes.status, 200, JSON.stringify(credRes.body));
+  assert.equal(credRes.body.taxId, null);
+  assert.match(credRes.body.accessCode, /^VP-/);
+  assert.ok(credRes.body.passcode);
+
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId: credRes.body.accessCode, passcode: credRes.body.passcode } });
+  assert.equal(loginRes.status, 200, JSON.stringify(loginRes.body));
+  assert.equal(loginRes.body.id, vendorRes.body.id);
+
+  // Idempotent: a second "Reset passcode" call keeps the same access code
+  // and only changes the passcode.
+  const credRes2 = await server.call("POST", `/api/admin/vendors/${vendorRes.body.id}/portal-credential`, { userId: "ADMIN", body: {} });
+  assert.equal(credRes2.body.accessCode, credRes.body.accessCode);
+  assert.notEqual(credRes2.body.passcode, credRes.body.passcode);
+});
+
+test("Vendor portal: once a vendor's Tax ID is set, portal-credential stops surfacing the access code, but it still logs in", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Later Tax ID Co" } });
+  const credRes = await server.call("POST", `/api/admin/vendors/${vendorRes.body.id}/portal-credential`, { userId: "ADMIN", body: {} });
+  const accessCode = credRes.body.accessCode;
+
+  const updateRes = await server.call("PATCH", `/api/admin/vendors/${vendorRes.body.id}`, { userId: "ADMIN", body: { name: vendorRes.body.name, taxId: "55-7654321" } });
+  assert.equal(updateRes.status, 200, JSON.stringify(updateRes.body));
+
+  const credRes2 = await server.call("POST", `/api/admin/vendors/${vendorRes.body.id}/portal-credential`, { userId: "ADMIN", body: {} });
+  assert.equal(credRes2.body.taxId, "55-7654321");
+  assert.equal(credRes2.body.accessCode, null);
+
+  // The old access code is never retired -- still logs in.
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId: accessCode, passcode: credRes2.body.passcode } });
+  assert.equal(loginRes.status, 200, JSON.stringify(loginRes.body));
+});
+
+test("Vendor portal: a vendor can self-report their Tax ID, with a conflict against an existing vendor caught and flagged to admin", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const existingRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "Already On File Co", taxId: "44-9988776" } });
+  assert.equal(existingRes.status, 201);
+
+  const vendorRes = await server.call("POST", "/api/admin/vendors", { userId: "ADMIN", body: { name: "New Vendor Co" } });
+  const credRes = await server.call("POST", `/api/admin/vendors/${vendorRes.body.id}/portal-credential`, { userId: "ADMIN", body: {} });
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId: credRes.body.accessCode, passcode: credRes.body.passcode } });
+  const token = loginRes.body.token;
+
+  const noAuthRes = await vendorCall(server, "PATCH", "/api/vendor-portal/tax-id", { body: { taxId: "11-2223333" } });
+  assert.equal(noAuthRes.status, 401);
+
+  const missingRes = await vendorCall(server, "PATCH", "/api/vendor-portal/tax-id", { token, body: {} });
+  assert.equal(missingRes.status, 400);
+
+  // Conflict: already on file for a different vendor.
+  const conflictRes = await vendorCall(server, "PATCH", "/api/vendor-portal/tax-id", { token, body: { taxId: "44-9988776" } });
+  assert.equal(conflictRes.status, 409);
+  assert.doesNotMatch(conflictRes.body.error, /Already On File Co/, "must never name the other vendor to the self-reporting vendor");
+
+  const meAfterConflict = await vendorCall(server, "GET", "/api/vendor-portal/me", { token });
+  assert.equal(meAfterConflict.body.taxId, null, "a conflicting Tax ID is never saved");
+
+  const tasksRes = await server.call("GET", "/api/tasks?category=vendor_tax_id_conflict", { userId: "ADMIN" });
+  assert.equal(tasksRes.body.length, 1);
+  assert.equal(tasksRes.body[0].relatedVendorId, vendorRes.body.id);
+  assert.match(tasksRes.body[0].title, /Already On File Co/);
+  assert.match(tasksRes.body[0].description, /New Vendor Co/);
+  assert.match(tasksRes.body[0].description, /Already On File Co/);
+
+  // No conflict: a fresh, unique Tax ID saves normally.
+  const okRes = await vendorCall(server, "PATCH", "/api/vendor-portal/tax-id", { token, body: { taxId: "11-2223333" } });
+  assert.equal(okRes.status, 200, JSON.stringify(okRes.body));
+  assert.equal(okRes.body.taxId, "11-2223333");
+
+  const meAfterOk = await vendorCall(server, "GET", "/api/vendor-portal/me", { token });
+  assert.equal(meAfterOk.body.taxId, "11-2223333");
+
+  // Resubmitting the vendor's own existing value is fine -- no new task.
+  const resubmitRes = await vendorCall(server, "PATCH", "/api/vendor-portal/tax-id", { token, body: { taxId: "11-2223333" } });
+  assert.equal(resubmitRes.status, 200);
+  const tasksAfterResubmit = await server.call("GET", "/api/tasks?category=vendor_tax_id_conflict", { userId: "ADMIN" });
+  assert.equal(tasksAfterResubmit.body.length, 1, "resubmitting your own value should not create a second task");
+});
+
+test("Vendor portal: Submit for review is rejected without a Tax ID on file, even with every case approved", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  // Strip the Tax ID back off via a direct admin edit, simulating a vendor
+  // who somehow has every case approved but no Tax ID on file yet.
+  await server.call("PATCH", `/api/admin/vendors/${vendor.id}`, { userId: "ADMIN", body: { name: vendor.name, taxId: "" } });
+
+  const res = await vendorCall(server, "POST", "/api/vendor-portal/submit-for-review", { token });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /Tax ID/);
 });
 
 test("Vendor portal: two vendors can't share the same Tax ID", async (t) => {

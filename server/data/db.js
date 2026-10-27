@@ -2102,6 +2102,17 @@ if (!hasColumn("vendors", "tax_id")) {
   db.exec("ALTER TABLE vendors ADD COLUMN tax_id TEXT");
 }
 
+// A vendor's own first-login identifier when no real Tax ID is on file
+// yet -- lets admin grant portal access before the vendor has supplied a
+// TIN (see ensureVendorPortalAccessCode). Nullable: most vendors never get
+// one, either because they had a taxId from the start or supplied one
+// later. Never cleared once issued -- it stays a valid login key even
+// after a real Tax ID arrives, so a vendor who was already relayed this
+// code never gets locked out by it going stale.
+if (!hasColumn("vendors", "portal_access_code")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN portal_access_code TEXT");
+}
+
 // A vendor's own portal passcode -- kept off the already-wide vendors
 // table, same reasoning technicians.pin lives on technicians but sessions/
 // password_resets are their own tables. One row per vendor (an admin
@@ -8322,6 +8333,60 @@ function findVendorByTaxId(taxId) {
   return row ? presentVendorRow(row) : null;
 }
 
+// Same unambiguous-glyph alphabet as vendors.js's own passcode generator,
+// just with a "VP-" prefix so this is never mistaken for a real Tax ID at
+// a glance (a TIN is always digits/dashes).
+const PORTAL_ACCESS_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function generatePortalAccessCode() {
+  const bytes = crypto.randomBytes(8);
+  return "VP-" + Array.from(bytes, (b) => PORTAL_ACCESS_CODE_ALPHABET[b % PORTAL_ACCESS_CODE_ALPHABET.length]).join("");
+}
+
+function findVendorByPortalAccessCode(code) {
+  if (!code || !String(code).trim()) return null;
+  const row = db.prepare("SELECT * FROM vendors WHERE portal_access_code = ?").get(String(code).trim());
+  return row ? presentVendorRow(row) : null;
+}
+
+// Idempotent -- a vendor that already has an access code keeps it (same
+// "reset passcode never changes the identifier" idempotence
+// setVendorPortalPasscode gives the taxId path). Unlike every other random
+// generator in this codebase (passcodes, session tokens, upload file
+// names), this one is a literal login lookup key, so a collision isn't
+// just cosmetic -- it would let two vendors share one login identity. The
+// keyspace (32^8) makes a real collision vanishingly unlikely, but the
+// retry loop costs nothing and makes that guarantee actual rather than
+// assumed.
+function ensureVendorPortalAccessCode(vendorId) {
+  const existing = db.prepare("SELECT portal_access_code AS v FROM vendors WHERE id = ?").get(Number(vendorId));
+  if (existing && existing.v) return existing.v;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generatePortalAccessCode();
+    const clash = db.prepare("SELECT 1 FROM vendors WHERE portal_access_code = ?").get(code);
+    if (!clash) {
+      db.prepare("UPDATE vendors SET portal_access_code = ? WHERE id = ?").run(code, Number(vendorId));
+      return code;
+    }
+  }
+  throw new Error("Could not generate a unique portal access code");
+}
+
+// A vendor setting their own Tax ID from the portal, once they've been
+// granted access via a system access code instead (see
+// ensureVendorPortalAccessCode) -- narrow single-column update, same
+// pattern as updateVendorContactInfo, not the full-row updateVendor. The
+// caller (vendorPortal.js's PATCH /tax-id route) is responsible for the
+// duplicate-Tax-ID check before calling this -- this function trusts its
+// caller and just writes the value.
+function setVendorTaxIdFromPortal(vendorId, taxId) {
+  db.prepare("UPDATE vendors SET tax_id = ?, updated_at = ? WHERE id = ?").run(
+    String(taxId).trim(),
+    new Date().toISOString(),
+    Number(vendorId)
+  );
+  return findVendor(vendorId);
+}
+
 // Overwrites whatever passcode this vendor already had (there's only ever
 // one live passcode per vendor, same as a technician's own PIN) -- an
 // admin "regenerating" a lost/forgotten passcode is the same call as
@@ -8353,8 +8418,18 @@ function hasVendorPortalAccess(vendorId) {
   return Boolean(db.prepare("SELECT 1 FROM vendor_credentials WHERE vendor_id = ?").get(Number(vendorId)));
 }
 
+// taxId here is really "whatever identifier the vendor typed" -- a real
+// Tax ID for a vendor who has one on file, or a system-issued access code
+// (see ensureVendorPortalAccessCode) for a vendor who was granted access
+// before supplying one. Tries a Tax ID match first (unchanged behavior
+// for every vendor that already has one), falls back to an access-code
+// match. Both are kept as valid login keys forever once assigned -- see
+// the portal_access_code column's own migration comment.
 function verifyVendorLogin(taxId, passcode) {
-  const vendorRow = db.prepare("SELECT * FROM vendors WHERE tax_id = ?").get(String(taxId || "").trim());
+  const identifier = String(taxId || "").trim();
+  const vendorRow =
+    db.prepare("SELECT * FROM vendors WHERE tax_id = ?").get(identifier) ||
+    db.prepare("SELECT * FROM vendors WHERE portal_access_code = ?").get(identifier);
   if (!vendorRow) return null;
   const cred = db.prepare("SELECT * FROM vendor_credentials WHERE vendor_id = ?").get(vendorRow.id);
   if (!cred) return null;
@@ -8421,6 +8496,7 @@ function getVendorPortalChecklist(vendorId) {
   const approved = relevant.filter((i) => String(i.status).trim().toLowerCase() === "approved").length;
   return {
     vendorName: vendorRow.name,
+    taxId: vendorRow.tax_id || null,
     phone: vendorRow.phone || "",
     email: vendorRow.email || "",
     poEmail: vendorRow.po_email || "",
@@ -13300,6 +13376,9 @@ module.exports = {
   createPasswordReset,
   consumePasswordReset,
   findVendorByTaxId,
+  findVendorByPortalAccessCode,
+  ensureVendorPortalAccessCode,
+  setVendorTaxIdFromPortal,
   setVendorPortalPasscode,
   revokeVendorPortalAccess,
   hasVendorPortalAccess,

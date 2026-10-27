@@ -25,6 +25,13 @@ const MAX_ATTEMPTS = 5;
 const LOCK_DURATION_MS = 15 * 60 * 1000;
 const loginThrottle = createLoginThrottle(MAX_ATTEMPTS, LOCK_DURATION_MS);
 
+// taxId here is "whatever identifier the vendor was given" -- a real Tax
+// ID for a vendor who had one on file when access was granted, or a
+// system-issued access code (see db.ensureVendorPortalAccessCode) for a
+// vendor granted access before supplying one. db.verifyVendorLogin tries
+// both. Kept as the wire field name regardless, rather than renaming --
+// renaming would touch every existing test and the login form's own
+// input id for no behavioral gain.
 router.post("/login", (req, res) => {
   const { taxId, passcode } = req.body || {};
   if (!taxId || !passcode) return res.status(400).json({ error: "Tax ID and passcode are required" });
@@ -88,6 +95,44 @@ router.patch("/contact-info", requireVendorAuth, (req, res) => {
   const updated = db.updateVendorContactInfo(req.vendor.id, { phone, email, poEmail });
   db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_CONTACT_INFO_UPDATED", `${req.vendor.name} updated their contact info via the vendor portal`, req.vendor.id);
   res.json({ phone: updated.phone, email: updated.email, poEmail: updated.poEmail });
+});
+
+// A vendor supplying their own Tax ID -- the counterpart to being granted
+// portal access via a system access code instead of a Tax ID (see
+// vendors.js's POST /:id/portal-credential and db.ensureVendorPortalAccessCode).
+// Re-editable any time, not just once, same trust level as the contact-info
+// fields above -- no admin review gate on the value itself. The only thing
+// this route guards against is two vendors ending up sharing one Tax ID,
+// which would make one of them unreachable by Tax-ID login (same reasoning
+// as vendors.js's own findDuplicateTaxId, mirrored here rather than
+// imported since these two route files don't share route-local helpers).
+// On a real conflict, this never saves the value and never tells the
+// vendor which other vendor it collided with -- that's for admin to sort
+// out (via a task + the existing "Merge duplicate..." tool), not something
+// to leak to an unrelated vendor over what might just be a typo.
+router.patch("/tax-id", requireVendorAuth, (req, res) => {
+  const { taxId } = req.body || {};
+  if (!taxId || !String(taxId).trim()) return res.status(400).json({ error: "taxId is required" });
+
+  const vendor = db.findVendor(req.vendor.id);
+  const match = db.findVendorByTaxId(taxId);
+  if (match && Number(match.id) !== Number(vendor.id)) {
+    db.createTask({
+      title: `${vendor.name} reported a Tax ID that's already on file for ${match.name}`,
+      description: `Vendor "${vendor.name}" (id ${vendor.id}) submitted Tax ID ${String(taxId).trim()} from the vendor portal, which is already on file for vendor "${match.name}" (id ${match.id}). Confirm whether these are the same vendor and, if so, merge the duplicate.`,
+      assignedRole: "admin",
+      category: "vendor_tax_id_conflict",
+      priority: "normal",
+      relatedVendorId: vendor.id,
+      source: "vendor_portal",
+    });
+    db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_TAX_ID_CONFLICT", `${vendor.name} submitted a Tax ID already on file for another vendor`, vendor.id);
+    return res.status(409).json({ error: "This Tax ID appears to already be on file with us. We've notified your C&W Services contact to help connect your account." });
+  }
+
+  const updated = db.setVendorTaxIdFromPortal(vendor.id, taxId);
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_TAX_ID_SET", `${vendor.name} added their Tax ID via the vendor portal`, vendor.id);
+  res.json({ taxId: updated.taxId });
 });
 
 // The categories a vendor is allowed to submit themselves -- the same
@@ -268,6 +313,7 @@ router.patch("/coi-limit-confirmation", requireVendorAuth, (req, res) => {
 router.post("/submit-for-review", requireVendorAuth, (req, res) => {
   const vendor = db.findVendor(req.vendor.id);
   const checklist = db.getVendorPortalChecklist(req.vendor.id);
+  if (!checklist.taxId) return res.status(400).json({ error: "Add your Tax ID before submitting for review" });
   const task = db.upsertTaskBySourceKey(`VENDOR-${vendor.id}-PORTAL-SUBMIT`, {
     title: `${vendor.name} submitted their onboarding documents for review`,
     description: `${checklist.approvedCount}/${checklist.totalCount} document cases show Approved at submission time. Review everything and, once satisfied, start the onboarding case in ServiceEdge and continue local case tracking as usual.`,

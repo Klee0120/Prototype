@@ -249,11 +249,15 @@ router.patch("/:id/preferred", (req, res) => {
 // database (see db.setVendorPortalPasscode) and is never retrievable
 // again after this response. The admin relays it to the vendor however
 // they'd normally communicate (phone, the welcome email, etc.), alongside
-// the Tax ID already on file. Requires a Tax ID on file first -- a
-// passcode with nothing to pair it with can never actually log in.
-// Random, not derived from anything about the vendor -- 10 characters
-// from an alphabet with the visually-ambiguous ones (0/O, 1/I/l) removed,
-// since this is meant to be read aloud or typed from a sticky note.
+// whichever identifier the vendor will log in with: their real Tax ID if
+// one is already on file, or a system-issued access code otherwise (see
+// db.ensureVendorPortalAccessCode) -- a vendor can be granted portal
+// access immediately, before admin has their Tax ID in hand, and supply
+// it themselves from inside the portal (see vendorPortal.js's PATCH
+// /tax-id route). Random, not derived from anything about the vendor --
+// 10 characters from an alphabet with the visually-ambiguous ones (0/O,
+// 1/I/l) removed, since this is meant to be read aloud or typed from a
+// sticky note.
 const PASSCODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 function generateVendorPasscode() {
   const bytes = crypto.randomBytes(10);
@@ -263,12 +267,16 @@ function generateVendorPasscode() {
 router.post("/:id/portal-credential", (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
-  if (!vendor.taxId) return res.status(400).json({ error: "Add a Tax ID to this vendor's profile before setting up portal access" });
 
   const passcode = generateVendorPasscode();
   db.setVendorPortalPasscode(vendor.id, passcode, req.user.id);
   db.addAudit(req.user.id, "VENDOR_PORTAL_CREDENTIAL_SET", `${req.user.name} ${vendor.hasPortalAccess ? "reset" : "set up"} portal access for ${vendor.name}`, vendor.id);
-  res.json({ taxId: vendor.taxId, passcode });
+  // Never surface a stale access code once a real Tax ID exists, even
+  // though the stored column stays around as a still-valid login key --
+  // keeps this response's two identifier fields mutually exclusive for
+  // whoever's displaying it (see adminReview.js's result card).
+  const accessCode = vendor.taxId ? null : db.ensureVendorPortalAccessCode(vendor.id);
+  res.json({ taxId: vendor.taxId || null, accessCode, passcode });
 });
 
 router.delete("/:id/portal-credential", (req, res) => {

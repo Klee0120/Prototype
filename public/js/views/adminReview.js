@@ -2814,23 +2814,24 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return `
       <div class="vendor-overview-card vendor-portal-access-card">
         <h4>Vendor portal access</h4>
-        ${
-          !v.taxId
-            ? `<p class="review-checklist-hint">Add a Tax ID above (Edit vendor) before setting up portal access.</p>`
-            : `
-              <p class="review-checklist-hint">
-                Tax ID on file: <strong>${escapeHtml(v.taxId)}</strong> --
-                ${v.hasPortalAccess ? "portal access is set up." : "no passcode set up yet."}
-              </p>
-              <div class="vendor-portal-access-actions">
-                <button type="button" class="btn btn-secondary vendor-portal-generate-btn">
-                  ${v.hasPortalAccess ? "Reset passcode" : "Set up portal access"}
-                </button>
-                ${v.hasPortalAccess ? `<button type="button" class="btn btn-link danger-link vendor-portal-revoke-btn">Revoke access</button>` : ""}
-              </div>
-              <div class="vendor-portal-new-passcode" hidden></div>
-            `
-        }
+        <p class="review-checklist-hint">
+          ${
+            v.taxId
+              ? `Tax ID on file: <strong>${escapeHtml(v.taxId)}</strong> -- ${v.hasPortalAccess ? "portal access is set up." : "no passcode set up yet."}`
+              : `No Tax ID on file yet -- ${
+                  v.hasPortalAccess
+                    ? "the vendor was given an access code and will add their own Tax ID and W-9 once they log in."
+                    : "they'll be given a system access code instead, and asked to add their own Tax ID and W-9 after logging in."
+                }`
+          }
+        </p>
+        <div class="vendor-portal-access-actions">
+          <button type="button" class="btn btn-secondary vendor-portal-generate-btn">
+            ${v.hasPortalAccess ? "Reset passcode" : "Set up portal access"}
+          </button>
+          ${v.hasPortalAccess ? `<button type="button" class="btn btn-link danger-link vendor-portal-revoke-btn">Revoke access</button>` : ""}
+        </div>
+        <div class="vendor-portal-new-passcode" hidden></div>
       </div>
     `;
   }
@@ -2844,13 +2845,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         const verb = v.hasPortalAccess ? "Reset" : "Set up";
         if (!window.confirm(`${verb} portal access for ${v.name}? ${v.hasPortalAccess ? "Their current passcode will stop working immediately." : ""}`)) return;
         try {
-          const { taxId, passcode } = await api.post(`/api/admin/vendors/${v.id}/portal-credential`, {});
+          const { taxId, accessCode, passcode } = await api.post(`/api/admin/vendors/${v.id}/portal-credential`, {});
           v.hasPortalAccess = true;
           invalidateVendorsCache();
           resultEl.hidden = false;
           resultEl.innerHTML = `
             <p><strong>Give this to ${escapeHtml(v.name)} now -- it won't be shown again:</strong></p>
-            <p class="vendor-portal-passcode-value">Tax ID: ${escapeHtml(taxId)} &nbsp;&middot;&nbsp; Passcode: <code>${escapeHtml(passcode)}</code></p>
+            <p class="vendor-portal-passcode-value">${
+              taxId ? `Tax ID: ${escapeHtml(taxId)}` : `Access Code: ${escapeHtml(accessCode)}`
+            } &nbsp;&middot;&nbsp; Passcode: <code>${escapeHtml(passcode)}</code></p>
+            ${!taxId ? `<p class="review-checklist-hint">They'll add their own Tax ID and W-9 once they log in.</p>` : ""}
           `;
           generateBtn.textContent = "Reset passcode";
         } catch (err) {
