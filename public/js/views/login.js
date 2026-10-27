@@ -19,6 +19,10 @@ function loginCardHtml(initialMessage) {
       <p class="auth-error" id="login-error" ${initialMessage ? "" : "hidden"}>${initialMessage || ""}</p>
     </form>
     <button type="button" class="auth-link-btn" id="login-forgot-pin">${escapeHtml(t("Forgot your PIN?"))}</button>
+    <div class="auth-vendor-pathway">
+      <p class="auth-vendor-pathway-label">${escapeHtml(t("Are you a vendor?"))}</p>
+      <a class="auth-link-btn" href="/vendor-portal/index.html">${escapeHtml(t("Go to the Vendor Portal"))} <span class="auth-btn-arrow" aria-hidden="true">&rarr;</span></a>
+    </div>
   `;
 }
 

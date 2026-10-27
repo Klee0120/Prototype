@@ -428,6 +428,23 @@ h1, h2, h3, h4 {
   color: var(--accent-dark);
 }
 
+.auth-vendor-pathway {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+.auth-vendor-pathway-label {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.auth-vendor-pathway .auth-link-btn {
+  margin-top: 0;
+  display: inline-block;
+  width: auto;
+}
+
 .auth-footer {
   text-align: center;
   padding: 20px;
