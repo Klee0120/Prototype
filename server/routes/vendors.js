@@ -4,6 +4,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const multer = require("multer");
 const { simpleParser } = require("mailparser");
+const { summarizeCorrespondence } = require("../utils/aiSummarizer");
 const db = require("../data/db");
 const mailer = require("../utils/mailer");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
@@ -418,17 +419,25 @@ router.get("/:id/correspondence", (req, res) => {
   res.json(db.listVendorCorrespondence(vendor.id));
 });
 
-router.post("/:id/correspondence", (req, res) => {
+router.post("/:id/correspondence", async (req, res) => {
   const vendor = db.findVendor(req.params.id);
   if (!vendor) return res.status(404).json({ error: "Vendor not found" });
   const { subject, correspondent, occurredAt, bodyText } = req.body || {};
   if (!subject || !String(subject).trim()) return res.status(400).json({ error: "subject is required" });
   if (!correspondent || !String(correspondent).trim()) return res.status(400).json({ error: "correspondent is required" });
+  const trimmedSubject = String(subject).trim();
+  const trimmedCorrespondent = String(correspondent).trim();
+  const trimmedBody = (bodyText || "").trim();
+  // See aiSummarizer.js's own comment -- returns null (never throws) when
+  // ANTHROPIC_API_KEY isn't configured or the call fails, so logging a
+  // correspondence entry never depends on this succeeding.
+  const summary = await summarizeCorrespondence({ subject: trimmedSubject, correspondent: trimmedCorrespondent, bodyText: trimmedBody });
   const entry = db.addVendorCorrespondence(vendor.id, {
-    subject: String(subject).trim(),
-    correspondent: String(correspondent).trim(),
+    subject: trimmedSubject,
+    correspondent: trimmedCorrespondent,
     occurredAt: occurredAt || undefined,
-    bodyText: bodyText || "",
+    bodyText: trimmedBody,
+    summary,
     loggedBy: req.user.name,
   });
   db.addAudit(req.user.id, "VENDOR_CORRESPONDENCE_LOGGED", `${req.user.name} logged correspondence "${entry.subject}" for ${vendor.name}`, vendor.id);
@@ -461,17 +470,24 @@ router.post("/:id/correspondence/import-eml", correspondenceUpload.single("file"
     } catch (err) {
       return res.status(422).json({ error: `Couldn't read this email file: ${err.message}` });
     }
+    const subject = parsed.subject || "(no subject)";
+    const correspondent = (parsed.from && parsed.from.text) || "Unknown sender";
+    const bodyText = parsed.text || "";
+    const summary = await summarizeCorrespondence({ subject, correspondent, bodyText });
     entry = db.addVendorCorrespondence(vendor.id, {
-      subject: parsed.subject || "(no subject)",
-      correspondent: (parsed.from && parsed.from.text) || "Unknown sender",
+      subject,
+      correspondent,
       occurredAt: parsed.date ? parsed.date.toISOString() : undefined,
-      bodyText: parsed.text || "",
+      bodyText,
+      summary,
       loggedBy: req.user.name,
     });
     for (const att of parsed.attachments || []) {
       attachmentsToFile.push({ originalname: att.filename || "attachment", mimetype: att.contentType, buffer: att.content });
     }
   } else {
+    // No real body text for a plain-document drop, so summarizeCorrespondence's
+    // own empty-body guard short-circuits this without an API call.
     entry = db.addVendorCorrespondence(vendor.id, {
       subject: originalName.replace(/\.[^.]+$/, ""),
       correspondent: "",

@@ -3141,56 +3141,50 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           (e) => `
         <div class="vendor-correspondence-entry" data-id="${e.id}">
           <button type="button" class="vendor-correspondence-entry-header">
-            <span class="vendor-correspondence-entry-subject">${escapeHtml(e.subject)}</span>
-            <span class="vendor-correspondence-entry-meta">${escapeHtml(e.correspondent || "Unknown sender")} &middot; ${escapeHtml(
-            (e.occurredAt || "").slice(0, 10)
-          )} &middot; logged by ${escapeHtml(e.loggedBy)}</span>
+            <span class="vendor-correspondence-entry-title-row">
+              <span class="vendor-correspondence-entry-subject">${escapeHtml(e.subject)}</span>
+              ${e.attachmentCount > 0 ? `<span class="badge badge-warn">Needs case assignment</span>` : ""}
+            </span>
+            <span class="vendor-correspondence-entry-meta">${escapeHtml(e.correspondent || "Unknown sender")} &rarr; ${escapeHtml(
+            e.loggedBy
+          )} &middot; ${escapeHtml((e.occurredAt || "").slice(0, 10))}${
+            e.attachmentCount > 0 ? ` &middot; Email + ${e.attachmentCount} attachment${e.attachmentCount === 1 ? "" : "s"}` : ""
+          }</span>
           </button>
           <div class="vendor-correspondence-entry-body" hidden>
-            ${e.bodyText ? `<p class="vendor-correspondence-entry-text">${escapeHtml(e.bodyText)}</p>` : `<p class="empty-note">No body text.</p>`}
-            <div class="vendor-correspondence-entry-attachments"></div>
+            ${
+              e.summary
+                ? `<div class="vendor-correspondence-summary">
+                     <div class="vendor-correspondence-summary-label">Draft Summary</div>
+                     <p>${escapeHtml(e.summary)}</p>
+                   </div>`
+                : ""
+            }
+            <button type="button" class="btn btn-link vendor-correspondence-chain-toggle">&#9656; View original email chain</button>
+            <div class="vendor-correspondence-chain-text" hidden>
+              ${e.bodyText ? `<p class="vendor-correspondence-entry-text">${escapeHtml(e.bodyText)}</p>` : `<p class="empty-note">No body text.</p>`}
+            </div>
+            <div class="vendor-correspondence-attachments-host"></div>
           </div>
         </div>
       `
         )
         .join("");
 
-      // One entry's attachment panel -- a named function (not inlined)
-      // since filing an attachment onto the vendor's real Documents
-      // (onFileToCase) needs to re-render this exact same panel afterward
-      // so the just-filed file disappears from here.
-      function renderEntryAttachments(el, entry) {
-        return renderAttachments(el.querySelector(".vendor-correspondence-entry-attachments"), {
-          title: "Attachments",
-          relatedType: "vendor_correspondence",
-          relatedId: entry.id,
-          categories: [{ value: "attachment", label: "Attachment" }],
-          canUpload: true,
-          emptyText: "No attachments.",
-          // A full draw() (not just re-rendering this one panel) -- the
-          // pending-count badge on the Correspondence tab itself lives on
-          // `v`, which only a real redraw through vendorsCache picks up.
-          // Costs the just-expanded entry collapsing back, which is an
-          // acceptable tradeoff for the badge actually being correct.
-          onFileToCase: (file) =>
-            openFileToCaseModal(v, file, async () => {
-              invalidateVendorsCache();
-              await draw();
-            }),
-        });
-      }
-
       listHost.querySelectorAll(".vendor-correspondence-entry").forEach((el) => {
         const entry = entries.find((x) => String(x.id) === el.dataset.id);
         const headerBtn = el.querySelector(".vendor-correspondence-entry-header");
         const bodyEl = el.querySelector(".vendor-correspondence-entry-body");
+        el.querySelector(".vendor-correspondence-chain-toggle").addEventListener("click", () => {
+          el.querySelector(".vendor-correspondence-chain-text").toggleAttribute("hidden");
+        });
         let attachmentsLoaded = false;
         headerBtn.addEventListener("click", async () => {
           const wasHidden = bodyEl.hasAttribute("hidden");
           bodyEl.toggleAttribute("hidden", !wasHidden);
           if (wasHidden && !attachmentsLoaded) {
             attachmentsLoaded = true;
-            await renderEntryAttachments(el, entry);
+            await renderEntryAttachmentsChecklist(el, entry, v);
           }
         });
       });
@@ -3214,8 +3208,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       if (!file) return;
       uploadMsg.textContent = "Importing…";
       try {
-        await api.uploadRawFile(`/api/admin/vendors/${v.id}/correspondence/import-eml`, file);
-        uploadMsg.textContent = "";
+        const result = await api.uploadRawFile(`/api/admin/vendors/${v.id}/correspondence/import-eml`, file);
+        const parts = [`"${result.entry.subject}" saved`];
+        if (result.attachments.length > 0) {
+          parts.push(`${result.attachments.length} attachment${result.attachments.length === 1 ? "" : "s"} extracted`);
+        }
+        parts.push(result.entry.summary ? "draft summary ready" : "no draft summary");
+        uploadMsg.textContent = parts.join(" · ");
         await refreshList();
       } catch (err) {
         uploadMsg.textContent = err.message;
@@ -3286,40 +3285,112 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     });
   }
 
-  // Promotes a correspondence attachment onto the vendor's real compliance
-  // Documents -- the same existing relocate endpoint the COI pool and task
-  // attachments already use to move a file between buckets, just source
-  // (vendor_correspondence) and destination (vendor) categories specific
-  // to this flow. The admin always picks the category -- "which case this
-  // actually belongs to" is a judgment call, same as every other hint-only
-  // document handling in this app.
-  function openFileToCaseModal(v, file, onDone) {
-    const { body, close } = openModal({
-      title: `File "${file.originalName}" to a case`,
-      bodyHtml: `
-        <form class="modal-form file-to-case-form">
-          <label class="profile-field">
-            <span>Category</span>
-            <select name="category">
-              ${VENDOR_DOC_CATEGORIES.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
-            </select>
+  // One correspondence entry's attachment checklist -- checkboxes (all
+  // pre-checked) plus a single "Select case" + "Link selected documents"
+  // action, so several attachments from the same email go to one case in
+  // one action instead of filing each separately. "Link" calls the same
+  // existing relocate endpoint the COI pool and task attachments already
+  // use to move a file between buckets, once per checked file -- the
+  // admin always picks the category, same as every other hint-only
+  // document handling in this app. A full draw() (not just this one
+  // panel) afterward, since the pending-count badge on the Correspondence
+  // tab label and each entry's own "Needs case assignment" badge both
+  // live on data only a real redraw through vendorsCache picks up --
+  // costs the entry collapsing back, an acceptable tradeoff for every
+  // badge actually being correct.
+  async function renderEntryAttachmentsChecklist(entryEl, entry, v) {
+    const host = entryEl.querySelector(".vendor-correspondence-attachments-host");
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    let files;
+    try {
+      files = await api.get(`/api/files?relatedType=vendor_correspondence&relatedId=${entry.id}`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    if (files.length === 0) {
+      host.innerHTML = `<p class="empty-note">No attachments.</p>`;
+      return;
+    }
+    host.innerHTML = `
+      <div class="vendor-correspondence-attachments-label">Attachments &middot; select to link to a case</div>
+      <div class="vendor-correspondence-attachments-checklist">
+        ${files
+          .map(
+            (f) => `
+          <label class="vendor-correspondence-attachment-row">
+            <input type="checkbox" class="vendor-correspondence-attachment-checkbox" value="${f.id}" checked />
+            <span class="vendor-correspondence-attachment-name">${escapeHtml(f.originalName)}</span>
+            <span class="badge badge-draft">Unreviewed</span>
+            <button type="button" class="attachment-icon-btn vendor-correspondence-attachment-download" data-id="${f.id}" data-name="${escapeHtml(
+              f.originalName
+            )}" title="Download" aria-label="Download">&#11015;&#65039;</button>
           </label>
-          <p class="review-checklist-hint">Moves this file onto ${escapeHtml(v.name)}'s Documents tab under that category -- it won't show here on Correspondence anymore.</p>
-          <div class="modal-form-actions"><button type="submit" class="btn btn-primary">File it</button></div>
-          <span class="save-message"></span>
-        </form>
-      `,
+        `
+          )
+          .join("")}
+      </div>
+      <div class="vendor-correspondence-link-bar">
+        <select class="vendor-correspondence-case-select">
+          <option value="">Select case&hellip;</option>
+          ${VENDOR_DOC_CATEGORIES.map((c) => `<option value="${c.value}">${escapeHtml(c.label)}</option>`).join("")}
+        </select>
+        <button type="button" class="btn btn-primary vendor-correspondence-link-btn">Link selected documents</button>
+      </div>
+      <span class="save-message vendor-correspondence-link-message"></span>
+      <button type="button" class="btn btn-link vendor-correspondence-attach-more-btn">+ Attach another file</button>
+      <input type="file" class="vendor-correspondence-attach-more-input" hidden />
+    `;
+
+    host.querySelectorAll(".vendor-correspondence-attachment-download").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api.downloadFile(btn.dataset.id, btn.dataset.name);
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
     });
-    const form = body.querySelector(".file-to-case-form");
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = form.querySelector(".save-message");
+
+    const linkBtn = host.querySelector(".vendor-correspondence-link-btn");
+    const linkMsg = host.querySelector(".vendor-correspondence-link-message");
+    linkBtn.addEventListener("click", async () => {
+      const checked = [...host.querySelectorAll(".vendor-correspondence-attachment-checkbox:checked")].map((cb) => cb.value);
+      const category = host.querySelector(".vendor-correspondence-case-select").value;
+      if (checked.length === 0) {
+        linkMsg.textContent = "Select at least one attachment.";
+        return;
+      }
+      if (!category) {
+        linkMsg.textContent = "Pick a case first.";
+        return;
+      }
+      linkBtn.disabled = true;
+      linkMsg.textContent = "Linking…";
       try {
-        await api.patch(`/api/files/${file.id}/relocate`, { relatedType: "vendor", relatedId: v.id, category: form.category.value });
-        close();
-        await onDone();
+        for (const fileId of checked) {
+          await api.patch(`/api/files/${fileId}/relocate`, { relatedType: "vendor", relatedId: v.id, category });
+        }
+        invalidateVendorsCache();
+        await draw();
       } catch (err) {
-        msg.textContent = err.message;
+        linkBtn.disabled = false;
+        linkMsg.textContent = err.message;
+      }
+    });
+
+    const attachMoreBtn = host.querySelector(".vendor-correspondence-attach-more-btn");
+    const attachMoreInput = host.querySelector(".vendor-correspondence-attach-more-input");
+    attachMoreBtn.addEventListener("click", () => attachMoreInput.click());
+    attachMoreInput.addEventListener("change", async () => {
+      const file = attachMoreInput.files[0];
+      if (!file) return;
+      try {
+        await api.uploadFile("vendor_correspondence", entry.id, "attachment", file);
+        await renderEntryAttachmentsChecklist(entryEl, entry, v);
+        invalidateVendorsCache();
+      } catch (err) {
+        window.alert(err.message);
       }
     });
   }

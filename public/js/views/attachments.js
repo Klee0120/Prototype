@@ -290,7 +290,6 @@ export async function renderAttachments(host, opts) {
                   }</button>
                   ${opts.onReviewCoi && f.category === "coi" ? `<button type="button" class="row-menu-item review-coi-btn">Review COI</button>` : ""}
                   ${opts.onAssignVendor && f.category === "coi" ? `<button type="button" class="row-menu-item assign-vendor-btn">Assign to vendor&hellip;</button>` : ""}
-                  ${opts.onFileToCase ? `<button type="button" class="row-menu-item file-to-case-btn">File to case&hellip;</button>` : ""}
                   <button type="button" class="row-menu-item row-menu-item-danger delete-btn">Delete</button>
                 </div>
               </div>`
@@ -333,13 +332,6 @@ export async function renderAttachments(host, opts) {
     if (assignVendor) {
       assignVendor.addEventListener("click", () => {
         opts.onAssignVendor(f);
-      });
-    }
-
-    const fileToCase = row.querySelector(".file-to-case-btn");
-    if (fileToCase) {
-      fileToCase.addEventListener("click", () => {
-        opts.onFileToCase(f);
       });
     }
 

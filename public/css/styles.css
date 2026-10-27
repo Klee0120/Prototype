@@ -5189,6 +5189,12 @@ tr.gl-import-shrink-row {
   text-align: left;
 }
 
+.vendor-correspondence-entry-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .vendor-correspondence-entry-subject {
   font-weight: 600;
 }
@@ -5206,6 +5212,76 @@ tr.gl-import-shrink-row {
 .vendor-correspondence-entry-text {
   white-space: pre-wrap;
   margin: 0 0 12px;
+}
+
+.vendor-correspondence-summary {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.vendor-correspondence-summary-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-dark);
+  margin-bottom: 2px;
+}
+.vendor-correspondence-summary p {
+  margin: 0;
+}
+
+.vendor-correspondence-chain-toggle {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.vendor-correspondence-chain-text {
+  margin-bottom: 12px;
+}
+
+.vendor-correspondence-attachments-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.vendor-correspondence-attachments-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.vendor-correspondence-attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.vendor-correspondence-attachment-name {
+  flex: 1;
+}
+
+.vendor-correspondence-link-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.vendor-correspondence-link-bar select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
 }
 
 /* ---- Roster / employee profile ---- */

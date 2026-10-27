@@ -3487,7 +3487,11 @@ function listVendorRemarks(vendorId) {
 }
 
 // ---- Vendor correspondence (emails logged outside the portal) ----
-function presentVendorCorrespondence(row) {
+// attachmentCount doubles as "still needs case assignment" -- a filed
+// attachment is relocated away from relatedType "vendor_correspondence"
+// entirely (see adminReview.js's bulk-link flow), so this count is always
+// exactly how many of this entry's own attachments are still unfiled.
+function presentVendorCorrespondence(row, attachmentCount = 0) {
   if (!row) return null;
   return {
     id: row.id,
@@ -3499,6 +3503,7 @@ function presentVendorCorrespondence(row) {
     summary: row.summary || null,
     loggedBy: row.logged_by,
     createdAt: row.created_at,
+    attachmentCount,
   };
 }
 
@@ -3521,10 +3526,20 @@ function findVendorCorrespondence(id) {
 // admin filing a backlog of old emails shouldn't push them above more
 // recent ones just because they were typed in last.
 function listVendorCorrespondence(vendorId) {
-  return db
-    .prepare("SELECT * FROM vendor_correspondence WHERE vendor_id = ? ORDER BY occurred_at DESC, id DESC")
-    .all(Number(vendorId))
-    .map(presentVendorCorrespondence);
+  const rows = db.prepare("SELECT * FROM vendor_correspondence WHERE vendor_id = ? ORDER BY occurred_at DESC, id DESC").all(Number(vendorId));
+  if (rows.length === 0) return [];
+  const placeholders = rows.map(() => "?").join(",");
+  const counts = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT CAST(related_id AS INTEGER) AS entryId, COUNT(*) AS n FROM files
+       WHERE related_type = 'vendor_correspondence' AND CAST(related_id AS INTEGER) IN (${placeholders})
+       GROUP BY entryId`
+    )
+    .all(...rows.map((r) => r.id))) {
+    counts.set(r.entryId, r.n);
+  }
+  return rows.map((r) => presentVendorCorrespondence(r, counts.get(r.id) || 0));
 }
 
 // ---- COI document review (server/utils/coiDocumentReview.js) ----

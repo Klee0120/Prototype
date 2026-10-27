@@ -47,7 +47,12 @@ test("vendors: correspondence log", async (t) => {
     assert.equal(res.body.correspondent, "Jane at Acme");
     assert.equal(res.body.occurredAt, "2026-10-01");
     assert.equal(res.body.loggedBy, "Krista Lee");
-    assert.equal(res.body.summary, null, "stays null until AI summarization exists as its own later piece");
+    // ANTHROPIC_API_KEY isn't set in this test file's environment, so
+    // aiSummarizer.isConfigured() is false and summarizeCorrespondence
+    // short-circuits to null -- the "configured, real summary" path is
+    // covered separately in vendorCorrespondenceSummary.test.js, which has
+    // to set that env var before its own first require of server/app.
+    assert.equal(res.body.summary, null);
     manualEntryId = res.body.id;
   });
 
@@ -171,6 +176,12 @@ test("vendors: correspondence log", async (t) => {
     assert.equal(vendor.pendingCorrespondenceCount, 3);
   });
 
+  await t.test("each correspondence entry carries its own attachmentCount, doubling as its \"needs case assignment\" signal", async () => {
+    const res = await server.call("GET", `/api/admin/vendors/${vendorId}/correspondence`, { userId: "ADMIN" });
+    const emlEntry = res.body.find((e) => e.id === emlEntryId);
+    assert.equal(emlEntry.attachmentCount, 1);
+  });
+
   await t.test("filing a correspondence attachment to a case moves it onto the vendor's real Documents", async () => {
     const beforeFiles = await server.call("GET", `/api/files?relatedType=vendor_correspondence&relatedId=${emlEntryId}`, { userId: "ADMIN" });
     const coiFileId = beforeFiles.body[0].id;
@@ -192,6 +203,10 @@ test("vendors: correspondence log", async (t) => {
     const vendorListRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
     const vendor = vendorListRes.body.find((v) => v.id === vendorId);
     assert.equal(vendor.pendingCorrespondenceCount, 2, "one fewer, now that it's been filed");
+
+    const entriesRes = await server.call("GET", `/api/admin/vendors/${vendorId}/correspondence`, { userId: "ADMIN" });
+    const emlEntry = entriesRes.body.find((e) => e.id === emlEntryId);
+    assert.equal(emlEntry.attachmentCount, 0, "drops to 0 for this entry once its one attachment is filed away");
   });
 
   await t.test("importing without a file is rejected", async () => {
