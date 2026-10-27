@@ -32,6 +32,20 @@ const COI_UNIVERSAL_REQUIREMENTS = [
   { key: "autoLiabilityBoxes", label: "Auto Liability checkbox combination meets one of the 5 accepted patterns" },
 ];
 
+// Parses a dollar figure in either the matrix's own shorthand ("$1M",
+// "$4M") or the extractor's full form ("$1,000,000") into a plain number,
+// so a scanned guess can be compared against a vendor's required minimum.
+// Returns null for anything that isn't a recognizable dollar figure
+// (never throws) -- callers treat null as "can't compare," not as zero.
+function parseDollarAmount(value) {
+  const str = String(value || "").trim();
+  const millionMatch = str.match(/^\$?\s*(\d+(?:\.\d+)?)\s*M$/i);
+  if (millionMatch) return Math.round(parseFloat(millionMatch[1]) * 1_000_000);
+  const plainMatch = str.match(/^\$?\s*([\d,]+)$/);
+  if (plainMatch) return Number(plainMatch[1].replace(/,/g, ""));
+  return null;
+}
+
 // A vendor's services are stored as a single "|"-joined string of COI
 // matrix labels (see adminReview.js's splitServices) -- mirrored here
 // rather than imported, since that helper lives in a client ES module.
@@ -69,10 +83,19 @@ async function buildCoiRequirementChecklist(vendorServicesRaw, coverageLimitGues
       const itemKey = `${key}:${value}`;
       if (seen.has(itemKey)) continue;
       seen.add(itemKey);
+      const guess = coverageLimitGuesses[key] || null;
+      const requiredAmount = parseDollarAmount(value);
+      const guessAmount = parseDollarAmount(guess);
       items.push({
         key: itemKey,
-        label: `${label} meets ${value} minimum (required for ${service})`,
-        extractedGuess: coverageLimitGuesses[key] || null,
+        label: `${label} meets ${value} minimum`,
+        extractedGuess: guess,
+        // null when either side can't be parsed as a dollar figure (no
+        // guess found, or an unrecognized format) -- "can't compare," not
+        // a silent false. Still just what the SCAN says against the
+        // requirement -- never auto-applied to approval, same as the
+        // guess itself (see extractCoiCoverageLimitGuesses's own comment).
+        meetsRequirement: requiredAmount != null && guessAmount != null ? guessAmount >= requiredAmount : null,
       });
     }
   }

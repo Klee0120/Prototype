@@ -773,6 +773,16 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   function formatServicesList(raw) {
     return splitServices(raw).join(", ");
   }
+  // The short, final segment of each service's own "Category / Sub /
+  // Specific" breadcrumb (e.g. "Electrical Maintenance" out of "Facilities
+  // Infrastructure & Maintenance / Operations & Maintenance / Electrical
+  // Maintenance") -- used as a one-line heading over a COI requirement
+  // list instead of repeating the full matrix label on every single line.
+  function formatServiceHeading(raw) {
+    return splitServices(raw)
+      .map((s) => s.split("/").pop().trim())
+      .join(", ");
+  }
 
   // The four coverage figures Krista actually reads off the welcome email
   // she sends vendors (GL, Auto, WC, Umbrella) -- shown next to the COI
@@ -3515,13 +3525,22 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                    <p class="review-checklist-hint">Best-effort suggestions pulled from the document's text -- double-check and correct before approving or rejecting. These save to this vendor's COI case either way.</p>`
                 : ""
             }
-            <h4>Requirements</h4>
+            <h4>Requirements${v.services ? ` &mdash; COI Requirements for ${escapeHtml(formatServiceHeading(v.services))}` : ""}</h4>
             <ul class="coi-review-checklist">
               ${review.checklist
                 .map((item) => {
                   const hint = hints[item.key];
                   const hintBadge = hint === true ? `<span class="badge badge-approved">found in text</span>` : hint === false ? `<span class="badge badge-warn">not found in text</span>` : "";
-                  const guessBadge = item.extractedGuess ? `<span class="badge">scanned: ${escapeHtml(item.extractedGuess)}</span>` : "";
+                  // meetsRequirement compares the scanned guess against this
+                  // item's own required minimum (server-side, see
+                  // coiDocumentReview.js's buildCoiRequirementChecklist) --
+                  // null when either side couldn't be parsed as a dollar
+                  // figure, shown as a plain badge with no claim either way.
+                  const guessBadgeClass = item.meetsRequirement === true ? "badge-approved" : item.meetsRequirement === false ? "badge-rejected" : "";
+                  const guessBadgeSuffix = item.meetsRequirement === true ? " (meets minimum)" : item.meetsRequirement === false ? " (below minimum)" : "";
+                  const guessBadge = item.extractedGuess
+                    ? `<span class="badge ${guessBadgeClass}">scanned: ${escapeHtml(item.extractedGuess)}${guessBadgeSuffix}</span>`
+                    : "";
                   const confirmation = (review.vendorLimitConfirmations || {})[item.key];
                   const confirmationText = confirmation
                     ? confirmation.type === "excess_coverage"

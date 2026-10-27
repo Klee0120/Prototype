@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { startServer } = require("./helpers");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 const { DatabaseSync } = require("node:sqlite");
-const { extractCoiStructuredFields, extractCoiCoverageLimitGuesses } = require("../server/utils/coiDocumentReview");
+const { extractCoiStructuredFields, extractCoiCoverageLimitGuesses, buildCoiRequirementChecklist } = require("../server/utils/coiDocumentReview");
 
 const REQUIRED_COI_LANGUAGE =
   "C&W Facility Services Inc. d/b/a C&W Services, Toyota Motor Sales, USA, Inc., its subsidiaries and affiliated corporations are additional insureds (except Workers’ Compensation) as required by written contract/agreement.";
@@ -372,6 +372,32 @@ test("extractCoiCoverageLimitGuesses: a proximity guess can anchor to the wrong 
   const guesses = extractCoiCoverageLimitGuesses(sample);
   assert.equal(guesses.eAndO, "$3,000,000", "E&O has no limit of its own in the text, so the scan incorrectly borrows Pollution's neighboring figure");
   assert.equal(guesses.pol, "$3,000,000");
+});
+
+test("buildCoiRequirementChecklist: flags whether a scanned guess meets, falls short of, or can't be compared against the required minimum", async () => {
+  // Commercial Printing & Finishing requires glOcc $1M, glAgg $2M, wc $1M
+  // (confirmed against public/js/data/coiMatrix.js).
+  const service = "Corporate Administrative / Marketing & Communications / Commercial Printing & Finishing";
+  const checklist = await buildCoiRequirementChecklist(service, {
+    glOcc: "$1,000,000", // exactly meets the $1M minimum
+    glAgg: "$1,000,000", // short of the $2M minimum
+    // wc: no guess at all
+  });
+
+  const glOccItem = checklist.find((item) => item.key.startsWith("glOcc:"));
+  const glAggItem = checklist.find((item) => item.key.startsWith("glAgg:"));
+  const wcItem = checklist.find((item) => item.key.startsWith("wc:"));
+
+  assert.equal(glOccItem.meetsRequirement, true);
+  assert.equal(glAggItem.meetsRequirement, false);
+  assert.equal(wcItem.extractedGuess, null);
+  assert.equal(wcItem.meetsRequirement, null, "nothing to compare without a scanned guess");
+
+  // The 4 universal items (acord25, language, certHolder,
+  // autoLiabilityBoxes) are untouched by this -- they never had
+  // extractedGuess at all, so meetsRequirement shouldn't appear either.
+  const universalItem = checklist.find((item) => item.key === "acord25");
+  assert.ok(!("meetsRequirement" in universalItem));
 });
 
 test("coi review -> case sync: approving creates the vendor's Onboarding - COI case, Approved, with the submitted policy details", async (t) => {

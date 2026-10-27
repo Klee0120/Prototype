@@ -3,6 +3,21 @@
 // own comment for why that separation matters here specifically.
 const SESSION_KEY = "vendorPortal:session";
 
+// Set once per page load from /me's own response (showChecklist), read
+// later by renderCoiReviewResult -- the COI checklist's own items no
+// longer repeat "(required for X)" on every single line (see
+// coiDocumentReview.js's buildCoiRequirementChecklist), so this is what
+// backs the one-line heading above the list instead.
+let currentVendorServices = "";
+function formatServiceHeading(raw) {
+  return (raw || "")
+    .split("|")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => s.split("/").pop().trim())
+    .join(", ");
+}
+
 function loadSession() {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -137,6 +152,7 @@ async function showChecklist() {
   helpView.hidden = false;
   logoutRow.hidden = false;
   document.getElementById("vendor-name").textContent = data.vendorName;
+  currentVendorServices = data.services || "";
   document.getElementById("summary-line").textContent = `${data.approvedCount}/${data.totalCount} document cases approved`;
   document.getElementById("contact-phone").value = data.phone || "";
   document.getElementById("contact-email").value = data.email || "";
@@ -398,7 +414,8 @@ function renderCoiReviewResult(coiReview) {
     ${
       checklist.length
         ? `
-          <p class="hint" style="margin-top: 8px;">Here's the full insurance requirement list for your registered service type(s). "Confirmed"/"Couldn't confirm" are the only two things actually checked automatically from the file you uploaded -- everything else still needs a human reviewer to confirm against your actual certificate, even once you've answered it below.</p>
+          ${currentVendorServices ? `<p class="coi-requirement-heading" style="margin-top: 8px;"><strong>COI Requirements for ${escapeHtml(formatServiceHeading(currentVendorServices))}</strong></p>` : ""}
+          <p class="hint">Here's the full insurance requirement list for your registered service type(s). "Confirmed"/"Couldn't confirm" are the only two things actually checked automatically from the file you uploaded -- everything else still needs a human reviewer to confirm against your actual certificate, even once you've answered it below.</p>
           <ul class="checklist coi-requirement-list">
             ${checklist
               .map((item) => {

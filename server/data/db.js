@@ -8512,6 +8512,7 @@ function getVendorPortalChecklist(vendorId) {
   return {
     vendorName: vendorRow.name,
     taxId: vendorRow.tax_id || null,
+    services: vendorRow.services || "",
     phone: vendorRow.phone || "",
     email: vendorRow.email || "",
     poEmail: vendorRow.po_email || "",
