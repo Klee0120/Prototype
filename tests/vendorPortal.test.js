@@ -113,7 +113,7 @@ test("Vendor portal: /me returns the same approved/total checklist math the admi
   assert.equal(meRes.body.approvedCount, adminApproved, "portal and admin-side data must agree on what's actually approved");
 });
 
-test("Vendor portal: a vendor can set their own phone/email/PO email, which show up on the admin side", async (t) => {
+test("Vendor portal: a vendor can set their own phone/email, which show up on the admin side -- PO email is NOT settable here", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
 
@@ -125,6 +125,10 @@ test("Vendor portal: a vendor can set their own phone/email/PO email, which show
   assert.equal(beforeRes.body.phone, "");
   assert.equal(beforeRes.body.poEmail, "");
 
+  // PO email is included in the body (as a naive client might still send),
+  // but the route only ever reads phone/email -- it must come back
+  // unchanged, since a PO email change is gated (see po-email-change-request
+  // below), not instant like phone/email.
   const saveRes = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", {
     token,
     body: { phone: "555-0100", email: "ops-updated@portaltest.test", poEmail: "po@portaltest.test" },
@@ -132,17 +136,17 @@ test("Vendor portal: a vendor can set their own phone/email/PO email, which show
   assert.equal(saveRes.status, 200);
   assert.equal(saveRes.body.phone, "555-0100");
   assert.equal(saveRes.body.email, "ops-updated@portaltest.test");
-  assert.equal(saveRes.body.poEmail, "po@portaltest.test");
+  assert.equal(saveRes.body.poEmail, undefined, "contact-info no longer returns or writes poEmail at all");
 
   const afterRes = await vendorCall(server, "GET", "/api/vendor-portal/me", { token });
   assert.equal(afterRes.body.phone, "555-0100");
-  assert.equal(afterRes.body.poEmail, "po@portaltest.test");
+  assert.equal(afterRes.body.poEmail, "", "PO email must still be blank -- contact-info never touched it");
 
   const adminRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
   const adminVendor = adminRes.body.find((v) => v.id === vendor.id);
   assert.equal(adminVendor.phone, "555-0100");
   assert.equal(adminVendor.email, "ops-updated@portaltest.test");
-  assert.equal(adminVendor.poEmail, "po@portaltest.test");
+  assert.equal(adminVendor.poEmail, "", "PO email on the real vendor record must be untouched");
 });
 
 test("Vendor portal: contact-info rejects an invalid email, requires a session, and can't touch any other vendor field", async (t) => {
@@ -160,7 +164,7 @@ test("Vendor portal: contact-info rejects an invalid email, requires a session, 
   assert.equal(badEmail.status, 400);
 
   // Posting unrelated fields in the same body is silently ignored, not
-  // applied -- this route only ever touches phone/email/poEmail, however
+  // applied -- this route only ever touches phone/email, however
   // creatively the request is shaped.
   const sneaky = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", {
     token,
@@ -180,6 +184,71 @@ test("Vendor portal: contact-info rejects an invalid email, requires a session, 
   const internalToken = await server.tokenFor("ADMIN");
   const asAdmin = await vendorCall(server, "PATCH", "/api/vendor-portal/contact-info", { token: internalToken, body: { phone: "555-0100" } });
   assert.equal(asAdmin.status, 401);
+});
+
+// Part of task #18 (Vendor portal Phase 4): a PO email change is gated,
+// not instant -- it's where real purchase orders get sent, so an
+// unreviewed change could silently redirect them. Per Krista: the vendor
+// requests it, admin reviews and updates the real PO email, then starts a
+// new Payment/ACH compliance case on the vendor's behalf (the existing
+// case-start flow) -- this route's only job is getting the ask in front
+// of the right admin.
+test("Vendor portal: PO email change request is gated -- creates an admin task, routes to the territory admin, and never writes the real po_email", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw.prepare("INSERT INTO locations (code, name, territory) VALUES (?, ?, ?)").run("PO-EMAIL-LOC", "PO Email Test Site", "East");
+  raw
+    .prepare("INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email) VALUES (?, ?, ?, 'admin', 1, 'active', ?, ?)")
+    .run("PO-EMAIL-ADMIN", "PO Email Admin", "0000", "PO-EMAIL-LOC", "po.email.admin@example.com");
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const now = new Date().toISOString();
+  raw
+    .prepare("INSERT INTO pos (composite_key, vendor_id, region, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)")
+    .run(crypto.randomUUID(), vendor.id, "East", now, now, now, now);
+
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const noAuthRes = await vendorCall(server, "POST", "/api/vendor-portal/po-email-change-request", { body: { newPoEmail: "new@vendor.test" } });
+  assert.equal(noAuthRes.status, 401);
+
+  const badEmail = await vendorCall(server, "POST", "/api/vendor-portal/po-email-change-request", { token, body: { newPoEmail: "not-an-email" } });
+  assert.equal(badEmail.status, 400);
+
+  const res = await vendorCall(server, "POST", "/api/vendor-portal/po-email-change-request", { token, body: { newPoEmail: "new@vendor.test" } });
+  assert.equal(res.status, 201);
+
+  // The real po_email column is untouched -- only the pending-request fields are set.
+  const adminVendorRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  const adminVendor = adminVendorRes.body.find((v) => v.id === vendor.id);
+  assert.equal(adminVendor.poEmail, "", "the real PO email must not change until admin acts");
+  assert.equal(adminVendor.poEmailChangeRequested, "new@vendor.test");
+  assert.ok(adminVendor.poEmailChangeRequestedAt);
+
+  const meRes = await vendorCall(server, "GET", "/api/vendor-portal/me", { token });
+  assert.equal(meRes.body.poEmailChangeRequested, "new@vendor.test");
+
+  const tasksRes = await server.call(
+    "GET",
+    `/api/tasks?category=vendor_po_email_change_request&vendor=${vendor.id}&assignedTo=PO-EMAIL-ADMIN`,
+    { userId: "ADMIN" }
+  );
+  assert.equal(tasksRes.body.length, 1, "routed to the vendor's own territory admin, same as help-request");
+  assert.match(tasksRes.body[0].title, /requests a PO email change/);
+  assert.match(tasksRes.body[0].description, /new@vendor\.test/);
+
+  // Admin resolving it (editing the real PO email) clears the pending flag.
+  const editRes = await server.call("PATCH", `/api/admin/vendors/${vendor.id}`, {
+    userId: "ADMIN",
+    body: { ...adminVendor, poEmail: "new@vendor.test" },
+  });
+  assert.equal(editRes.status, 200);
+  assert.equal(editRes.body.poEmail, "new@vendor.test");
+  assert.equal(editRes.body.poEmailChangeRequested, null, "updating the real PO email resolves the pending request");
 });
 
 // The core safety invariant the whole portal design rests on: a vendor's

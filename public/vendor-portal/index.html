@@ -294,10 +294,22 @@
         <input type="text" id="contact-phone" autocomplete="tel" />
         <label for="contact-email">Email</label>
         <input type="text" id="contact-email" autocomplete="email" />
-        <label for="contact-po-email">PO email</label>
-        <input type="text" id="contact-po-email" autocomplete="email" />
         <button type="submit" id="contact-submit">Save</button>
       </form>
+
+      <h2 class="section-heading">PO email</h2>
+      <p class="hint">This is where C&amp;W Services sends your purchase orders. Since it controls where POs get sent, a change here is reviewed by admin before it takes effect.</p>
+      <p id="po-email-current"></p>
+      <p class="hint" id="po-email-pending" hidden></p>
+      <button type="button" class="btn-link" id="po-email-change-toggle">Request a change</button>
+      <div id="po-email-change-panel" hidden>
+        <div id="po-email-change-error" class="error"></div>
+        <form id="po-email-change-form">
+          <label for="po-email-change-input">New PO email</label>
+          <input type="text" id="po-email-change-input" autocomplete="off" />
+          <button type="submit" id="po-email-change-submit">Send request</button>
+        </form>
+      </div>
     </section>
 
     <section id="po-view" class="card" hidden>

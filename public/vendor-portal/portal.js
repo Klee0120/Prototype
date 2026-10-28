@@ -163,7 +163,17 @@ async function showChecklist() {
   document.getElementById("summary-line").textContent = `${data.approvedCount}/${data.totalCount} document cases approved`;
   document.getElementById("contact-phone").value = data.phone || "";
   document.getElementById("contact-email").value = data.email || "";
-  document.getElementById("contact-po-email").value = data.poEmail || "";
+  document.getElementById("po-email-current").textContent = data.poEmail ? `Current: ${data.poEmail}` : "No PO email on file yet.";
+  const poEmailPending = document.getElementById("po-email-pending");
+  const poEmailChangeToggle = document.getElementById("po-email-change-toggle");
+  if (data.poEmailChangeRequested) {
+    poEmailPending.hidden = false;
+    poEmailPending.textContent = `Change to ${data.poEmailChangeRequested} requested${data.poEmailChangeRequestedAt ? ` ${formatDate(data.poEmailChangeRequestedAt)}` : ""} -- pending admin review.`;
+    poEmailChangeToggle.textContent = "Request a different change";
+  } else {
+    poEmailPending.hidden = true;
+    poEmailChangeToggle.textContent = "Request a change";
+  }
   const list = document.getElementById("checklist-items");
   list.innerHTML = data.items
     .filter((item) => !item.notRequired)
@@ -445,9 +455,8 @@ contactForm.addEventListener("submit", async (e) => {
   contactSuccess.style.display = "none";
   const phone = document.getElementById("contact-phone").value.trim();
   const email = document.getElementById("contact-email").value.trim();
-  const poEmail = document.getElementById("contact-po-email").value.trim();
   try {
-    await apiRequest("PATCH", "/api/vendor-portal/contact-info", { phone, email, poEmail });
+    await apiRequest("PATCH", "/api/vendor-portal/contact-info", { phone, email });
     contactSuccess.textContent = "Saved.";
     contactSuccess.style.display = "block";
   } catch (err) {
@@ -455,6 +464,39 @@ contactForm.addEventListener("submit", async (e) => {
     contactError.style.display = "block";
   } finally {
     contactSubmit.disabled = false;
+  }
+});
+
+// PO email change -- gated, not instant (see index.html's own note and
+// the server-side comment on POST /po-email-change-request): toggles open
+// a small real form, same single-inline-form pattern as the other request
+// flows in this file, rather than letting the field itself be edited and
+// saved like phone/email above.
+const poEmailChangeToggle = document.getElementById("po-email-change-toggle");
+const poEmailChangePanel = document.getElementById("po-email-change-panel");
+const poEmailChangeForm = document.getElementById("po-email-change-form");
+const poEmailChangeSubmit = document.getElementById("po-email-change-submit");
+const poEmailChangeError = document.getElementById("po-email-change-error");
+
+poEmailChangeToggle.addEventListener("click", () => {
+  poEmailChangePanel.hidden = !poEmailChangePanel.hidden;
+});
+
+poEmailChangeForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  poEmailChangeSubmit.disabled = true;
+  poEmailChangeError.style.display = "none";
+  const newPoEmail = document.getElementById("po-email-change-input").value.trim();
+  try {
+    await apiRequest("POST", "/api/vendor-portal/po-email-change-request", { newPoEmail });
+    poEmailChangeForm.reset();
+    poEmailChangePanel.hidden = true;
+    await showChecklist();
+  } catch (err) {
+    poEmailChangeError.textContent = err.message;
+    poEmailChangeError.style.display = "block";
+  } finally {
+    poEmailChangeSubmit.disabled = false;
   }
 });
 

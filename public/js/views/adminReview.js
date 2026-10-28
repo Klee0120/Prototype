@@ -4043,6 +4043,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const warnings = [];
     if (!v.formChecksComplete) warnings.push("One or more document checks (COI/W-9/ACH) aren't confirmed yet -- see the COI/W-9/Payment cases above.");
     if (v.poEmailMismatch) warnings.push(`The email on a generated PO didn't match what's on file (saw ${escapeHtml(v.poEmailMismatchExtracted || "")}).`);
+    if (v.poEmailChangeRequested) {
+      warnings.push(
+        `Vendor requested their PO email be changed to ${escapeHtml(v.poEmailChangeRequested)}${v.poEmailChangeRequestedAt ? ` (requested ${new Date(v.poEmailChangeRequestedAt).toLocaleDateString()})` : ""} -- if legitimate, update the PO email above and start a new Payment/ACH case to re-verify.`
+      );
+    }
     if (warnings.length === 0) return `<p class="review-checklist-hint">No open document-compliance issues.</p>`;
     return `<p class="split-row-warning">${warnings.join(" ")}</p>`;
   }

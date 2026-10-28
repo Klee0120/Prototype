@@ -2138,6 +2138,23 @@ if (!hasColumn("vendors", "portal_access_code")) {
   db.exec("ALTER TABLE vendors ADD COLUMN portal_access_code TEXT");
 }
 
+// A vendor's own self-reported "my PO email changed" ask -- unlike phone/
+// email (instant self-service, see updateVendorContactInfo), a PO email
+// change is gated: it's where real purchase orders get sent, so an
+// unreviewed change could silently redirect them. The vendor's request
+// lands here (and as a vendor_po_email_change_request admin task) rather
+// than writing straight to the real po_email column; an admin reviews it,
+// updates the real po_email once satisfied, and separately starts a new
+// Payment/ACH case for the vendor through the existing case-start flow.
+// Cleared automatically by updateVendor whenever po_email actually
+// changes (see that function's own comment) -- not tied to the requested
+// value matching exactly, since admin's own judgment on the final value
+// is what resolves the ask, not string equality.
+if (!hasColumn("vendors", "po_email_change_requested")) {
+  db.exec("ALTER TABLE vendors ADD COLUMN po_email_change_requested TEXT");
+  db.exec("ALTER TABLE vendors ADD COLUMN po_email_change_requested_at TEXT");
+}
+
 // A vendor's own portal passcode -- kept off the already-wide vendors
 // table, same reasoning technicians.pin lives on technicians but sessions/
 // password_resets are their own tables. One row per vendor (an admin
@@ -2949,6 +2966,8 @@ function presentVendorRowBase(v) {
     poEmailMismatch: Boolean(v.po_email_mismatch),
     poEmailMismatchExtracted: v.po_email_mismatch_extracted || null,
     poEmailMismatchDetectedAt: v.po_email_mismatch_detected_at || null,
+    poEmailChangeRequested: v.po_email_change_requested || null,
+    poEmailChangeRequestedAt: v.po_email_change_requested_at || null,
     taxId: v.tax_id || "",
     // Display-only, never stored -- see deriveParentStage. A manual denial
     // always wins, the same "denied overrides everything" rule
@@ -3348,7 +3367,9 @@ function updateVendor(id, fields) {
       denied_reason = ?,
       updated_at = ?,
       parent_vendor_id = ?,
-      tax_id = ?
+      tax_id = ?,
+      po_email_change_requested = ?,
+      po_email_change_requested_at = ?
      WHERE id = ?`
   ).run(
     fields.name,
@@ -3396,6 +3417,12 @@ function updateVendor(id, fields) {
     // parentVendorId: null, as opposed to just leaving it out of the body.
     fields.parentVendorId !== undefined ? (fields.parentVendorId != null ? Number(fields.parentVendorId) : null) : existing.parentVendorId,
     fields.taxId !== undefined ? (String(fields.taxId || "").trim() || null) : existing.taxId || null,
+    // A real PO-email change resolves whatever was pending about it --
+    // admin's own saved value is what settles the ask, not whether it
+    // matches the vendor's requested text exactly. Any other edit (name,
+    // status, an unrelated field) leaves the pending request untouched.
+    (fields.poEmail || "") !== (existing.poEmail || "") ? null : existing.poEmailChangeRequested,
+    (fields.poEmail || "") !== (existing.poEmail || "") ? null : existing.poEmailChangeRequestedAt,
     Number(id)
   );
   linkUnmatchedPosForVendor(Number(id), fields.jdeVendorNumber);
@@ -3409,11 +3436,23 @@ function updateVendor(id, fields) {
 // these three fields. A vendor session can only ever reach this function
 // for its own vendor id (see server/routes/vendorPortal.js), so there's
 // no risk of it touching another vendor's record either.
-function updateVendorContactInfo(vendorId, { phone, email, poEmail }) {
-  db.prepare("UPDATE vendors SET phone = ?, email = ?, po_email = ?, updated_at = ? WHERE id = ?").run(
-    phone || "",
-    email || "",
-    poEmail || "",
+// po_email is deliberately NOT writable here -- see the po_email_change_
+// requested migration comment above for why a PO email change is gated
+// instead of instant like phone/email.
+function updateVendorContactInfo(vendorId, { phone, email }) {
+  db.prepare("UPDATE vendors SET phone = ?, email = ?, updated_at = ? WHERE id = ?").run(phone || "", email || "", new Date().toISOString(), Number(vendorId));
+  return findVendor(vendorId);
+}
+
+// The vendor portal's "Request a PO email change" ask -- records the
+// request (surfaced on the vendor's own profile, see presentVendorRowBase)
+// and leaves the real po_email column untouched; the caller (POST
+// /api/vendor-portal/po-email-change-request) is responsible for also
+// creating the admin task. Overwrites any still-pending request rather
+// than stacking them -- the latest ask is the one that matters.
+function requestVendorPoEmailChange(vendorId, newPoEmail) {
+  db.prepare("UPDATE vendors SET po_email_change_requested = ?, po_email_change_requested_at = ? WHERE id = ?").run(
+    newPoEmail,
     new Date().toISOString(),
     Number(vendorId)
   );
@@ -8572,6 +8611,8 @@ function getVendorPortalChecklist(vendorId) {
     phone: vendorRow.phone || "",
     email: vendorRow.email || "",
     poEmail: vendorRow.po_email || "",
+    poEmailChangeRequested: vendorRow.po_email_change_requested || null,
+    poEmailChangeRequestedAt: vendorRow.po_email_change_requested_at || null,
     items,
     approvedCount: approved,
     totalCount: relevant.length,
@@ -13484,6 +13525,7 @@ module.exports = {
   createVendor,
   updateVendor,
   updateVendorContactInfo,
+  requestVendorPoEmailChange,
   deleteVendor,
   mergeVendors,
   setVendorPreferred,

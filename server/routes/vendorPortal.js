@@ -79,24 +79,57 @@ router.get("/me", requireVendorAuth, (req, res) => {
 
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
-// A vendor filling in their own Contact phone / Email / PO email --
-// fields that already exist on the vendor record and show on the admin
-// Overview tab, but previously only an admin could set (via "Edit
-// vendor"). Deliberately its own narrow route rather than routing a
-// vendor session through the admin PATCH /api/admin/vendors/:id, which
-// accepts (and requires) every vendor column -- name, onboarding stage,
-// JDE #, etc. -- none of which a vendor should ever be able to touch.
-// db.updateVendorContactInfo only ever writes these three columns, and
-// only ever for req.vendor.id, same hardcoded-to-self pattern the
-// document upload route above already uses.
+// A vendor filling in their own Contact phone / Email -- fields that
+// already exist on the vendor record and show on the admin Overview tab,
+// but previously only an admin could set (via "Edit vendor"). Deliberately
+// its own narrow route rather than routing a vendor session through the
+// admin PATCH /api/admin/vendors/:id, which accepts (and requires) every
+// vendor column -- name, onboarding stage, JDE #, etc. -- none of which a
+// vendor should ever be able to touch. db.updateVendorContactInfo only
+// ever writes these two columns, and only ever for req.vendor.id, same
+// hardcoded-to-self pattern the document upload route above already uses.
+// PO email is deliberately NOT editable here -- see POST
+// /po-email-change-request below for why that one's gated instead.
 router.patch("/contact-info", requireVendorAuth, (req, res) => {
-  const { phone, email, poEmail } = req.body || {};
+  const { phone, email } = req.body || {};
   if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: "That doesn't look like a valid email address" });
-  if (poEmail && !EMAIL_RE.test(poEmail)) return res.status(400).json({ error: "That doesn't look like a valid PO email address" });
 
-  const updated = db.updateVendorContactInfo(req.vendor.id, { phone, email, poEmail });
+  const updated = db.updateVendorContactInfo(req.vendor.id, { phone, email });
   db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_CONTACT_INFO_UPDATED", `${req.vendor.name} updated their contact info via the vendor portal`, req.vendor.id);
-  res.json({ phone: updated.phone, email: updated.email, poEmail: updated.poEmail });
+  res.json({ phone: updated.phone, email: updated.email });
+});
+
+// PO email is where real purchase orders get sent -- unlike phone/email
+// above, a change here is gated rather than instant (see the
+// po_email_change_requested migration comment in db.js): the ask lands as
+// an admin task (routed to the vendor's own territory admin when
+// unambiguous, same as help-request below) and on the vendor's own
+// profile (poEmailChangeRequested), but never touches the real po_email
+// column itself. An admin reviews it, updates the real PO email once
+// satisfied (which clears the pending flag -- see updateVendor), and
+// separately starts a new Payment/ACH case for the vendor through the
+// existing case-start flow (Onboarding & Compliance tab) -- this route
+// doesn't invent a new approval workflow, just gets the ask in front of
+// admin with enough to act on.
+router.post("/po-email-change-request", requireVendorAuth, (req, res) => {
+  const { newPoEmail } = req.body || {};
+  if (!newPoEmail || !EMAIL_RE.test(newPoEmail)) return res.status(400).json({ error: "Enter a valid new PO email address" });
+
+  const vendor = db.findVendor(req.vendor.id);
+  db.requestVendorPoEmailChange(vendor.id, newPoEmail);
+  const territoryAdmin = db.resolveVendorTerritoryAdmin(vendor.id);
+  db.createTask({
+    title: `${vendor.name} requests a PO email change`,
+    description: `Current PO email on file: ${vendor.poEmail || "none"}\nRequested: ${newPoEmail}\n\nIf legitimate, update the PO email on the vendor's profile and start a new Payment/ACH case to re-verify.`,
+    assignedTo: territoryAdmin ? territoryAdmin.id : null,
+    assignedRole: "admin",
+    category: "vendor_po_email_change_request",
+    priority: "normal",
+    relatedVendorId: vendor.id,
+    source: "vendor_portal",
+  });
+  db.addAudit(`vendor:${req.vendor.id}`, "VENDOR_PORTAL_PO_EMAIL_CHANGE_REQUESTED", `${vendor.name} requested a PO email change to ${newPoEmail}`, vendor.id);
+  res.status(201).json({ ok: true });
 });
 
 // A vendor supplying their own Tax ID -- the counterpart to being granted
