@@ -231,9 +231,15 @@ router.get("/documents", requireVendorAuth, (req, res) => {
 router.post("/help-request", requireVendorAuth, (req, res) => {
   const { message } = req.body || {};
   const vendor = db.findVendor(req.vendor.id);
+  // Routed to the admin who covers this vendor's own territory when that's
+  // unambiguous (see db.resolveVendorTerritoryAdmin) -- still always lands
+  // in the admin role queue either way, so an ambiguous/no-history vendor
+  // falls back to exactly today's behavior rather than going unassigned.
+  const territoryAdmin = db.resolveVendorTerritoryAdmin(vendor.id);
   db.createTask({
     title: `Vendor help request from ${vendor.name}`,
     description: message || "",
+    assignedTo: territoryAdmin ? territoryAdmin.id : null,
     assignedRole: "admin",
     category: "vendor_help_request",
     priority: "normal",

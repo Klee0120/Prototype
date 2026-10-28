@@ -4399,6 +4399,19 @@ function findAdminForTerritory(territory) {
     .get(territory);
 }
 
+// Routes a vendor's own unscoped ask (the vendor portal's "Request help"
+// button) to the one admin who actually covers their territory, when
+// that's unambiguous. getVendorTerritories derives territory from the
+// vendor's own PO/WOM history -- a vendor working across more than one
+// territory, or with no history at all yet, has no single right admin to
+// guess, so this returns null and the caller falls back to its existing
+// admin-role-queue behavior rather than misrouting it.
+function resolveVendorTerritoryAdmin(vendorId) {
+  const territories = getVendorTerritories(vendorId);
+  if (territories.length !== 1) return null;
+  return findAdminForTerritory(territories[0]);
+}
+
 // A PO's territory -- the Budget PO Tracker's own Admin column is a more
 // reliable signal than the PO's own location match: every row carries an
 // admin name, while the location match can be missing or wrong, and each
@@ -13465,6 +13478,7 @@ module.exports = {
   findVendorByNumber,
   recordPoEmailExtraction,
   getVendorTerritories,
+  resolveVendorTerritoryAdmin,
   getVendorPoGlRollup,
   getVendorInvoiceHistory,
   createVendor,

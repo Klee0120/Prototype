@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
 const { startServer } = require("./helpers");
 const { DatabaseSync } = require("node:sqlite");
 
@@ -491,6 +492,73 @@ test("Vendor portal: 'Need help' creates an admin-visible task carrying the vend
   assert.equal(tasksRes.body[0].relatedVendorId, vendor.id);
   assert.match(tasksRes.body[0].title, new RegExp(vendor.name));
   assert.equal(tasksRes.body[0].description, "Not sure which COI form to use");
+});
+
+// Part of task #18 (Vendor portal Phase 4): route "Request help" to the
+// admin who actually covers the vendor's own territory when that's
+// unambiguous -- derived from the vendor's own PO history (see
+// db.getVendorTerritories/resolveVendorTerritoryAdmin), not guessed.
+test("Vendor portal: 'Need help' routes to the vendor's own territory admin when unambiguous, falls back to the admin queue otherwise", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw.prepare("INSERT INTO locations (code, name, territory) VALUES (?, ?, ?)").run("HELP-EAST-LOC", "East Site", "East");
+  raw.prepare("INSERT INTO locations (code, name, territory) VALUES (?, ?, ?)").run("HELP-WEST-LOC", "West Site", "West");
+  raw
+    .prepare("INSERT INTO technicians (id, name, pin, role, active, employment_status, home_location_code, email) VALUES (?, ?, ?, 'admin', 1, 'active', ?, ?)")
+    .run("HELP-EAST-ADMIN", "East Admin", "0000", "HELP-EAST-LOC", "east.admin@example.com");
+
+  function insertPo(vendorId, region) {
+    const now = new Date().toISOString();
+    raw
+      .prepare(
+        `INSERT INTO pos (composite_key, vendor_id, region, lifecycle_status, first_imported_at, last_seen_at, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?, ?, ?)`
+      )
+      .run(crypto.randomUUID(), vendorId, region, now, now, now, now);
+  }
+
+  await t.test("a vendor whose POs are all in one territory gets routed directly to that territory's admin", async () => {
+    const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+    insertPo(vendor.id, "East");
+    insertPo(vendor.id, "East");
+    const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+    const res = await vendorCall(server, "POST", "/api/vendor-portal/help-request", { token: loginRes.body.token, body: { message: "Routing test" } });
+    assert.equal(res.status, 201);
+
+    // GET /api/tasks defaults to the caller's own "my work" view, which
+    // only shows unassigned admin-role tasks plus ones assigned to the
+    // caller themself -- an explicit assignedTo lookup (admin-only) is
+    // needed to see a task routed to a DIFFERENT admin, same as any other
+    // cross-employee lookup in this app.
+    const tasksRes = await server.call("GET", `/api/tasks?category=vendor_help_request&vendor=${vendor.id}&assignedTo=HELP-EAST-ADMIN`, { userId: "ADMIN" });
+    assert.equal(tasksRes.body.length, 1);
+    assert.equal(tasksRes.body[0].assignedTo, "HELP-EAST-ADMIN");
+  });
+
+  await t.test("a vendor spanning more than one territory falls back to the unassigned admin queue, same as before", async () => {
+    const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+    insertPo(vendor.id, "East");
+    insertPo(vendor.id, "West");
+    const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+    const res = await vendorCall(server, "POST", "/api/vendor-portal/help-request", { token: loginRes.body.token, body: { message: "Ambiguous routing test" } });
+    assert.equal(res.status, 201);
+
+    const tasksRes = await server.call("GET", `/api/tasks?category=vendor_help_request&vendor=${vendor.id}`, { userId: "ADMIN" });
+    assert.ok(!tasksRes.body[0].assignedTo, "no single admin to route to -- should land in the shared admin queue, not guessed");
+  });
+
+  await t.test("a vendor with no PO/WOM history yet also falls back to the admin queue", async () => {
+    const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+    const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+    const res = await vendorCall(server, "POST", "/api/vendor-portal/help-request", { token: loginRes.body.token, body: { message: "No history yet" } });
+    assert.equal(res.status, 201);
+
+    const tasksRes = await server.call("GET", `/api/tasks?category=vendor_help_request&vendor=${vendor.id}`, { userId: "ADMIN" });
+    assert.ok(!tasksRes.body[0].assignedTo);
+  });
 });
 
 test("Vendor portal: COI waiver request requires a reason and creates an admin-visible VPO waiver task", async (t) => {
