@@ -6207,6 +6207,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
               ${TERRITORIES.map((t) => `<option value="${t}">${t}</option>`).join("")}
             </select>
           </div>
+          <label class="not-on-coa-toggle">
+            <input type="checkbox" name="notOnCoa" />
+            Not on Toyota's Chart of Accounts yet
+          </label>
           <div class="modal-form-actions">
             <button type="submit" class="btn btn-primary">Add location</button>
           </div>
@@ -6219,7 +6223,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       e.preventDefault();
       const msg = body.querySelector(".save-message");
       try {
-        await api.post("/api/locations", {
+        const result = await api.post("/api/locations", {
           code: form.code.value.trim(),
           name: form.name.value.trim(),
           efJobNumber: form.efJobNumber.value.trim() || null,
@@ -6227,9 +6231,13 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           ppsJobNumber: form.ppsJobNumber.value.trim() || null,
           region: form.region.value.trim() || null,
           territory: form.territory.value,
+          notOnCoa: form.notOnCoa.checked,
         });
         close();
         await drawLocations(content);
+        if (result.rematchedCount) {
+          window.alert(`${result.rematchedCount} previously-unassigned GL line${result.rematchedCount === 1 ? "" : "s"} now matched to this location.`);
+        }
       } catch (err) {
         msg.textContent = err.message;
       }
@@ -6412,6 +6420,10 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <input name="ppsJobNumber" placeholder="PPS Contract Job Number" value="${escapeHtml(l.ppsJobNumber || "")}" />
           <input name="region" placeholder="Region" value="${escapeHtml(l.region || "")}" />
           <select name="territory">${renderTerritorySelect(l.territory)}</select>
+          <label class="not-on-coa-toggle">
+            <input type="checkbox" name="notOnCoa" ${l.notOnCoa ? "checked" : ""} />
+            Not on Toyota's Chart of Accounts yet
+          </label>
           <button type="submit" class="btn btn-primary">Save</button>
           <button type="button" class="btn btn-link cancel-edit">Cancel</button>
           <span class="save-message"></span>
@@ -6426,16 +6438,20 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         const form = e.target;
         const msg = el.querySelector(".save-message");
         try {
-          await api.patch(`/api/locations/${encodeURIComponent(l.code)}`, {
+          const result = await api.patch(`/api/locations/${encodeURIComponent(l.code)}`, {
             name: form.name.value.trim(),
             efJobNumber: form.efJobNumber.value.trim() || null,
             womJobNumber: form.womJobNumber.value.trim() || null,
             ppsJobNumber: form.ppsJobNumber.value.trim() || null,
             region: form.region.value.trim() || null,
             territory: form.territory.value,
+            notOnCoa: form.notOnCoa.checked,
           });
           locationEditing.delete(l.code);
           await drawLocations(content);
+          if (result.rematchedCount) {
+            window.alert(`${result.rematchedCount} previously-unassigned GL line${result.rematchedCount === 1 ? "" : "s"} now matched to this location.`);
+          }
         } catch (err) {
           msg.textContent = err.message;
         }
@@ -6448,9 +6464,12 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const ppsJobLabel = l.ppsJobNumber ? ` &middot; PPS Job # ${escapeHtml(l.ppsJobNumber)}` : "";
     const regionLabel = l.region ? ` &middot; ${escapeHtml(l.region)}` : "";
     const territoryLabel = ` &middot; <span class="badge badge-draft">${escapeHtml(l.territory || "Midwest")}</span>`;
+    const notOnCoaLabel = l.notOnCoa
+      ? ` &middot; <span class="badge badge-rejected" title="Added by hand -- Toyota's own Chart of Accounts hasn't confirmed this location yet">Not on COA</span>`
+      : "";
     el.innerHTML = `
       <div class="review-row-summary">
-        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${ppsJobLabel}${regionLabel}</span>${territoryLabel}</div>
+        <div class="review-row-name">${escapeHtml(l.name)} <span class="wom-desc">${jobLabel}${womJobLabel}${ppsJobLabel}${regionLabel}</span>${territoryLabel}${notOnCoaLabel}</div>
         <button class="btn btn-link edit-location-btn" type="button">Edit</button>
         <button class="btn btn-link delete-location-btn" type="button">Delete</button>
       </div>

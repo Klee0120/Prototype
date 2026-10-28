@@ -3,6 +3,7 @@ import { escapeHtml } from "../app.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 import { getTerritory } from "../globalFilters.js";
 import { openModal } from "../modal.js";
+import { TERRITORIES } from "../constants.js";
 
 function formatMoney(n) {
   if (n == null) return "—";
@@ -539,8 +540,13 @@ function formatGlDetailRow(item) {
 // The summary row only shows the handful of fields worth a quick scan --
 // clicking it pops up every other field the actual GL export line carries
 // (document #, business unit, batch #, PO, the full un-truncated remark,
-// etc.), same shape/purpose as Meals' own full-GL-line popup.
-function openGlLineModal(it) {
+// etc.), same shape/purpose as Meals' own full-GL-line popup. A line with
+// no matched location also gets an "Add as location" action here -- per
+// Krista: "theres an unassigned job location and I would like the
+// financial analysis to add the location to our locations tab" -- using
+// this line's own business unit as the new location's job number, flagged
+// as not yet confirmed by Toyota's own Chart of Accounts.
+function openGlLineModal(it, onLocationAdded) {
   const g = it.glLine || {};
   const row = (label, value) => `
     <div class="gl-line-detail-row">
@@ -548,7 +554,7 @@ function openGlLineModal(it) {
       <span class="gl-line-detail-value">${value != null && value !== "" ? escapeHtml(String(value)) : "—"}</span>
     </div>
   `;
-  openModal({
+  const { body } = openModal({
     title: "Full GL line",
     bodyHtml: `
       <div class="gl-line-detail">
@@ -572,7 +578,86 @@ function openGlLineModal(it) {
         ${row("Purchase order", g.purchaseOrder)}
         ${row("Subledger (WOM)", g.subledgerGl)}
       </div>
+      ${
+        !it.locationCode && g.businessUnit
+          ? `
+      <div class="gl-line-add-location">
+        <p class="review-checklist-hint">
+          Business unit ${escapeHtml(g.businessUnit)} doesn't match any location on file -- that's why this line is Unassigned.
+          Add it as a location now (flagged as not yet confirmed by Toyota's own Chart of Accounts) and every GL line waiting on
+          this job number, including this one, will match immediately -- no GL re-import needed.
+        </p>
+        <button type="button" class="btn btn-secondary gl-line-add-location-btn">Add as location</button>
+      </div>
+      `
+          : ""
+      }
     `,
+  });
+  body.querySelector(".gl-line-add-location-btn")?.addEventListener("click", () => {
+    openAddLocationFromGlLineModal(g.businessUnit, onLocationAdded);
+  });
+}
+
+// A small, self-contained "Add location" form -- spendBreakdown.js has no
+// access to adminReview.js's own Locations tab form (separate module), so
+// this reuses the same POST /api/locations endpoint directly rather than
+// trying to share UI code across them.
+function openAddLocationFromGlLineModal(businessUnit, onLocationAdded) {
+  const { body, close } = openModal({
+    title: "Add Location",
+    bodyHtml: `
+      <form class="spend-add-location-form modal-form">
+        <div class="add-tech-grid">
+          <input name="code" placeholder="Location code" required />
+          <input name="name" placeholder="Location name" required />
+          <input name="efJobNumber" placeholder="E&amp;F Contract Job Number" value="${escapeHtml(businessUnit || "")}" />
+          <input name="womJobNumber" placeholder="WOM Job Number" />
+          <input name="ppsJobNumber" placeholder="PPS Contract Job Number" />
+          <input name="region" placeholder="Region (e.g. Southeast)" />
+          <select name="territory" required>
+            <option value="" disabled selected>Select territory…</option>
+            ${TERRITORIES.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("")}
+          </select>
+        </div>
+        <p class="review-checklist-hint">
+          The job number above is pre-filled as the E&amp;F Contract Job Number -- move it to WOM or PPS instead if that's what
+          this line actually is.
+        </p>
+        <label class="not-on-coa-toggle">
+          <input type="checkbox" name="notOnCoa" checked />
+          Not on Toyota's Chart of Accounts yet
+        </label>
+        <div class="modal-form-actions">
+          <button type="submit" class="btn btn-primary">Add location</button>
+        </div>
+        <span class="save-message"></span>
+      </form>
+    `,
+  });
+  const form = body.querySelector(".spend-add-location-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = body.querySelector(".save-message");
+    try {
+      const result = await api.post("/api/locations", {
+        code: form.code.value.trim(),
+        name: form.name.value.trim(),
+        efJobNumber: form.efJobNumber.value.trim() || null,
+        womJobNumber: form.womJobNumber.value.trim() || null,
+        ppsJobNumber: form.ppsJobNumber.value.trim() || null,
+        region: form.region.value.trim() || null,
+        territory: form.territory.value,
+        notOnCoa: form.notOnCoa.checked,
+      });
+      close();
+      if (onLocationAdded) await onLocationAdded();
+      if (result.rematchedCount) {
+        window.alert(`${result.rematchedCount} previously-unassigned GL line${result.rematchedCount === 1 ? "" : "s"} now matched, including this one.`);
+      }
+    } catch (err) {
+      msg.textContent = err.message;
+    }
   });
 }
 
@@ -665,7 +750,7 @@ async function openSpendDetailModal({
       body.querySelectorAll("[data-gl-id]").forEach((row) => {
         row.addEventListener("click", () => {
           const it = byId.get(row.dataset.glId);
-          if (it) openGlLineModal(it);
+          if (it) openGlLineModal(it, loadPage);
         });
       });
     }

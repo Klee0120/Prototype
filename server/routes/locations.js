@@ -118,6 +118,11 @@ function presentLocation(l) {
     region: l.region,
     territory: l.territory,
     efSubsidiaryCode: EF_SUBSIDIARY_CODE,
+    // Set on a location added by hand from an "Unassigned" GL line (the
+    // Spend Breakdown drill-down's "Add as location" action) -- Toyota's
+    // own Chart of Accounts hasn't confirmed this one yet. Cleared
+    // automatically the next time a COA import actually matches it by name.
+    notOnCoa: Boolean(l.not_on_coa),
   };
 }
 
@@ -155,34 +160,48 @@ router.post("/import-coa", requireAuth, requireAdmin, upload.single("file"), (re
     db.addAudit(
       req.user.id,
       "LOCATION_COA_IMPORT",
-      `${req.user.name} imported job numbers from the Chart of Accounts: ${summary.changedCount} location(s) updated, ${summary.createdCount} created, ${summary.unmatchedCount - summary.createdCount} still unmatched`
+      `${req.user.name} imported job numbers from the Chart of Accounts: ${summary.changedCount} location(s) updated, ${summary.createdCount} created, ${summary.unmatchedCount - summary.createdCount} still unmatched` +
+        (summary.rematchedCount ? `, ${summary.rematchedCount} previously-unassigned GL line(s) now matched` : "")
     );
   }
   res.json({ ...summary, dryRun, sheetName: parsed.sheetName, missingColumns: parsed.missingColumns });
 });
 
 router.post("/", requireAuth, requireAdmin, (req, res) => {
-  const { code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = req.body || {};
+  const { code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber, notOnCoa } = req.body || {};
   if (!code || !name) return res.status(400).json({ error: "code and name are required" });
   if (db.findLocation(code)) return res.status(409).json({ error: "Location code already exists" });
   if (!territory) return res.status(400).json({ error: "Territory is required" });
   if (!db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory, ppsJobNumber || null);
-  db.addAudit(req.user.id, "LOCATION_CREATED", `${req.user.name} created location ${code}: ${name}`);
-  res.status(201).json({ ok: true });
+  db.createLocation(code, name, efJobNumber || null, region || null, womJobNumber || null, territory, ppsJobNumber || null, Boolean(notOnCoa));
+  // A job number just landed on a location that didn't have one -- some
+  // already-imported GL lines may have been sitting unmatched for exactly
+  // this reason (see rematchUnassignedGlEntries's own comment).
+  const { rematchedCount } = db.rematchUnassignedGlEntries();
+  db.addAudit(
+    req.user.id,
+    "LOCATION_CREATED",
+    `${req.user.name} created location ${code}: ${name}` + (rematchedCount ? ` (${rematchedCount} previously-unassigned GL line(s) now matched)` : "")
+  );
+  res.status(201).json({ ok: true, rematchedCount });
 });
 
 router.patch("/:code", requireAuth, requireAdmin, (req, res) => {
-  const { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = req.body || {};
+  const { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber, notOnCoa } = req.body || {};
   const existing = db.findLocation(req.params.code);
   if (!existing) return res.status(404).json({ error: "Location not found" });
   if (!name) return res.status(400).json({ error: "name is required" });
   if (territory && !db.TERRITORIES.includes(territory)) return res.status(400).json({ error: "Unknown territory" });
 
-  const location = db.setLocationDetails(req.params.code, { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber });
-  db.addAudit(req.user.id, "LOCATION_UPDATED", `${req.user.name} updated location ${location.code}`);
-  res.json(presentLocation(location));
+  const location = db.setLocationDetails(req.params.code, { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber, notOnCoa });
+  const { rematchedCount } = db.rematchUnassignedGlEntries();
+  db.addAudit(
+    req.user.id,
+    "LOCATION_UPDATED",
+    `${req.user.name} updated location ${location.code}` + (rematchedCount ? ` (${rematchedCount} previously-unassigned GL line(s) now matched)` : "")
+  );
+  res.json({ ...presentLocation(location), rematchedCount });
 });
 
 // A location created by mistake -- a test entry, a typo -- rather than

@@ -1034,6 +1034,17 @@ if (!hasColumn("locations", "wom_job_number")) {
 if (!hasColumn("locations", "pps_job_number")) {
   db.exec("ALTER TABLE locations ADD COLUMN pps_job_number TEXT");
 }
+// Per Krista: a location added by hand from an "Unassigned" GL line (see
+// the Spend Breakdown drill-down's "Add as location" action) isn't
+// something Toyota's own Chart of Accounts has confirmed yet -- flagged so
+// it reads differently from every other location, which came from (or has
+// since been matched against) a real COA import. Cleared automatically the
+// moment a COA import actually matches this location by name (see
+// runLocationCoaImport) -- Toyota's own file is the authority, so once it
+// confirms a site for real, the flag no longer applies.
+if (!hasColumn("locations", "not_on_coa")) {
+  db.exec("ALTER TABLE locations ADD COLUMN not_on_coa INTEGER NOT NULL DEFAULT 0");
+}
 
 // Checks a job number against all three of a location's own job-number
 // columns at once. Declared here, early, rather than down by
@@ -5279,11 +5290,11 @@ function getAdminTerritory(admin) {
 // is exactly what mistagged a corporate/overhead code (no real territory of
 // its own) as Midwest in the past. Every caller must say which territory a
 // new location actually belongs to.
-function createLocation(code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber) {
+function createLocation(code, name, efJobNumber, region, womJobNumber, territory, ppsJobNumber, notOnCoa) {
   if (!territory) throw new Error("Territory is required to create a location");
   db.prepare(
-    "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory, pps_job_number) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory, ppsJobNumber || null);
+    "INSERT INTO locations (code, name, ef_job_number, region, wom_job_number, territory, pps_job_number, not_on_coa) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(code, name, efJobNumber || null, region || null, womJobNumber || null, territory, ppsJobNumber || null, notOnCoa ? 1 : 0);
   return findLocation(code);
 }
 
@@ -5360,16 +5371,22 @@ function runLocationCoaImport(rows, { commit, createUnmatched } = {}) {
     // territory the location already has alone, same "don't guess" rule as
     // the unmatched-row create path.
     const nextTerritory = row.territory || location.territory;
+    // A location that name-matches a real COA row is, by definition, now
+    // confirmed by Toyota's own file -- clears any "not on COA" flag it was
+    // carrying from a manual add (see createLocation/the Spend Breakdown
+    // "Add as location" flow), the same way the rest of this row's fields
+    // let the COA overwrite whatever was there before.
     const changed =
       nextEf !== location.ef_job_number ||
       nextWom !== location.wom_job_number ||
       nextPps !== location.pps_job_number ||
       nextRegion !== location.region ||
-      nextTerritory !== location.territory;
+      nextTerritory !== location.territory ||
+      Boolean(location.not_on_coa);
     if (changed) {
       changedCount++;
       if (commit) {
-        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ?, pps_job_number = ?, region = ?, territory = ? WHERE code = ?").run(
+        db.prepare("UPDATE locations SET ef_job_number = ?, wom_job_number = ?, pps_job_number = ?, region = ?, territory = ?, not_on_coa = 0 WHERE code = ?").run(
           nextEf || null,
           nextWom || null,
           nextPps || null,
@@ -5393,14 +5410,70 @@ function runLocationCoaImport(rows, { commit, createUnmatched } = {}) {
     });
   }
 
-  return { results, totalRows: rows.length, matchedCount, changedCount, unmatchedCount, createdCount };
+  // Per Krista: "why can't we just make it so it updates those values only
+  // when a new COA is uploaded" -- rather than requiring every GL report
+  // that came up with unassigned lines to be re-imported by hand, a COA
+  // commit re-resolves any GL line still sitting unmatched against the
+  // locations table as it now stands, in one pass.
+  const rematchedCount = commit ? rematchUnassignedGlEntries().rematchedCount : 0;
+
+  return { results, totalRows: rows.length, matchedCount, changedCount, unmatchedCount, createdCount, rematchedCount };
 }
 
-function setLocationDetails(code, { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber } = {}) {
-  if (!findLocation(code)) return null;
+// Re-resolves every GL line still sitting unmatched (matched_location_code
+// IS NULL) against the locations table as it stands right now -- the same
+// job-number-first/name-fallback logic importGlEntries itself uses, just
+// scoped to the rows that came up blank, instead of a full re-import of
+// the GL report. Called after anything that could newly explain a
+// previously-unmatched line: a COA import (see runLocationCoaImport), or a
+// location created/edited by hand (see the locations routes).
+function rematchUnassignedGlEntries() {
+  const rows = db.prepare("SELECT id, business_unit, location_code FROM gl_entries WHERE matched_location_code IS NULL").all();
+  if (rows.length === 0) return { rematchedCount: 0 };
+
+  const jobNumberCache = new Map();
+  const resolveByJobNumber = (businessUnit) => {
+    if (!businessUnit) return null;
+    if (!jobNumberCache.has(businessUnit)) {
+      const location = findLocationByJobNumber(businessUnit);
+      jobNumberCache.set(businessUnit, location ? location.code : null);
+    }
+    return jobNumberCache.get(businessUnit);
+  };
+  const locationNameCache = new Map();
+  const resolveByName = (raw) => {
+    if (!raw) return null;
+    if (!locationNameCache.has(raw)) locationNameCache.set(raw, matchLocationCodeByName(extractGlLocationName(raw)));
+    return locationNameCache.get(raw);
+  };
+
+  const update = db.prepare("UPDATE gl_entries SET matched_location_code = ?, matched_location_source = ? WHERE id = ?");
+  let rematchedCount = 0;
+  for (const row of rows) {
+    const byJobNumber = resolveByJobNumber(row.business_unit);
+    const matched = byJobNumber || resolveByName(row.location_code);
+    if (!matched) continue;
+    update.run(matched, byJobNumber ? "business_unit" : "name", row.id);
+    rematchedCount++;
+  }
+  return { rematchedCount };
+}
+
+function setLocationDetails(code, { name, efJobNumber, region, womJobNumber, territory, ppsJobNumber, notOnCoa } = {}) {
+  const existing = findLocation(code);
+  if (!existing) return null;
   db.prepare(
-    "UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ?, territory = ?, pps_job_number = ? WHERE code = ?"
-  ).run(name, efJobNumber || null, region || null, womJobNumber || null, territory || "Midwest", ppsJobNumber || null, code);
+    "UPDATE locations SET name = ?, ef_job_number = ?, region = ?, wom_job_number = ?, territory = ?, pps_job_number = ?, not_on_coa = ? WHERE code = ?"
+  ).run(
+    name,
+    efJobNumber || null,
+    region || null,
+    womJobNumber || null,
+    territory || "Midwest",
+    ppsJobNumber || null,
+    notOnCoa !== undefined ? (notOnCoa ? 1 : 0) : existing.not_on_coa,
+    code
+  );
   return findLocation(code);
 }
 
@@ -13675,6 +13748,7 @@ module.exports = {
   getAdminTerritory,
   createLocation,
   runLocationCoaImport,
+  rematchUnassignedGlEntries,
   deleteLocation,
   deleteTechnician,
   setLocationDetails,

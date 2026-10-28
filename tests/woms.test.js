@@ -748,6 +748,98 @@ test("locations: Chart of Accounts import backfills job numbers by name match", 
   });
 });
 
+// Per Krista: "I do want to know when I upload my chart of accounts to add
+// more locations - it does NOT mean I need to upload new GL reports to get
+// the financial analysis accurate right?" -- and the follow-up ask: a COA
+// import (or a location added/edited by hand) re-resolves any GL line
+// still sitting unmatched, instead of requiring a re-import of the GL
+// report that originally came up Unassigned.
+test("locations: a COA import (or a manual add) retroactively re-matches already-imported GL lines that were Unassigned", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+  const XLSX = require("xlsx");
+  const now = new Date().toISOString();
+
+  function insertUnassignedGlRow(businessUnit) {
+    raw
+      .prepare(
+        `INSERT INTO gl_entries (period_number, fiscal_year, gl_date, business_unit, object_account, object_account_code, subsidiary, amount, name_alpha, created_at)
+         VALUES (10, 26, '2026-10-01', ?, '605200 - Gen~Sub NonRecur Lab', '605200', '20920000', 500, 'A Brand New Vendor', ?)`
+      )
+      .run(businessUnit, now);
+    return raw.prepare("SELECT id, matched_location_code FROM gl_entries WHERE business_unit = ?").get(businessUnit);
+  }
+
+  function coaWorkbook(rows) {
+    const headers = [
+      "PPS Contract           Job Number", "E&F Contract Job Number", "E1 WOM                         Job Number",
+      "Description", "E&F", "City", "State",
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, "Job Numbers");
+    return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  }
+
+  await t.test("a COA import that adds a job number re-matches the GL line already sitting Unassigned for it", async () => {
+    const before = insertUnassignedGlRow("100110088001");
+    assert.equal(before.matched_location_code, null, "no location has this job number yet -- starts Unassigned");
+
+    const buffer = coaWorkbook([[null, 100110088001, null, "Brand New Rematch Site", "Region 5", "Nowhere", "ZZ"]]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: { createUnmatched: "true" },
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.createdCount, 1);
+    assert.equal(res.body.rematchedCount, 1, "the previously-unassigned GL line should be re-matched without a GL re-import");
+
+    const after = raw.prepare("SELECT matched_location_code FROM gl_entries WHERE business_unit = '100110088001'").get();
+    const newLocation = (await server.call("GET", "/api/locations", { userId: "ADMIN" })).body.find((l) => l.name === "Brand New Rematch Site");
+    assert.equal(after.matched_location_code, newLocation.code);
+  });
+
+  await t.test("manually adding a location (flagged not on COA) also re-matches any GL line waiting on its job number", async () => {
+    insertUnassignedGlRow("100110088002");
+
+    const createRes = await server.call("POST", "/api/locations", {
+      userId: "ADMIN",
+      body: { code: "MANUAL-ADD-SITE", name: "Manually Added Site", efJobNumber: "100110088002", territory: "Midwest", notOnCoa: true },
+    });
+    assert.equal(createRes.status, 201, JSON.stringify(createRes.body));
+    assert.equal(createRes.body.rematchedCount, 1);
+
+    const after = raw.prepare("SELECT matched_location_code FROM gl_entries WHERE business_unit = '100110088002'").get();
+    assert.equal(after.matched_location_code, "MANUAL-ADD-SITE");
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const manualSite = list.body.find((l) => l.code === "MANUAL-ADD-SITE");
+    assert.equal(manualSite.notOnCoa, true, "flagged as not confirmed by Toyota's own Chart of Accounts");
+  });
+
+  await t.test("a later COA import that name-matches a 'not on COA' location clears the flag", async () => {
+    const buffer = coaWorkbook([[null, 100110088002, null, "Manually Added Site", "Region 2", "Nowhere", "ZZ"]]);
+    const res = await server.upload("/api/locations/import-coa", {
+      userId: "ADMIN",
+      fields: {},
+      fileName: "coa.xlsx",
+      fileContent: buffer,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.changedCount, 1, "clearing the flag counts as a real change even if the job number itself didn't change");
+
+    const list = await server.call("GET", "/api/locations", { userId: "ADMIN" });
+    const manualSite = list.body.find((l) => l.code === "MANUAL-ADD-SITE");
+    assert.equal(manualSite.notOnCoa, false, "Toyota's own COA just confirmed this site for real");
+  });
+});
+
 // WOM Profile Consolidation (Phase 4): the Labor & Financials tab's
 // GL-links route, and the Tasks tab's dedicated route. The latter exists
 // specifically because the general GET /api/tasks defaults to "my work"
