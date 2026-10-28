@@ -2991,7 +2991,20 @@ function presentVendorRow(v) {
     // actually shows this.
     hasPortalAccess: hasVendorPortalAccess(v.id),
     pendingCorrespondenceCount: countPendingVendorCorrespondenceFiles(v.id),
+    // Specifically the vendor's OWN asks (help/PO/invoice-email-failed/
+    // waiver/submission/tax-id-conflict/PO-email-change requests -- every
+    // task source:"vendor_portal" creates) -- distinct from openTaskCount,
+    // which also includes ordinary admin-generated compliance follow-ups a
+    // vendor never asked for. Per Krista: these shouldn't be something an
+    // admin only discovers by opening the profile.
+    vendorRequestCount: countOpenVendorPortalRequests(v.id),
   };
+}
+
+function countOpenVendorPortalRequests(vendorId) {
+  return db
+    .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE related_vendor_id = ? AND source = 'vendor_portal' AND status IN ('open', 'in_progress', 'waiting')`)
+    .get(Number(vendorId)).n;
 }
 
 // How many files a vendor's own correspondence log is still holding that
@@ -3090,6 +3103,17 @@ function listVendors() {
 
   const portalAccessIds = new Set(db.prepare("SELECT vendor_id FROM vendor_credentials").all().map((r) => r.vendor_id));
 
+  const vendorRequestCounts = new Map();
+  for (const r of db
+    .prepare(
+      `SELECT related_vendor_id AS vendorId, COUNT(*) AS n FROM tasks
+       WHERE related_vendor_id IS NOT NULL AND source = 'vendor_portal' AND status IN ('open', 'in_progress', 'waiting')
+       GROUP BY related_vendor_id`
+    )
+    .all()) {
+    vendorRequestCounts.set(r.vendorId, r.n);
+  }
+
   const pendingCorrespondenceCounts = new Map();
   for (const r of db
     .prepare(
@@ -3114,6 +3138,7 @@ function listVendors() {
       lastInvoicedAt: lastInvoiced.get(v.id) || null,
       hasPortalAccess: portalAccessIds.has(v.id),
       pendingCorrespondenceCount: pendingCorrespondenceCounts.get(v.id) || 0,
+      vendorRequestCount: vendorRequestCounts.get(v.id) || 0,
     };
   });
 }

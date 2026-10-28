@@ -541,6 +541,40 @@ test("Vendor portal: upload rejects a category a vendor isn't allowed to submit,
   assert.equal(noAuthRes.status, 401);
 });
 
+// Per Krista: admins shouldn't have to open a vendor's profile to notice
+// it's asking for something -- a visible count on both the vendor's own
+// Overview tab and the Directory list card, not buried.
+test("Vendor portal: a vendor's own open requests (not just any admin task) show up as vendorRequestCount, on both the single-vendor and bulk Directory paths", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const { vendor, taxId, passcode } = await createVendorWithPortalAccess(server);
+  const loginRes = await vendorCall(server, "POST", "/api/vendor-portal/login", { body: { taxId, passcode } });
+  const token = loginRes.body.token;
+
+  const zeroRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  assert.equal(zeroRes.body.find((v) => v.id === vendor.id).vendorRequestCount, 0);
+
+  await vendorCall(server, "POST", "/api/vendor-portal/help-request", { token, body: { message: "test" } });
+  const poEmailRes = await vendorCall(server, "POST", "/api/vendor-portal/po-email-change-request", { token, body: { newPoEmail: "new@test.example" } });
+  assert.equal(poEmailRes.status, 201);
+
+  // A plain admin-created task on the same vendor (not source:"vendor_portal")
+  // must NOT count -- vendorRequestCount is specifically the vendor's own asks.
+  await server.call("POST", "/api/tasks", { userId: "ADMIN", body: { title: "Unrelated admin task", relatedVendorId: vendor.id } });
+
+  const listRes = await server.call("GET", "/api/admin/vendors", { userId: "ADMIN" });
+  const listVendor = listRes.body.find((v) => v.id === vendor.id);
+  assert.equal(listVendor.vendorRequestCount, 2, "2 vendor-portal-sourced requests, the plain admin task excluded");
+
+  // The bulk Directory path (listVendors) and the single-vendor path
+  // (findVendor/presentVendorRow) compute this the same way -- no HTTP
+  // route returns a single vendor directly, so this checks db.findVendor
+  // itself, same as the vendor profile page would get.
+  const db = require("../server/data/db");
+  assert.equal(db.findVendor(vendor.id).vendorRequestCount, 2, "single-vendor path must match the bulk Directory path");
+});
+
 test("Vendor portal: 'Need help' creates an admin-visible task carrying the vendor and message", async (t) => {
   const server = await startServer();
   t.after(() => server.close());

@@ -2593,6 +2593,11 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${v.onboardingStage === "in_progress" ? `<span class="badge badge-draft">Onboarding: In Progress</span>` : ""}
         ${v.onboardingStage === "denied" ? `<span class="badge badge-rejected">Onboarding: Denied</span>` : ""}
         ${v.onboardingStage === "not_required" ? `<span class="badge badge-draft">Onboarding: Not Required</span>` : ""}
+        ${
+          v.vendorRequestCount > 0
+            ? `<span class="badge badge-rejected" title="Help, PO-not-found, invoice-email-failed, waiver, or PO-email-change requests from this vendor, waiting on review">${v.vendorRequestCount} vendor request${v.vendorRequestCount === 1 ? "" : "s"}</span>`
+            : ""
+        }
         ${v.openTaskCount > 0 ? `<span class="chip">${v.openTaskCount} open task${v.openTaskCount === 1 ? "" : "s"}</span>` : ""}
         <button class="btn btn-secondary vendor-open-btn" type="button">Open</button>
       </div>
@@ -2884,6 +2889,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     return `
       <div class="vendor-overview-card vendor-portal-access-card">
         <h4>Vendor portal access</h4>
+        ${
+          v.vendorRequestCount > 0
+            ? `<p class="split-row-warning vendor-request-banner">
+                 ${v.vendorRequestCount} request${v.vendorRequestCount === 1 ? "" : "s"} from this vendor ${v.vendorRequestCount === 1 ? "is" : "are"} waiting on review
+                 (help, a PO they can't find, an invoice that failed to email, or a PO email change) --
+                 <button type="button" class="btn btn-link vendor-request-banner-btn">see Tasks</button>
+               </p>`
+            : ""
+        }
         <p class="review-checklist-hint">
           ${
             v.taxId
@@ -2907,6 +2921,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   }
 
   function wireVendorPortalAccessCard(host, v) {
+    host.querySelector(".vendor-request-banner-btn")?.addEventListener("click", () => openVendorProfile(v.id, "tasks"));
     const generateBtn = host.querySelector(".vendor-portal-generate-btn");
     const revokeBtn = host.querySelector(".vendor-portal-revoke-btn");
     const resultEl = host.querySelector(".vendor-portal-new-passcode");
