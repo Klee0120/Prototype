@@ -523,21 +523,11 @@ function blankJournalEntryFormSheet(title, labelCol) {
   return [titleRow("C&W Services"), titleRow(title), [], labelRow("Date of Request"), labelRow("Requester:"), labelRow("Requester Phone:"), labelRow("For the month of:")];
 }
 
-// The Finance-ready export Krista asked for: "export a reclass submission
-// report exactly like the ones I attached for the submission which is the
-// format needed for finance to do those reclasses" -- same 5 sheets, in the
-// same order, as a real territory submission (Template, RECLASS, GL
-// RECLASS - Expense Detail, REVENUE, EXPENSE -- confirmed against 5 real
-// territory files), built from whatever's currently on the Reclass list
-// for this region/period rather than a new file someone has to fill out by
-// hand.
-router.get("/finance-export", (req, res) => {
-  const { region, fiscalPeriodNumber, fiscalYear, status } = req.query || {};
-  if (!region || !fiscalPeriodNumber || !fiscalYear) {
-    return res.status(400).json({ error: "region, fiscalPeriodNumber, and fiscalYear are all required" });
-  }
-  const periodNumber = Number(fiscalPeriodNumber);
-  const year = Number(fiscalYear);
+// Builds the same 5-sheet workbook both finance-export routes below hand
+// back -- factored out so "just export what's on the list" (GET, no
+// side effects) and "accept everything then export" (POST, below) can
+// never drift apart in what they actually put in the file.
+function buildFinanceExportWorkbook({ region, periodNumber, year, status, producedBy }) {
   // A blank "From" job # ends parseReclassWorkbook's own read of the line
   // items (it's the sheet's own "no more real rows" signal) -- an item with
   // no job # at all can't be posted as a reclass anyway (there's nothing to
@@ -556,7 +546,7 @@ router.get("/finance-export", (req, res) => {
     revisionDate: new Date().toISOString().slice(0, 10),
     reasonForChange: "Monthly GL reclass submission",
     revisionNo: 1,
-    producedBy: req.user.name,
+    producedBy,
   };
 
   const reclassSheetRows = [...reclassMetadataRows(metadata), RECLASS_CATEGORY_HEADER_ROW, RECLASS_SHEET_HEADER, ...items.map((it, i) => reclassItemToSheetRow(it, i))];
@@ -598,6 +588,59 @@ router.get("/finance-export", (req, res) => {
   XLSX.utils.book_append_sheet(workbook, expenseSheet, "EXPENSE");
   const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
   const fileName = `${region}_Reclass_Fiscal_${periodNumber}-${year}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  return { buffer, fileName, itemCount: items.length };
+}
+
+// The Finance-ready export Krista asked for: "export a reclass submission
+// report exactly like the ones I attached for the submission which is the
+// format needed for finance to do those reclasses" -- same 5 sheets, in the
+// same order, as a real territory submission (Template, RECLASS, GL
+// RECLASS - Expense Detail, REVENUE, EXPENSE -- confirmed against 5 real
+// territory files), built from whatever's currently on the Reclass list
+// for this region/period rather than a new file someone has to fill out by
+// hand. A plain look at the file -- never changes any item's status (see
+// /accept-export below for the version that does).
+router.get("/finance-export", (req, res) => {
+  const { region, fiscalPeriodNumber, fiscalYear, status } = req.query || {};
+  if (!region || !fiscalPeriodNumber || !fiscalYear) {
+    return res.status(400).json({ error: "region, fiscalPeriodNumber, and fiscalYear are all required" });
+  }
+  const { buffer, fileName } = buildFinanceExportWorkbook({
+    region,
+    periodNumber: Number(fiscalPeriodNumber),
+    year: Number(fiscalYear),
+    status,
+    producedBy: req.user.name,
+  });
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(buffer);
+});
+
+// Krista's real end-to-end ask: review every line for a region/month (the
+// table's own Yes/No approve-or-reject actions, or a "fix" edit, per item),
+// then hit one button that both locks the whole slice in as sent to
+// Finance and drops the filled-out submission workbook, instead of two
+// separate steps where it's unclear whether anything was ever actually
+// finalized. Marking the batch accepted happens before the file is built,
+// so what gets exported is identical to the GET route's own output -- just
+// with the items' status now reflecting that this file was actually handed
+// to Finance.
+router.post("/accept-export", (req, res) => {
+  const { region, fiscalPeriodNumber, fiscalYear } = req.body || {};
+  if (!region || !fiscalPeriodNumber || !fiscalYear) {
+    return res.status(400).json({ error: "region, fiscalPeriodNumber, and fiscalYear are all required" });
+  }
+  const periodNumber = Number(fiscalPeriodNumber);
+  const year = Number(fiscalYear);
+  const acceptedCount = db.acceptReclassItemsForExport({ region, fiscalPeriodNumber: periodNumber, fiscalYear: year, actorId: req.user.id });
+  const { buffer, fileName, itemCount } = buildFinanceExportWorkbook({ region, periodNumber, year, producedBy: req.user.name });
+  db.addAudit(
+    req.user.id,
+    "RECLASS_ACCEPTED_EXPORTED",
+    `${req.user.name} accepted and exported ${itemCount} reclass line${itemCount === 1 ? "" : "s"} for ${region}, P${periodNumber}/FY${year}` +
+      (acceptedCount ? ` (${acceptedCount} newly marked Submitted)` : "")
+  );
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
   res.send(buffer);

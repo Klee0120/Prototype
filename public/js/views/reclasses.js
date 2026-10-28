@@ -33,6 +33,11 @@ const STATUS_BADGE_CLASS = {
   dismissed: "rejected",
 };
 
+// Statuses still open for an admin's yes/no -- once a line is Submitted
+// (handed to Finance) or Confirmed Posted (verified landed in the GL), the
+// Approve/Reject actions step aside; it's done.
+const OPEN_FOR_REVIEW_STATUSES = ["flagged", "draft", "reviewed"];
+
 // GL Reclasses -- modeled on Krista's real reclass submission sheet (see
 // server/routes/reclasses.js's parser). Submitting/importing a reclass here
 // never changes any posted-actuals figure anywhere else in the app; it's
@@ -124,12 +129,15 @@ export async function renderReclasses(container, options = {}) {
         <button type="button" class="btn btn-primary reclass-import-btn">Import Submission</button>
         <input type="file" class="reclass-import-file" accept=".xlsx,.xls" hidden />
         <button type="button" class="btn btn-secondary reclass-flag-btn">+ Flag a finding</button>
-        <button type="button" class="btn btn-secondary reclass-finance-export-btn" ${regionFilter && fiscalPeriodFilter ? "" : "disabled"}>Export Finance Submission</button>
+        <button type="button" class="btn btn-secondary reclass-finance-export-btn" ${regionFilter && fiscalPeriodFilter ? "" : "disabled"}>Accept &amp; Export</button>
       </div>
       ${
         !(regionFilter && fiscalPeriodFilter)
-          ? `<p class="review-checklist-hint">Pick a location and a month above to export a Finance submission for just that region/period.</p>`
-          : ""
+          ? `<p class="review-checklist-hint">Pick a location and a month above to review and export a Finance submission for just that region/period.</p>`
+          : `<p class="review-checklist-hint">
+               Use Yes/No on each line below to approve or reject it, or open a line to fix its coding first. "Accept &amp; Export"
+               marks every remaining open line for ${escapeHtml(regionFilter)} as Submitted and drops the filled-out workbook for Finance.
+             </p>`
       }
       <p class="review-checklist-hint">
         ${
@@ -212,15 +220,24 @@ export async function renderReclasses(container, options = {}) {
     container.querySelector(".reclass-finance-export-btn").addEventListener("click", async (e) => {
       if (!(regionFilter && fiscalPeriodFilter)) return;
       const [fiscalPeriodNumber, fiscalYear] = fiscalPeriodFilter.split("|");
+      if (
+        !window.confirm(
+          `Accept & Export for ${regionFilter}? Every remaining open line (not already rejected) for this month moves to Submitted, and the Finance workbook downloads. This can't be undone.`
+        )
+      ) {
+        return;
+      }
       const btn = e.target;
       btn.disabled = true;
       const original = btn.textContent;
       btn.textContent = "Exporting…";
       try {
-        await api.downloadFromUrl(
-          `/api/admin/reclasses/finance-export?region=${encodeURIComponent(regionFilter)}&fiscalPeriodNumber=${fiscalPeriodNumber}&fiscalYear=${fiscalYear}`,
+        await api.downloadFromPost(
+          "/api/admin/reclasses/accept-export",
+          { region: regionFilter, fiscalPeriodNumber, fiscalYear },
           `${regionFilter}_Reclass_Submission_P${fiscalPeriodNumber}-FY${fiscalYear}.xlsx`
         );
+        await draw();
       } catch (err) {
         window.alert(err.message);
       } finally {
@@ -372,6 +389,7 @@ export async function renderReclasses(container, options = {}) {
             <th>Root Cause</th>
             <th>Source</th>
             <th>Status</th>
+            <th>Approve?</th>
           </tr>
         </thead>
         <tbody>
@@ -390,6 +408,16 @@ export async function renderReclasses(container, options = {}) {
               <td>${escapeHtml(r.rootCause || "—")}</td>
               <td>${sourceLabel(r.source)}</td>
               <td><span class="badge badge-${STATUS_BADGE_CLASS[r.status] || "draft"}">${escapeHtml(meta.statuses.find((s) => s.value === r.status)?.label || r.status)}</span></td>
+              <td class="reclass-approve-cell">
+                ${
+                  OPEN_FOR_REVIEW_STATUSES.includes(r.status)
+                    ? `
+                  <button type="button" class="btn btn-link reclass-approve-btn" data-id="${r.id}" title="Approve -- keeps it on the list, ready for Accept &amp; Export">Yes</button>
+                  <button type="button" class="btn btn-link reclass-reject-btn" data-id="${r.id}" title="Reject -- removes this line from the list">No</button>
+                `
+                    : "—"
+                }
+              </td>
             </tr>`
             )
             .join("")}
@@ -400,6 +428,29 @@ export async function renderReclasses(container, options = {}) {
       row.addEventListener("click", () => {
         const item = itemsCache.find((r) => r.id === Number(row.dataset.id));
         if (item) openReclassDetailModal(item);
+      });
+    });
+    wrap.querySelectorAll(".reclass-approve-btn").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await api.patch(`/api/admin/reclasses/items/${btn.dataset.id}`, { status: "reviewed" });
+          await draw();
+        } catch (err) {
+          window.alert(err.message);
+        }
+      });
+    });
+    wrap.querySelectorAll(".reclass-reject-btn").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!window.confirm("Reject this reclass? It'll be removed from the list -- this can't be undone.")) return;
+        try {
+          await api.patch(`/api/admin/reclasses/items/${btn.dataset.id}`, { status: "dismissed" });
+          await draw();
+        } catch (err) {
+          window.alert(err.message);
+        }
       });
     });
   }
@@ -532,6 +583,15 @@ export async function renderReclasses(container, options = {}) {
         <h4>Linked PO / GL</h4>
         <div class="reclass-gl-links">Loading…</div>
         <form class="reclass-status-form modal-form">
+          <h4>Submit a fix (corrects the coding Finance will actually post)</h4>
+          <h5>From (coded as)</h5>
+          ${codingFieldsHtml("from", { jobNumber: item.fromJobNumber, objectCode: item.fromObjectCode, subsidiary: item.fromSubsidiary, womNumber: item.fromWomNumber, amount: item.fromAmount })}
+          <h5>To (should be)</h5>
+          ${codingFieldsHtml("to", { jobNumber: item.toJobNumber, objectCode: item.toObjectCode, subsidiary: item.toSubsidiary, womNumber: item.toWomNumber, amount: item.toAmount })}
+          <label class="profile-field">
+            <span>Vendor / source</span>
+            <input name="vendor" value="${escapeHtml(item.vendor || "")}" />
+          </label>
           <label class="profile-field">
             <span>Status</span>
             <select name="status">
@@ -562,6 +622,17 @@ export async function renderReclasses(container, options = {}) {
       const msg = form.querySelector(".save-message");
       try {
         await api.patch(`/api/admin/reclasses/items/${item.id}`, {
+          fromJobNumber: form.fromJobNumber.value.trim(),
+          fromObjectCode: form.fromObjectCode.value.trim(),
+          fromSubsidiary: form.fromSubsidiary.value.trim(),
+          fromWomNumber: form.fromWomNumber.value.trim(),
+          fromAmount: form.fromAmount.value,
+          toJobNumber: form.toJobNumber.value.trim(),
+          toObjectCode: form.toObjectCode.value.trim(),
+          toSubsidiary: form.toSubsidiary.value.trim(),
+          toWomNumber: form.toWomNumber.value.trim(),
+          toAmount: form.toAmount.value,
+          vendor: form.vendor.value.trim(),
           status: form.status.value,
           confirmedGlReference: form.confirmedGlReference.value.trim(),
         });

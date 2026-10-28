@@ -696,3 +696,106 @@ test("Reclasses import: an older submission file with no Period column still imp
   assert.equal(item.subledgerAdjusted, false);
   assert.ok(item.fiscalPeriodNumber != null, "falls back to the import date's own fiscal period when there's no Period column");
 });
+
+// Krista's real workflow: review every line for a region/month (approve,
+// reject, or fix each one), then one button both locks the batch in and
+// drops the Finance workbook.
+test("Reclasses: editing a line's coding (\"submit the fix\"), rejecting one, and Accept & Export finalizing the rest", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  const REGION = "Southeast";
+  const PERIOD = 6;
+  const FY = 40;
+  const now = new Date().toISOString();
+
+  function insertItem(vendor) {
+    raw
+      .prepare(
+        `INSERT INTO reclass_items (
+          from_job_number, from_object_code, from_subsidiary, from_amount,
+          to_job_number, to_object_code, to_subsidiary, to_amount,
+          vendor, comments, region, source, status, fiscal_period_number, fiscal_year, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 'flagged', ?, ?, ?, ?)`
+      )
+      .run("SE-SITE", "605300", "10010010", 100, "SE-SITE", "601000", "10010010", 100, vendor, "needs review", REGION, PERIOD, FY, now, now);
+    return raw.prepare("SELECT last_insert_rowid() AS id").get().id;
+  }
+
+  const fixMeId = insertItem("Wrong Vendor Name");
+  const rejectMeId = insertItem("Should Be Rejected");
+  const approveMeId = insertItem("Approve As-Is");
+
+  await t.test("PATCH can fix a line's coding, not just its status", async () => {
+    const res = await server.call("PATCH", `/api/admin/reclasses/items/${fixMeId}`, {
+      userId: "ADMIN",
+      body: { fromJobNumber: "SE-SITE-FIXED", toObjectCode: "601500", vendor: "Corrected Vendor LLC", status: "reviewed" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.fromJobNumber, "SE-SITE-FIXED");
+    assert.equal(res.body.toObjectCode, "601500");
+    assert.equal(res.body.vendor, "Corrected Vendor LLC");
+    assert.equal(res.body.status, "reviewed");
+    // Untouched fields survive the edit.
+    assert.equal(res.body.fromSubsidiary, "10010010");
+  });
+
+  await t.test("PATCH status:dismissed removes the rejected line outright", async () => {
+    const res = await server.call("PATCH", `/api/admin/reclasses/items/${rejectMeId}`, { userId: "ADMIN", body: { status: "dismissed" } });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.deleted, true);
+    const listRes = await server.call("GET", `/api/admin/reclasses/items?region=${REGION}`, { userId: "ADMIN" });
+    assert.ok(!listRes.body.find((i) => i.id === rejectMeId), "rejected item should no longer appear anywhere");
+  });
+
+  await t.test("400s without region/fiscalPeriodNumber/fiscalYear", async () => {
+    const res = await server.call("POST", "/api/admin/reclasses/accept-export", { userId: "ADMIN", body: {} });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a technician can't reach accept-export", async () => {
+    const res = await server.call("POST", "/api/admin/reclasses/accept-export", {
+      userId: "T1001",
+      body: { region: REGION, fiscalPeriodNumber: PERIOD, fiscalYear: FY },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  const token = await server.tokenFor("ADMIN");
+  const acceptRes = await fetch(`${server.baseUrl}/api/admin/reclasses/accept-export`, {
+    method: "POST",
+    headers: { "x-session-token": token, "Content-Type": "application/json" },
+    body: JSON.stringify({ region: REGION, fiscalPeriodNumber: PERIOD, fiscalYear: FY }),
+  });
+  assert.equal(acceptRes.status, 200);
+  assert.equal(acceptRes.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  const buffer = Buffer.from(await acceptRes.arrayBuffer());
+  const XLSX = require("xlsx");
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  assert.deepEqual(workbook.SheetNames, ["Template", "RECLASS", "GL RECLASS - Expense Detail", "REVENUE", "EXPENSE"]);
+  const templateRows = XLSX.utils.sheet_to_json(workbook.Sheets["Template"], { header: 1, defval: null });
+  assert.ok(
+    templateRows.some((r) => r[0] === "SE-SITE-FIXED.605300.10010010"),
+    "the fixed coding, not the original, should be what gets exported"
+  );
+
+  await t.test("both remaining open items moved to Submitted, the dismissed one stays gone", async () => {
+    const listRes = await server.call("GET", `/api/admin/reclasses/items?region=${REGION}`, { userId: "ADMIN" });
+    const fixed = listRes.body.find((i) => i.id === fixMeId);
+    const approved = listRes.body.find((i) => i.id === approveMeId);
+    assert.equal(fixed.status, "submitted");
+    assert.ok(fixed.submittedAt);
+    assert.equal(approved.status, "submitted");
+    assert.ok(!listRes.body.find((i) => i.id === rejectMeId));
+  });
+
+  await t.test("accept-export on a region/period with nothing open is a no-op, not an error", async () => {
+    const res = await server.call("POST", "/api/admin/reclasses/accept-export", {
+      userId: "ADMIN",
+      body: { region: REGION, fiscalPeriodNumber: PERIOD, fiscalYear: FY },
+    });
+    assert.equal(res.status, 200);
+  });
+});

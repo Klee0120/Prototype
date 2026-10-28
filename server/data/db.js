@@ -4392,12 +4392,31 @@ function updateReclassItem(id, fields) {
   // on a later refresh. This is the Performance tab's reclass-turnaround
   // KPI (created_at to submitted_at).
   const enteringSubmitted = fields.status === "submitted" && existing.status !== "submitted";
+  // The From/To coding + vendor fields -- editable here (not just at
+  // creation) so an admin reviewing a region's monthly list can "submit the
+  // fix" for a line that's wrong, right from the same list, instead of
+  // dismissing and re-flagging it from scratch.
   db.prepare(
     `UPDATE reclass_items SET
+      from_job_number = ?, from_object_code = ?, from_subsidiary = ?, from_wom_number = ?, from_amount = ?,
+      to_job_number = ?, to_object_code = ?, to_subsidiary = ?, to_wom_number = ?, to_amount = ?,
+      vendor = ?, region = ?,
       comments = ?, path_forward = ?, caused_by = ?, root_cause = ?, impacts_final_invoice = ?,
       status = ?, confirmed_gl_reference = ?, updated_at = ?, submitted_at = ?, submitted_by = ?
      WHERE id = ?`
   ).run(
+    fields.fromJobNumber !== undefined ? fields.fromJobNumber || null : existing.fromJobNumber,
+    fields.fromObjectCode !== undefined ? fields.fromObjectCode || null : existing.fromObjectCode,
+    fields.fromSubsidiary !== undefined ? fields.fromSubsidiary || null : existing.fromSubsidiary,
+    fields.fromWomNumber !== undefined ? fields.fromWomNumber || null : existing.fromWomNumber,
+    fields.fromAmount !== undefined ? (fields.fromAmount === "" || fields.fromAmount == null ? null : Number(fields.fromAmount)) : existing.fromAmount,
+    fields.toJobNumber !== undefined ? fields.toJobNumber || null : existing.toJobNumber,
+    fields.toObjectCode !== undefined ? fields.toObjectCode || null : existing.toObjectCode,
+    fields.toSubsidiary !== undefined ? fields.toSubsidiary || null : existing.toSubsidiary,
+    fields.toWomNumber !== undefined ? fields.toWomNumber || null : existing.toWomNumber,
+    fields.toAmount !== undefined ? (fields.toAmount === "" || fields.toAmount == null ? null : Number(fields.toAmount)) : existing.toAmount,
+    fields.vendor !== undefined ? fields.vendor || null : existing.vendor,
+    fields.region !== undefined ? fields.region || null : existing.region,
     fields.comments !== undefined ? fields.comments : existing.comments,
     fields.pathForward !== undefined ? fields.pathForward : existing.pathForward,
     fields.causedBy !== undefined ? fields.causedBy : existing.causedBy,
@@ -4422,6 +4441,29 @@ function updateReclassItem(id, fields) {
     createReclassSmartsheetUpdateTask(updated);
   }
   return updated;
+}
+
+// "Accept & Export": once an admin has been through every line for a
+// region/month (approved or rejected each one, fixed whatever needed
+// fixing), this is the one action that locks the batch in -- every
+// still-open item for that region/period moves to 'submitted' (this app's
+// own "sent to Finance" status), the same transition a single item gets
+// via updateReclassItem, just applied to the whole slice at once. An item
+// with no From job # is left alone -- it was never going to appear in the
+// exported file anyway (see the finance-export route's own filter), so
+// marking it Submitted would be a lie. Already-terminal items
+// (submitted/confirmed_posted) are left untouched rather than their
+// submitted_at getting overwritten by a second accept.
+function acceptReclassItemsForExport({ region, fiscalPeriodNumber, fiscalYear, actorId }) {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE reclass_items SET status = 'submitted', submitted_at = ?, submitted_by = ?, updated_at = ?
+       WHERE region = ? AND fiscal_period_number = ? AND fiscal_year = ?
+         AND status NOT IN ('submitted', 'confirmed_posted') AND from_job_number IS NOT NULL`
+    )
+    .run(now, actorId || null, now, region, fiscalPeriodNumber, fiscalYear);
+  return result.changes;
 }
 
 // Matches the PO Tracker's free-text Admin column against a real admin
@@ -13592,6 +13634,7 @@ module.exports = {
   flagPosForReclass,
   unflagPosForReclass,
   updateReclassItem,
+  acceptReclassItemsForExport,
   VENDOR_COI_FIELDS,
   listVendorRequests,
   addVendorRequest,
