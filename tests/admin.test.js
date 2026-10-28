@@ -1125,3 +1125,24 @@ test("purelyhr verification: time off flagged for manual cross-check", async (t)
     assert.equal(res.status, 409);
   });
 });
+
+// Per Krista: "timekeeping is showing me people that are terminated. Only
+// active should show up on this list to do allocated timecards" -- a
+// terminated tech isn't clocking any more hours to review, same reasoning
+// schedule.js's own technician list already applies.
+test("admin: a terminated technician doesn't show up in the weekly timekeeping review list", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+
+  const meta = await server.call("GET", "/api/meta/current-week");
+  const week = meta.body.weekMonday;
+
+  const before = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+  assert.ok(before.body.find((r) => r.technician.id === "T1001"), "T1001 should be listed while still active");
+
+  db.setEmploymentStatus("T1001", "terminated");
+  t.after(() => db.setEmploymentStatus("T1001", "active"));
+
+  const after = await server.call("GET", `/api/admin/weeks/${week}`, { userId: "ADMIN" });
+  assert.ok(!after.body.find((r) => r.technician.id === "T1001"), "a terminated technician should drop off the review list");
+});

@@ -455,7 +455,16 @@ function computeWeekRow(tech, weekMonday) {
 
 router.get("/weeks/:weekMonday", (req, res) => {
   const { weekMonday } = req.params;
-  const rows = db.listTechnicians().map((tech) => computeWeekRow(tech, weekMonday));
+  // Timekeeping review is about getting current weeks into UKG -- a
+  // terminated/retired tech isn't clocking any more hours to review here.
+  // Same active-only filter schedule.js already applies for the same
+  // reason. A terminated tech's own unfinished last week doesn't disappear
+  // from the system -- it's still on their technician record -- it just
+  // doesn't clutter this week-by-week working list any more.
+  const rows = db
+    .listTechnicians()
+    .filter((t) => t.employment_status === "active")
+    .map((tech) => computeWeekRow(tech, weekMonday));
   res.json(rows);
 });
 
