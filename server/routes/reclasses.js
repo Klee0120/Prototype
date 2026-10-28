@@ -386,11 +386,59 @@ const EXPENSE_DETAIL_COLUMNS = [
   { header: "Purchase Order", key: "purchaseOrder", supported: true },
 ];
 
+// Matches the real submission file's own title block + two-column metric
+// layout exactly (confirmed against 5 real territory files): two title
+// rows, a blank row, then 6 rows pairing a left-side metric (col B/D) with
+// a right-side one (col M/N) -- "% of Reclasses for Region" has no
+// right-side partner, so that row's right half is just left blank.
+// parseReclassWorkbook doesn't care which row/column a label lands in (it
+// scans every pre-header-row cell and reads the next non-null cell to its
+// right in that same row), so this layout is cosmetic, not load-bearing --
+// but it's what Finance is used to seeing.
 function reclassMetadataRows(metadata) {
-  const labelFor = Object.fromEntries(Object.entries(METADATA_LABELS).map(([label, key]) => [key, label]));
-  const order = ["region", "totalGlLineItems", "reclassCount", "totalAmount", "originalDatePublished", "revisionDate", "reasonForChange", "revisionNo", "producedBy"];
-  return order.map((key) => [labelFor[key], metadata[key] == null ? null : metadata[key]]);
+  const titleRow = (value) => {
+    const r = [];
+    r[1] = value;
+    return r;
+  };
+  const metricRow = (leftLabel, leftValue, rightLabel, rightValue) => {
+    const r = [];
+    r[1] = leftLabel;
+    r[3] = leftValue == null ? null : leftValue;
+    r[12] = rightLabel;
+    r[13] = rightValue == null ? null : rightValue;
+    return r;
+  };
+  const pctOfReclassesForRegion = metadata.totalGlLineItems ? metadata.reclassCount / metadata.totalGlLineItems : null;
+  return [
+    titleRow("C&W Services"),
+    titleRow("JOURNAL ENTRY  FORM - RECLASS"),
+    [],
+    metricRow("Metric Calculations", null, "Original Date Published:", metadata.originalDatePublished),
+    metricRow("Region", metadata.region, "Revision Date:", metadata.revisionDate),
+    metricRow("Total GL Line Items for Site", metadata.totalGlLineItems, "Reason for Change", metadata.reasonForChange),
+    metricRow("# of Reclasses for Site", metadata.reclassCount, "Revision No.:", metadata.revisionNo),
+    metricRow("Total Amount of Reclasses for Site", metadata.totalAmount, "Produced By:", metadata.producedBy),
+    metricRow("% of Reclasses for Region", pctOfReclassesForRegion, null, null),
+  ];
 }
+
+// The category-group header row that sits exactly one row above
+// RECLASS_SHEET_HEADER in every real submission file -- these 6 labels
+// span the same impacting/non-impacting/root-cause/path-forward column
+// groups RECLASS_SHEET_HEADER's own columns already land on (confirmed
+// against the real file's column positions, same 21/25/29/34 starts
+// reclassItemToSheetRow/parseReclassWorkbook already use).
+const RECLASS_CATEGORY_HEADER_ROW = (() => {
+  const row = new Array(RECLASS_SHEET_HEADER.length).fill(null);
+  row[16] = "TYPE";
+  row[20] = "Would this have an impact on Final Invoice?";
+  row[21] = "Impacting Adjustments";
+  row[25] = "Non Impacting Adjustments";
+  row[29] = "FINAL";
+  row[34] = "FINAL ACTION TO PREVENT REOCCURANCE (if applicable)";
+  return row;
+})();
 
 // Mirrors parseReclassWorkbook's column reading, in reverse -- each item
 // becomes one row at the exact offsets that parser expects (shift=1, since
@@ -426,24 +474,63 @@ function reclassItemToSheetRow(item, index) {
   return row;
 }
 
+// The real raw JE-upload format Finance actually posts from (confirmed
+// directly against 5 real territory files' own "Template" sheet) -- not
+// the simplified Job#/Object/Subsidiary/WOM/Amount/Vendor/Comments shape
+// this used to produce. One negative leg (pulling the dollars off the
+// wrong coding) and one positive leg (landing them on the right coding)
+// per reclass, same FROM/TO fields as the RECLASS sheet's own From/To
+// block, just laid out the way the JE upload expects it.
 function reclassItemToTemplateRows(item) {
-  // The raw JE-posting format Finance actually keys from: one negative
-  // (pulling the dollars off the wrong coding) and one positive (landing
-  // them on the right coding) line per reclass, same FROM/TO fields as the
-  // RECLASS sheet's own From/To block, just laid out the way a journal
-  // entry upload expects it.
+  const leg = (jobNumber, objectCode, subsidiary, womNumber, amount) => ({
+    // A dotted composite string, not three separate columns -- confirmed
+    // against the real file's own "Account Number" column, e.g.
+    // "100110043046.605200.20920000".
+    accountNumber: [jobNumber, objectCode, subsidiary].join("."),
+    amount,
+    accountDescription: null,
+    subledgerType: womNumber ? "W" : null,
+    subledger: womNumber || null,
+    subledgerDescription: null,
+    // Truncated to 30 chars -- the column's own header says so, and the
+    // real file's own values are cut at exactly 30.
+    remark: (item.vendor || "").slice(0, 30),
+    purchaseOrder: null,
+    purchaseOrderSuffix: null,
+    period: item.fiscalPeriodNumber,
+  });
   return [
-    { jobNumber: item.fromJobNumber, objectCode: item.fromObjectCode, subsidiary: item.fromSubsidiary, womNumber: item.fromWomNumber, amount: -Math.abs(item.fromAmount || 0), vendor: item.vendor, comments: item.comments },
-    { jobNumber: item.toJobNumber, objectCode: item.toObjectCode, subsidiary: item.toSubsidiary, womNumber: item.toWomNumber, amount: Math.abs(item.toAmount != null ? item.toAmount : item.fromAmount || 0), vendor: item.vendor, comments: item.comments },
+    leg(item.fromJobNumber, item.fromObjectCode, item.fromSubsidiary, item.fromWomNumber, -Math.abs(item.fromAmount || 0)),
+    leg(item.toJobNumber, item.toObjectCode, item.toSubsidiary, item.toWomNumber, Math.abs(item.toAmount != null ? item.toAmount : item.fromAmount || 0)),
   ];
+}
+
+// REVENUE and EXPENSE are always-blank boilerplate stubs in every real
+// submission file seen (confirmed against 5 real territory files, even
+// fully-filled ones) -- this just matches their title-block structure for
+// completeness, not real data.
+function blankJournalEntryFormSheet(title, labelCol) {
+  const titleRow = (value) => {
+    const r = [];
+    r[0] = value;
+    return r;
+  };
+  const labelRow = (value) => {
+    const r = [];
+    r[labelCol] = value;
+    return r;
+  };
+  return [titleRow("C&W Services"), titleRow(title), [], labelRow("Date of Request"), labelRow("Requester:"), labelRow("Requester Phone:"), labelRow("For the month of:")];
 }
 
 // The Finance-ready export Krista asked for: "export a reclass submission
 // report exactly like the ones I attached for the submission which is the
-// format needed for finance to do those reclasses" -- same 3 sheets as a
-// real territory submission (RECLASS, Template, GL RECLASS - Expense
-// Detail), built from whatever's currently on the Reclass list for this
-// region/period rather than a new file someone has to fill out by hand.
+// format needed for finance to do those reclasses" -- same 5 sheets, in the
+// same order, as a real territory submission (Template, RECLASS, GL
+// RECLASS - Expense Detail, REVENUE, EXPENSE -- confirmed against 5 real
+// territory files), built from whatever's currently on the Reclass list
+// for this region/period rather than a new file someone has to fill out by
+// hand.
 router.get("/finance-export", (req, res) => {
   const { region, fiscalPeriodNumber, fiscalYear, status } = req.query || {};
   if (!region || !fiscalPeriodNumber || !fiscalYear) {
@@ -472,11 +559,24 @@ router.get("/finance-export", (req, res) => {
     producedBy: req.user.name,
   };
 
-  const reclassSheetRows = [...reclassMetadataRows(metadata), [], RECLASS_SHEET_HEADER, ...items.map((it, i) => reclassItemToSheetRow(it, i))];
+  const reclassSheetRows = [...reclassMetadataRows(metadata), RECLASS_CATEGORY_HEADER_ROW, RECLASS_SHEET_HEADER, ...items.map((it, i) => reclassItemToSheetRow(it, i))];
   const reclassSheet = XLSX.utils.aoa_to_sheet(reclassSheetRows);
 
-  const templateHeader = ["Job #", "Object Code", "Subsidiary", "WOM #", "Amount", "Vendor", "Comments"];
-  const templateRows = items.flatMap(reclassItemToTemplateRows).map((r) => [r.jobNumber, r.objectCode, r.subsidiary, r.womNumber, r.amount, r.vendor, r.comments]);
+  const templateHeader = [
+    "Account Number",
+    "Amount",
+    "Account Description",
+    "Subledger Type (if applicable)",
+    "Subledger (if applicable)",
+    "Subledger Description",
+    "Remark (30 Characters)",
+    "Purchase Order (if applicable)",
+    "Purchase Order Suffix (if applicable)",
+    "Period",
+  ];
+  const templateRows = items
+    .flatMap(reclassItemToTemplateRows)
+    .map((r) => [r.accountNumber, r.amount, r.accountDescription, r.subledgerType, r.subledger, r.subledgerDescription, r.remark, r.purchaseOrder, r.purchaseOrderSuffix, r.period]);
   const templateSheet = XLSX.utils.aoa_to_sheet([templateHeader, ...templateRows]);
 
   const expenseDetailHeader = EXPENSE_DETAIL_COLUMNS.map((c) => c.header);
@@ -485,10 +585,17 @@ router.get("/finance-export", (req, res) => {
   );
   const expenseDetailSheet = XLSX.utils.aoa_to_sheet([expenseDetailHeader, ...expenseDetailRows]);
 
+  const revenueSheet = XLSX.utils.aoa_to_sheet(blankJournalEntryFormSheet("JOURNAL ENTRY  FORM - REVENUE", 4));
+  const expenseSheet = XLSX.utils.aoa_to_sheet(blankJournalEntryFormSheet("JOURNAL ENTRY  FORM - EXPENSE", 5));
+
+  // Sheet order matches every real submission file seen, exactly: Template,
+  // RECLASS, GL RECLASS - Expense Detail, REVENUE, EXPENSE.
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, reclassSheet, "RECLASS");
   XLSX.utils.book_append_sheet(workbook, templateSheet, "Template");
+  XLSX.utils.book_append_sheet(workbook, reclassSheet, "RECLASS");
   XLSX.utils.book_append_sheet(workbook, expenseDetailSheet, "GL RECLASS - Expense Detail");
+  XLSX.utils.book_append_sheet(workbook, revenueSheet, "REVENUE");
+  XLSX.utils.book_append_sheet(workbook, expenseSheet, "EXPENSE");
   const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
   const fileName = `${region}_Reclass_Fiscal_${periodNumber}-${year}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

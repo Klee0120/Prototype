@@ -330,7 +330,7 @@ test("Reclasses import: the 2026-09 template's Period column resolves each line'
 // someone to fill out a new file by hand. Round-tripping the export straight
 // back through the real import parser is the actual correctness bar: if the
 // two ever drift, this is where it shows up.
-test("Reclasses finance-export: builds a 3-sheet Finance workbook that round-trips through the real import parser", async (t) => {
+test("Reclasses finance-export: builds a 5-sheet Finance workbook that round-trips through the real import parser", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const db = require("../server/data/db");
@@ -413,8 +413,54 @@ test("Reclasses finance-export: builds a 3-sheet Finance workbook that round-tri
 
   const workbook = XLSX.read(buffer, { type: "buffer" });
 
-  await t.test("the workbook has exactly the 3 real sheets, in order", () => {
-    assert.deepEqual(workbook.SheetNames, ["RECLASS", "Template", "GL RECLASS - Expense Detail"]);
+  await t.test("the workbook has exactly the 5 real sheets, in order", () => {
+    assert.deepEqual(workbook.SheetNames, ["Template", "RECLASS", "GL RECLASS - Expense Detail", "REVENUE", "EXPENSE"]);
+  });
+
+  await t.test("the RECLASS sheet's metadata block carries the title rows, metrics, % row, and category-group header", () => {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets["RECLASS"], { header: 1, defval: null });
+    assert.equal(rows[0][1], "C&W Services");
+    assert.equal(rows[1][1], "JOURNAL ENTRY  FORM - RECLASS");
+    assert.equal(rows[4][1], "Region");
+    assert.equal(rows[4][3], REGION);
+    assert.equal(rows[8][1], "% of Reclasses for Region");
+    const totalGlLineItems = db.countGlEntriesForRegionPeriod(REGION, PERIOD, FY);
+    assert.equal(rows[8][3], totalGlLineItems ? 2 / totalGlLineItems : null);
+    // The category-group header row sits one row above the real column
+    // header row, at the exact columns the Yes/No, impacting, non-impacting,
+    // root-cause, and path-forward blocks land on.
+    const categoryHeaderRow = rows[9];
+    assert.equal(categoryHeaderRow[16], "TYPE");
+    assert.equal(categoryHeaderRow[20], "Would this have an impact on Final Invoice?");
+    assert.equal(categoryHeaderRow[21], "Impacting Adjustments");
+    assert.equal(categoryHeaderRow[25], "Non Impacting Adjustments");
+    assert.equal(categoryHeaderRow[29], "FINAL");
+    assert.equal(categoryHeaderRow[34], "FINAL ACTION TO PREVENT REOCCURANCE (if applicable)");
+    assert.deepEqual(rows[10].slice(0, 2), ["#", "Job # (Cost Center or Business Unit)"]);
+  });
+
+  await t.test("the Template sheet matches the real 10-column JE-upload format", () => {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets["Template"], { header: 1, defval: null });
+    assert.deepEqual(rows[0], [
+      "Account Number", "Amount", "Account Description", "Subledger Type (if applicable)", "Subledger (if applicable)",
+      "Subledger Description", "Remark (30 Characters)", "Purchase Order (if applicable)", "Purchase Order Suffix (if applicable)", "Period",
+    ]);
+    const allegisFrom = rows.find((r) => r[0] === "FINEXP-SITE.605300.10010010");
+    assert.ok(allegisFrom, "expected the Allegis item's From leg as a dotted Account Number composite");
+    assert.equal(allegisFrom[1], -500);
+    assert.equal(allegisFrom[6], "Allegis Global Solutions");
+    assert.equal(allegisFrom[9], PERIOD);
+    const allegisTo = rows.find((r) => r[0] === "FINEXP-SITE.601000.10010010");
+    assert.ok(allegisTo);
+    assert.equal(allegisTo[1], 500);
+  });
+
+  await t.test("REVENUE and EXPENSE ship as blank boilerplate stub sheets", () => {
+    for (const sheetName of ["REVENUE", "EXPENSE"]) {
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: null });
+      assert.equal(rows[0][0], "C&W Services");
+      assert.equal(rows[1][0], `JOURNAL ENTRY  FORM - ${sheetName}`);
+    }
   });
 
   await t.test("the RECLASS sheet's line items exclude the item with no From job #", () => {
