@@ -6984,6 +6984,21 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   };
 
   async function renderWomOverviewTab(host, w, content, locationByCode, locations) {
+    host.innerHTML = `<p class="empty-note">Loading…</p>`;
+    // "Reported applied" is a Smartsheet-tracker figure and is often blank
+    // until someone fills it in there -- per Krista: she shouldn't have to
+    // switch to the Labor & Financials tab just to see what's actually hit
+    // the GL against this WOM's linked POs. Same fetch/total the
+    // Financials tab's own "Posted to GL" card already uses.
+    let totalPosted = null;
+    try {
+      const glLinks = await api.get(`/api/woms/${encodeURIComponent(w.code)}/gl-links`);
+      totalPosted = glLinks.reduce((sum, p) => sum + (p.actualPaid || 0), 0);
+    } catch {
+      // Non-fatal -- the Overview tab still renders fine without this card
+      // if the GL-links lookup fails; Financials tab is the fallback.
+    }
+
     const metaItems = [
       { label: "Subsidiary", value: w.subsidiaryCode ? escapeHtml(w.subsidiaryCode) : "—" },
       { label: "Maximo #", value: w.maximoNumber ? escapeHtml(w.maximoNumber) : "—" },
@@ -7016,6 +7031,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           <span class="wom-stat-icon">&#9989;</span>
           <div><div class="wom-stat-label">Work completion</div><div class="wom-stat-value">${escapeHtml(workCompletedLabel)}</div></div>
         </div>
+        ${
+          totalPosted != null
+            ? `
+        <div class="wom-stat-card">
+          <span class="wom-stat-icon">&#128179;</span>
+          <div><div class="wom-stat-label">Posted to GL</div><div class="wom-stat-value">$${formatMoney(totalPosted)}</div></div>
+        </div>`
+            : ""
+        }
       </div>
     `;
 
