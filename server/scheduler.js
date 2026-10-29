@@ -120,7 +120,8 @@ function startNightlyBackup() {
     businessDaysOnly: false,
     run: async (key) => {
       const result = await runBackup();
-      console.log(`[nightly backup] ${key} ${TIMEZONE}: db -> ${result.dbBackupPath}, uploads -> ${result.uploadsBackupDir}, pruned ${result.pruned} old`);
+      const offsiteNote = result.offsite.attempted ? `, offsite ${result.offsite.succeeded ? "ok" : `FAILED (${result.offsite.error})`}` : "";
+      console.log(`[nightly backup] ${key} ${TIMEZONE}: db -> ${result.dbBackupPath}, uploads -> ${result.uploadsBackupDir}, pruned ${result.pruned} old${offsiteNote}`);
     },
   });
 }

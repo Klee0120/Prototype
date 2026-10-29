@@ -52,6 +52,18 @@
 # (see below) -- specifically so a routine re-run (e.g. just to add
 # DOMAIN) can never silently "lose" the key and orphan already-encrypted
 # files. You only need to pass it explicitly on the very first deploy.
+#
+# BACKUP_S3_ENDPOINT/BACKUP_S3_BUCKET/BACKUP_S3_REGION/BACKUP_S3_ACCESS_KEY/
+# BACKUP_S3_SECRET_KEY turn on pushing the nightly, already-encrypted
+# database backup (see server/utils/offsiteBackup.js) to an S3-compatible
+# bucket -- AWS S3, DigitalOcean Spaces, MinIO, whatever actually speaks
+# the S3 REST API -- so a copy exists somewhere other than this one
+# droplet's disk. Optional: until all five are set, backups still run,
+# still get encrypted, and still land in server/data/backups/ exactly as
+# before, this is purely additive. Example (DigitalOcean Spaces):
+#   BACKUP_S3_ENDPOINT=https://nyc3.digitaloceanspaces.com
+#   BACKUP_S3_BUCKET=serviceworks-backups
+#   BACKUP_S3_REGION=nyc3
 set -euo pipefail
 
 REPO_URL="https://github.com/Klee0120/Prototype.git"
@@ -63,6 +75,11 @@ SENDGRID_API_KEY="${SENDGRID_API_KEY:-}"
 SENDGRID_FROM="${SENDGRID_FROM:-}"
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 FILE_ENCRYPTION_KEY="${FILE_ENCRYPTION_KEY:-}"
+BACKUP_S3_ENDPOINT="${BACKUP_S3_ENDPOINT:-}"
+BACKUP_S3_BUCKET="${BACKUP_S3_BUCKET:-}"
+BACKUP_S3_REGION="${BACKUP_S3_REGION:-}"
+BACKUP_S3_ACCESS_KEY="${BACKUP_S3_ACCESS_KEY:-}"
+BACKUP_S3_SECRET_KEY="${BACKUP_S3_SECRET_KEY:-}"
 # Unlike every other var above, carry an already-configured key forward
 # automatically if this run didn't pass one -- see this script's header
 # comment for why losing this specific key is catastrophic (not just an
@@ -114,6 +131,11 @@ Environment=SENDGRID_FROM=$SENDGRID_FROM
 Environment=PUBLIC_BASE_URL=$PUBLIC_BASE_URL
 Environment=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 Environment=FILE_ENCRYPTION_KEY=$FILE_ENCRYPTION_KEY
+Environment=BACKUP_S3_ENDPOINT=$BACKUP_S3_ENDPOINT
+Environment=BACKUP_S3_BUCKET=$BACKUP_S3_BUCKET
+Environment=BACKUP_S3_REGION=$BACKUP_S3_REGION
+Environment=BACKUP_S3_ACCESS_KEY=$BACKUP_S3_ACCESS_KEY
+Environment=BACKUP_S3_SECRET_KEY=$BACKUP_S3_SECRET_KEY
 
 [Install]
 WantedBy=multi-user.target

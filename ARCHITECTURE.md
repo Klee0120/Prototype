@@ -152,6 +152,18 @@ treated as a secret is the vendor banking details, and those only ever
 exist inside an uploaded, encrypted ACH/voided-check file, never as a
 database column -- see **Security** below.
 
+That tradeoff makes the live database the single most exposed plaintext
+copy of this data on disk, which is why the *backup* of it is encrypted
+even though the live table isn't -- see **Security posture**'s backup
+paragraph. Full column-level (or whole-file, SQLCipher-style) encryption
+of the live database was considered and deliberately not done: `node:sqlite`
+(this app's built-in, zero-extra-deps driver, see **Stack**) has no
+transparent whole-database encryption support, and per-column encryption
+would break every `SUM`/`GROUP BY` the reporting/reconciliation/export
+pages run directly in SQL -- a rewrite of every aggregate query site, not
+a config change. If that tradeoff ever needs revisiting, treat it as its
+own project, not a quick follow-up.
+
 ### Vendor compliance & the Vendor Portal
 
 Vendors have a compliance checklist (COI/W-9/ACH/etc., `VENDOR_DOC_CATEGORIES`
@@ -178,17 +190,26 @@ if `ANTHROPIC_API_KEY` isn't set.
   consistently, ~1000 call sites).
 - Access control (`files.js`'s `canRead`/`canWrite`) is enforced
   server-side per request, not just hidden in the UI.
-- Nightly automated backup of the DB + uploads folder, 14-day retention --
-  **but currently same-disk, not off-site**. A droplet-level disk failure
-  takes out backups too.
+- Nightly automated backup of the DB + uploads folder, 14-day retention,
+  database snapshot encrypted at rest (`server/utils/backup.js`). An
+  **optional** off-site push (`server/utils/offsiteBackup.js`, see
+  README's **Backups**) exists but isn't configured by default -- until
+  `BACKUP_S3_*` is set, backups are still **same-disk only**, and a
+  droplet-level disk failure (or the droplet being lost entirely) takes
+  out the live data and every backup of it at once.
 
 ## Open risks / known gaps (be honest about these, don't paper over them)
 
 - **Hosting is not currently approved infrastructure.** This runs on a
   personal/departmental DigitalOcean droplet, not a company-sanctioned
   cloud account -- confirmed as a real blocker in conversation with IT,
-  not just a theoretical concern. Don't assume this is where it'll stay.
-- **Backups are same-disk** -- no real disaster recovery yet.
+  not just a theoretical concern. Don't assume this is where it'll stay --
+  see **Moving hosting off this droplet** below for what that actually
+  involves once a destination is picked.
+- **Backups are same-disk by default** -- the database snapshot is
+  encrypted, but a droplet-level disk failure still takes out both the
+  live data and every local backup unless the optional off-site push is
+  configured (see **Security posture** above and README's **Backups**).
 - No formal security audit or pen test has been done. The measures above
   are solid internal-tool practice, not a compliance certification.
 - OCR for reading a UKG timesheet screenshot was evaluated and shelved --
@@ -200,6 +221,40 @@ if `ANTHROPIC_API_KEY` isn't set.
 - Bulk CSV import for Time Off opening balances (vs. one-at-a-time) is
   deferred until there's a real PurelyHR export file to build the column
   mapping against.
+
+## Moving hosting off this droplet
+
+No approved destination has been picked yet, so this isn't a build item --
+it's the checklist for whenever one is. The app was built to make this a
+known, low-risk move rather than a scramble:
+
+- **Nothing here is DigitalOcean-specific.** It's Node.js + Express +
+  `node:sqlite` + local disk for uploads -- see **Stack**. `scripts/
+  deploy.sh` happens to target an Ubuntu droplet behind Caddy, but that's
+  one deployment script, not a dependency the app itself has on
+  DigitalOcean. The same app runs anywhere that can run Node 18+: another
+  cloud VM, a container platform, on-prem.
+- **What actually has to move**: `server/data/store.sqlite` (or wherever
+  `LABOR_DB_PATH` points), the `server/data/uploads/` folder (or
+  `LABOR_UPLOADS_DIR`), and the five secrets currently set as environment
+  variables on the droplet (`FILE_ENCRYPTION_KEY` -- **the uploaded
+  COI/W-9/ACH files are permanently unreadable without this exact key,
+  copy it first** -- plus `SENDGRID_API_KEY`/`SENDGRID_FROM`,
+  `ANTHROPIC_API_KEY`, and `PUBLIC_BASE_URL`). A fresh `runBackup()`
+  (`server/utils/backup.js`) right before cutover gives you a single
+  encrypted, consistent snapshot of the first two to carry over.
+- **What doesn't need to change**: the schema, the query layer, the
+  route/auth/session code, the frontend -- none of it knows or cares what
+  host it's running on.
+- Once a destination is picked, the concrete steps are: stand up Node
+  22 there, `git clone`/`npm install --omit=dev` the repo (same as `scripts/
+  deploy.sh` already does), copy over the DB file + uploads folder + the
+  five secrets above, point a reverse proxy / TLS termination at it,
+  switch DNS, confirm `npm test` and a login both work against the new
+  box, then decommission the droplet. `scripts/deploy.sh` can likely be
+  adapted almost as-is for whatever the new target turns out to be (a
+  systemd + Caddy setup isn't DigitalOcean-specific either) -- expect to
+  change the install steps, not the app.
 
 ## Testing conventions
 

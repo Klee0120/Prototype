@@ -2694,12 +2694,36 @@ happen.
   `-wal` file) into `server/data/backups/` (override with
   `LABOR_BACKUP_DIR`), keeping the most recent 14 of each by default
   (override with `LABOR_BACKUP_RETENTION`) and deleting older ones
-  automatically. This is **droplet-local** protection against an
-  application-level mistake (a bad import, an accidental delete) or disk
-  corruption — it does not protect against the droplet itself being
-  destroyed or lost. For that, turn on DigitalOcean's own droplet
-  snapshots in its control panel; that's a hosting-account setting only
-  the account owner can enable, not something this app can do for itself.
+  automatically.
+  - **The database snapshot is encrypted at rest** (`store-*.sqlite.enc`,
+    AES-256-GCM via the same `FILE_ENCRYPTION_KEY` the uploaded documents
+    already use) — the live database itself stores GL/PO/WOM financial
+    figures as plain columns on purpose (see **Data model** / GL below —
+    reporting needs to `SUM`/`GROUP BY` them directly), which makes a raw
+    copy of it the single most exposed plaintext copy of that data
+    anywhere on disk. `runBackup()` fails closed (no backup is written at
+    all) if `FILE_ENCRYPTION_KEY` isn't configured, same rule uploads
+    already follow, rather than silently writing an unencrypted
+    financial-data snapshot. The uploads-folder copy needs no separate
+    encryption — every file under it is already individually encrypted at
+    rest before it's ever written.
+  - **Optional off-site push** (`server/utils/offsiteBackup.js`) — once
+    `BACKUP_S3_ENDPOINT`/`BACKUP_S3_BUCKET`/`BACKUP_S3_REGION`/
+    `BACKUP_S3_ACCESS_KEY`/`BACKUP_S3_SECRET_KEY` are all set, the nightly
+    run also pushes that same encrypted database snapshot to an
+    S3-compatible bucket (AWS S3, DigitalOcean Spaces, MinIO — anything
+    speaking the S3 REST API), signed with a hand-rolled SigV4 PUT over
+    Node's built-in `fetch`/`crypto` rather than pulling in the AWS SDK.
+    No-op until configured — the local backup runs and succeeds exactly
+    as before either way — and a failed off-site push never fails the
+    local backup itself (logged, not thrown).
+  - This is still **droplet-local** protection against an application-level
+    mistake (a bad import, an accidental delete) or disk corruption — the
+    off-site push is what actually protects against the droplet itself
+    being destroyed or lost; without it configured, also turn on
+    DigitalOcean's own droplet snapshots in its control panel (a
+    hosting-account setting only the account owner can enable, not
+    something this app can do for itself).
 - **Vendor compliance reminders** (`server/utils/
   vendorComplianceReminders.js`). The automated half of "chasing" a vendor
   for an expired or soon-to-expire COI/W-9/ACH: once a day, it finds every
