@@ -1286,6 +1286,22 @@ if (!hasColumn("woms", "source_reclass_amount_requested")) {
   db.exec("ALTER TABLE woms ADD COLUMN source_reclass_submitted INTEGER");
   db.exec("ALTER TABLE woms ADD COLUMN source_reclass_to_raw TEXT");
 }
+// The real PSE Request intake form's own fields that have no existing home
+// on this table -- see createWomRequest below. A WOM created this way (vs.
+// synced in from Smartsheet) has requested_by_tech_id set and
+// smartsheet_row_id null; everything downstream (estimate/applied costs,
+// Toyota approval, reclass, invoicing) reuses the columns above unchanged,
+// since those are the same fields Smartsheet sync already writes into.
+if (!hasColumn("woms", "requested_by_tech_id")) {
+  db.exec("ALTER TABLE woms ADD COLUMN requested_by_tech_id TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN background TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN exclusions TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN assumptions TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN notes TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN property_code TEXT");
+  db.exec("ALTER TABLE woms ADD COLUMN labor_hours_estimate REAL");
+  db.exec("ALTER TABLE woms ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0");
+}
 // One-time cleanup for tasks left behind by the old 9-stage PSE state
 // machine this app used before the WOM lifecycle checklist replaced it
 // ("Produce PSE for X", "Follow up: Toyota approval for X", etc.) --
@@ -5701,6 +5717,93 @@ function createWom(code, description, locationCode, budgetHours, subsidiaryCode,
     budgetHours == null ? null : Number(budgetHours),
     subsidiaryCode || null,
     maximoNumber || null
+  );
+  return findWom(code);
+}
+
+// A placeholder code for a WOM that doesn't have a real one yet -- same
+// shape Smartsheet-synced rows already use (see the sync code's own
+// `PENDING-${rowId}`), just with no Smartsheet row to key off of. The
+// collision retry is defensive, not expected to ever actually loop --
+// two requests landing in the exact same millisecond is the only way it
+// could collide.
+function generatePendingWomRequestCode() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = `PENDING-REQ-${Date.now()}${attempt > 0 ? `-${attempt}` : ""}`;
+    if (!findWom(code)) return code;
+  }
+  throw new Error("Could not generate a unique request code -- try again");
+}
+
+// The real PSE Request form, built natively instead of synced in from
+// Smartsheet -- see this table's own comment on requested_by_tech_id.
+// Deliberately does NOT call checkWomLifecycleAutoSteps: that helper's
+// "a request date on the tracker means Toyota approval already cleared"
+// heuristic is calibrated for historical rows a sync is seeing for the
+// first time, which is never true for a request made through this
+// function just now -- "Send PSE to Toyota" is still a real, separate,
+// not-yet-done step for a WOM created this way.
+function createWomRequest(techId, fields) {
+  const tech = findTechnician(techId);
+  if (!tech) throw new Error("Technician not found");
+  const {
+    description,
+    background,
+    locationCode,
+    propertyCode,
+    subsidiaryCode,
+    laborHoursEstimate,
+    estimatedContracted,
+    estimatedMaterials,
+    estimatedTax,
+    estimatedContingency,
+    vendorId,
+    maximoNumber,
+    urgent,
+    notes,
+    assumptions,
+    exclusions,
+  } = fields || {};
+
+  if (!description || !String(description).trim()) throw new Error("Project Name is required");
+  if (!background || !String(background).trim()) throw new Error("Background is required");
+  if (!locationCode || !findLocation(locationCode)) throw new Error("A valid Site Location is required");
+  if (!propertyCode || !String(propertyCode).trim()) throw new Error("Property Code is required");
+  if (!subsidiaryCode || !String(subsidiaryCode).trim()) throw new Error("Subsidiary Code is required");
+  const laborHours = Number(laborHoursEstimate);
+  if (!(laborHours > 0)) throw new Error("Labor Hrs must be a positive number");
+  const contracted = Number(estimatedContracted);
+  if (!(contracted >= 0)) throw new Error("Estimate PO $ (Contracted Services) is required -- enter 0 for a C&W-labor-only job");
+  if (vendorId != null && !findVendor(vendorId)) throw new Error("Vendor not found");
+
+  const code = generatePendingWomRequestCode();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO woms
+      (code, description, status, location_code, property_code, subsidiary_code, maximo_number, vendor_id,
+       labor_hours_estimate, estimated_contracted, estimated_materials, estimated_tax, estimated_contingency,
+       background, exclusions, assumptions, notes, urgent, requested_by_tech_id, date_requested)
+     VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    code,
+    String(description).trim(),
+    locationCode,
+    String(propertyCode).trim(),
+    String(subsidiaryCode).trim(),
+    maximoNumber ? String(maximoNumber).trim() : null,
+    vendorId != null ? Number(vendorId) : null,
+    round2(laborHours),
+    round2(contracted),
+    round2(Number(estimatedMaterials) || 0),
+    round2(Number(estimatedTax) || 0),
+    round2(Number(estimatedContingency) || 0),
+    String(background).trim(),
+    exclusions && String(exclusions).trim() ? String(exclusions).trim() : "None",
+    assumptions && String(assumptions).trim() ? String(assumptions).trim() : "Work to be Performed Monday thru Friday between 7-5PM",
+    notes ? String(notes).trim() : null,
+    urgent ? 1 : 0,
+    techId,
+    now.slice(0, 10)
   );
   return findWom(code);
 }
@@ -13969,6 +14072,7 @@ module.exports = {
   hasWomInvoiceDocument,
   listWomsNeedingInvoicing,
   createWom,
+  createWomRequest,
   countWomAllocatedHours,
   womHoursByTechnician,
   deleteWom,

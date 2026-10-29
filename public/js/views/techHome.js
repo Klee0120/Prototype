@@ -6,7 +6,7 @@ import { renderAttachments } from "./attachments.js";
 import { renderSchedule } from "./schedule.js";
 import { renderTaskBoard } from "./tasks.js";
 import { renderMyTimeOff } from "./timeOff.js";
-import { WOM_REQUEST_FORM_URL, CW_PO_REQUEST_FORM_URL } from "../constants.js";
+import { CW_PO_REQUEST_FORM_URL } from "../constants.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
 import { openModal, closeModal } from "../modal.js";
 
@@ -467,7 +467,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
 
     content.innerHTML = `
       <div class="review-actions">
-        <a class="btn btn-secondary" href="${WOM_REQUEST_FORM_URL}" target="_blank" rel="noopener">Request a new WOM ↗</a>
+        <button type="button" class="btn btn-secondary tech-request-wom-btn">+ Request a WOM</button>
         <button type="button" class="btn btn-secondary tech-request-po-btn">Request a C&amp;W PO ↗</button>
       </div>
       <div class="tabs wom-guide-toggle">
@@ -477,6 +477,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
       <div id="tech-wom-view"></div>
     `;
 
+    content.querySelector(".tech-request-wom-btn").addEventListener("click", () => openRequestWomModal(locations));
     content.querySelector(".tech-request-po-btn").addEventListener("click", openRequestCwPoModal);
     content.querySelectorAll(".wom-guide-toggle [data-view]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -617,6 +618,118 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
       } catch (err) {
         msg.textContent = err.message;
       }
+    });
+  }
+
+  // The native PSE Request intake form -- replaces the external Smartsheet
+  // form as the "Request a new WOM" entry point. Creates a real WOM
+  // (status 'pending', no WOM # yet) via db.createWomRequest, same as a
+  // Smartsheet-synced row with no WOM # -- it shows up everywhere a
+  // pending WOM already does (Tech Allocation, WOM tab), no separate
+  // "requests" list to build. The file upload is a second call after the
+  // WOM is created (same two-step shape the vendor correspondence
+  // attach-more flow already uses), so a failed upload never loses the
+  // request itself -- the WOM still exists even if attaching the quote
+  // has to be retried.
+  async function openRequestWomModal(locations) {
+    let vendors;
+    try {
+      vendors = await api.get("/api/vendors");
+    } catch (err) {
+      alert(err.message || "Couldn't load the vendor list.");
+      return;
+    }
+    const locationOptions = locations
+      .map((l) => `<option value="${escapeHtml(l.code)}" ${l.code === state.user.homeLocationCode ? "selected" : ""}>${escapeHtml(l.name)}</option>`)
+      .join("");
+    const vendorOptions = vendors.map((v) => `<option value="${v.id}">${escapeHtml(v.name)}</option>`).join("");
+
+    const { body, close } = openModal({
+      title: "Project Scope Estimate (PSE) Request",
+      size: "large",
+      bodyHtml: `
+        <p class="review-checklist-hint">
+          A PSE is required for all projects over $7,500 and for any out-of-scope work. Complete the required
+          fields below and attach the vendor quote/supporting documentation before submitting.
+        </p>
+        <form class="modal-form wom-request-form">
+          <label class="profile-field"><span>Project Name</span><input name="description" required /></label>
+          <label class="profile-field">
+            <span>Background</span>
+            <span class="wom-request-hint">Briefly describe the requested work, why it is needed, and what the vendor will be completing.</span>
+            <textarea name="background" rows="3" required></textarea>
+          </label>
+          <label class="profile-field"><span>Site Location</span><select name="locationCode" required><option value="">Choose one</option>${locationOptions}</select></label>
+          <label class="profile-field"><span>Property Code</span><input name="propertyCode" required /></label>
+          <label class="profile-field"><span>Subsidiary Code</span><input name="subsidiaryCode" required /></label>
+          <label class="profile-field">
+            <span>Labor Hrs</span>
+            <span class="wom-request-hint">Total projected C&amp;W technician labor hours. One number only (e.g. 12), not a range.</span>
+            <input name="laborHoursEstimate" type="number" min="0.5" step="0.5" required />
+          </label>
+          <label class="profile-field">
+            <span>Estimate PO $ (Contracted Services)</span>
+            <span class="wom-request-hint">The vendor's quoted price. If this is a C&amp;W-labor-only job, enter 0.</span>
+            <input name="estimatedContracted" type="number" min="0" step="0.01" required />
+          </label>
+          <label class="profile-field"><span>Estimate Materials $</span><input name="estimatedMaterials" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="profile-field"><span>Estimate Sales Tax</span><input name="estimatedTax" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="profile-field"><span>Estimated Contingency $</span><input name="estimatedContingency" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="profile-field"><span>Vendor</span><select name="vendorId"><option value="">No vendor (C&amp;W labor only)</option>${vendorOptions}</select></label>
+          <label class="profile-field"><span>Maximo # (if there is one)</span><input name="maximoNumber" /></label>
+          <label class="wom-request-urgent"><input type="checkbox" name="urgent" /> Urgent -- emergency work, work already completed, or needs an urgent PO issued for the vendor</label>
+          <label class="profile-field"><span>Vendor quote / supporting documentation</span><input type="file" name="file" required /></label>
+          <label class="profile-field"><span>Notes (optional)</span><input name="notes" /></label>
+          <label class="profile-field"><span>Assumptions</span><input name="assumptions" placeholder="Work to be Performed Monday thru Friday between 7-5PM" /></label>
+          <label class="profile-field"><span>Exclusions</span><input name="exclusions" placeholder="None" /></label>
+          <div class="modal-form-actions"><button type="submit" class="btn btn-primary">Submit Request</button></div>
+          <span class="save-message"></span>
+        </form>
+      `,
+    });
+    const form = body.querySelector(".wom-request-form");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = form.querySelector(".save-message");
+      const submitBtn = form.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      let wom;
+      try {
+        wom = await api.post("/api/woms/requests", {
+          description: form.description.value.trim(),
+          background: form.background.value.trim(),
+          locationCode: form.locationCode.value,
+          propertyCode: form.propertyCode.value.trim(),
+          subsidiaryCode: form.subsidiaryCode.value.trim(),
+          laborHoursEstimate: Number(form.laborHoursEstimate.value),
+          estimatedContracted: Number(form.estimatedContracted.value),
+          estimatedMaterials: Number(form.estimatedMaterials.value) || 0,
+          estimatedTax: Number(form.estimatedTax.value) || 0,
+          estimatedContingency: Number(form.estimatedContingency.value) || 0,
+          vendorId: form.vendorId.value ? Number(form.vendorId.value) : null,
+          maximoNumber: form.maximoNumber.value.trim(),
+          urgent: form.urgent.checked,
+          notes: form.notes.value.trim(),
+          assumptions: form.assumptions.value.trim(),
+          exclusions: form.exclusions.value.trim(),
+        });
+      } catch (err) {
+        msg.textContent = err.message;
+        submitBtn.disabled = false;
+        return;
+      }
+      const file = form.file.files[0];
+      if (file) {
+        try {
+          await api.uploadFile("wom", wom.code, "quote", file);
+        } catch (err) {
+          close();
+          alert(`Your request was submitted, but the file didn't attach: ${err.message}. You can try attaching it again from this WOM's own detail view.`);
+          return;
+        }
+      }
+      close();
+      alert(`PSE request submitted. It's been added as a pending project -- an admin will pick it up from here.`);
     });
   }
 

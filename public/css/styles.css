@@ -7578,6 +7578,20 @@ tr.gl-import-shrink-row {
   display: none;
 }
 
+.wom-request-hint {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+  margin-top: -2px;
+}
+
+.wom-request-urgent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
 .timeoff-tier-toggle {
   grid-column: 1 / -1;
   display: flex;

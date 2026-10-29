@@ -187,12 +187,45 @@ function presentWom(w, vendorNameById) {
     // #, or the full billing checklist complete) while the app's own status
     // still shows it open or earlier -- see computeWomStatusConflict above.
     statusConflict: computeWomStatusConflict(w),
+    // Set only for a WOM created through the native PSE Request form (see
+    // db.createWomRequest) rather than synced in from Smartsheet --
+    // requestedByTechId is null for every synced-in WOM, including ones
+    // with a real requester name on the sheet (that's sourceRequestedBy,
+    // free text, above).
+    requestedByTechId: w.requested_by_tech_id,
+    propertyCode: w.property_code,
+    laborHoursEstimate: w.labor_hours_estimate,
+    background: w.background,
+    exclusions: w.exclusions,
+    assumptions: w.assumptions,
+    notes: w.notes,
+    urgent: Boolean(w.urgent),
   };
 }
 
 router.get("/", requireAuth, (req, res) => {
   const vendorNameById = db.getVendorNameMap();
   res.json(db.listWoms().map((w) => presentWom(w, vendorNameById)));
+});
+
+// The native PSE Request intake form (see db.createWomRequest) -- a
+// technician requesting their own project, or an admin submitting one on a
+// technician's behalf (techId in the body), the same "self or admin"
+// pattern the Time Off request route already uses. Creates a real WOM in
+// 'pending' status, same as a Smartsheet-synced row with no WOM # yet.
+router.post("/requests", requireAuth, (req, res) => {
+  const { techId, ...fields } = req.body || {};
+  const targetTechId = techId || req.user.id;
+  if (req.user.role !== "admin" && req.user.id !== targetTechId) {
+    return res.status(403).json({ error: "Not allowed to submit a request for this person" });
+  }
+  try {
+    const wom = db.createWomRequest(targetTechId, fields);
+    db.addAudit(req.user.id, "WOM_REQUESTED", `${req.user.name} requested a new WOM: "${wom.description}" (${wom.code})`);
+    res.status(201).json(presentWom(wom));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // The WOM lifecycle checklist: the Financials-wide list of WOMs still
