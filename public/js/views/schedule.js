@@ -2,6 +2,7 @@ import { api } from "../api.js";
 import { wireDateMaskInput, isoFromUs } from "../dateMask.js";
 import { state, escapeHtml } from "../app.js";
 import { openModal } from "../modal.js";
+import { openRequestForm as openTimeOffRequestForm, loadTimeOffTypes } from "./timeOff.js";
 
 const DAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -401,15 +402,15 @@ export async function renderSchedule(container, options = {}) {
                <button class="btn btn-ghost" id="schedule-next-month">Next &rarr;</button>`
         }
         <select id="schedule-location-filter"><option value="">All sites</option>${locationOptions}</select>
-        <button class="btn btn-secondary" id="schedule-add-toggle">+ Schedule a WOM</button>
+        <button class="btn btn-secondary" id="schedule-add-toggle">+ Schedule</button>
       </div>
       <p class="review-checklist-hint">
         WOM projects scheduled out by date, across all technicians, plus approved time off (color-coded
         by type -- see the legend) -- E&amp;F time isn't shown here (see Tech Allocation or Weekly Review
         for that). WOM dates are <strong>tentative</strong> -- each technician's own planned allocation
         for that day, not a locked commitment -- so treat them as a working plan, not a confirmed
-        schedule. Click a WOM entry for its own details, or <strong>+ Schedule a WOM</strong> to put one
-        on the calendar ${isAdmin ? "for any technician" : "for yourself"} across one or more days at once.
+        schedule. Click a WOM entry for its own details, or <strong>+ Schedule</strong> to put a WOM project
+        or a time-off request on the calendar ${isAdmin ? "for any technician" : "for yourself"}.
       </p>
       <div class="schedule-legend">
         <span class="schedule-legend-item"><span class="schedule-legend-swatch schedule-legend-swatch-accent"></span>WOM project</span>
@@ -480,7 +481,7 @@ export async function renderSchedule(container, options = {}) {
       draw();
     });
     container.querySelector("#schedule-add-toggle").addEventListener("click", () => {
-      openAddModal();
+      openScheduleChooser();
     });
 
     const host = container.querySelector("#schedule-calendar-host");
@@ -812,6 +813,46 @@ export async function renderSchedule(container, options = {}) {
     // edit a given week's allocations server-side. A range can span more
     // than one week, so this batches one GET+PUT per affected week rather
     // than one per day.
+    // Entry point for the "+ Schedule" button -- a WOM project and a
+    // time-off request are both things that land on this same calendar
+    // (see TIME_OFF_COLOR_CLASS / the legend above), so asking which one
+    // up front routes to the right existing form instead of needing two
+    // separate buttons.
+    function openScheduleChooser() {
+      const { body, close } = openModal({
+        title: "What do you want to schedule?",
+        bodyHtml: `
+          <div class="schedule-chooser">
+            <button type="button" class="btn btn-secondary schedule-chooser-option" data-kind="wom">
+              WOM project
+              <span>Charge planned hours to a job at a location.</span>
+            </button>
+            <button type="button" class="btn btn-secondary schedule-chooser-option" data-kind="timeoff">
+              Time off
+              <span>Request PTO, sick, floating holiday, or bereavement.</span>
+            </button>
+          </div>
+        `,
+      });
+      body.querySelector('[data-kind="wom"]').addEventListener("click", () => {
+        close();
+        openAddModal();
+      });
+      body.querySelector('[data-kind="timeoff"]').addEventListener("click", async () => {
+        close();
+        const types = await loadTimeOffTypes();
+        const techId = isAdmin ? (activeTechnicians[0] && activeTechnicians[0].id) || "" : state.user.id;
+        openTimeOffRequestForm({
+          types,
+          techId,
+          people: isAdmin ? activeTechnicians : undefined,
+          onSubmitted: async () => {
+            await draw();
+          },
+        });
+      });
+    }
+
     function openAddModal() {
       const techOptions = isAdmin
         ? activeTechnicians.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("")

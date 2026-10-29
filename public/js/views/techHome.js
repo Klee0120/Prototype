@@ -13,6 +13,79 @@ import { openModal, closeModal } from "../modal.js";
 const WOM_STATUS_LABELS = { open: "Open", invoiced: "Invoiced", closed: "Closed" };
 const WOM_STATUS_BADGE_CLASS = { open: "approved", invoiced: "submitted", closed: "rejected" };
 
+// A deliberately thin coworker directory for techs -- name and home
+// location only, searchable, nothing clickable into a real profile (that's
+// the admin Roster's job, with full PII, gated to admin). See GET
+// /api/technicians/directory, which already limits the fields server-side.
+async function drawRosterDirectory(content) {
+  let directory;
+  try {
+    directory = await api.get("/api/technicians/directory");
+  } catch (err) {
+    content.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  const locationNames = [...new Set(directory.map((d) => d.locationName).filter(Boolean))].sort();
+
+  content.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h2 class="page-header-title">Roster</h2>
+        <p class="page-header-subtitle">Everyone active on the team -- name and home location only.</p>
+      </div>
+    </div>
+    <div class="roster-filters">
+      <label class="roster-filter-field">
+        <span>Search by name</span>
+        <input type="text" class="roster-directory-search" placeholder="Name…" />
+      </label>
+      <label class="roster-filter-field">
+        <span>Location</span>
+        <select class="roster-directory-location">
+          <option value="">All</option>
+          ${locationNames.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("")}
+        </select>
+      </label>
+    </div>
+    <div class="roster-table-wrap">
+      <table class="detail-table roster-table">
+        <thead><tr><th>Name</th><th>Location</th></tr></thead>
+        <tbody>
+          ${directory
+            .map(
+              (d) => `<tr data-name="${escapeHtml(d.name.toLowerCase())}" data-location="${escapeHtml(d.locationName || "")}">
+            <td>${escapeHtml(d.name)}</td><td>${escapeHtml(d.locationName || "—")}</td>
+          </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <p class="empty-note roster-directory-empty" hidden>No one matches.</p>
+    </div>
+  `;
+
+  const searchInput = content.querySelector(".roster-directory-search");
+  const locationSelect = content.querySelector(".roster-directory-location");
+  const rows = [...content.querySelectorAll(".roster-table tbody tr")];
+  const emptyNote = content.querySelector(".roster-directory-empty");
+
+  // Filtering toggles row visibility in place rather than re-rendering the
+  // table, so the search input never loses focus/cursor position mid-type.
+  function applyFilters() {
+    const search = searchInput.value.trim().toLowerCase();
+    const location = locationSelect.value;
+    let visibleCount = 0;
+    rows.forEach((row) => {
+      const matches = (!search || row.dataset.name.includes(search)) && (!location || row.dataset.location === location);
+      row.hidden = !matches;
+      if (matches) visibleCount += 1;
+    });
+    emptyNote.hidden = visibleCount > 0;
+  }
+  searchInput.addEventListener("input", applyFilters);
+  locationSelect.addEventListener("change", applyFilters);
+}
+
 function formatMoney(n) {
   if (n == null) return "—";
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -262,6 +335,7 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     ["week", t("My Week")],
     ["timeoff", t("Time Off")],
     ["schedule", t("Schedule")],
+    ["roster", t("Roster")],
     ["locations", t("Locations &amp; WOM")],
     ["vendors", t("Vendors")],
     ["documents", t("My Documents")],
@@ -291,11 +365,12 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     const content = container.querySelector("#tab-content");
     // Same shared loading state as the admin view's draw() -- every tab
     // here fetches before rendering, so this covers all of them for free.
-    const loadingLabels = { mywork: "My Work", week: "My Week", timeoff: "Time Off", schedule: "Schedule", locations: "Locations & WOM", vendors: "Vendors", documents: "My Documents" };
+    const loadingLabels = { mywork: "My Work", week: "My Week", timeoff: "Time Off", schedule: "Schedule", roster: "Roster", locations: "Locations & WOM", vendors: "Vendors", documents: "My Documents" };
     renderLoadingState(content, loadingLabelFor(loadingLabels[activeTab] || "content"));
     if (activeTab === "mywork") await renderTaskBoard(content);
     else if (activeTab === "timeoff") await renderMyTimeOff(content);
     else if (activeTab === "schedule") await renderSchedule(content);
+    else if (activeTab === "roster") await drawRosterDirectory(content);
     else if (activeTab === "locations") await drawLocationsAndWoms(content);
     else if (activeTab === "vendors") await drawApprovedVendors(content);
     else if (activeTab === "documents") await drawMyDocuments(content);

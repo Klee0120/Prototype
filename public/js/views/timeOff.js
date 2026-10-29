@@ -9,6 +9,7 @@ async function loadTypes() {
   if (!typesCache) typesCache = await api.get("/api/time-off/types");
   return typesCache;
 }
+export { loadTypes as loadTimeOffTypes };
 
 function typeLabel(types, value) {
   return (types.find((t) => t.value === value) || {}).label || value;
@@ -18,6 +19,109 @@ const STATUS_BADGE_CLASS = { pending: "submitted", approved: "approved", denied:
 
 function dateRangeLabel(r) {
   return r.startDate === r.endDate ? r.startDate : `${r.startDate} to ${r.endDate}`;
+}
+
+// ---- Time-off-only month calendar (shared by the self-service and
+// per-technician admin views below). The Schedule tab's own calendar
+// already blends this same approved-time-off data with WOM work across
+// everyone (see server/routes/schedule.js's GET /:month/time-off); this
+// narrows that same feed to one person, for the Time Off tab itself.
+const CAL_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const CAL_DAY_HEADERS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const CAL_TIME_OFF_COLOR_CLASS = {
+  vacation: "schedule-timeoff-chip-yellow",
+  holiday: "schedule-timeoff-chip-yellow",
+  sick: "schedule-timeoff-chip-blue",
+  floating_holiday: "schedule-timeoff-chip-ok",
+  bereavement: "schedule-timeoff-chip-violet",
+};
+
+function calCurrentMonthIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function calShiftMonth(monthIso, delta) {
+  const [y, m] = monthIso.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function calAddDaysIso(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + n);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+function calMondayOfIso(dateIso) {
+  const [y, m, d] = dateIso.split("-").map(Number);
+  const mondayIndex = (new Date(y, m - 1, d).getDay() + 6) % 7; // 0=Mon..6=Sun
+  return calAddDaysIso(dateIso, -mondayIndex);
+}
+
+async function renderTimeOffCalendar(host, { techId, types, initialMonth }) {
+  let month = initialMonth || calCurrentMonthIso();
+
+  async function draw() {
+    let byDate;
+    try {
+      byDate = await api.get(`/api/schedule/${month}/time-off`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    const [y, m] = month.split("-").map(Number);
+    const lastOfMonth = calAddDaysIso(`${calShiftMonth(month, 1)}-01`, -1);
+    const gridStart = calMondayOfIso(`${month}-01`);
+    const gridEndMonday = calMondayOfIso(lastOfMonth);
+    const days = [];
+    for (let cur = gridStart; cur <= calAddDaysIso(gridEndMonday, 6); cur = calAddDaysIso(cur, 1)) days.push(cur);
+    const weeks = [];
+    for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7));
+
+    host.innerHTML = `
+      <div class="week-nav timeoff-cal-nav">
+        <button type="button" class="btn btn-ghost timeoff-cal-prev">&larr; Prev</button>
+        <div class="week-range">${CAL_MONTH_NAMES[m - 1]} ${y}</div>
+        <button type="button" class="btn btn-ghost timeoff-cal-next">Next &rarr;</button>
+      </div>
+      <div class="schedule-calendar-grid">
+        <div class="schedule-calendar-headerrow">${CAL_DAY_HEADERS.map((d) => `<div class="schedule-calendar-headercell">${d}</div>`).join("")}</div>
+        ${weeks
+          .map(
+            (week) => `
+          <div class="schedule-week">
+            ${week
+              .map((dateIso) => {
+                const [dy, dm, dd] = dateIso.split("-").map(Number);
+                const inMonth = dm === m && dy === y;
+                const entries = (byDate[dateIso] || []).filter((e) => e.techId === techId);
+                return `<div class="schedule-daycell timeoff-cal-daycell ${inMonth ? "" : "schedule-calendar-outside"}">
+                  <div class="schedule-calendar-daynum">${dd}</div>
+                  ${entries
+                    .map((e) => {
+                      const colorClass = CAL_TIME_OFF_COLOR_CLASS[e.type] || "schedule-timeoff-chip-yellow";
+                      return `<span class="schedule-timeoff-chip ${colorClass}">${escapeHtml(typeLabel(types, e.type))} &middot; ${e.hours}h</span>`;
+                    })
+                    .join("")}
+                </div>`;
+              })
+              .join("")}
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    `;
+    host.querySelector(".timeoff-cal-prev").addEventListener("click", () => {
+      month = calShiftMonth(month, -1);
+      draw();
+    });
+    host.querySelector(".timeoff-cal-next").addEventListener("click", () => {
+      month = calShiftMonth(month, 1);
+      draw();
+    });
+  }
+
+  await draw();
 }
 
 function renderBalanceTable(balance, { onAuditTrail } = {}) {
@@ -145,7 +249,7 @@ function openAuditTrailModal({ types, techId, techName, initialType }) {
 // matches PurelyHR's own "Request For: Select User" entry point -- techId
 // becomes that dropdown's initial value (or the first person) rather than
 // a fixed subject.
-function openRequestForm({ types, techId, people, onSubmitted }) {
+export function openRequestForm({ types, techId, people, onSubmitted }) {
   const { body, close } = openModal({
     title: "Request Time Off",
     bodyHtml: `
@@ -362,6 +466,8 @@ export async function renderMyTimeOff(container) {
       </div>
     </div>
     ${renderBalanceTable(balance, { onAuditTrail: true })}
+    <h3>My Time Off Calendar</h3>
+    <div class="timeoff-calendar-host"></div>
     <h3>My Requests</h3>
     <div class="timeoff-requests-host"></div>
   `;
@@ -370,6 +476,7 @@ export async function renderMyTimeOff(container) {
     openRequestForm({ types, techId, onSubmitted: () => renderMyTimeOff(container) });
   });
   wireBalanceAuditTrailButtons(container, { types, techId, techName: state.user.name, onAuditTrail: true });
+  renderTimeOffCalendar(container.querySelector(".timeoff-calendar-host"), { techId, types });
 
   const host = container.querySelector(".timeoff-requests-host");
   host.innerHTML = renderRequestsTable(requests, types, { onCancel: () => renderMyTimeOff(container) });
@@ -740,6 +847,8 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
       CA/MT/NE carryover exception applies to this person
     </label>
     ${renderBalanceTable(balance, { onAuditTrail: true })}
+    <h3>Time Off Calendar</h3>
+    <div class="timeoff-calendar-host"></div>
     <div class="timeoff-approvers-assign">
       <span>Who can approve this person's requests</span>
       <p class="review-checklist-hint">If nobody's checked below, any active admin may approve -- check specific admins to limit it.</p>
@@ -762,6 +871,7 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
   const refreshDetail = () => renderPersonDetail(detailHost, techId, { types, policies, admins, people, host });
   const techName = (people || []).find((p) => p.id === techId)?.name;
   wireBalanceAuditTrailButtons(detailHost, { types, techId, techName, onAuditTrail: true });
+  renderTimeOffCalendar(detailHost.querySelector(".timeoff-calendar-host"), { techId, types });
   detailHost.querySelector(".timeoff-admin-request-btn").addEventListener("click", () => {
     openRequestForm({ types, techId, onSubmitted: refreshDetail });
   });

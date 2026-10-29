@@ -52,6 +52,23 @@ function sumByDay(allocations) {
   return totals;
 }
 
+// A deliberately thin coworker directory -- any logged-in technician can
+// see who else is on the roster and where they're based, but nothing an
+// admin's own Roster view shows (hire date, UKG ID, forms, devices...),
+// and nothing clickable into a real profile. Name + location only.
+router.get("/directory", requireAuth, (req, res) => {
+  const locationByCode = Object.fromEntries(db.listLocations().map((l) => [l.code, l]));
+  const directory = db
+    .listTechnicians()
+    .filter((t) => t.role === "tech" && t.employment_status === "active")
+    .map((t) => ({
+      name: t.name,
+      locationName: (locationByCode[t.home_location_code] && locationByCode[t.home_location_code].name) || null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  res.json(directory);
+});
+
 // Which week a technician should land on by default: the currently-open
 // week if there is one, otherwise this calendar week (which will render in
 // "timeoff-only" mode until its own window opens -- see getEditMode).
