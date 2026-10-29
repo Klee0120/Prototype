@@ -167,9 +167,13 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
   });
 
   await t.test("a pending request can be cancelled by its own requester", async () => {
+    // "vacation" (not "sick") -- T1001's policy only accrues vacation and
+    // floating_holiday (see the policy set up above); this test is about
+    // the cancel action itself, not balance, so it just uses a type that
+    // actually has hours on file. 16h left (40 accrued - 24 already used).
     const createRes = await server.call("POST", "/api/time-off/requests", {
       userId: "T1001",
-      body: { type: "sick", startDate: "2026-07-01", endDate: "2026-07-01", hoursPerDay: 8 },
+      body: { type: "vacation", startDate: "2026-07-01", endDate: "2026-07-01", hoursPerDay: 8 },
     });
     const cancelRes = await server.call("PATCH", `/api/time-off/requests/${createRes.body.id}`, {
       userId: "T1001",
@@ -208,6 +212,17 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
   });
 
   await t.test("a request spanning two weeks writes allocation rows into both", async () => {
+    // The policy above was deleted (previous test) -- T1001's earlier
+    // floating_holiday accrual event is still on file, it's just not
+    // currently visible on any balance without a policy/rule covering that
+    // type again (see computeTimeOffBalance's own ruleByType filter).
+    // Re-assigning one here (no need to re-run accrual) surfaces it again.
+    const freshPolicyRes = await server.call("POST", "/api/time-off/policies", {
+      userId: "ADMIN",
+      body: { name: "Re-Assigned", rules: [{ type: "floating_holiday", frequency: "annually", accrueOnDay: 1, rateHours: 16, accrueUntil: "cap", capHours: 16, startRule: "calendar_year" }] },
+    });
+    await server.call("PATCH", "/api/time-off/technicians/T1001/policy", { userId: "ADMIN", body: { policyId: freshPolicyRes.body.id } });
+
     const createRes = await server.call("POST", "/api/time-off/requests", {
       userId: "T1001",
       // 2026-06-26 is a Friday (week of 06-22); 2026-06-29 is the following
@@ -229,5 +244,81 @@ test("Time Off: policies, approvers, requests, balances", async (t) => {
       body: { allocations: [{ day: "Mon", type: "timeoff", timeOffType: "floating_holiday", hours: 8 }] },
     });
     assert.equal(res.status, 200);
+  });
+});
+
+// Per Krista: "We should block until they have time on their balance" --
+// a request (self-service or admin-on-behalf, same route) can't ask for
+// more hours of a type than the technician currently has accrued and not
+// already used/pending. A type with no policy/rule covering it at all
+// reads as zero balance, same end result as a real shortfall.
+test("Time Off: requests are blocked past the technician's own accrued balance", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  // A dedicated tech, not T1001 -- T1001 already carries vacation/
+  // floating_holiday accrual history from the earlier test in this file
+  // (same shared DB per test file), which would throw off the exact
+  // balance numbers asserted here.
+  raw
+    .prepare("INSERT INTO technicians (id, name, pin, role, active, employment_status, hire_date) VALUES (?, ?, ?, 'tech', 1, 'active', ?)")
+    .run("BALTEST", "Bal Test", "hash", "2020-01-01");
+  const balTestToken = db.createSession("BALTEST");
+
+  await t.test("no policy assigned at all -- any request is blocked", async () => {
+    const res = await server.call("POST", "/api/time-off/requests", {
+      token: balTestToken,
+      body: { type: "vacation", startDate: "2026-08-03", endDate: "2026-08-03", hoursPerDay: 8 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /no vacation balance on file/i);
+  });
+
+  let policyId;
+  await t.test("a policy with a small cap -- a request within it is allowed", async () => {
+    const policyRes = await server.call("POST", "/api/time-off/policies", {
+      userId: "ADMIN",
+      body: { name: "Small Cap", rules: [{ type: "vacation", frequency: "annually", accrueOnDay: 1, rateHours: 8, accrueUntil: "cap", capHours: 8, startRule: "calendar_year" }] },
+    });
+    policyId = policyRes.body.id;
+    await server.call("PATCH", "/api/time-off/technicians/BALTEST/policy", { userId: "ADMIN", body: { policyId } });
+    await server.call("POST", "/api/time-off/run-accrual", { userId: "ADMIN", body: { asOf: "2026-01-01" } });
+
+    const balanceRes = await server.call("GET", "/api/time-off/balance/BALTEST", { userId: "ADMIN" });
+    assert.equal(balanceRes.body.types.find((t2) => t2.type === "vacation").balance, 8);
+
+    const res = await server.call("POST", "/api/time-off/requests", {
+      token: balTestToken,
+      body: { type: "vacation", startDate: "2026-08-03", endDate: "2026-08-03", hoursPerDay: 8 },
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+  });
+
+  await t.test("a second request that would exceed the now-reduced balance is blocked", async () => {
+    const res = await server.call("POST", "/api/time-off/requests", {
+      token: balTestToken,
+      body: { type: "vacation", startDate: "2026-08-04", endDate: "2026-08-04", hoursPerDay: 8 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /not enough accrued vacation/i);
+  });
+
+  await t.test("admin submitting on the tech's behalf is held to the same cap", async () => {
+    const res = await server.call("POST", "/api/time-off/requests", {
+      userId: "ADMIN",
+      body: { techId: "BALTEST", type: "vacation", startDate: "2026-08-05", endDate: "2026-08-05", hoursPerDay: 8 },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("a type the policy doesn't cover at all is still blocked, not silently allowed", async () => {
+    const res = await server.call("POST", "/api/time-off/requests", {
+      token: balTestToken,
+      body: { type: "sick", startDate: "2026-08-03", endDate: "2026-08-03", hoursPerDay: 8 },
+    });
+    assert.equal(res.status, 400);
   });
 });

@@ -13194,10 +13194,43 @@ function presentTimeOffRequest(r) {
   };
 }
 
+// Per Krista: "We should block until they have time on their balance" --
+// a request can't ask for more than this type's current balance (accrued
+// minus already used/pending, see computeTimeOffBalance), whether that
+// shortfall is because the person is genuinely out of hours or because no
+// policy's been assigned to them yet at all (an un-assigned type simply
+// isn't in computeTimeOffBalance's own `types` list, which reads as zero
+// balance here, same end result). Scoped to the request's own start-date
+// year -- a request spanning New Year's checks against that first year's
+// balance only; the cross-year carryover/reset behavior itself is a
+// separate, not-yet-built piece per Krista's own "we will work on what it
+// resets at on 1st of the year" follow-up.
+// Returns null when this type has no rule on the tech's current policy at
+// all (no balance tracked for it, whether that's because no policy is
+// assigned or their policy just doesn't cover this type) -- distinct from
+// a real entry whose balance has simply been used/pending down to zero,
+// so createTimeOffRequest's own error message can tell "you've never had
+// this tracked" apart from "you're out for now."
+function timeOffBalanceEntry(techId, type, year) {
+  const balance = computeTimeOffBalance(techId, year);
+  return balance.types.find((t) => t.type === type) || null;
+}
+
 function createTimeOffRequest(techId, { type, startDate, endDate, hoursPerDay, notes }) {
   if (!TIME_OFF_TYPE_VALUES.includes(type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
   if (!startDate || !endDate || endDate < startDate) throw new Error("endDate must be on or after startDate");
   if (!(hoursPerDay > 0)) throw new Error("hoursPerDay must be a positive number");
+
+  const requestedHours = round2(weekdaysInRange(startDate, endDate).length * hoursPerDay);
+  const entry = timeOffBalanceEntry(techId, type, Number(startDate.slice(0, 4)));
+  const label = TIME_OFF_TYPES.find((t) => t.value === type)?.label || type;
+  if (!entry) {
+    throw new Error(`No ${label} balance on file yet -- ask an admin to assign a time-off policy first.`);
+  }
+  if (requestedHours > entry.balance) {
+    throw new Error(`Not enough accrued ${label} -- requesting ${requestedHours}h, only ${entry.balance}h available.`);
+  }
+
   const now = new Date().toISOString();
   const result = db
     .prepare(
