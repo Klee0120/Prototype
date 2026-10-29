@@ -91,7 +91,7 @@ const VENDOR_STATUS_BADGE_CLASS = {
 // sub-tabs underneath once it's the active section.
 const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
-  { key: "timekeeping", label: "Timekeeping", tabs: ["techalloc", "overview", "review", "fiscalcalendar", "timeoff", "schedule"] },
+  { key: "timekeeping", label: "Timekeeping", tabs: ["review", "techalloc", "overview", "fiscalcalendar", "timeoff", "schedule"] },
   { key: "roster", label: "Roster", tabs: ["technicians"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance", "coireviews", "onboardform"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
