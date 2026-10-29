@@ -1576,6 +1576,20 @@ if (!tableExists("time_off_accrual_events")) {
     CREATE INDEX idx_time_off_accrual_events_tech ON time_off_accrual_events(tech_id, type);
   `);
 }
+// Free-text context for a manual balance adjustment (e.g. "Opening balance
+// from PurelyHR audit, 10/29/26") -- blank for every ordinary
+// system/carryover-posted event, which speak for themselves.
+if (!hasColumn("time_off_accrual_events", "note")) {
+  db.exec("ALTER TABLE time_off_accrual_events ADD COLUMN note TEXT");
+}
+// Who entered a manual adjustment -- PurelyHR's own Balance Audit Trail
+// shows this on every manual line ("By: Eileen Aucoin"), and it matters
+// here for the same reason: a manual entry is someone's judgment call, not
+// a system computation, so the log should say whose. Blank for system/
+// carryover events, same as `note`.
+if (!hasColumn("time_off_accrual_events", "created_by")) {
+  db.exec("ALTER TABLE time_off_accrual_events ADD COLUMN created_by TEXT");
+}
 // Per-employee override for the one state-law exception to "use it or lose
 // it" carryover (CA/MT/NE allow carrying over up to 1.75x the annual cap
 // instead of resetting to zero every Jan 1) -- a plain admin-set flag
@@ -13376,16 +13390,48 @@ function clampDayToMonth(day, year, month) {
   return Math.min(day, daysInMonth);
 }
 
+const TIME_OFF_ACCRUAL_SOURCE_LABELS = { accrual: "System Accrual", carryover: "Carryover", manual_adjustment: "Manual Adjustment" };
+
 function presentAccrualEvent(e) {
-  const SOURCE_LABELS = { accrual: "System Accrual", carryover: "Carryover" };
+  const enteredByTech = e.created_by ? findTechnician(e.created_by) : null;
   return {
     id: e.id,
     techId: e.tech_id,
     type: e.type,
     accrualDate: e.accrual_date,
     hours: e.hours,
-    accruedBy: SOURCE_LABELS[e.source] || e.source,
+    accruedBy: TIME_OFF_ACCRUAL_SOURCE_LABELS[e.source] || e.source,
+    note: e.note || "",
+    // Who entered a manual adjustment -- blank for a system/carryover
+    // event, same as `note`. Matches PurelyHR's own Balance Audit Trail,
+    // which shows this on every manual line (e.g. "By: Eileen Aucoin").
+    enteredBy: enteredByTech ? enteredByTech.name : e.created_by || "",
   };
+}
+
+// A one-off, admin-entered balance entry -- for bringing in an opening
+// balance from PurelyHR (or any other real-world correction) rather than
+// letting everyone start the pilot at zero. Posts as its own event,
+// clearly labeled "Manual Adjustment" in the audit trail (see
+// TIME_OFF_ACCRUAL_SOURCE_LABELS) so it's never mistaken for the system's
+// own rule-based accrual. `hours` can be negative, for a correction in the
+// other direction -- this isn't only ever a grant.
+function addTimeOffBalanceAdjustment(techId, { type, hours, date, note, createdBy } = {}) {
+  if (!TIME_OFF_TYPE_VALUES.includes(type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
+  if (!date) throw new Error("date is required");
+  const h = Number(hours);
+  if (!Number.isFinite(h) || h === 0) throw new Error("hours must be a non-zero number");
+  const existing = db
+    .prepare("SELECT id FROM time_off_accrual_events WHERE tech_id = ? AND type = ? AND accrual_date = ? AND source = 'manual_adjustment'")
+    .get(techId, type, date);
+  if (existing) throw new Error("A manual adjustment already exists for this technician/type/date -- edit or remove that one instead of adding a second.");
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO time_off_accrual_events (tech_id, type, accrual_date, hours, rule_id, source, note, created_by, created_at)
+     VALUES (?, ?, ?, ?, NULL, 'manual_adjustment', ?, ?, ?)`
+  ).run(techId, type, date, h, note || null, createdBy || null, now);
+  return listTimeOffAccrualEvents({ techId, type });
 }
 
 // Backs the Audit Trail modal exactly as PurelyHR's own shows it: every
@@ -14002,5 +14048,6 @@ module.exports = {
   computeTimeOffBalance,
   listApprovedTimeOffForMonth,
   listTimeOffAccrualEvents,
+  addTimeOffBalanceAdjustment,
   runTimeOffAccrual,
 };

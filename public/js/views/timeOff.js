@@ -108,7 +108,7 @@ function openAuditTrailModal({ types, techId, techName, initialType }) {
       }
       tableHost.innerHTML = `
         <table class="detail-table">
-          <thead><tr><th>Date</th><th>Time-Off Type</th><th>Hours</th><th>Accrued By</th></tr></thead>
+          <thead><tr><th>Date</th><th>Time-Off Type</th><th>Hours</th><th>Accrued By</th><th>By</th><th>Note</th></tr></thead>
           <tbody>
             ${events
               .map(
@@ -116,8 +116,10 @@ function openAuditTrailModal({ types, techId, techName, initialType }) {
               <tr>
                 <td>${escapeHtml(e.accrualDate)}</td>
                 <td>${escapeHtml(typeLabel(types, e.type))}</td>
-                <td>${e.hours}h</td>
+                <td class="${e.hours < 0 ? "cost-amount-danger" : ""}">${e.hours > 0 ? "+" : ""}${e.hours}h</td>
                 <td>${escapeHtml(e.accruedBy)}</td>
+                <td>${escapeHtml(e.enteredBy || "—")}</td>
+                <td>${escapeHtml(e.note || "—")}</td>
               </tr>
             `
               )
@@ -199,6 +201,55 @@ function openRequestForm({ types, techId, people, onSubmitted }) {
         endDate: form.endDate.value,
         hoursPerDay: Number(form.hoursPerDay.value),
         notes: form.notes.value.trim(),
+      });
+      close();
+      await onSubmitted();
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+}
+
+// A one-off balance entry, admin-only -- for bringing in an opening
+// balance from PurelyHR (or any other real-world correction) instead of
+// starting someone at zero. Posts as its own "Manual Adjustment" line in
+// the Balance Audit Trail, distinct from system accrual.
+function openBalanceAdjustmentForm({ types, techId, onSubmitted }) {
+  const { body, close } = openModal({
+    title: "Adjust Balance",
+    bodyHtml: `
+      <form class="modal-form timeoff-adjust-form">
+        <label class="profile-field">
+          <span>Type</span>
+          <select name="type">${types.map((t) => `<option value="${t.value}">${escapeHtml(t.label)}</option>`).join("")}</select>
+        </label>
+        <label class="profile-field">
+          <span>Hours (negative to subtract)</span>
+          <input type="number" name="hours" step="0.001" required placeholder="e.g. 4.036 or -8" />
+        </label>
+        <label class="profile-field">
+          <span>Effective date</span>
+          <input type="date" name="date" required value="${new Date().toISOString().slice(0, 10)}" />
+        </label>
+        <label class="profile-field">
+          <span>Note (recommended)</span>
+          <textarea name="note" placeholder="e.g. Opening balance from PurelyHR audit"></textarea>
+        </label>
+        <div class="modal-form-actions"><button type="submit" class="btn btn-primary">Save adjustment</button></div>
+        <span class="save-message"></span>
+      </form>
+    `,
+  });
+  const form = body.querySelector(".timeoff-adjust-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = form.querySelector(".save-message");
+    try {
+      await api.post(`/api/time-off/technicians/${techId}/balance-adjustment`, {
+        type: form.type.value,
+        hours: Number(form.hours.value),
+        date: form.date.value,
+        note: form.note.value.trim(),
       });
       close();
       await onSubmitted();
@@ -680,6 +731,7 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
         </select>
       </div>
       <div class="page-header-actions">
+        <button type="button" class="btn btn-secondary timeoff-adjust-balance-btn">+ Adjust Balance</button>
         <button type="button" class="btn btn-primary timeoff-admin-request-btn">+ Request Time Off</button>
       </div>
     </div>
@@ -712,6 +764,9 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
   wireBalanceAuditTrailButtons(detailHost, { types, techId, techName, onAuditTrail: true });
   detailHost.querySelector(".timeoff-admin-request-btn").addEventListener("click", () => {
     openRequestForm({ types, techId, onSubmitted: refreshDetail });
+  });
+  detailHost.querySelector(".timeoff-adjust-balance-btn").addEventListener("click", () => {
+    openBalanceAdjustmentForm({ types, techId, onSubmitted: refreshDetail });
   });
   detailHost.querySelector(".timeoff-policy-select").addEventListener("change", async (e) => {
     try {

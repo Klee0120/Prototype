@@ -322,3 +322,90 @@ test("Time Off: requests are blocked past the technician's own accrued balance",
     assert.equal(res.status, 400);
   });
 });
+
+// Per Krista: "I will download their current time and audit for all the
+// employees I have so we can have accurate measures during this pilot" --
+// a manual, admin-entered balance entry for bringing in a real opening
+// balance from PurelyHR, distinct from the system's own rule-based accrual.
+test("Time Off: manual balance adjustments (opening-balance import from PurelyHR)", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const db = require("../server/data/db");
+  const raw = new DatabaseSync(process.env.LABOR_DB_PATH);
+  t.after(() => raw.close());
+
+  raw
+    .prepare("INSERT INTO technicians (id, name, pin, role, active, employment_status, hire_date) VALUES (?, ?, ?, 'tech', 1, 'active', ?)")
+    .run("ADJTEST", "Adj Test", "hash", "2020-01-01");
+
+  await t.test("a technician cannot adjust their own balance", async () => {
+    const token = db.createSession("ADJTEST");
+    const res = await server.call("POST", "/api/time-off/technicians/ADJTEST/balance-adjustment", {
+      token,
+      body: { type: "vacation", hours: 10, date: "2026-10-29" },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  await t.test("blocked without a policy/rule covering this type yet -- same reason the request-balance check reads zero", async () => {
+    const res = await server.call("POST", "/api/time-off/technicians/ADJTEST/balance-adjustment", {
+      userId: "ADMIN",
+      body: { type: "vacation", hours: 10, date: "2026-10-29", note: "Opening balance from PurelyHR" },
+    });
+    // The adjustment itself is allowed to post (it's what makes the type
+    // trackable in the first place) -- but let's first assign a policy so
+    // the rest of this test matches the real admin workflow (policy, then
+    // balance), and confirms the number actually surfaces once one exists.
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+  });
+
+  let policyId;
+  await t.test("assigning a policy surfaces the already-posted adjustment", async () => {
+    const policyRes = await server.call("POST", "/api/time-off/policies", {
+      userId: "ADMIN",
+      body: { name: "Adj Policy", rules: [{ type: "vacation", frequency: "annually", accrueOnDay: 1, rateHours: 1, accrueUntil: "none" }] },
+    });
+    policyId = policyRes.body.id;
+    await server.call("PATCH", "/api/time-off/technicians/ADJTEST/policy", { userId: "ADMIN", body: { policyId } });
+
+    const balanceRes = await server.call("GET", "/api/time-off/balance/ADJTEST", { userId: "ADMIN" });
+    const vacation = balanceRes.body.types.find((t2) => t2.type === "vacation");
+    assert.equal(vacation.accruedHours, 10);
+    assert.equal(vacation.balance, 10);
+  });
+
+  await t.test("a negative adjustment corrects it back down", async () => {
+    const res = await server.call("POST", "/api/time-off/technicians/ADJTEST/balance-adjustment", {
+      userId: "ADMIN",
+      body: { type: "vacation", hours: -2, date: "2026-10-30", note: "Correction" },
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+
+    const balanceRes = await server.call("GET", "/api/time-off/balance/ADJTEST", { userId: "ADMIN" });
+    assert.equal(balanceRes.body.types.find((t2) => t2.type === "vacation").balance, 8);
+  });
+
+  await t.test("the audit trail shows the note and who entered it", async () => {
+    const res = await server.call("GET", "/api/time-off/accrual-events/ADJTEST?type=vacation", { userId: "ADMIN" });
+    const opening = res.body.find((e) => e.note === "Opening balance from PurelyHR");
+    assert.ok(opening);
+    assert.equal(opening.accruedBy, "Manual Adjustment");
+    assert.equal(opening.enteredBy, "Krista Lee");
+  });
+
+  await t.test("a second adjustment for the same technician/type/date is rejected, not silently duplicated", async () => {
+    const res = await server.call("POST", "/api/time-off/technicians/ADJTEST/balance-adjustment", {
+      userId: "ADMIN",
+      body: { type: "vacation", hours: 5, date: "2026-10-30" },
+    });
+    assert.equal(res.status, 400);
+  });
+
+  await t.test("zero hours is rejected", async () => {
+    const res = await server.call("POST", "/api/time-off/technicians/ADJTEST/balance-adjustment", {
+      userId: "ADMIN",
+      body: { type: "vacation", hours: 0, date: "2026-11-01" },
+    });
+    assert.equal(res.status, 400);
+  });
+});

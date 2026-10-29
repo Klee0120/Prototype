@@ -98,6 +98,24 @@ router.post("/run-accrual", requireAdmin, (req, res) => {
   res.json(result);
 });
 
+// A one-off balance entry an admin enters by hand -- bringing in an
+// opening balance from PurelyHR (or any other real-world correction)
+// rather than starting someone at zero. See db.addTimeOffBalanceAdjustment.
+router.post("/technicians/:techId/balance-adjustment", requireAdmin, (req, res) => {
+  const { type, hours, date, note } = req.body || {};
+  try {
+    const events = db.addTimeOffBalanceAdjustment(req.params.techId, { type, hours, date, note, createdBy: req.user.id });
+    db.addAudit(
+      req.user.id,
+      "TIME_OFF_BALANCE_ADJUSTED",
+      `${req.user.name} manually adjusted ${req.params.techId}'s ${type} balance by ${hours > 0 ? "+" : ""}${hours}h (${date})${note ? `: ${note}` : ""}`
+    );
+    res.status(201).json(events);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ---- Requests ----
 
 // Admin with no techId filter sees everything; a technician without one
