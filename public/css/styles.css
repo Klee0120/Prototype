@@ -5758,9 +5758,6 @@ tr.gl-import-shrink-row {
 
 .schedule-week-range {
   font-weight: 700;
-  color: var(--ink);
-  text-align: center;
-  flex: 1;
 }
 
 .schedule-agenda-list {
