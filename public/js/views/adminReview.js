@@ -3248,11 +3248,15 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
                      <div class="vendor-correspondence-summary-label">Draft Summary</div>
                      <p>${escapeHtml(e.summary)}</p>
                    </div>`
-                : ""
+                : `<p class="empty-note">${
+                    e.bodyText
+                      ? "No AI summary for this entry -- see the raw email chain below."
+                      : "No AI summary -- no email body text was logged for this entry."
+                  }</p>`
             }
-            <button type="button" class="btn btn-link vendor-correspondence-chain-toggle">&#9656; View original email chain</button>
-            <div class="vendor-correspondence-chain-text" hidden>
-              ${e.bodyText ? `<p class="vendor-correspondence-entry-text">${escapeHtml(e.bodyText)}</p>` : `<p class="empty-note">No body text.</p>`}
+            <div class="vendor-correspondence-chain-text">
+              <div class="vendor-correspondence-summary-label">Email Chain</div>
+              ${e.bodyText ? `<p class="vendor-correspondence-entry-text">${escapeHtml(e.bodyText)}</p>` : `<p class="empty-note">No body text was logged for this entry.</p>`}
             </div>
             <div class="vendor-correspondence-attachments-host"></div>
           </div>
@@ -3265,9 +3269,6 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         const entry = entries.find((x) => String(x.id) === el.dataset.id);
         const headerBtn = el.querySelector(".vendor-correspondence-entry-header");
         const bodyEl = el.querySelector(".vendor-correspondence-entry-body");
-        el.querySelector(".vendor-correspondence-chain-toggle").addEventListener("click", () => {
-          el.querySelector(".vendor-correspondence-chain-text").toggleAttribute("hidden");
-        });
         let attachmentsLoaded = false;
         headerBtn.addEventListener("click", async () => {
           const wasHidden = bodyEl.hasAttribute("hidden");
