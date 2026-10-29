@@ -616,6 +616,10 @@ async function renderPolicies(host) {
   }
   const ruleSummary = (r) => {
     const freq = r.frequency === "monthly" ? `/mo` : r.frequency === "annually" ? `/yr` : " on hire";
+    if (r.tiered) {
+      const years = r.tiers.map((t) => t.minYears);
+      return `${escapeHtml(typeLabel(types, r.type))}: Tenure-tiered${freq} (${r.tiers.length} tier${r.tiers.length === 1 ? "" : "s"}, ${Math.min(...years)}-${Math.max(...years)}+ yrs)`;
+    }
     return `${escapeHtml(typeLabel(types, r.type))}: ${r.rateHours}h${freq}${r.accrueUntil === "cap" ? ` (cap ${r.capHours}h)` : ""}`;
   };
   list.innerHTML = `
@@ -664,9 +668,40 @@ async function renderPolicies(host) {
 // rule) rather than the old single "yearly hours" number. A type's
 // checkbox off means it's simply not offered under this policy at all --
 // same meaning the old blank-input-means-not-offered convention had.
+// Seeded into a fresh tenure-tiered rule the moment it's turned on (for a
+// rule with no tiers yet) -- the real PTO policy's own rate card, in hours
+// (days x 8). Just a starting point: every field stays fully editable, and
+// an existing rule's own saved tiers are used instead of this once any
+// exist.
+const DEFAULT_TENURE_TIERS = [
+  { minYears: 0, rateHours: 6.64, capHours: 80 },
+  { minYears: 1, rateHours: 7.36, capHours: 88 },
+  { minYears: 2, rateHours: 8.0, capHours: 96 },
+  { minYears: 3, rateHours: 8.64, capHours: 104 },
+  { minYears: 4, rateHours: 10.0, capHours: 120 },
+  { minYears: 5, rateHours: 10.64, capHours: 128 },
+  { minYears: 6, rateHours: 11.36, capHours: 136 },
+  { minYears: 7, rateHours: 12.0, capHours: 144 },
+  { minYears: 8, rateHours: 12.64, capHours: 152 },
+  { minYears: 9, rateHours: 13.36, capHours: 160 },
+];
+
+function tierRowHtml(tier, showCap) {
+  return `
+    <div class="timeoff-tier-row">
+      <label><span>Years of service</span><input type="number" class="tier-min-years" min="0" step="1" value="${tier.minYears}" /></label>
+      <label><span>Rate (hrs/occurrence)</span><input type="number" class="tier-rate" min="0.01" step="0.01" value="${tier.rateHours}" /></label>
+      <label class="tier-cap-field" ${showCap ? "" : "hidden"}><span>Annual cap (hrs)</span><input type="number" class="tier-cap" min="0" step="0.01" value="${tier.capHours ?? ""}" /></label>
+      <button type="button" class="btn btn-link timeoff-tier-remove-btn" title="Remove this tier">&times;</button>
+    </div>
+  `;
+}
+
 function ruleFieldsetHtml(t, rule) {
   const enabled = Boolean(rule);
   const accrueUntil = rule?.accrueUntil || "cap";
+  const tiered = Boolean(rule?.tiered);
+  const tiers = tiered && rule.tiers.length ? rule.tiers : DEFAULT_TENURE_TIERS;
   return `
     <div class="timeoff-rule-group" data-type="${t.value}">
       <label class="timeoff-rule-toggle">
@@ -687,19 +722,11 @@ function ruleFieldsetHtml(t, rule) {
           <input type="number" class="rule-accrue-day" min="1" max="28" value="${rule?.accrueOnDay || 1}" />
         </label>
         <label class="profile-field">
-          <span>Rate (hours per occurrence)</span>
-          <input type="number" step="0.01" min="0.01" class="rule-rate" value="${rule?.rateHours ?? ""}" placeholder="e.g. 6.64" />
-        </label>
-        <label class="profile-field">
           <span>Accrue until</span>
           <select class="rule-accrue-until">
             <option value="cap" ${accrueUntil === "cap" ? "selected" : ""}>Annual cap</option>
             <option value="none" ${accrueUntil === "none" ? "selected" : ""}>Flat grant (no running cap)</option>
           </select>
-        </label>
-        <label class="profile-field rule-cap-field" ${accrueUntil === "none" ? "hidden" : ""}>
-          <span>Annual cap (hours)</span>
-          <input type="number" step="0.01" min="0" class="rule-cap" value="${rule?.capHours ?? ""}" placeholder="e.g. 80" />
         </label>
         <label class="profile-field">
           <span>First (partial) year</span>
@@ -708,6 +735,23 @@ function ruleFieldsetHtml(t, rule) {
             <option value="calendar_year" ${rule?.startRule === "calendar_year" ? "selected" : ""}>Full amount from assignment</option>
           </select>
         </label>
+        <label class="timeoff-tier-toggle">
+          <input type="checkbox" class="rule-tiered" ${tiered ? "checked" : ""} />
+          Rate depends on years of service (tenure-tiered) -- one policy, rate follows each person's own hire date
+        </label>
+        <label class="profile-field rule-flat-field" ${tiered ? "hidden" : ""}>
+          <span>Rate (hours per occurrence)</span>
+          <input type="number" step="0.01" min="0.01" class="rule-rate" value="${rule?.rateHours ?? ""}" placeholder="e.g. 6.64" />
+        </label>
+        <label class="profile-field rule-flat-field rule-cap-field" ${tiered || accrueUntil === "none" ? "hidden" : ""}>
+          <span>Annual cap (hours)</span>
+          <input type="number" step="0.01" min="0" class="rule-cap" value="${rule?.capHours ?? ""}" placeholder="e.g. 80" />
+        </label>
+        <div class="timeoff-tier-table" ${tiered ? "" : "hidden"}>
+          <p class="review-checklist-hint">One row per "years of service" breakpoint -- everyone assigned to this policy automatically gets the row matching their own completed years, recomputed every accrual run.</p>
+          <div class="timeoff-tier-rows">${tiers.map((tier) => tierRowHtml(tier, accrueUntil !== "none")).join("")}</div>
+          <button type="button" class="btn btn-link timeoff-tier-add-btn">+ Add tier</button>
+        </div>
       </div>
     </div>
   `;
@@ -720,9 +764,35 @@ function wireRuleFieldset(group) {
     fields.toggleAttribute("hidden", !checkbox.checked);
   });
   const accrueUntilSelect = group.querySelector(".rule-accrue-until");
-  const capField = group.querySelector(".rule-cap-field");
+  const flatCapField = group.querySelector(".rule-flat-field.rule-cap-field");
   accrueUntilSelect.addEventListener("change", () => {
-    capField.toggleAttribute("hidden", accrueUntilSelect.value === "none");
+    const showCap = accrueUntilSelect.value !== "none";
+    flatCapField.toggleAttribute("hidden", !showCap || tieredCheckbox.checked);
+    group.querySelectorAll(".tier-cap-field").forEach((f) => f.toggleAttribute("hidden", !showCap));
+  });
+
+  const tieredCheckbox = group.querySelector(".rule-tiered");
+  const flatField = group.querySelector(".rule-flat-field:not(.rule-cap-field)");
+  const tierTable = group.querySelector(".timeoff-tier-table");
+  tieredCheckbox.addEventListener("change", () => {
+    const tiered = tieredCheckbox.checked;
+    flatField.toggleAttribute("hidden", tiered);
+    flatCapField.toggleAttribute("hidden", tiered || accrueUntilSelect.value === "none");
+    tierTable.toggleAttribute("hidden", !tiered);
+  });
+
+  function wireTierRow(row) {
+    row.querySelector(".timeoff-tier-remove-btn").addEventListener("click", () => {
+      if (group.querySelectorAll(".timeoff-tier-row").length > 1) row.remove();
+    });
+  }
+  group.querySelectorAll(".timeoff-tier-row").forEach(wireTierRow);
+  group.querySelector(".timeoff-tier-add-btn").addEventListener("click", () => {
+    const rowsHost = group.querySelector(".timeoff-tier-rows");
+    const nextMinYears = rowsHost.querySelectorAll(".timeoff-tier-row").length;
+    const showCap = accrueUntilSelect.value !== "none";
+    rowsHost.insertAdjacentHTML("beforeend", tierRowHtml({ minYears: nextMinYears, rateHours: "", capHours: "" }, showCap));
+    wireTierRow(rowsHost.lastElementChild);
   });
 }
 
@@ -738,7 +808,7 @@ function openPolicyForm(types, existing, onSaved) {
           <span>Name</span>
           <input name="name" value="${escapeHtml(existing?.name || "")}" placeholder="e.g. 2yr Policy, New Hire" required />
         </label>
-        <p class="review-checklist-hint">Check a type to offer it under this policy and set its accrual rule -- matches PurelyHR's own Balance Accrual screen. Moving someone to their next tenure tier later means editing (or swapping) a rule here, the same way PurelyHR itself works.</p>
+        <p class="review-checklist-hint">Check a type to offer it under this policy and set its accrual rule -- matches PurelyHR's own Balance Accrual screen. Turn on "tenure-tiered" to have the rate follow each person's own hire date automatically (one policy for everyone), or leave it off for one flat rate for anyone on this policy.</p>
         ${types.map((t) => ruleFieldsetHtml(t, ruleByType.get(t.value))).join("")}
         <div class="modal-form-actions"><button type="submit" class="btn btn-primary">${isEdit ? "Save" : "Add Policy"}</button></div>
         <span class="save-message"></span>
@@ -755,15 +825,26 @@ function openPolicyForm(types, existing, onSaved) {
     for (const group of form.querySelectorAll(".timeoff-rule-group")) {
       if (!group.querySelector(".rule-enabled").checked) continue;
       const accrueUntil = group.querySelector(".rule-accrue-until").value;
-      rules.push({
+      const tiered = group.querySelector(".rule-tiered").checked;
+      const rule = {
         type: group.dataset.type,
         frequency: group.querySelector(".rule-frequency").value,
         accrueOnDay: Number(group.querySelector(".rule-accrue-day").value) || 1,
-        rateHours: Number(group.querySelector(".rule-rate").value),
         accrueUntil,
-        capHours: accrueUntil === "cap" ? Number(group.querySelector(".rule-cap").value) : null,
         startRule: group.querySelector(".rule-start").value,
-      });
+        tiered,
+      };
+      if (tiered) {
+        rule.tiers = [...group.querySelectorAll(".timeoff-tier-row")].map((row) => ({
+          minYears: Number(row.querySelector(".tier-min-years").value),
+          rateHours: Number(row.querySelector(".tier-rate").value),
+          capHours: accrueUntil === "cap" ? Number(row.querySelector(".tier-cap").value) : null,
+        }));
+      } else {
+        rule.rateHours = Number(group.querySelector(".rule-rate").value);
+        rule.capHours = accrueUntil === "cap" ? Number(group.querySelector(".rule-cap").value) : null;
+      }
+      rules.push(rule);
     }
     try {
       const payload = { name: form.name.value.trim(), rules };

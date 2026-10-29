@@ -1553,6 +1553,32 @@ if (!tableExists("time_off_accrual_rules")) {
   }
 }
 
+// Tenure-tiered rules (added after the above was first built as flat-only
+// -- see this file's own history). is_tiered marks a rule whose real rate
+// is a step table by completed years of service (the real PTO policy's own
+// rate card: "0-1 years," "2nd year," ... "10+ years") rather than one flat
+// number -- when set, the rule's own rate_hours/cap_hours columns are
+// unused placeholders and time_off_tenure_tiers is authoritative instead.
+// This replaces the old "an admin manually reassigns a different named
+// policy/rule at each work anniversary" design (see the comment above and
+// runTimeOffAccrual's own) with the rate following hire_date automatically.
+if (!hasColumn("time_off_accrual_rules", "is_tiered")) {
+  db.exec("ALTER TABLE time_off_accrual_rules ADD COLUMN is_tiered INTEGER NOT NULL DEFAULT 0");
+}
+if (!tableExists("time_off_tenure_tiers")) {
+  db.exec(`
+    CREATE TABLE time_off_tenure_tiers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rule_id INTEGER NOT NULL,
+      min_years INTEGER NOT NULL,
+      rate_hours REAL NOT NULL,
+      cap_hours REAL,
+      UNIQUE(rule_id, min_years)
+    );
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_time_off_tenure_tiers_rule_id ON time_off_tenure_tiers(rule_id)");
+}
+
 // The discrete, persisted entries behind the Audit Trail modal (one row
 // per 07/01, 08/01, etc, matching PurelyHR's own screen) -- never computed
 // on the fly, so a rule changing later never rewrites history. source
@@ -13028,7 +13054,12 @@ const ACCRUAL_FREQUENCIES = ["monthly", "annually", "on_hire_date"];
 const ACCRUAL_UNTIL_VALUES = ["cap", "none"];
 const ACCRUAL_START_RULES = ["hire_date", "calendar_year"];
 
-function presentAccrualRule(r) {
+function presentTenureTier(t) {
+  return { id: t.id, minYears: t.min_years, rateHours: t.rate_hours, capHours: t.cap_hours };
+}
+
+function presentAccrualRule(r, tierRows) {
+  const tiered = Boolean(r.is_tiered);
   return {
     id: r.id,
     type: r.type,
@@ -13040,15 +13071,22 @@ function presentAccrualRule(r) {
     capHours: r.cap_hours,
     startRule: r.start_rule,
     active: Boolean(r.active),
+    tiered,
+    tiers: tiered
+      ? (tierRows || [])
+          .filter((t) => t.rule_id === r.id)
+          .map(presentTenureTier)
+          .sort((a, b) => a.minYears - b.minYears)
+      : [],
   };
 }
 
-function presentTimeOffPolicy(row, ruleRows) {
+function presentTimeOffPolicy(row, ruleRows, tierRows) {
   if (!row) return null;
   return {
     id: row.id,
     name: row.name,
-    rules: ruleRows.filter((r) => r.policy_id === row.id).map(presentAccrualRule),
+    rules: ruleRows.filter((r) => r.policy_id === row.id).map((r) => presentAccrualRule(r, tierRows)),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -13057,46 +13095,116 @@ function presentTimeOffPolicy(row, ruleRows) {
 function listTimeOffPolicies() {
   const policies = db.prepare("SELECT * FROM time_off_policies ORDER BY name").all();
   const rules = db.prepare("SELECT * FROM time_off_accrual_rules").all();
-  return policies.map((p) => presentTimeOffPolicy(p, rules));
+  const tiers = db.prepare("SELECT * FROM time_off_tenure_tiers").all();
+  return policies.map((p) => presentTimeOffPolicy(p, rules, tiers));
 }
 
 function findTimeOffPolicy(id) {
   const policy = db.prepare("SELECT * FROM time_off_policies WHERE id = ?").get(Number(id));
   if (!policy) return null;
   const rules = db.prepare("SELECT * FROM time_off_accrual_rules WHERE policy_id = ?").all(Number(id));
-  return presentTimeOffPolicy(policy, rules);
+  const ruleIds = rules.map((r) => r.id);
+  const tiers = ruleIds.length
+    ? db.prepare(`SELECT * FROM time_off_tenure_tiers WHERE rule_id IN (${ruleIds.map(() => "?").join(",")})`).all(...ruleIds)
+    : [];
+  return presentTimeOffPolicy(policy, rules, tiers);
 }
 
 // One row per (policy, type) -- same cardinality as the old flat allowance
-// table, just a richer rule per row. See the table's own comment for why
-// tenure-tier advancement is a manual rule swap, not automatic.
+// table, just a richer rule per row. A tiered rule (is_tiered) carries its
+// real rate/cap in time_off_tenure_tiers instead of this row's own
+// rate_hours/cap_hours (left as harmless placeholders) -- see that table's
+// own comment and resolveAccrualRateForTech below for how a tech's rate is
+// picked from it automatically by their hire_date, replacing the old
+// "admin manually reassigns a different rule every work anniversary" design.
 function setTimeOffPolicyAccrualRules(policyId, rules) {
+  const oldRuleIds = db.prepare("SELECT id FROM time_off_accrual_rules WHERE policy_id = ?").all(policyId).map((r) => r.id);
+  if (oldRuleIds.length) {
+    db.prepare(`DELETE FROM time_off_tenure_tiers WHERE rule_id IN (${oldRuleIds.map(() => "?").join(",")})`).run(...oldRuleIds);
+  }
   db.prepare("DELETE FROM time_off_accrual_rules WHERE policy_id = ?").run(policyId);
   const insert = db.prepare(
     `INSERT INTO time_off_accrual_rules
-      (policy_id, type, frequency, interval_count, accrue_on_day, rate_hours, accrue_until, cap_hours, start_rule, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      (policy_id, type, frequency, interval_count, accrue_on_day, rate_hours, accrue_until, cap_hours, start_rule, active, is_tiered)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const insertTier = db.prepare(
+    `INSERT INTO time_off_tenure_tiers (rule_id, min_years, rate_hours, cap_hours) VALUES (?, ?, ?, ?)`
   );
   for (const r of rules || []) {
     if (!TIME_OFF_TYPE_VALUES.includes(r.type)) throw new Error(`type must be one of: ${TIME_OFF_TYPE_VALUES.join(", ")}`);
     if (!ACCRUAL_FREQUENCIES.includes(r.frequency)) throw new Error(`frequency must be one of: ${ACCRUAL_FREQUENCIES.join(", ")}`);
-    if (!(Number(r.rateHours) > 0)) throw new Error("rateHours must be a positive number");
     const accrueUntil = ACCRUAL_UNTIL_VALUES.includes(r.accrueUntil) ? r.accrueUntil : "cap";
-    if (accrueUntil === "cap" && !(Number(r.capHours) > 0)) throw new Error("capHours is required when accrueUntil is 'cap'");
     const startRule = ACCRUAL_START_RULES.includes(r.startRule) ? r.startRule : "hire_date";
-    insert.run(
+    const tiered = Boolean(r.tiered);
+    if (tiered) {
+      const tiers = Array.isArray(r.tiers) ? r.tiers : [];
+      if (tiers.length === 0) throw new Error(`${r.type}: a tenure-tiered rule needs at least one tier`);
+      const seenYears = new Set();
+      for (const t of tiers) {
+        const minYears = Number(t.minYears);
+        if (!Number.isInteger(minYears) || minYears < 0) throw new Error(`${r.type}: each tier's "years of service" must be a whole number >= 0`);
+        if (seenYears.has(minYears)) throw new Error(`${r.type}: two tiers both start at ${minYears} years`);
+        seenYears.add(minYears);
+        if (!(Number(t.rateHours) > 0)) throw new Error(`${r.type}: each tier's rate must be a positive number`);
+        if (accrueUntil === "cap" && !(Number(t.capHours) > 0)) throw new Error(`${r.type}: each tier needs a cap when "Accrue until" is Annual cap`);
+      }
+    } else if (!(Number(r.rateHours) > 0)) {
+      throw new Error("rateHours must be a positive number");
+    } else if (accrueUntil === "cap" && !(Number(r.capHours) > 0)) {
+      throw new Error("capHours is required when accrueUntil is 'cap'");
+    }
+    const result = insert.run(
       policyId,
       r.type,
       r.frequency,
       Number(r.intervalCount) || 1,
       Math.min(28, Math.max(1, Number(r.accrueOnDay) || 1)),
-      Number(r.rateHours),
+      tiered ? 0 : Number(r.rateHours),
       accrueUntil,
-      accrueUntil === "cap" ? Number(r.capHours) : null,
+      tiered ? null : accrueUntil === "cap" ? Number(r.capHours) : null,
       startRule,
-      r.active === false ? 0 : 1
+      r.active === false ? 0 : 1,
+      tiered ? 1 : 0
     );
+    if (tiered) {
+      for (const t of r.tiers) {
+        insertTier.run(result.lastInsertRowid, Number(t.minYears), Number(t.rateHours), accrueUntil === "cap" ? Number(t.capHours) : null);
+      }
+    }
   }
+}
+
+// Completed full years of service as of asOfDate -- the anchor for a
+// tenure-tiered rule's rate. "Completed" means the hire-date anniversary
+// has actually passed this year, not just the same calendar year started --
+// someone hired 08/25/2025 is still in their 1st year (0 completed) through
+// 08/24/2026, and enters their 2nd year (1 completed) on 08/25/2026.
+function completedYearsOfService(hireDateIso, asOfDate) {
+  const hire = new Date(`${hireDateIso}T00:00:00Z`);
+  let years = asOfDate.getUTCFullYear() - hire.getUTCFullYear();
+  const anniversaryPassed =
+    asOfDate.getUTCMonth() > hire.getUTCMonth() ||
+    (asOfDate.getUTCMonth() === hire.getUTCMonth() && asOfDate.getUTCDate() >= hire.getUTCDate());
+  if (!anniversaryPassed) years -= 1;
+  return Math.max(0, years);
+}
+
+// The rate/cap a tiered rule actually uses for one technician right now --
+// the tier with the highest minYears that's <= their completed years of
+// service (tiers sorted ascending coming in). Falls back to the rule's own
+// flat rate_hours/cap_hours for a non-tiered rule, so every call site can
+// use this instead of branching on rule.is_tiered itself.
+function resolveAccrualRateForTech(rule, tiers, hireDateIso, asOfDate) {
+  if (!rule.is_tiered) return { rateHours: rule.rate_hours, capHours: rule.cap_hours };
+  const years = completedYearsOfService(hireDateIso, asOfDate);
+  const ruleTiers = tiers.filter((t) => t.rule_id === rule.id).sort((a, b) => a.min_years - b.min_years);
+  let match = ruleTiers[0];
+  for (const t of ruleTiers) {
+    if (t.min_years <= years) match = t;
+  }
+  if (!match) return { rateHours: rule.rate_hours, capHours: rule.cap_hours };
+  return { rateHours: match.rate_hours, capHours: match.cap_hours };
 }
 
 function createTimeOffPolicy({ name, rules }) {
@@ -13372,11 +13480,23 @@ function computeTimeOffBalance(techId, year) {
     types: TIME_OFF_TYPES.filter((t) => ruleByType.has(t.value)).map((t) => {
       const entry = byType.get(t.value);
       const rule = ruleByType.get(t.value);
+      // The presented rule shape (tiered/tiers, camelCase) from
+      // findTimeOffPolicy, not the raw row resolveAccrualRateForTech
+      // expects -- resolved inline here just for the display cap, since
+      // accruedHours above already comes from the real posted ledger
+      // either way.
+      let capHours = rule.accrueUntil === "cap" ? rule.capHours : null;
+      if (rule.tiered && tech && tech.hire_date) {
+        const years = completedYearsOfService(tech.hire_date, new Date());
+        let match = rule.tiers[0];
+        for (const tier of rule.tiers) if (tier.minYears <= years) match = tier;
+        capHours = rule.accrueUntil === "cap" ? (match ? match.capHours : null) : null;
+      }
       return {
         type: t.value,
         label: t.label,
         accruedHours: entry.accruedHours,
-        capHours: rule.accrueUntil === "cap" ? rule.capHours : null,
+        capHours,
         used: entry.used,
         pending: entry.pending,
         balance: round2(entry.accruedHours - entry.used - entry.pending),
@@ -13487,6 +13607,10 @@ function runTimeOffAccrual({ asOf } = {}) {
   );
 
   const rules = db.prepare("SELECT * FROM time_off_accrual_rules WHERE active = 1").all();
+  const tieredRuleIds = rules.filter((r) => r.is_tiered).map((r) => r.id);
+  const allTiers = tieredRuleIds.length
+    ? db.prepare(`SELECT * FROM time_off_tenure_tiers WHERE rule_id IN (${tieredRuleIds.map(() => "?").join(",")})`).all(...tieredRuleIds)
+    : [];
   let posted = 0;
 
   for (const rule of rules) {
@@ -13499,6 +13623,12 @@ function runTimeOffAccrual({ asOf } = {}) {
       const hireDate = new Date(`${tech.hire_date}T00:00:00Z`);
       const hireYear = hireDate.getUTCFullYear();
       const hireMonth = hireDate.getUTCMonth() + 1;
+      // For a tenure-tiered rule, this is resolved fresh for every
+      // occurrence (not cached across the loop) specifically so someone
+      // who crosses into their next tier mid-run picks up the new rate
+      // automatically -- the whole point of tiering over the old "admin
+      // manually swaps their rule every work anniversary" design.
+      const { rateHours, capHours } = resolveAccrualRateForTech(rule, allTiers, tech.hire_date, now);
 
       if (rule.frequency === "monthly") {
         const postDay = clampDayToMonth(rule.accrue_on_day, year, month);
@@ -13506,7 +13636,7 @@ function runTimeOffAccrual({ asOf } = {}) {
         const occurrenceDate = new Date(Date.UTC(year, month - 1, postDay));
         if (occurrenceDate < hireDate) continue; // this month's occurrence falls before the person was even hired
 
-        let hours = rule.rate_hours;
+        let hours = rateHours;
         // Pro-rate only the very first occurrence a newly-assigned person
         // ever receives under this rule -- by the fraction of their hire
         // month they were actually employed, even if that first occurrence
@@ -13517,17 +13647,17 @@ function runTimeOffAccrual({ asOf } = {}) {
         if (priorCount === 0) {
           const daysInHireMonth = new Date(Date.UTC(hireYear, hireMonth, 0)).getUTCDate();
           const daysEmployed = daysInHireMonth - hireDate.getUTCDate() + 1;
-          hours = round2(rule.rate_hours * (daysEmployed / daysInHireMonth));
+          hours = round2(rateHours * (daysEmployed / daysInHireMonth));
         }
-        if (rule.accrue_until === "cap" && rule.cap_hours != null) {
+        if (rule.accrue_until === "cap" && capHours != null) {
           const postedThisYear = sumPostedThisYear.get(tech.id, rule.type, `${year}-01-01`, `${year}-12-31`).total;
-          hours = Math.max(0, Math.min(hours, round2(rule.cap_hours - postedThisYear)));
+          hours = Math.max(0, Math.min(hours, round2(capHours - postedThisYear)));
         }
         if (hours > 0 && insertEvent.run(tech.id, rule.type, dateIso, hours, rule.id, "accrual", createdAt).changes) posted += 1;
       } else if (rule.frequency === "annually") {
         if (month !== 1 || day !== clampDayToMonth(rule.accrue_on_day, year, 1)) continue;
         if (year < hireYear) continue;
-        if (insertEvent.run(tech.id, rule.type, dateIso, rule.rate_hours, rule.id, "accrual", createdAt).changes) posted += 1;
+        if (insertEvent.run(tech.id, rule.type, dateIso, rateHours, rule.id, "accrual", createdAt).changes) posted += 1;
       } else if (rule.frequency === "on_hire_date") {
         // The real Sick-time policy this mirrors: 40 hours on the actual
         // hire date for a brand-new hire's first (partial) year, then 40
@@ -13535,7 +13665,7 @@ function runTimeOffAccrual({ asOf } = {}) {
         // every year, which would drift the grant date for no reason.
         const isHireYear = year === hireYear;
         if (isHireYear ? month !== hireMonth || day !== hireDate.getUTCDate() : month !== 1 || day !== 1) continue;
-        if (insertEvent.run(tech.id, rule.type, dateIso, rule.rate_hours, rule.id, "accrual", createdAt).changes) posted += 1;
+        if (insertEvent.run(tech.id, rule.type, dateIso, rateHours, rule.id, "accrual", createdAt).changes) posted += 1;
       }
     }
 
@@ -13544,14 +13674,16 @@ function runTimeOffAccrual({ asOf } = {}) {
     // "Use it or lose it" is the default (no event posted, so the new
     // year's balance starts at 0 accrued); the CA/MT/NE exception is the
     // one admin-set override (technicians.pto_carryover_exempt), carrying
-    // over up to 1.75x the rule's annual cap.
+    // over up to 1.75x the rule's (or, for a tiered rule, that tech's own
+    // current tier's) annual cap.
     if (month === 1 && day === 1 && rule.accrue_until === "cap") {
       for (const tech of techs) {
         if (!tech.pto_carryover_exempt) continue;
         const priorYear = computeTimeOffBalance(tech.id, year - 1).types.find((t) => t.type === rule.type);
         if (!priorYear) continue;
+        const { capHours } = resolveAccrualRateForTech(rule, allTiers, tech.hire_date, now);
         const unused = Math.max(0, priorYear.balance);
-        const carryoverCap = round2((rule.cap_hours || 0) * 1.75);
+        const carryoverCap = round2((capHours || 0) * 1.75);
         const carryover = round2(Math.min(unused, carryoverCap));
         if (carryover > 0 && insertEvent.run(tech.id, rule.type, dateIso, carryover, rule.id, "carryover", createdAt).changes) posted += 1;
       }

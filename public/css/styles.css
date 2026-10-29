@@ -7574,6 +7574,59 @@ tr.gl-import-shrink-row {
   margin-top: 10px;
 }
 
+.rule-flat-field[hidden] {
+  display: none;
+}
+
+.timeoff-tier-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.timeoff-tier-table {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.timeoff-tier-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timeoff-tier-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.timeoff-tier-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.timeoff-tier-row input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.timeoff-tier-remove-btn {
+  padding: 6px 10px;
+  color: var(--danger);
+}
+
 .timeoff-audit-trail-header {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
