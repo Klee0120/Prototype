@@ -56,6 +56,16 @@ function renderTimeOffChipsHtml(entries) {
   `;
 }
 
+// A small label under the date, same spot the time-off chips sit -- the
+// real Toyota-account holiday calendar (see timeOff.js's own Holidays
+// admin tab), not a computed/guessed date, so this only ever shows what
+// an admin has actually entered for that year.
+function renderHolidayBadgeHtml(dateIso, holidayByDate) {
+  const holiday = holidayByDate[dateIso];
+  if (!holiday) return "";
+  return `<div class="schedule-holiday-badge" title="Company holiday">${escapeHtml(holiday.name)}</div>`;
+}
+
 function formatMoney(n) {
   if (n == null) return "—";
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -272,7 +282,7 @@ function buildWeekRuns(week, byDate, keyOf) {
 // work -- a day-by-day skip-if-nothing list; Week lists all 7 days
 // including empty ones (and days with only time off, no WOM), so the
 // week reads as a complete picture rather than just its busy days.
-function renderAgendaListHtml(dates, byDate, timeOffByDate) {
+function renderAgendaListHtml(dates, byDate, timeOffByDate, holidayByDate = {}) {
   if (dates.length === 0) {
     return `<p class="empty-note">Nothing scheduled.</p>`;
   }
@@ -284,6 +294,7 @@ function renderAgendaListHtml(dates, byDate, timeOffByDate) {
         return `
           <div class="schedule-agenda-day">
             <div class="schedule-agenda-date">${escapeHtml(formatLongDate(dateIso))}</div>
+            ${renderHolidayBadgeHtml(dateIso, holidayByDate)}
             <p class="empty-note">Nothing scheduled.</p>
           </div>
         `;
@@ -291,6 +302,7 @@ function renderAgendaListHtml(dates, byDate, timeOffByDate) {
       return `
         <div class="schedule-agenda-day">
           <div class="schedule-agenda-date">${escapeHtml(formatLongDate(dateIso))}</div>
+          ${renderHolidayBadgeHtml(dateIso, holidayByDate)}
           ${renderTimeOffChipsHtml(timeOffToday)}
           ${entries
             .map((e, i) => {
@@ -493,17 +505,22 @@ export async function renderSchedule(container, options = {}) {
     // month the week's Monday falls in always has that whole week's data,
     // even when the week straddles two real months.
     const fetchMonth = isWeekMode ? state.scheduleWeekMonday.slice(0, 7) : state.scheduleMonth;
-    let data, timeOffByDate;
+    let data, timeOffByDate, holidays;
     try {
       const query = state.scheduleLocation ? `?location=${encodeURIComponent(state.scheduleLocation)}` : "";
-      [data, timeOffByDate] = await Promise.all([
+      [data, timeOffByDate, holidays] = await Promise.all([
         api.get(`/api/schedule/${fetchMonth}${query}`),
         api.get(`/api/schedule/${fetchMonth}/time-off`),
+        // Unfiltered by year -- the visible grid can straddle a Dec/Jan
+        // boundary, and the full list is small (a handful of dates a
+        // year), so there's no real cost to just fetching all of it.
+        api.get("/api/time-off/holidays"),
       ]);
     } catch (err) {
       host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
       return;
     }
+    const holidayByDate = Object.fromEntries(holidays.map((h) => [h.date, h]));
 
     const [y, m] = state.scheduleMonth.split("-").map(Number);
     const days = [];
@@ -535,6 +552,7 @@ export async function renderSchedule(container, options = {}) {
                   const timeOffToday = timeOffByDate[dateIso] || [];
                   return `<div class="schedule-daycell ${inMonth ? "" : "schedule-calendar-outside"}" style="grid-column:${i + 1}">
                     <div class="schedule-calendar-daynum">${dd}</div>
+                    ${renderHolidayBadgeHtml(dateIso, holidayByDate)}
                     ${renderTimeOffChipsHtml(timeOffToday)}
                   </div>`;
                 })
@@ -569,13 +587,13 @@ export async function renderSchedule(container, options = {}) {
       // full project" -> onOpenWom) works identically for either shape.
       const agendaDates = isWeekMode
         ? Array.from({ length: 7 }, (_, i) => addDaysIso(state.scheduleWeekMonday, i))
-        : Array.from(new Set([...Object.keys(data.byDate), ...Object.keys(timeOffByDate)]))
+        : Array.from(new Set([...Object.keys(data.byDate), ...Object.keys(timeOffByDate), ...Object.keys(holidayByDate)]))
             .filter((dateIso) => {
               const [dy, dm] = dateIso.split("-").map(Number);
               return dm === m && dy === y;
             })
             .sort();
-      host.innerHTML = renderAgendaListHtml(agendaDates, data.byDate, timeOffByDate);
+      host.innerHTML = renderAgendaListHtml(agendaDates, data.byDate, timeOffByDate, holidayByDate);
     }
 
     host.querySelectorAll(".schedule-entry").forEach((btn) => {

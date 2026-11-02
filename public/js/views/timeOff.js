@@ -363,6 +363,54 @@ function openBalanceAdjustmentForm({ types, techId, onSubmitted }) {
   });
 }
 
+// Per the real Toyota-account holiday policy: someone who works a
+// scheduled company holiday earns a floating holiday in lieu, usable
+// within 6 months of the date worked -- admin-confirmed rather than
+// auto-detected (see db.grantInLieuFloatingHoliday's own comment), so
+// this is a small, separate form from the general Adjust Balance one
+// above: it always grants to floating_holiday, always expires, and the
+// hours default to a full 8-hour day rather than asking every time.
+function openInLieuGrantForm({ techId, onSubmitted }) {
+  const { body, close } = openModal({
+    title: "Grant Floating Holiday (In Lieu of Holiday Worked)",
+    bodyHtml: `
+      <form class="modal-form timeoff-in-lieu-form">
+        <p class="review-checklist-hint">For someone who worked a scheduled company holiday -- grants a floating holiday usable within 6 months of the date below, on top of their regular pay for that day.</p>
+        <label class="profile-field">
+          <span>Holiday worked</span>
+          <input type="date" name="workedDate" required value="${new Date().toISOString().slice(0, 10)}" />
+        </label>
+        <label class="profile-field">
+          <span>Hours</span>
+          <input type="number" name="hours" step="0.01" min="0.01" required value="8" />
+        </label>
+        <label class="profile-field">
+          <span>Note (optional)</span>
+          <textarea name="note" placeholder="e.g. Worked Thanksgiving to cover an emergency call"></textarea>
+        </label>
+        <div class="modal-form-actions"><button type="submit" class="btn btn-primary">Grant floating holiday</button></div>
+        <span class="save-message"></span>
+      </form>
+    `,
+  });
+  const form = body.querySelector(".timeoff-in-lieu-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = form.querySelector(".save-message");
+    try {
+      await api.post(`/api/time-off/technicians/${techId}/in-lieu-grant`, {
+        workedDate: form.workedDate.value,
+        hours: Number(form.hours.value),
+        note: form.note.value.trim(),
+      });
+      close();
+      await onSubmitted();
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+}
+
 function renderRequestsTable(requests, types, { showTech = false, onCancel, onDecide } = {}) {
   if (requests.length === 0) return `<p class="empty-note">Nothing here yet.</p>`;
   return `
@@ -504,6 +552,7 @@ export async function renderTimeOffAdmin(container) {
         <button type="button" class="tab ${adminSubTab === "history" ? "active" : ""}" data-sub="history">History</button>
         <button type="button" class="tab ${adminSubTab === "policies" ? "active" : ""}" data-sub="policies">Time-Off Policies</button>
         <button type="button" class="tab ${adminSubTab === "people" ? "active" : ""}" data-sub="people">By Technician</button>
+        <button type="button" class="tab ${adminSubTab === "holidays" ? "active" : ""}" data-sub="holidays">Holidays</button>
         <button type="button" class="tab ${adminSubTab === "documents" ? "active" : ""}" data-sub="documents">Policy Documents</button>
       </div>
       <div class="page-header-actions">
@@ -526,6 +575,7 @@ export async function renderTimeOffAdmin(container) {
   if (adminSubTab === "policies") await renderPolicies(body);
   else if (adminSubTab === "people") await renderByTechnician(body, types);
   else if (adminSubTab === "history") await renderHistory(body, types);
+  else if (adminSubTab === "holidays") await renderHolidays(body);
   else if (adminSubTab === "documents") await renderPolicyDocuments(body);
   else await renderApprovalsQueue(body, types, container);
 }
@@ -656,6 +706,122 @@ async function renderPolicies(host) {
       try {
         await api.delete(`/api/time-off/policies/${policy.id}`);
         await renderPolicies(host);
+      } catch (err) {
+        window.alert(err.message);
+      }
+    });
+  });
+}
+
+function openHolidayForm(existing, onSaved) {
+  const { body, close } = openModal({
+    title: existing ? "Edit Holiday" : "Add Holiday",
+    bodyHtml: `
+      <form class="modal-form timeoff-holiday-form">
+        <label class="profile-field">
+          <span>Date</span>
+          <input type="date" name="date" required value="${existing?.date || ""}" />
+        </label>
+        <label class="profile-field">
+          <span>Name</span>
+          <input name="name" required value="${escapeHtml(existing?.name || "")}" placeholder="e.g. Labor Day" />
+        </label>
+        <div class="modal-form-actions"><button type="submit" class="btn btn-primary">${existing ? "Save" : "Add Holiday"}</button></div>
+        <span class="save-message"></span>
+      </form>
+    `,
+  });
+  const form = body.querySelector(".timeoff-holiday-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = form.querySelector(".save-message");
+    try {
+      const payload = { date: form.date.value, name: form.name.value.trim() };
+      if (existing) await api.patch(`/api/time-off/holidays/${existing.id}`, payload);
+      else await api.post("/api/time-off/holidays", payload);
+      close();
+      await onSaved();
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+}
+
+// The real Toyota-account (TMNA) holiday calendar -- re-entered from each
+// year's memo, not the general C&W corporate schedule (different day
+// count, doesn't apply to this account). Shown on the Schedule calendar
+// (see schedule.js) once added here.
+let holidaysYearFilter = new Date().getFullYear();
+async function renderHolidays(host) {
+  host.innerHTML = `<p class="empty-note">Loading…</p>`;
+  let holidays;
+  try {
+    holidays = await api.get(`/api/time-off/holidays?year=${holidaysYearFilter}`);
+  } catch (err) {
+    host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+
+  const years = [holidaysYearFilter - 1, holidaysYearFilter, holidaysYearFilter + 1];
+  host.innerHTML = `
+    <div class="page-header">
+      <label class="profile-field timeoff-holidays-year">
+        <span>Year</span>
+        <select class="timeoff-holidays-year-select">
+          ${years.map((y) => `<option value="${y}" ${y === holidaysYearFilter ? "selected" : ""}>${y}</option>`).join("")}
+        </select>
+      </label>
+      <div class="page-header-actions">
+        <button type="button" class="btn btn-primary timeoff-add-holiday-btn">+ Add Holiday</button>
+      </div>
+    </div>
+    <div class="timeoff-holidays-host"></div>
+  `;
+  host.querySelector(".timeoff-holidays-year-select").addEventListener("change", (e) => {
+    holidaysYearFilter = Number(e.target.value);
+    renderHolidays(host);
+  });
+  host.querySelector(".timeoff-add-holiday-btn").addEventListener("click", () => openHolidayForm(null, () => renderHolidays(host)));
+
+  const list = host.querySelector(".timeoff-holidays-host");
+  if (holidays.length === 0) {
+    list.innerHTML = `<p class="empty-note">No holidays on file for ${holidaysYearFilter} yet.</p>`;
+    return;
+  }
+  list.innerHTML = `
+    <table class="detail-table">
+      <thead><tr><th>Date</th><th>Holiday</th><th></th></tr></thead>
+      <tbody>
+        ${holidays
+          .map(
+            (h) => `
+          <tr data-id="${h.id}">
+            <td>${h.date}</td>
+            <td>${escapeHtml(h.name)}</td>
+            <td class="timeoff-row-actions">
+              <button type="button" class="btn btn-secondary timeoff-edit-holiday-btn" data-id="${h.id}">Edit</button>
+              <button type="button" class="btn btn-link danger-link timeoff-delete-holiday-btn" data-id="${h.id}">Delete</button>
+            </td>
+          </tr>
+        `
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+  list.querySelectorAll(".timeoff-edit-holiday-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const holiday = holidays.find((h) => String(h.id) === btn.dataset.id);
+      openHolidayForm(holiday, () => renderHolidays(host));
+    });
+  });
+  list.querySelectorAll(".timeoff-delete-holiday-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const holiday = holidays.find((h) => String(h.id) === btn.dataset.id);
+      if (!window.confirm(`Remove ${holiday.name} (${holiday.date}) from the holiday calendar?`)) return;
+      try {
+        await api.delete(`/api/time-off/holidays/${holiday.id}`);
+        await renderHolidays(host);
       } catch (err) {
         window.alert(err.message);
       }
@@ -920,6 +1086,7 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
       </div>
       <div class="page-header-actions">
         <button type="button" class="btn btn-secondary timeoff-adjust-balance-btn">+ Adjust Balance</button>
+        <button type="button" class="btn btn-secondary timeoff-in-lieu-grant-btn">+ Grant Floating Holiday (In Lieu)</button>
         <button type="button" class="btn btn-primary timeoff-admin-request-btn">+ Request Time Off</button>
       </div>
     </div>
@@ -958,6 +1125,9 @@ async function renderPersonDetail(detailHost, techId, { types, policies, admins,
   });
   detailHost.querySelector(".timeoff-adjust-balance-btn").addEventListener("click", () => {
     openBalanceAdjustmentForm({ types, techId, onSubmitted: refreshDetail });
+  });
+  detailHost.querySelector(".timeoff-in-lieu-grant-btn").addEventListener("click", () => {
+    openInLieuGrantForm({ techId, onSubmitted: refreshDetail });
   });
   detailHost.querySelector(".timeoff-policy-select").addEventListener("change", async (e) => {
     try {

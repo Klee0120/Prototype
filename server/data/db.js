@@ -1632,6 +1632,18 @@ if (!hasColumn("time_off_accrual_events", "note")) {
 if (!hasColumn("time_off_accrual_events", "created_by")) {
   db.exec("ALTER TABLE time_off_accrual_events ADD COLUMN created_by TEXT");
 }
+// Null for every ordinary accrual/carryover/manual_adjustment event --
+// only ever set on a 'floating_holiday' grant awarded in lieu of a
+// company holiday actually worked (see grantInLieuFloatingHoliday), which
+// the real Toyota-account holiday policy says must be used within 6
+// months of the holiday worked, not "by Dec 31" like every other type's
+// use-it-or-lose-it rule. computeTimeOffBalance is the one place that
+// reads this -- it keeps an unexpired grant counted even once it crosses
+// into the following calendar year, and drops it the moment it expires,
+// regardless of which year's balance is being viewed.
+if (!hasColumn("time_off_accrual_events", "expires_at")) {
+  db.exec("ALTER TABLE time_off_accrual_events ADD COLUMN expires_at TEXT");
+}
 // Per-employee override for the one state-law exception to "use it or lose
 // it" carryover (CA/MT/NE allow carrying over up to 1.75x the annual cap
 // instead of resetting to zero every Jan 1) -- a plain admin-set flag
@@ -1639,6 +1651,25 @@ if (!hasColumn("time_off_accrual_events", "created_by")) {
 // territory (Midwest/East/West/...) doesn't map to a single US state.
 if (!hasColumn("technicians", "pto_carryover_exempt")) {
   db.exec("ALTER TABLE technicians ADD COLUMN pto_carryover_exempt INTEGER NOT NULL DEFAULT 0");
+}
+
+// The real Toyota-account (TMNA) holiday schedule, re-entered every year
+// from that year's memo -- not the general C&W corporate schedule, which
+// has a different day count and doesn't apply to this account. Plain
+// admin-managed rows, not derived from anything else: a holiday's date
+// moves around every year (observed-on-a-Friday, etc.), so there's no
+// formula to compute it from. Surfaced on the Schedule calendar so techs
+// and admins can see them without cross-checking a PDF.
+if (!tableExists("company_holidays")) {
+  db.exec(`
+    CREATE TABLE company_holidays (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      holiday_date TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
 }
 
 // Who may approve a given person's time-off requests -- a list, not a
@@ -13555,10 +13586,24 @@ function computeTimeOffBalance(techId, year) {
   const policy = tech && tech.time_off_policy_id ? findTimeOffPolicy(tech.time_off_policy_id) : null;
   const yearFrom = `${year}-01-01`;
   const yearTo = `${year}-12-31`;
+  const todayIso = new Date().toISOString().slice(0, 10);
   const requests = listTimeOffRequests({ techId, from: yearFrom, to: yearTo }).filter((r) => r.status === "approved" || r.status === "pending");
+  // A normal event only ever counts toward the year it was posted in. An
+  // in-lieu-of-holiday-worked grant (see grantInLieuFloatingHoliday) is the
+  // one exception: it carries an expires_at up to 6 months out, which can
+  // cross into the following calendar year, so a grant posted late in
+  // `year - 1` still counts here as long as it hasn't expired yet. Either
+  // way, anything already past its own expires_at is dropped regardless of
+  // which year it was posted in -- expired time is never spendable.
   const accrualRows = db
-    .prepare("SELECT type, SUM(hours) AS total FROM time_off_accrual_events WHERE tech_id = ? AND accrual_date BETWEEN ? AND ? GROUP BY type")
-    .all(techId, yearFrom, yearTo);
+    .prepare(
+      `SELECT type, SUM(hours) AS total FROM time_off_accrual_events
+       WHERE tech_id = ?
+         AND (accrual_date BETWEEN ? AND ? OR (expires_at IS NOT NULL AND expires_at >= ?))
+         AND (expires_at IS NULL OR expires_at >= ?)
+       GROUP BY type`
+    )
+    .all(techId, yearFrom, yearTo, yearFrom, todayIso);
   const accruedByType = new Map(accrualRows.map((r) => [r.type, round2(r.total)]));
   const ruleByType = new Map((policy ? policy.rules : []).map((r) => [r.type, r]));
 
@@ -13613,7 +13658,7 @@ function clampDayToMonth(day, year, month) {
   return Math.min(day, daysInMonth);
 }
 
-const TIME_OFF_ACCRUAL_SOURCE_LABELS = { accrual: "System Accrual", carryover: "Carryover", manual_adjustment: "Manual Adjustment" };
+const TIME_OFF_ACCRUAL_SOURCE_LABELS = { accrual: "System Accrual", carryover: "Carryover", manual_adjustment: "Manual Adjustment", in_lieu_holiday: "In Lieu of Holiday Worked" };
 
 function presentAccrualEvent(e) {
   const enteredByTech = e.created_by ? findTechnician(e.created_by) : null;
@@ -13629,6 +13674,9 @@ function presentAccrualEvent(e) {
     // event, same as `note`. Matches PurelyHR's own Balance Audit Trail,
     // which shows this on every manual line (e.g. "By: Eileen Aucoin").
     enteredBy: enteredByTech ? enteredByTech.name : e.created_by || "",
+    // Only ever set on an in-lieu-of-holiday-worked grant (see
+    // grantInLieuFloatingHoliday) -- null for every other source.
+    expiresAt: e.expires_at || null,
   };
 }
 
@@ -13655,6 +13703,86 @@ function addTimeOffBalanceAdjustment(techId, { type, hours, date, note, createdB
      VALUES (?, ?, ?, ?, NULL, 'manual_adjustment', ?, ?, ?)`
   ).run(techId, type, date, h, note || null, createdBy || null, now);
   return listTimeOffAccrualEvents({ techId, type });
+}
+
+// 2027-11-26 + 6 months -> 2028-05-26 -- UTC-based, same construction
+// server/utils/week.js's own date helpers use, so this never drifts a day
+// around a DST boundary the way a naive local-time Date would.
+function addMonthsToIsoDate(dateIso, months) {
+  const [y, m, d] = dateIso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1 + months, d));
+  return dt.toISOString().slice(0, 10);
+}
+
+function presentCompanyHoliday(row) {
+  return { id: row.id, date: row.holiday_date, name: row.name };
+}
+
+// The real Toyota-account holiday calendar, re-entered by an admin from
+// each year's memo (see company_holidays's own comment) -- `year` filters
+// by the date's own calendar year since there's no separate year column.
+function listCompanyHolidays({ year } = {}) {
+  const rows = year
+    ? db.prepare("SELECT * FROM company_holidays WHERE holiday_date LIKE ? ORDER BY holiday_date").all(`${year}-%`)
+    : db.prepare("SELECT * FROM company_holidays ORDER BY holiday_date").all();
+  return rows.map(presentCompanyHoliday);
+}
+
+function createCompanyHoliday({ date, name }) {
+  if (!date) throw new Error("date is required");
+  if (!name || !name.trim()) throw new Error("name is required");
+  const existing = db.prepare("SELECT id FROM company_holidays WHERE holiday_date = ?").get(date);
+  if (existing) throw new Error("A holiday is already on file for this date -- edit or remove that one instead of adding a second.");
+  const now = new Date().toISOString();
+  const result = db
+    .prepare("INSERT INTO company_holidays (holiday_date, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+    .run(date, name.trim(), now, now);
+  return presentCompanyHoliday(db.prepare("SELECT * FROM company_holidays WHERE id = ?").get(result.lastInsertRowid));
+}
+
+function updateCompanyHoliday(id, { date, name }) {
+  const existing = db.prepare("SELECT * FROM company_holidays WHERE id = ?").get(Number(id));
+  if (!existing) return null;
+  const nextDate = date !== undefined ? date : existing.holiday_date;
+  const nextName = name !== undefined ? name.trim() : existing.name;
+  if (!nextDate) throw new Error("date is required");
+  if (!nextName) throw new Error("name is required");
+  const clash = db.prepare("SELECT id FROM company_holidays WHERE holiday_date = ? AND id != ?").get(nextDate, Number(id));
+  if (clash) throw new Error("A holiday is already on file for this date.");
+  db.prepare("UPDATE company_holidays SET holiday_date = ?, name = ?, updated_at = ? WHERE id = ?").run(nextDate, nextName, new Date().toISOString(), Number(id));
+  return presentCompanyHoliday(db.prepare("SELECT * FROM company_holidays WHERE id = ?").get(Number(id)));
+}
+
+function deleteCompanyHoliday(id) {
+  const existing = db.prepare("SELECT 1 FROM company_holidays WHERE id = ?").get(Number(id));
+  if (!existing) return false;
+  db.prepare("DELETE FROM company_holidays WHERE id = ?").run(Number(id));
+  return true;
+}
+
+// Admin-granted floating holiday for someone who worked a scheduled
+// company holiday -- per the real Toyota-account policy ("Floating
+// Holiday Earned In Lieu of Worked Holiday"), this is on top of their
+// regular pay for that day, usable within 6 months of the holiday worked.
+// Deliberately admin-granted rather than auto-detected: whether someone
+// "worked" a given holiday isn't a clean yes/no the system can infer
+// safely from timecard data alone (a partial shift? an on-call callback?),
+// so an admin confirms it the same way they already confirm every other
+// manual balance entry. expires_at is what makes this different from a
+// normal accrual/manual_adjustment event -- see computeTimeOffBalance for
+// where that's actually enforced.
+function grantInLieuFloatingHoliday({ techId, workedDate, hours, note, createdBy }) {
+  if (!techId) throw new Error("techId is required");
+  if (!workedDate) throw new Error("workedDate is required");
+  const h = Number(hours ?? 8);
+  if (!(h > 0)) throw new Error("hours must be a positive number");
+  const now = new Date().toISOString();
+  const expiresAt = addMonthsToIsoDate(workedDate, 6);
+  db.prepare(
+    `INSERT INTO time_off_accrual_events (tech_id, type, accrual_date, hours, rule_id, source, note, created_by, expires_at, created_at)
+     VALUES (?, 'floating_holiday', ?, ?, NULL, 'in_lieu_holiday', ?, ?, ?, ?)`
+  ).run(techId, workedDate, h, note || `Worked ${workedDate} -- in lieu of holiday, expires ${expiresAt}`, createdBy || null, expiresAt, now);
+  return listTimeOffAccrualEvents({ techId, type: "floating_holiday" });
 }
 
 // Backs the Audit Trail modal exactly as PurelyHR's own shows it: every
@@ -14286,4 +14414,9 @@ module.exports = {
   listTimeOffAccrualEvents,
   addTimeOffBalanceAdjustment,
   runTimeOffAccrual,
+  listCompanyHolidays,
+  createCompanyHoliday,
+  updateCompanyHoliday,
+  deleteCompanyHoliday,
+  grantInLieuFloatingHoliday,
 };

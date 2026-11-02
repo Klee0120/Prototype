@@ -116,6 +116,63 @@ router.post("/technicians/:techId/balance-adjustment", requireAdmin, (req, res) 
   }
 });
 
+// An admin-granted floating holiday for someone who worked a scheduled
+// company holiday -- see db.grantInLieuFloatingHoliday for why this is
+// admin-confirmed rather than auto-detected, and why it carries its own
+// 6-month expiry unlike every other balance entry.
+router.post("/technicians/:techId/in-lieu-grant", requireAdmin, (req, res) => {
+  const { workedDate, hours, note } = req.body || {};
+  try {
+    const events = db.grantInLieuFloatingHoliday({ techId: req.params.techId, workedDate, hours, note, createdBy: req.user.id });
+    db.addAudit(
+      req.user.id,
+      "TIME_OFF_IN_LIEU_GRANTED",
+      `${req.user.name} granted ${req.params.techId} a floating holiday in lieu of working ${workedDate}`
+    );
+    res.status(201).json(events);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ---- Company holidays ----
+// The real Toyota-account (TMNA) holiday calendar, not the general C&W
+// corporate one -- see company_holidays's own comment in db.js. Readable
+// by anyone authenticated (the Schedule calendar needs it for every
+// technician, not just admins); only an admin can edit the list.
+
+router.get("/holidays", (req, res) => {
+  res.json(db.listCompanyHolidays({ year: req.query.year }));
+});
+
+router.post("/holidays", requireAdmin, (req, res) => {
+  try {
+    const holiday = db.createCompanyHoliday(req.body || {});
+    db.addAudit(req.user.id, "COMPANY_HOLIDAY_ADDED", `${req.user.name} added ${holiday.name} (${holiday.date}) to the company holiday calendar`);
+    res.status(201).json(holiday);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.patch("/holidays/:id", requireAdmin, (req, res) => {
+  try {
+    const holiday = db.updateCompanyHoliday(req.params.id, req.body || {});
+    if (!holiday) return res.status(404).json({ error: "Holiday not found" });
+    db.addAudit(req.user.id, "COMPANY_HOLIDAY_UPDATED", `${req.user.name} updated ${holiday.name} (${holiday.date})`);
+    res.json(holiday);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete("/holidays/:id", requireAdmin, (req, res) => {
+  const ok = db.deleteCompanyHoliday(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Holiday not found" });
+  db.addAudit(req.user.id, "COMPANY_HOLIDAY_DELETED", `${req.user.name} removed a holiday from the company holiday calendar`);
+  res.json({ ok: true });
+});
+
 // ---- Requests ----
 
 // Admin with no techId filter sees everything; a technician without one
