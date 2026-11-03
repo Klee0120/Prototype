@@ -1769,13 +1769,18 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // Once a case is Approved it's a closed record of one policy/form period
   // -- a renewal (a new COI for the next policy year, a re-signed W-9, a
   // new ACH after a vendor switches banks) is a fresh case, not a
-  // correction to that one, so the pill locks (every field disabled, the
-  // approved data still fully visible) and offers "Start new case"
-  // instead of letting a stray edit silently overwrite the old approval.
+  // correction to that one, so the pill locks by default (every field
+  // disabled, the approved data still fully visible) and offers "Start
+  // new case" instead of letting a stray edit silently overwrite the old
+  // approval. "Edit anyway" is the deliberate escape hatch for an actual
+  // mistake on the approved record itself (a typo'd case #, a date that
+  // needs correcting) -- one extra click (plus a confirm()) past the
+  // default lock, not a second status to track: forceUnlock re-renders
+  // this same pill, same `latest` data, with the lock simply off.
   // Still-open cases (gathering/in review/revisions needed/denied) keep
   // editing in place exactly like before -- that's the same submission
   // still being worked, not a new period.
-  function renderCasePillHtml(v, ct, latest, startingNew) {
+  function renderCasePillHtml(v, ct, latest, startingNew, forceUnlock) {
     const coiRef = ct.key === "coi" ? coiRequirementLine(v) : "";
     const formStatus = v[FORM_STATUS_KEY_BY_CASE_KEY[ct.key]] || "not_requested";
     const isW9 = ct.key === "w9";
@@ -1784,7 +1789,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     const statusOptions = caseStatusOptionsFor(ct.key);
     const effectiveLatest = startingNew ? null : latest;
     const currentStatus = effectiveLatest ? effectiveLatest.status || "" : "";
-    const locked = !startingNew && currentStatus === "Approved";
+    const locked = !startingNew && !forceUnlock && currentStatus === "Approved";
     const disabledAttr = locked ? "disabled" : "";
     return `
       <div class="onboarding-case ${locked ? "onboarding-case-locked" : ""}" data-case-key="${ct.key}">
@@ -1793,7 +1798,8 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
           ${effectiveLatest && effectiveLatest.updatedBy === (state.user && state.user.id) ? `<span class="badge badge-draft onboarding-case-mine-badge">Mine</span>` : ""}
           ${
             locked
-              ? `<button type="button" class="btn btn-secondary onboarding-case-start-new-btn">Start new ${escapeHtml(ct.label)} case</button>`
+              ? `<button type="button" class="btn btn-secondary onboarding-case-start-new-btn">Start new ${escapeHtml(ct.label)} case</button>
+                 <button type="button" class="btn btn-link onboarding-case-edit-anyway-btn">Edit anyway</button>`
               : `<span class="onboarding-case-type-tag">Individual document case</span>`
           }
           <span class="onboarding-case-drop-status" hidden></span>
@@ -1801,7 +1807,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         ${locked ? "" : `<p class="onboarding-case-drop-hint">Drop a file here to upload it straight to this case.</p>`}
         ${
           locked
-            ? `<p class="onboarding-case-locked-hint">This ${escapeHtml(ct.label)} case is Approved and closed -- a record of this policy/form period. Click "Start new ${escapeHtml(ct.label)} case" above for a renewal or update, rather than editing this one.</p>`
+            ? `<p class="onboarding-case-locked-hint">This ${escapeHtml(ct.label)} case is Approved and closed -- a record of this policy/form period. Click "Start new ${escapeHtml(ct.label)} case" above for a renewal or update, or "Edit anyway" to correct a mistake on this record directly.</p>`
             : ""
         }
         ${coiRef ? `<div class="onboarding-case-coi-ref">${escapeHtml(coiRef)}</div>` : ""}
@@ -1895,26 +1901,43 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
   // active keystroke -- see persist() vs persistAndRefresh() below). The
   // first save for a case that doesn't exist yet POSTs (creates it);
   // every save after that PATCHes the same row in place.
-  function wireCasePill(caseEl, v, ct, onLogged, latest, startingNew) {
+  function wireCasePill(caseEl, v, ct, onLogged, latest, startingNew, forceUnlock) {
     const startNewBtn = caseEl.querySelector(".onboarding-case-start-new-btn");
-    if (startNewBtn) {
+    const editAnywayBtn = caseEl.querySelector(".onboarding-case-edit-anyway-btn");
+    if (startNewBtn || editAnywayBtn) {
       // Locked (Approved) state -- nothing else on this pill is live, just
-      // the one button. Clicking it re-renders this same element as a
-      // blank, fully-editable pill (treating `latest` as if no case
-      // existed yet, same as a vendor's very first case of this type) --
-      // nothing is actually created until a real field gets saved, so
-      // clicking this by itself and navigating away leaves no empty row
-      // behind.
-      startNewBtn.addEventListener("click", () => {
-        // Scoped to this pill's own parent, not a document-wide query --
-        // the Onboarding board shows every vendor's cases at once, so a
-        // global `data-case-key` lookup would grab the first match on the
-        // whole page instead of this specific vendor's row.
-        const container = caseEl.parentNode;
-        caseEl.outerHTML = renderCasePillHtml(v, ct, latest, true);
-        const freshEl = container.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
-        wireCasePill(freshEl, v, ct, onLogged, null, true);
-      });
+      // these two buttons.
+      if (startNewBtn) {
+        // Re-renders this same element as a blank, fully-editable pill
+        // (treating `latest` as if no case existed yet, same as a
+        // vendor's very first case of this type) -- nothing is actually
+        // created until a real field gets saved, so clicking this by
+        // itself and navigating away leaves no empty row behind.
+        startNewBtn.addEventListener("click", () => {
+          // Scoped to this pill's own parent, not a document-wide query --
+          // the Onboarding board shows every vendor's cases at once, so a
+          // global `data-case-key` lookup would grab the first match on the
+          // whole page instead of this specific vendor's row.
+          const container = caseEl.parentNode;
+          caseEl.outerHTML = renderCasePillHtml(v, ct, latest, true);
+          const freshEl = container.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
+          wireCasePill(freshEl, v, ct, onLogged, null, true);
+        });
+      }
+      if (editAnywayBtn) {
+        // The deliberate override: re-renders this SAME pill, the SAME
+        // approved `latest` data, with the lock off -- a direct correction
+        // to the closed record itself, not a new case. Confirmed first so
+        // it's never one accidental click away from quietly reopening a
+        // closed approval.
+        editAnywayBtn.addEventListener("click", () => {
+          if (!window.confirm(`"${ct.label}" is Approved and marked closed. Edit it directly instead of starting a new case? Use this only to fix a mistake on the existing record.`)) return;
+          const container = caseEl.parentNode;
+          caseEl.outerHTML = renderCasePillHtml(v, ct, latest, false, true);
+          const freshEl = container.querySelector(`.onboarding-case[data-case-key="${ct.key}"]`);
+          wireCasePill(freshEl, v, ct, onLogged, latest, false, true);
+        });
+      }
       return;
     }
 
