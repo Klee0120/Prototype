@@ -22,7 +22,7 @@ import { renderGlScreening } from "./glScreening.js";
 import { renderFiscalCalendar } from "./fiscalCalendar.js";
 import { renderIntegrations } from "./integrations.js";
 import { renderTimeOffAdmin } from "./timeOff.js";
-import { openModal } from "../modal.js";
+import { openModal, closeModal } from "../modal.js";
 import { WOM_REQUEST_FORM_URL, TERRITORIES } from "../constants.js";
 import { getTerritory, setTerritory, onTerritoryChange } from "../globalFilters.js";
 import { renderLoadingState, loadingLabelFor } from "../loadingState.js";
@@ -1116,18 +1116,14 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
         forms currency that drive each vendor's own compliance follow-up task.
         Vendors still being onboarded aren't shown here -- see Onboarding for those.
       </p>
-      <h3>Update a Vendor's Compliance Case</h3>
+      <h3>Start or Update a Vendor's Compliance Case</h3>
       <p class="review-checklist-hint">
-        Search any vendor to start or update one COI/W-9/ACH/Blank Invoice case directly -- for
+        Pick any vendor to start or update one COI/W-9/ACH/Blank Invoice case directly -- for
         when nothing's expired or flagged yet, but you already know it needs attention (a vendor
         emailed new bank details and you just need to log the ACH case, say). Not tied to a
         document upload or the full onboarding flow.
       </p>
-      <div class="onboarding-start-search">
-        <input type="text" id="compliance-case-search-input" placeholder="Search vendor name..." />
-      </div>
-      <div class="review-list" id="compliance-case-search-results"></div>
-      <div id="compliance-case-inline-host"></div>
+      <button type="button" class="btn btn-secondary" id="compliance-case-picker-btn">Pick a vendor&hellip;</button>
       <div class="wom-stat-cards">
         <div class="wom-stat-card ${needsUpdate.length > 0 ? "wom-stat-card-danger" : ""}">
           <span class="wom-stat-icon">&#9888;&#65039;</span>
@@ -1170,64 +1166,41 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
     wireComplianceReminders(content);
   }
 
-  // "Start Onboarding"'s search, but for any vendor regardless of
-  // onboarding stage, and landing on the inline case pills
-  // (renderVendorCasesSection -- the exact same component the Onboarding
-  // board's own rows and the vendor profile's Cases section use) instead
-  // of navigating away, so starting/updating one case never requires the
-  // thing that triggered it (an expired doc, a flagged mismatch) to exist
-  // first.
+  // Same search-and-pick modal every other "find a vendor" flow already
+  // uses (openVendorPickerModal -- parent company, merge-duplicate), for
+  // any vendor regardless of onboarding stage. Picking one opens the same
+  // case pills (renderVendorCasesSection -- the exact component the
+  // Onboarding board's own rows and the vendor profile's Cases section
+  // already share) in a second modal, so starting/updating one case never
+  // requires the thing that triggered it (an expired doc, a flagged
+  // mismatch) to exist first, and never requires leaving this dashboard.
   function wireComplianceCaseSearch(content) {
-    const searchInput = content.querySelector("#compliance-case-search-input");
-    const resultsHost = content.querySelector("#compliance-case-search-results");
-    const inlineHost = content.querySelector("#compliance-case-inline-host");
+    content.querySelector("#compliance-case-picker-btn").addEventListener("click", () => {
+      openVendorPickerModal(
+        "Start or update a compliance case",
+        (vendorId) => {
+          const v = vendorsCache.find((cand) => cand.id === vendorId);
+          if (v) openVendorCasesModal(v);
+        },
+        { allowCreate: false }
+      );
+    });
+  }
 
-    function renderResults(query) {
-      const q = query.trim().toLowerCase();
-      if (!q) {
-        resultsHost.innerHTML = "";
-        return;
-      }
-      const matches = vendorsCache.filter((v) => v.name.toLowerCase().includes(q));
-      if (matches.length === 0) {
-        resultsHost.innerHTML = `<p class="empty-note">No vendor matches "${escapeHtml(query)}".</p>`;
-        return;
-      }
-      resultsHost.innerHTML = "";
-      matches.slice(0, 20).forEach((v) => {
-        const row = document.createElement("div");
-        row.className = "review-row onboarding-row";
-        row.innerHTML = `
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(v.name)}</span>
-            <span class="vendor-jde">${escapeHtml(v.jdeVendorNumber || "No JDE #")}</span>
-            <button class="btn btn-secondary compliance-case-pick-btn" type="button">Open cases</button>
-          </div>
-        `;
-        row.querySelector(".compliance-case-pick-btn").addEventListener("click", () => showInlineCases(v));
-        resultsHost.appendChild(row);
-      });
-    }
-
-    async function showInlineCases(v) {
-      inlineHost.innerHTML = `
-        <div class="review-row onboarding-row">
-          <div class="review-row-summary">
-            <span class="review-row-name">${escapeHtml(v.name)}</span>
-            <button class="btn btn-link compliance-case-open-profile-btn" type="button">Open full vendor profile</button>
-            <button class="btn btn-link compliance-case-close-btn" type="button">Close</button>
-          </div>
-          <div class="onboarding-row-details"></div>
-        </div>
-      `;
-      inlineHost.querySelector(".compliance-case-open-profile-btn").addEventListener("click", () => openVendorProfile(v.id, "onboarding"));
-      inlineHost.querySelector(".compliance-case-close-btn").addEventListener("click", () => {
-        inlineHost.innerHTML = "";
-      });
-      await renderVendorCasesSection(inlineHost.querySelector(".onboarding-row-details"), v);
-    }
-
-    searchInput.addEventListener("input", () => renderResults(searchInput.value));
+  async function openVendorCasesModal(v) {
+    const { body } = openModal({
+      title: v.name,
+      size: "large",
+      bodyHtml: `
+        <button type="button" class="btn btn-link vendor-case-modal-open-profile-btn">Open full vendor profile</button>
+        <div class="vendor-case-modal-body"></div>
+      `,
+    });
+    body.querySelector(".vendor-case-modal-open-profile-btn").addEventListener("click", () => {
+      closeModal();
+      openVendorProfile(v.id, "onboarding");
+    });
+    await renderVendorCasesSection(body.querySelector(".vendor-case-modal-body"), v);
   }
 
   const COMPLIANCE_REMINDER_CATEGORY_LABELS = { coi: "Certificate of Insurance (COI)", w9: "W-9", ach: "ACH / banking details" };

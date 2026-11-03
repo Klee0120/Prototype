@@ -523,11 +523,13 @@ Demo logins:
   through Start Onboarding here or the first real case activity against
   that vendor (`deriveOnboardingStage`).
   The **Vendor Compliance** dashboard has the equivalent search for the
-  other direction -- **"Update a Vendor's Compliance Case"** finds any
-  vendor at all (onboarded or not, flagged or not) and opens the same
-  inline case pills (`renderVendorCasesSection`, the exact component the
+  other direction -- **"Start or Update a Vendor's Compliance Case"**
+  finds any vendor at all (onboarded or not, flagged or not) through the
+  same search-and-pick modal (`openVendorPickerModal`) already used for
+  choosing a parent company or merging a duplicate vendor, then opens the
+  same case pills (`renderVendorCasesSection`, the exact component the
   Onboarding board's own rows and the vendor profile's Cases section both
-  already share) right there on the dashboard, instead of navigating away.
+  already share) in a second modal, instead of navigating away.
   Starting or updating a COI/W-9/ACH/Blank Invoice case was already
   possible for any vendor from their own profile's Onboarding &
   Compliance tab -- editing any case pill's fields creates it on first
