@@ -71,6 +71,15 @@ const CATEGORY_BY_RELATED = {
   // the COI pool above. "policy" is a company policy document; "form" is
   // a blank form meant to be filled out and returned (e.g. at onboarding).
   company_documents: new Set(["policy", "form"]),
+  // A single Roster Required Forms requirement (see db.js's
+  // technician_required_forms table) -- relatedId is that requirement's
+  // own id, not the technician's. "template" is the blank form an admin
+  // optionally provides (admin-only to upload); "completed" is what
+  // satisfies the requirement, which the owning technician can upload
+  // themselves (see canWrite below) -- this is the one roster-related
+  // relatedType a non-admin can write to, by design, same spirit as the
+  // vendor portal letting a vendor upload their own compliance documents.
+  technician_required_form: new Set(["template", "completed"]),
 };
 
 function parseWeekRelatedId(relatedId) {
@@ -89,6 +98,16 @@ function canRead(user, relatedType, relatedId) {
   if (relatedType === "wom" || relatedType === "company_documents") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
   if (relatedType === "technician") return relatedId === user.id;
+  // Unlike the ad hoc tech_form category above, a Required Forms
+  // requirement is meant to be seen by the person it's required of --
+  // they need to read the template (if any) and their own completed
+  // file. relatedId here is the requirement's own id, so this looks the
+  // requirement up to find whose it is, rather than comparing relatedId
+  // to user.id directly the way "technician" does above.
+  if (relatedType === "technician_required_form") {
+    const requirement = db.findTechnicianRequiredForm(relatedId);
+    return Boolean(requirement && requirement.tech_id === user.id);
+  }
   return false;
 }
 
@@ -101,6 +120,14 @@ function canWrite(user, relatedType, relatedId, category) {
   if (relatedType === "vendor" || relatedType === "task" || relatedType === "po" || relatedType === "coi_pool" || relatedType === "company_documents" || relatedType === "vendor_correspondence") return false;
   if (relatedType === "wom") return true;
   if (relatedType === "week") return parseWeekRelatedId(relatedId).techId === user.id;
+  // The owning technician can only ever upload the "completed" category --
+  // the blank "template" is the admin's to provide, same reasoning
+  // vendor-side documents are admin-only to upload at all.
+  if (relatedType === "technician_required_form") {
+    if (category !== "completed") return false;
+    const requirement = db.findTechnicianRequiredForm(relatedId);
+    return Boolean(requirement && requirement.tech_id === user.id);
+  }
   return false;
 }
 
@@ -119,6 +146,7 @@ function relatedRecordExists(relatedType, relatedId) {
   // Same fixed-bucket shape as the COI pool above.
   if (relatedType === "company_documents") return relatedId === "library";
   if (relatedType === "vendor_correspondence") return Boolean(db.findVendorCorrespondence(relatedId));
+  if (relatedType === "technician_required_form") return Boolean(db.findTechnicianRequiredForm(relatedId));
   return false;
 }
 

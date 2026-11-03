@@ -1,6 +1,6 @@
 const express = require("express");
 const db = require("../data/db");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { DAY_NAMES, datesForWeek, classifyWeekForTech, getOpenWeekMonday, currentWeekMonday } = require("../utils/week");
 const { presentAllocation } = require("../utils/allocation");
 
@@ -524,6 +524,46 @@ router.post("/:id/weeks/:weekMonday/submit", requireAuth, (req, res) => {
   db.addAudit(req.user.id, "WEEK_SUBMITTED", `${req.user.name} submitted week${onBehalf} ${weekMonday} (${total}h)${confirmedNote}`);
 
   res.json({ ok: true, status: "submitted" });
+});
+
+// ---- Roster Required Forms ----
+// See db.js's technician_required_forms table for the "why" -- a real
+// per-employee requirement (status can be "missing"), distinct from the
+// existing ad hoc Forms & Certifications upload.
+
+// Roster-wide, for the admin matrix tab -- literal path, so this is never
+// reachable through the /:id/... pattern below regardless of registration
+// order (different number of path segments).
+router.get("/required-forms", requireAuth, requireAdmin, (req, res) => {
+  res.json(db.listTechnicianRequiredForms({}));
+});
+
+router.post("/required-forms", requireAuth, requireAdmin, (req, res) => {
+  const { techId, name, instructions } = req.body || {};
+  try {
+    const requirement = db.createTechnicianRequiredForm({ techId, name, instructions, createdBy: req.user.id });
+    db.addAudit(req.user.id, "REQUIRED_FORM_ASSIGNED", `${req.user.name} required "${requirement.name}" of ${requirement.techName}`);
+    res.status(201).json(requirement);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete("/required-forms/:formId", requireAuth, requireAdmin, (req, res) => {
+  const existing = db.findTechnicianRequiredForm(req.params.formId);
+  if (!existing) return res.status(404).json({ error: "Requirement not found" });
+  db.deleteTechnicianRequiredForm(req.params.formId);
+  db.addAudit(req.user.id, "REQUIRED_FORM_REMOVED", `${req.user.name} removed the "${existing.name}" requirement`);
+  res.json({ ok: true });
+});
+
+// One person's own list -- self or admin, same rule every other /:id
+// sub-resource in this file already follows.
+router.get("/:id/required-forms", requireAuth, (req, res) => {
+  if (!(req.user.role === "admin" || req.user.id === req.params.id)) {
+    return res.status(403).json({ error: "Not allowed to view this" });
+  }
+  res.json(db.listTechnicianRequiredForms({ techId: req.params.id }));
 });
 
 module.exports = router;

@@ -37,6 +37,175 @@ function statusBadge(status) {
  * straight into a technician's profile on a given sub-tab (used by the
  * Overview tab's expiring-forms banner).
  */
+function requiredFormStatusBadge(status) {
+  if (status === "on_file") return `<span class="badge badge-approved">On File</span>`;
+  if (status === "expired") return `<span class="badge badge-rejected">Expired</span>`;
+  return `<span class="badge badge-draft">Missing</span>`;
+}
+
+// A single requirement's template/completed files -- same renderAttachments
+// component every other compliance document panel in this app already
+// uses, scoped to this one requirement's own relatedId. Admin can manage
+// both categories here (including uploading "completed" on a tech's behalf
+// for a paper-based submission); the technician's own view (techHome.js)
+// shows the same two panels but can only ever write "completed" -- see
+// files.js's canWrite for where that's actually enforced.
+function openRequiredFormDetail(requirement, onChanged) {
+  const { body, close } = openModal({
+    title: `${requirement.name} -- ${requirement.techName}`,
+    size: "large",
+    bodyHtml: `
+      ${requirement.instructions ? `<p class="review-checklist-hint">${escapeHtml(requirement.instructions)}</p>` : ""}
+      <div class="required-form-template-host"></div>
+      <div class="required-form-completed-host"></div>
+      <div class="modal-form-actions"><button type="button" class="btn btn-link danger-link required-form-delete-btn">Remove this requirement</button></div>
+    `,
+  });
+  const refreshBoth = async () => {
+    await renderAttachments(body.querySelector(".required-form-template-host"), {
+      title: "Blank Template (optional)",
+      relatedType: "technician_required_form",
+      relatedId: String(requirement.id),
+      categories: [{ value: "template", label: "Template" }],
+      canUpload: true,
+      emptyText: "No blank template uploaded -- the technician will need their own copy of this form.",
+    });
+    await renderAttachments(body.querySelector(".required-form-completed-host"), {
+      title: "Completed Form",
+      relatedType: "technician_required_form",
+      relatedId: String(requirement.id),
+      categories: [{ value: "completed", label: "Completed" }],
+      canUpload: true,
+      trackExpiration: true,
+      emptyText: "Not on file yet.",
+    });
+  };
+  refreshBoth();
+  body.querySelector(".required-form-delete-btn").addEventListener("click", async () => {
+    if (!window.confirm(`Remove "${requirement.name}" as a requirement for ${requirement.techName}? Any uploaded files for it go with it.`)) return;
+    try {
+      await api.delete(`/api/technicians/required-forms/${requirement.id}`);
+      close();
+      await onChanged();
+    } catch (err) {
+      window.alert(err.message);
+    }
+  });
+}
+
+function openAssignRequiredFormForm(technicians, onSaved) {
+  const { body, close } = openModal({
+    title: "Require a Form",
+    bodyHtml: `
+      <form class="modal-form required-form-assign-form">
+        <label class="profile-field">
+          <span>Technician</span>
+          <select name="techId" required>
+            <option value="">Select…</option>
+            ${technicians.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="profile-field">
+          <span>Form name</span>
+          <input name="name" required placeholder="e.g. Toyota Background Check Consent" />
+        </label>
+        <label class="profile-field">
+          <span>Instructions (optional)</span>
+          <textarea name="instructions" placeholder="e.g. Sign and return to your site admin"></textarea>
+        </label>
+        <div class="modal-form-actions"><button type="submit" class="btn btn-primary">Require this form</button></div>
+        <span class="save-message"></span>
+      </form>
+    `,
+  });
+  const form = body.querySelector(".required-form-assign-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = form.querySelector(".save-message");
+    try {
+      await api.post("/api/technicians/required-forms", {
+        techId: form.techId.value,
+        name: form.name.value.trim(),
+        instructions: form.instructions.value.trim(),
+      });
+      close();
+      await onSaved();
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+}
+
+// Roster-wide compliance matrix -- "a tab on Roster" per Krista's own
+// request, a sibling of the Technicians tab (see adminReview.js's
+// NAV_SECTIONS), not something buried inside one technician's profile,
+// since the point is seeing who's missing what across the whole team at a
+// glance.
+export async function renderRequiredFormsTab(content) {
+  content.innerHTML = `<p class="empty-note">Loading…</p>`;
+  let requirements, technicians;
+  try {
+    [requirements, technicians] = await Promise.all([api.get("/api/technicians/required-forms"), api.get("/api/admin/technicians")]);
+  } catch (err) {
+    content.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  const activeTechnicians = technicians.filter((t) => t.employmentStatus === "active");
+
+  content.innerHTML = `
+    <div class="page-header">
+      <div></div>
+      <div class="page-header-actions">
+        <button type="button" class="btn btn-primary required-form-assign-btn">+ Require a Form</button>
+      </div>
+    </div>
+    <p class="review-checklist-hint">
+      Require a specific form of a specific employee, upload a blank template for them to fill out, and
+      track whether it's been returned and when it expires -- same idea as vendor compliance documents,
+      for roster paperwork instead.
+    </p>
+    <div class="required-forms-host"></div>
+  `;
+  const refresh = () => renderRequiredFormsTab(content);
+  content.querySelector(".required-form-assign-btn").addEventListener("click", () => {
+    openAssignRequiredFormForm(activeTechnicians, refresh);
+  });
+
+  const list = content.querySelector(".required-forms-host");
+  if (requirements.length === 0) {
+    list.innerHTML = `<p class="empty-note">No required forms on file yet.</p>`;
+    return;
+  }
+  list.innerHTML = `
+    <table class="detail-table">
+      <thead><tr><th>Technician</th><th>Form</th><th>Status</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+        ${requirements
+          .map(
+            (r) => `
+          <tr data-id="${r.id}">
+            <td>${escapeHtml(r.techName)}</td>
+            <td>${escapeHtml(r.name)}</td>
+            <td>${requiredFormStatusBadge(r.status)}</td>
+            <td>${r.expiresAt || "—"}</td>
+            <td class="timeoff-row-actions">
+              <button type="button" class="btn btn-secondary required-form-manage-btn" data-id="${r.id}">Manage</button>
+            </td>
+          </tr>
+        `
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+  list.querySelectorAll(".required-form-manage-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const requirement = requirements.find((r) => String(r.id) === btn.dataset.id);
+      openRequiredFormDetail(requirement, refresh);
+    });
+  });
+}
+
 export function renderTechniciansTab(content, openTo) {
   let profileTechId = openTo ? openTo.techId : null;
   let profileSubTab = openTo && openTo.subTab ? openTo.subTab : "basic";

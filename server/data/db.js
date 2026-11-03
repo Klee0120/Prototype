@@ -1672,6 +1672,35 @@ if (!tableExists("company_holidays")) {
   `);
 }
 
+// A per-employee requirement, distinct from the existing ad hoc "Forms &
+// Certifications" upload (files.category='tech_form') -- that one is just
+// a free-text label an admin types on upload, with no concept of "this
+// person still owes this form." This table IS that concept: a row exists
+// the moment an admin requires it, before anything's been uploaded, so
+// "missing" is a real, queryable state rather than just an absent file.
+// Fulfillment (and an optional blank template the admin provides) lives in
+// the normal `files` table under its own relatedType
+// ("technician_required_form", related_id = this row's own id) -- see
+// files.js's CATEGORY_BY_RELATED -- rather than a parallel storage system,
+// so it gets encryption-at-rest and every other files.js guarantee for
+// free. Tech-facing on purpose (per Krista): the technician sees what's
+// required of them and uploads the completed form back themselves, same
+// spirit as the vendor portal's own compliance checklist.
+if (!tableExists("technician_required_forms")) {
+  db.exec(`
+    CREATE TABLE technician_required_forms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tech_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      instructions TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_technician_required_forms_tech_id ON technician_required_forms(tech_id);
+  `);
+}
+
 // Who may approve a given person's time-off requests -- a list, not a
 // single "manager" field, since per Krista a tech's requests can have more
 // than one valid approver (both Krista and Kevin), while her own has just
@@ -9033,6 +9062,81 @@ function setFileAccessLevel(id, accessLevel) {
   return getFile(id);
 }
 
+// ---- Roster Required Forms ----
+// See technician_required_forms's own comment for why this exists as a
+// table (a real "missing" state) rather than piggybacking on the ad hoc
+// tech_form upload category.
+
+function findTechnicianRequiredForm(id) {
+  return db.prepare("SELECT * FROM technician_required_forms WHERE id = ?").get(Number(id));
+}
+
+// missing: no completed file yet. expired: a completed file exists but its
+// expires_at has passed. on_file: a completed file exists and either has
+// no expiry or hasn't expired yet. Always the MOST RECENT completed file
+// (listFiles already orders newest-first) -- a re-upload after a rejection
+// or a renewal supersedes the old one without deleting the history under it.
+function requiredFormStatus(requirementId) {
+  const files = listFiles("technician_required_form", String(requirementId));
+  const template = files.find((f) => f.category === "template") || null;
+  const completed = files.find((f) => f.category === "completed") || null;
+  if (!completed) return { status: "missing", template, completed: null };
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const status = completed.expiresAt && completed.expiresAt < todayIso ? "expired" : "on_file";
+  return { status, template, completed };
+}
+
+function presentTechnicianRequiredForm(row) {
+  const tech = findTechnician(row.tech_id);
+  const { status, template, completed } = requiredFormStatus(row.id);
+  return {
+    id: row.id,
+    techId: row.tech_id,
+    techName: tech ? tech.name : row.tech_id,
+    name: row.name,
+    instructions: row.instructions || "",
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    status,
+    hasTemplate: Boolean(template),
+    completedAt: completed ? completed.uploadedAt : null,
+    expiresAt: completed ? completed.expiresAt : null,
+  };
+}
+
+// Roster-wide (no techId) for the admin matrix tab, or narrowed to one
+// person (their own Required Forms section, or an admin viewing one
+// profile). Newest-assigned first within each.
+function listTechnicianRequiredForms({ techId } = {}) {
+  const rows = techId
+    ? db.prepare("SELECT * FROM technician_required_forms WHERE tech_id = ? ORDER BY created_at DESC").all(techId)
+    : db.prepare("SELECT * FROM technician_required_forms ORDER BY created_at DESC").all();
+  return rows.map(presentTechnicianRequiredForm);
+}
+
+function createTechnicianRequiredForm({ techId, name, instructions, createdBy }) {
+  if (!techId || !findTechnician(techId)) throw new Error("Technician not found");
+  if (!name || !name.trim()) throw new Error("name is required");
+  const now = new Date().toISOString();
+  const result = db
+    .prepare("INSERT INTO technician_required_forms (tech_id, name, instructions, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(techId, name.trim(), (instructions || "").trim(), createdBy, now, now);
+  return presentTechnicianRequiredForm(findTechnicianRequiredForm(result.lastInsertRowid));
+}
+
+// Deleting the requirement also clears any template/completed files filed
+// under it -- there's nothing left for those files to be "attached to"
+// once the requirement itself is gone, unlike e.g. deleteTimeOffPolicy's
+// unassign-don't-delete approach (a file has no useful standalone meaning
+// the way a technician still exists after losing a policy).
+function deleteTechnicianRequiredForm(id) {
+  const existing = findTechnicianRequiredForm(id);
+  if (!existing) return false;
+  for (const f of listFiles("technician_required_form", String(id))) deleteFile(f.id);
+  db.prepare("DELETE FROM technician_required_forms WHERE id = ?").run(Number(id));
+  return true;
+}
+
 // A document parked on a task (e.g. a COI that arrived before it was clear
 // which vendor it belongs to -- see server/routes/files.js's "task"
 // relatedType) never becomes filed to a vendor by itself; someone has to
@@ -14308,6 +14412,10 @@ module.exports = {
   listFiles,
   getFile,
   deleteFile,
+  findTechnicianRequiredForm,
+  listTechnicianRequiredForms,
+  createTechnicianRequiredForm,
+  deleteTechnicianRequiredForm,
   reassignFile,
   listCoiPoolFiles,
   setFileAccessLevel,

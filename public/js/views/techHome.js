@@ -801,8 +801,70 @@ export async function renderTechHome(container, navHost, topbarHost, subtabHost)
     `;
   }
 
+  // One card per form required of this technician specifically (see
+  // db.js's technician_required_forms table) -- distinct from the ad hoc
+  // "My Forms & Certifications" list just below, which has no concept of
+  // "still owed." Each card's own Completed panel is the one place in
+  // this whole tab the technician can actually upload something
+  // themselves -- see files.js's canWrite for why only this category.
+  async function drawRequiredForms(host) {
+    let requirements;
+    try {
+      requirements = await api.get(`/api/technicians/${state.user.id}/required-forms`);
+    } catch (err) {
+      host.innerHTML = `<p class="attachments-error">${escapeHtml(err.message)}</p>`;
+      return;
+    }
+    if (requirements.length === 0) {
+      host.innerHTML = "";
+      return;
+    }
+    const statusBadge = (status) => {
+      if (status === "on_file") return `<span class="badge badge-approved">On File</span>`;
+      if (status === "expired") return `<span class="badge badge-rejected">Expired</span>`;
+      return `<span class="badge badge-draft">Needs your attention</span>`;
+    };
+    host.innerHTML = `
+      <h3>Required Forms</h3>
+      <div class="required-forms-tech-list">
+        ${requirements
+          .map(
+            (r) => `
+          <div class="card required-forms-tech-card" data-id="${r.id}">
+            <div class="page-header-title">${escapeHtml(r.name)} ${statusBadge(r.status)}</div>
+            ${r.instructions ? `<p class="review-checklist-hint">${escapeHtml(r.instructions)}</p>` : ""}
+            <div class="required-form-template-host" data-id="${r.id}"></div>
+            <div class="required-form-completed-host" data-id="${r.id}"></div>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    `;
+    for (const r of requirements) {
+      await renderAttachments(host.querySelector(`.required-form-template-host[data-id="${r.id}"]`), {
+        title: "Blank Template",
+        relatedType: "technician_required_form",
+        relatedId: String(r.id),
+        categories: [{ value: "template", label: "Template" }],
+        canUpload: false,
+        emptyText: "No template provided -- use your own copy of this form.",
+      });
+      await renderAttachments(host.querySelector(`.required-form-completed-host[data-id="${r.id}"]`), {
+        title: "Your Completed Form",
+        relatedType: "technician_required_form",
+        relatedId: String(r.id),
+        categories: [{ value: "completed", label: "Completed" }],
+        canUpload: true,
+        trackExpiration: true,
+        emptyText: "Not uploaded yet.",
+      });
+    }
+  }
+
   async function drawMyDocuments(content) {
-    content.innerHTML = `<div id="tech-forms-host"></div><div id="tech-docs-host"></div><div id="tech-policy-docs-host"></div>`;
+    content.innerHTML = `<div id="tech-required-forms-host"></div><div id="tech-forms-host"></div><div id="tech-docs-host"></div><div id="tech-policy-docs-host"></div>`;
+    await drawRequiredForms(content.querySelector("#tech-required-forms-host"));
     await renderAttachments(content.querySelector("#tech-forms-host"), {
       title: "My Forms & Certifications",
       relatedType: "technician",

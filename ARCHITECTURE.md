@@ -135,6 +135,46 @@ specifically to seed real opening balances from PurelyHR exports during
 the pilot -- a one-off ledger entry, source `manual_adjustment`, distinct
 from a real accrual.
 
+**Company holiday calendar** (`company_holidays`) -- the real Toyota/TMNA
+account schedule, re-entered by an admin from each year's memo (not the
+general C&W corporate schedule, which has a different day count and
+doesn't apply here). Shown on the Schedule calendar for every technician.
+**Floating Holiday** is a normal accrual-bank type alongside PTO/Sick,
+plus an admin-granted top-up (`grantInLieuFloatingHoliday`) for someone
+who worked a scheduled holiday -- deliberately admin-confirmed rather than
+auto-detected from timecard data, and the one balance entry in this app
+that carries its own expiry (6 months from the date worked) instead of
+resetting every Jan 1 -- `computeTimeOffBalance` excludes anything past
+its own expiry and carries an unexpired grant across a calendar-year
+boundary.
+
+### Roster Required Forms
+
+A per-employee requirement (`technician_required_forms`) -- require a
+named form of a specific technician, optionally attach a blank template,
+and track whether it's come back and when it expires. Deliberately a real
+table, not just another upload category: it exists the moment an admin
+requires it, before anything's uploaded, so "missing" is a queryable
+state rather than just an absent file -- unlike the pre-existing ad hoc
+"Forms & Certifications" upload (`files.category = 'tech_form'`), which
+has no concept of "this person still owes this."
+
+Fulfillment lives in the normal `files` table under its own relatedType
+(`technician_required_form`, `related_id` = the requirement's own id, not
+the tech's), so it gets encryption-at-rest and every other `files.js`
+guarantee for free rather than a parallel storage system. Status
+(`requiredFormStatus`) is computed from the most recent `completed` file:
+missing / on_file / expired.
+
+Tech-facing on purpose (per Krista): the technician sees what's required
+of them under My Documents and uploads the completed form back
+themselves -- the one place a non-admin can write to this relatedType at
+all (`files.js`'s `canWrite`), same spirit as the vendor portal letting a
+vendor upload their own compliance documents. The roster-wide admin view
+is its own tab under Roster (sibling to Technicians), not buried in one
+person's profile, since the point is seeing who's missing what across the
+whole team at a glance.
+
 ### GL / financial data
 
 GL import (`importGlEntries`) matches each line to a location once, at

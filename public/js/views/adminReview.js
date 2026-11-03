@@ -2,7 +2,7 @@ import { api } from "../api.js";
 import { state, escapeHtml } from "../app.js";
 import { shiftWeek, weekRangeLabel, DAY_NAMES } from "../weekUtil.js";
 import { renderAttachments, renderAssignTaskDocumentControl } from "./attachments.js";
-import { renderTechniciansTab } from "./technicianProfile.js";
+import { renderTechniciansTab, renderRequiredFormsTab } from "./technicianProfile.js";
 import { renderTechWeek } from "./techWeek.js";
 import { renderSchedule } from "./schedule.js";
 import { COI_MATRIX, COI_MATRIX_BY_LABEL } from "../data/coiMatrix.js";
@@ -92,7 +92,7 @@ const VENDOR_STATUS_BADGE_CLASS = {
 const NAV_SECTIONS = [
   { key: "priorities", label: "Priorities", tabs: ["mywork", "checklist"] },
   { key: "timekeeping", label: "Timekeeping", tabs: ["review", "techalloc", "overview", "fiscalcalendar", "timeoff", "schedule"] },
-  { key: "roster", label: "Roster", tabs: ["technicians"] },
+  { key: "roster", label: "Roster", tabs: ["technicians", "requiredforms"] },
   { key: "vendors", label: "Vendors", tabs: ["vendors", "onboarding", "compliance", "coireviews", "onboardform"] },
   { key: "locations", label: "Locations", tabs: ["locations"] },
   { key: "wom", label: "WOM", tabs: ["woms", "womlookup"] },
@@ -123,6 +123,7 @@ const TAB_LABELS = {
   glscreening: "GL Screening",
   laborreports: "Reports",
   technicians: "Technicians",
+  requiredforms: "Required Forms",
   vendors: "Vendor Directory",
   onboarding: "Onboarding",
   compliance: "Vendor Compliance",
@@ -454,6 +455,7 @@ export async function renderAdminReview(container, navHost, topbarHost, subtabHo
       renderTechniciansTab(content, jumpToTech);
       jumpToTech = null;
     }
+    else if (activeTab === "requiredforms") await renderRequiredFormsTab(content);
     else if (activeTab === "vendors") await drawVendors(content);
     else if (activeTab === "onboarding") await drawVendorOnboarding(content);
     else if (activeTab === "compliance") await drawVendorCompliance(content);
