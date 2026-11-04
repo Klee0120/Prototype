@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ServiceWorks Vendor Portal</title>
+  <!--
+    Deliberately its own standalone page, not part of the main app's SPA
+    (public/js/app.js) -- a vendor's own session lives in a completely
+    separate system (vendor_sessions, not sessions; x-vendor-session-token,
+    not x-session-token) from the internal technician/admin app this same
+    server also hosts, and keeping the two in separate bundles/entry points
+    is part of that separation, not just a styling choice. No shared
+    localStorage key, no shared JS module, no shared router.
+  -->
+  <style>
+    :root {
+      --ink: #241f1f;
+      --muted: #8a7976;
+      --border: #ead9d6;
+      --bg: #f8f2ee;
+      --card: #ffffff;
+      --accent: #a3182a;
+      --accent-dark: #7d1220;
+      --accent-bg: #f8e3e1;
+      --ok: #1f7a4d;
+      --radius: 10px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    header {
+      background: #1a1f2b;
+      color: #fff;
+      padding: 16px 24px;
+      font-weight: 700;
+      font-size: 18px;
+    }
+    main {
+      max-width: 600px;
+      margin: 48px auto;
+      padding: 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+    }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p.hint { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    input[type="text"], input[type="password"], textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      margin-bottom: 16px;
+      resize: vertical;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-dark); }
+    button.secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .error {
+      background: var(--accent-bg);
+      color: var(--accent-dark);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .success {
+      background: #e3f3ea;
+      color: var(--ok);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 16px;
+      background: #fff;
+    }
+    input[type="file"] {
+      width: 100%;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+    h2.section-heading {
+      font-size: 15px;
+      margin: 24px 0 8px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .doc-history { list-style: none; padding: 0; margin: 0; }
+    .doc-history li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .doc-history li:last-child { border-bottom: none; }
+    .doc-history .doc-meta { color: var(--muted); font-size: 12px; }
+    #coi-review-result {
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: var(--bg);
+      font-size: 13px;
+    }
+    #coi-review-result ul { margin: 6px 0 0; padding-left: 18px; }
+    .checklist { list-style: none; padding: 0; margin: 16px 0; }
+    .checklist li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .checklist li:last-child { border-bottom: none; }
+    .status-pill {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: var(--bg);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .status-pill.approved { background: #e3f3ea; color: var(--ok); }
+    .status-pill.coi-not-confirmed { background: var(--accent-bg); color: var(--accent-dark); }
+    .status-pill.coi-self-reported { background: #e7edf5; color: #3f5770; }
+    .coi-self-report-value { font-size: 12px; color: var(--muted); }
+    .btn-link {
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 0;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-link:hover { text-decoration: underline; }
+    .coi-requirement-item { gap: 12px; }
+    .coi-requirement-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    li.coi-waiver-form,
+    li.coi-limit-confirmation-form {
+      display: block;
+      margin: 0 0 14px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .coi-waiver-form label,
+    .coi-limit-confirmation-form label { margin-top: 10px; }
+    .coi-waiver-form label:first-child,
+    .coi-limit-confirmation-form label:first-child { margin-top: 0; }
+    .coi-limit-confirmation-form input,
+    .coi-limit-confirmation-form textarea {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .coi-limit-confirmation-form .coi-limit-confirm-submit { margin-top: 8px; }
+    .coi-limit-confirmation-form .coi-limit-excess-submit {
+      margin-top: 8px;
+      background: var(--bg);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    .coi-limit-confirmation-form .coi-limit-excess-submit:hover { background: var(--accent-bg); }
+    .po-ap-requirements {
+      margin: 0 0 16px;
+      padding-left: 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .po-list li { display: block; }
+    .po-item-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+    .po-item-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    li.po-invoice-form {
+      display: block;
+      margin: 10px 0 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .po-invoice-history { list-style: none; padding: 0; margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+    .po-invoice-history li { padding: 4px 0; }
+    .summary {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .expiration { font-size: 12px; color: var(--muted); }
+    .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .top-row h1 { margin: 0; }
+    footer.logout { margin-top: 20px; text-align: right; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>ServiceWorks &middot; Vendor Portal</header>
+  <main>
+    <section id="login-view" class="card">
+      <h1>Sign in</h1>
+      <p class="hint">Use the Tax ID or access code and passcode your C&amp;W Services contact gave you.</p>
+      <div id="login-error" class="error"></div>
+      <form id="login-form">
+        <label for="tax-id">Tax ID or Access Code</label>
+        <input type="text" id="tax-id" autocomplete="off" required />
+        <label for="passcode">Passcode</label>
+        <input type="password" id="passcode" autocomplete="current-password" required />
+        <button type="submit" id="login-submit">Sign in</button>
+      </form>
+    </section>
+
+    <section id="tax-id-setup-view" class="card" hidden>
+      <h1>Add your Tax ID</h1>
+      <p class="hint">Before we can process payments or review your compliance documents, we need your Tax ID on file. You can upload your W-9 any time below, with or without this.</p>
+      <div id="tax-id-error" class="error"></div>
+      <div id="tax-id-success" class="success"></div>
+      <form id="tax-id-form">
+        <label for="tax-id-input">Tax ID (no dash, numbers only)</label>
+        <input type="text" id="tax-id-input" autocomplete="off" inputmode="numeric" placeholder="e.g. 123456789" required />
+        <button type="submit" id="tax-id-submit">Save</button>
+      </form>
+    </section>
+
+    <section id="checklist-view" class="card" hidden>
+      <div class="top-row">
+        <h1 id="vendor-name">—</h1>
+      </div>
+      <p class="summary" id="summary-line">—</p>
+      <ul class="checklist" id="checklist-items"></ul>
+      <p class="hint" id="submit-hint"></p>
+      <div id="submit-error" class="error"></div>
+      <div id="submit-success" class="success"></div>
+      <button type="button" class="secondary" id="submit-for-review-btn" disabled>Submit for review</button>
+    </section>
+
+    <section id="contact-view" class="card" hidden>
+      <h1>Contact info</h1>
+      <p class="hint">Keep this up to date so C&amp;W Services can reach you about this work.</p>
+      <div id="contact-error" class="error"></div>
+      <div id="contact-success" class="success"></div>
+      <form id="contact-form">
+        <label for="contact-phone">Contact phone</label>
+        <input type="text" id="contact-phone" autocomplete="tel" />
+        <label for="contact-email">Email</label>
+        <input type="text" id="contact-email" autocomplete="email" />
+        <button type="submit" id="contact-submit">Save</button>
+      </form>
+
+      <h2 class="section-heading">PO email</h2>
+      <p class="hint">This is where C&amp;W Services sends your purchase orders. Since it controls where POs get sent, a change here is reviewed by admin before it takes effect.</p>
+      <p id="po-email-current"></p>
+      <p class="hint" id="po-email-pending" hidden></p>
+      <button type="button" class="btn-link" id="po-email-change-toggle">Request a change</button>
+      <div id="po-email-change-panel" hidden>
+        <div id="po-email-change-error" class="error"></div>
+        <form id="po-email-change-form">
+          <label for="po-email-change-input">New PO email</label>
+          <input type="text" id="po-email-change-input" autocomplete="off" />
+          <button type="submit" id="po-email-change-submit">Send request</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="po-view" class="card" hidden>
+      <h1>My Open POs</h1>
+      <p class="hint">Purchase orders waiting on your invoice. Attach your invoice and we'll submit it to Accounts Payable for you right away.</p>
+      <ul class="checklist po-list" id="po-list-items"></ul>
+      <p class="hint" id="po-list-empty" hidden>No open POs waiting on an invoice right now.</p>
+
+      <h2 class="section-heading">Submitting Invoice(s) for Payment</h2>
+      <p class="hint">To ensure accurate processing of payment, every invoice should include:</p>
+      <ul class="po-ap-requirements">
+        <li>Purchase Order Number</li>
+        <li>PDF Format Only</li>
+        <li>Bill to: C&amp;W FACILITY SERVICES INC, 117 Kendrick Street, Suite 250, Needham, MA 02494</li>
+        <li>Identification of the location where materials were delivered, or service was performed.</li>
+        <li>The name of the C&amp;W Services team member who placed the order.</li>
+        <li>Supplier's contact information</li>
+      </ul>
+      <p class="hint">Payment status questions? Contact apsupport.amer@cwservices.com.</p>
+
+      <button type="button" class="btn-link" id="po-request-toggle">Don't see your PO?</button>
+      <div id="po-request-panel" hidden>
+        <div id="po-request-error" class="error"></div>
+        <div id="po-request-success" class="success"></div>
+        <form id="po-request-form">
+          <label for="po-request-number">PO number (if you know it)</label>
+          <input type="text" id="po-request-number" autocomplete="off" />
+          <label for="po-request-notes">Notes</label>
+          <textarea id="po-request-notes" rows="2"></textarea>
+          <button type="submit" id="po-request-submit">Send request</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="upload-view" class="card" hidden>
+      <h1>Submit a document</h1>
+      <p class="hint">Upload a new or replacement COI, W-9, ACH form, voided check, blank invoice, or hold harmless agreement. A COI is checked automatically and you'll see right away if anything looks off.</p>
+      <div id="upload-error" class="error"></div>
+      <div id="upload-success" class="success"></div>
+      <form id="upload-form">
+        <label for="upload-category">Document type</label>
+        <select id="upload-category" required>
+          <option value="coi">Certificate of Insurance (COI)</option>
+          <option value="w9">W-9</option>
+          <option value="ach">ACH / banking form</option>
+          <option value="check">Voided check</option>
+          <option value="blank_invoice">Blank invoice</option>
+          <option value="hold_harmless">Hold harmless agreement</option>
+        </select>
+        <label for="upload-file">File</label>
+        <input type="file" id="upload-file" required />
+        <button type="submit" id="upload-submit">Upload</button>
+      </form>
+      <div id="coi-review-result" hidden></div>
+      <h2 class="section-heading">Previously submitted</h2>
+      <ul class="doc-history" id="doc-history-items"></ul>
+    </section>
+
+    <section id="help-view" class="card" hidden>
+      <h1>Need help?</h1>
+      <p class="hint">Tell us what you need and a C&amp;W Services admin will follow up.</p>
+      <div id="help-error" class="error"></div>
+      <div id="help-success" class="success"></div>
+      <form id="help-form">
+        <label for="help-message">What do you need help with? (optional)</label>
+        <textarea id="help-message" rows="3"></textarea>
+        <button type="submit" id="help-submit">Request help</button>
+      </form>
+    </section>
+
+    <footer class="logout" id="logout-row" hidden>
+      <button type="button" class="secondary" id="logout-btn">Sign out</button>
+    </footer>
+  </main>
+  <script type="module" src="./portal.js"></script>
+</body>
+</html>
